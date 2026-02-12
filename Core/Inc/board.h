@@ -17,6 +17,7 @@
 #include "ext_drivers/accumulator.h"
 
 #define NFANS 6
+#define CANBUS_STATUS	0x1 // Notification bit value for Status messages
 
 typedef struct
 {
