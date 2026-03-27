@@ -24,20 +24,20 @@ extern UART_HandleTypeDef huart3;
 
 void stm32f767z_init(stm32f767z_t * dev)
 {
-	dev->hadc1 = hadc1;
-	dev->hadc2 = hadc2;
+	dev->hadc1 = &hadc1;
+	dev->hadc2 = &hadc2;
 
-	dev->hcan1 = hcan1;
+	dev->hcan1 = &hcan1;
 
-	dev->hspi6 = hspi6;
+	dev->hspi6 = &hspi6;
 
-	dev->htim1 = htim1;
-	dev->htim2 = htim2;
-	dev->htim3 = htim3;
-	dev->htim4 = htim4;
-	dev->htim5 = htim5;
+	dev->htim1 = &htim1;
+	dev->htim2 = &htim2;
+	dev->htim3 = &htim3;
+	dev->htim4 = &htim4;
+	dev->htim5 = &htim5;
 
-	dev->huart3 = huart3;
+	dev->huart3 = &huart3;
 }
 
 uint16_t stm32f767z_adc_read(ADC_HandleTypeDef *hadc)
