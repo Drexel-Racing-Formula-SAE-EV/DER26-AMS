@@ -22,6 +22,7 @@
 #include "stm32f7xx_it.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "app.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -61,7 +62,7 @@ extern UART_HandleTypeDef huart3;
 extern TIM_HandleTypeDef htim7;
 
 /* USER CODE BEGIN EV */
-
+extern app_data_t app;
 /* USER CODE END EV */
 
 /******************************************************************************/
@@ -219,5 +220,39 @@ void TIM7_IRQHandler(void)
 }
 
 /* USER CODE BEGIN 1 */
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+    cli_device_t *cli = &app.board.cli;
+    // Use global huart3 for everything until by-value bug is fixed
+    if(huart->Instance != cli->huart->Instance) return;
+    uint8_t c = cli->c;
 
+    if(c == '\r' || c == '\n')
+    {
+        if(cli->index > 0)
+        {
+            HAL_UART_Transmit(&huart3, (uint8_t *)"\r\n", 2, 10);
+            cli->line[cli->index] = '\0';
+            cli->index = 0;
+            cli->msg_count++;
+            cli->msg_pending = true;
+        }
+    }
+    else if(c == '\b' || c == 127)
+    {
+        if(cli->index > 0)
+        {
+            cli->index--;
+            HAL_UART_Transmit(&huart3, (uint8_t *)"\b \b", 3, 10);
+        }
+    }
+    else if(cli->index < CLI_LINESZ - 1)
+    {
+        cli->line[cli->index++] = c;
+        HAL_UART_Transmit(&huart3, &c, 1, 10);
+    }
+
+    // Re-arm on the global
+    HAL_UART_Receive_IT(&huart3, &cli->c, 1);
+}
 /* USER CODE END 1 */

@@ -42,15 +42,15 @@ void app_create()
 
 	board_init(&app.board);
 	accumulator_init(&app.acc,
-					 &app.board.stm32f767z.hspi6,
+					 app.board.stm32f767z.hspi6,
 					 CS_A_GPIO_Port,
 					 CS_B_GPIO_Port,
 					 CS_A_Pin,
 					 CS_B_Pin,
-					 &app.board.stm32f767z.htim1);
-	//HAL_UART_Receive_IT(app.board.cli.huart, &app.board.cli.c, 1);
+					 app.board.stm32f767z.htim1);
+	HAL_UART_Receive_IT(app.board.stm32f767z.huart3, &app.board.cli.c, 1);
 
-	//assert(app.cli_task = cli_task_start(&app));
+	assert(app.cli_task = cli_task_start(&app));
 	assert(app.fan_task = fan_task_start(&app));
 	//assert(app.canbus_task = canbus_task_start(&app));
 	assert(app.air_task = air_task_start(&app));
