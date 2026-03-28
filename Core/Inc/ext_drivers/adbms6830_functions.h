@@ -18,7 +18,8 @@ void adBms6830_init(adbms6830_driver_t* dev,
 				    GPIO_TypeDef* cs_port_a,
 				    GPIO_TypeDef* cs_port_b,
 				    uint16_t cs_pin_a,
-				    uint16_t cs_pin_b);
+				    uint16_t cs_pin_b,
+					TIM_HandleTypeDef *htim);
 
 void adbms6830_reset_cfg(adbms6830_driver_t *dev);
 void adbms6830_srst(adbms6830_driver_t *dev);

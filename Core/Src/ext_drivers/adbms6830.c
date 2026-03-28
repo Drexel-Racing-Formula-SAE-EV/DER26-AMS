@@ -149,7 +149,8 @@ void adBms6830_init(adbms6830_driver_t* dev,
 						   GPIO_TypeDef* cs_port_a,
 						   GPIO_TypeDef* cs_port_b,
 						   uint16_t cs_pin_a,
-						   uint16_t cs_pin_b)
+						   uint16_t cs_pin_b,
+						   TIM_HandleTypeDef *htim)
 {
 	dev->num_ics = num_ics;
 	dev->ics = ics;
@@ -158,6 +159,7 @@ void adBms6830_init(adbms6830_driver_t* dev,
 	dev->cs_port[1] = cs_port_b;
 	dev->cs_pin[0] = cs_pin_a;
 	dev->cs_pin[1] = cs_pin_b;
+	dev->htim = htim;
 
 	// Set CS pins high
 	dev->string = STRING_B;
@@ -171,9 +173,32 @@ void adBms6830_init(adbms6830_driver_t* dev,
 	adbms6830_reset_cfg(dev);
 	// TODO: Custom config
 
+//	adbms6830_wakeup(dev);
+//	adbms6830_wrcfga(dev);
+//	adbms6830_wrcfgb(dev);
+
+	// adBms6830_start_adc_cell_voltage_measurment
+	// adBmsWakeupIc(tIC);
 	adbms6830_wakeup(dev);
-	adbms6830_wrcfga(dev);
-	adbms6830_wrcfgb(dev);
+	// adBms6830_Adcv(RD_ON, CONTINUOUS, DCP_OFF, RSTF_OFF, OW_OFF_ALL_CH);
+	uint8_t cmd[2];
+	cmd[0] = 0x02 + 1;
+	cmd[1] = (1<<7)+(0<<4)+(0<<2)+(0 & 0x03) + 0x60;
+	adbms6830_cmd(dev, cmd);
+
+	// adBms6830_read_cell_voltages
+	// adBmsWakeupIc(tIC);
+	adbms6830_wakeup(dev);
+    // adBms6830_Adcv(RD_ON, CONTINUOUS, DCP_OFF, RSTF_OFF, OW_OFF_ALL_CH);
+	cmd[0] = 0x02 + 1;
+	cmd[1] = (1<<7)+(0<<4)+(0<<2)+(0 & 0x03) + 0x60;
+	adbms6830_cmd(dev, cmd);
+	// adBms6830_Snap();
+	cmd[0] = 0x00;
+	cmd[1] = 0x2D;
+	adbms6830_cmd(dev, cmd);
+	// adBmsReadData(tIC, &ic[0], RDCVA, Cell, A);
+
 }
 
 void adbms6830_reset_cfg(adbms6830_driver_t *dev)
@@ -504,3 +529,11 @@ void adbms6830_spi_write_read(adbms6830_driver_t *dev, uint8_t* tx_Data, uint8_t
 	ret |= HAL_SPI_Receive(dev->hspi, rx_data, rx_len, 100);
 	if(use_cs) adbms6830_set_cs(dev, 1);
 }
+
+void adbms6830_us_delay(adbms6830_driver_t* dev, uint16_t microseconds)
+{
+	__HAL_TIM_SET_COUNTER(dev->htim, 0);
+	while (__HAL_TIM_GET_COUNTER(dev->htim) < microseconds);
+	return;
+}
+

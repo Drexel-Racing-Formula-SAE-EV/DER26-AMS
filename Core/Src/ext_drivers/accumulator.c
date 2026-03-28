@@ -27,7 +27,9 @@ void accumulator_init(accumulator_t *dev,
 	HAL_TIM_Base_Start(htim);
 
 	// Init pack monitor, just on port A
-	adbms2950_init(&dev->apm, NAPMS, dev->apm_ics, hspi, cs_port_a, cs_port_a, cs_pin_a, cs_pin_a, htim);
+	// adbms2950_init(&dev->apm, NAPMS, dev->apm_ics, hspi, cs_port_a, cs_port_a, cs_pin_a, cs_pin_a, htim);
+
+	adBms6830_init(&dev->smb, NSMBS, dev->smb_ics, hspi, cs_port_a, cs_port_a, cs_pin_a, cs_pin_a, htim);
 }
 
 int accumulator_read_volt(accumulator_t *dev)
