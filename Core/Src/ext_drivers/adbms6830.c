@@ -124,6 +124,9 @@ static uint8_t SRST[2]          = { 0x00, 0x27 };
 /* Read SID command */
 static uint8_t RDSID[2]         = { 0x00, 0x2C };
 
+static uint16_t cmd_cntr = 0;
+static uint16_t rx_pec_error = 0;
+
 // SPI communication
 void adbms6830_set_cs(adbms6830_driver_t* dev, uint8_t state);
 void adbms6830_spi_write(adbms6830_driver_t* dev, uint8_t* data, uint16_t len, uint8_t use_cs);
@@ -168,36 +171,118 @@ void adBms6830_init(adbms6830_driver_t* dev,
 	adbms6830_set_cs(dev, 1);
 
 	adbms6830_srst(dev);
+	adbms6830_us_delay(dev, 300);
 	// DELAY
 
 	adbms6830_reset_cfg(dev);
-	// TODO: Custom config
 
-//	adbms6830_wakeup(dev);
-//	adbms6830_wrcfga(dev);
-//	adbms6830_wrcfgb(dev);
-
-	// adBms6830_start_adc_cell_voltage_measurment
-	// adBmsWakeupIc(tIC);
+//    float c1_volt; //voltage in Volts
+//    float c2_volt; //voltage in Volts
+//    float c3_volt; //voltage in Volts
+//    start:
+	debug_loop:
+	// 1. WAKEUP AND WRITE CONFIGURATION
+	// You MUST do this so dev->ics[i].tx_cfga.refon = PWR_UP is sent to the IC.
 	adbms6830_wakeup(dev);
-	// adBms6830_Adcv(RD_ON, CONTINUOUS, DCP_OFF, RSTF_OFF, OW_OFF_ALL_CH);
+	adbms6830_wrcfga(dev);
+	adbms6830_wrcfgb(dev);
+
+	// Wait ~3ms for the precision voltage reference to warm up and settle
+	adbms6830_us_delay(dev, 3000);
+
+	// 2. START ADC CONVERSION (Only Once!)
+	adbms6830_wakeup(dev);
 	uint8_t cmd[2];
-	cmd[0] = 0x02 + 1;
-	cmd[1] = (1<<7)+(0<<4)+(0<<2)+(0 & 0x03) + 0x60;
+	cmd[0] = 0x02 + 1; // RD_ON = 1
+	cmd[1] = (1<<7)+(0<<4)+(0<<2)+(0 & 0x03) + 0x60; // CONTINUOUS mode
 	adbms6830_cmd(dev, cmd);
 
-	// adBms6830_read_cell_voltages
-	// adBmsWakeupIc(tIC);
+	// 3. WAIT FOR THE FIRST CONVERSION CYCLE TO FINISH
+	// Wait at least 3 to 5 milliseconds to be safe.
+	adbms6830_us_delay(dev, 5000);
+
+	// 4. SNAP AND READ
+	// Wakeup again just in case the isoSPI bus idled out during the 5ms delay
 	adbms6830_wakeup(dev);
-    // adBms6830_Adcv(RD_ON, CONTINUOUS, DCP_OFF, RSTF_OFF, OW_OFF_ALL_CH);
-	cmd[0] = 0x02 + 1;
-	cmd[1] = (1<<7)+(0<<4)+(0<<2)+(0 & 0x03) + 0x60;
-	adbms6830_cmd(dev, cmd);
-	// adBms6830_Snap();
+
+	// Send SNAP
 	cmd[0] = 0x00;
 	cmd[1] = 0x2D;
 	adbms6830_cmd(dev, cmd);
-	// adBmsReadData(tIC, &ic[0], RDCVA, Cell, A);
+	adbms6830_us_delay(dev, 10); // 10us is fine for SNAP
+
+//	// Read Register A
+//	adbms6830_rd48(dev, RDCVA, shared_buf);
+//	for (uint8_t ic = 0; ic < dev->num_ics; ic++)
+//	{
+//	    uint8_t *d = &shared_buf[ic * RX_DATA];
+//
+//	    uint16_t c1 = (d[1] << 8) | d[0];
+//	    uint16_t c2 = (d[3] << 8) | d[2];
+//	    uint16_t c3 = (d[5] << 8) | d[4];
+//
+//	    // Example: store or print
+//	    dev->ics[ic].cell.c_codes[0] = c1;
+//	    dev->ics[ic].cell.c_codes[1] = c2;
+//	    dev->ics[ic].cell.c_codes[2] = c3;
+//
+//	    // float c1_volt; //voltage in Volts
+//	    c1_volt = ((c1 + 10000) * 0.000150);
+//	    // float c2_volt; //voltage in Volts
+//	    c2_volt = ((c2 + 10000) * 0.000150);
+//	    // float c3_volt; //voltage in Volts
+//	    c3_volt = ((c3 + 10000) * 0.000150);
+//	}
+//	goto start;
+
+
+	// Array of commands for Registers A through F
+	uint8_t* cell_cmds[6] = {RDCVA, RDCVB, RDCVC, RDCVD, RDCVE, RDCVF};
+
+	// Registers A-E hold 3 cells each. Register F holds 1 cell (Cell 16).
+	uint8_t cells_in_reg[6] = {3, 3, 3, 3, 3, 1};
+
+	// Array to hold the converted float voltages locally (optional)
+	float cell_volts[16];
+
+	for (uint8_t reg = 0; reg < 6; reg++)
+	{
+	    // 1. Read the current register (A, B, C, D, E, or F)
+	    adbms6830_rd48(dev, cell_cmds[reg], shared_buf);
+
+	    // 2. Parse the data for each IC in the daisy chain
+	    for (uint8_t ic = 0; ic < dev->num_ics; ic++)
+	    {
+	        uint8_t *d = &shared_buf[ic * RX_DATA];
+
+	        // Calculate the starting index for this register (0, 3, 6, 9, 12, or 15)
+	        uint8_t base_idx = reg * 3;
+
+	        for (uint8_t i = 0; i < cells_in_reg[reg]; i++)
+	        {
+	            // Parse the 16-bit raw code (Little Endian: Low byte first, then High byte)
+	            uint16_t raw_code = (d[(i * 2) + 1] << 8) | d[i * 2];
+
+	            // Calculate the absolute cell index (0 to 15)
+	            uint8_t cell_idx = base_idx + i;
+
+	            // Store the raw code in your struct
+	            dev->ics[ic].cell.c_codes[cell_idx] = raw_code;
+
+	            // Calculate the voltage in Volts
+	            cell_volts[cell_idx] = ((raw_code + 10000) * 0.000150f);
+
+	            /* * Tip: If you need to access these float voltages elsewhere in your program,
+	             * you should add a `float volts[16];` array to your `adbms6830_asic` struct
+	             * and save it there:
+	             * dev->ics[ic].cell.volts[cell_idx] = cell_volts[cell_idx];
+	             */
+	        }
+	    }
+	}
+
+	adbms6830_wakeup(dev);
+	goto debug_loop; // TODO: Remove if not doing debug
 
 }
 
@@ -443,74 +528,109 @@ void adbms6830_cmd(adbms6830_driver_t* dev, uint8_t cmd[CMDSZ])
 // Tx/Rx Utility
 void adbms6830_wr48(adbms6830_driver_t* dev, uint8_t cmd[CMDSZ], uint8_t* tx_data)
 {
-	uint16_t pec15;
-	uint16_t pec10;
-	uint16_t tx_sz = CMDSZ + PEC15SZ + ((TX_DATA + DPECSZ) * dev->num_ics);
-	uint16_t cmd_index;
-	uint8_t src_addr = 0;
-	uint8_t temp[TX_DATA];
+    uint16_t pec15;
+    uint16_t data_pec;
+    // tx_sz = 4 bytes cmd/pec + (6 bytes data + 2 bytes pec) * num_ics
+    uint16_t tx_sz = CMDSZ + PEC15SZ + ((TX_DATA + DPECSZ) * dev->num_ics);
+    uint16_t cmd_index = 0;
+    uint8_t src_addr = 0;
+    uint8_t temp[TX_DATA];
 
-	write_buf[0] = cmd[0];
-	write_buf[1] = cmd[1];
-	pec15 = Pec15_Calc(CMDSZ, cmd);
-	write_buf[2] = (uint8_t)(pec15 >> 8);
-	write_buf[3] = (uint8_t)pec15;
-	cmd_index = 4;
+    /* 1. Wakeup the isoSPI Daisy Chain */
+    adbms6830_wakeup(dev);
 
-	for (uint8_t current_ic = dev->num_ics; current_ic > 0; current_ic--)
-	{
-	  src_addr = ((current_ic-1) * TX_DATA);
-	  /*!< The first configuration written is received by the last IC in the daisy chain */
-	  for (uint8_t current_byte = 0; current_byte < TX_DATA; current_byte++)
-	  {
-		write_buf[cmd_index] = tx_data[((current_ic-1)*6)+current_byte];
-		cmd_index = cmd_index + 1;
-	  }
-	  /*!< Copy each ic correspond data + pec value for calculate data pec */
-	  memcpy(temp, &tx_data[src_addr], TX_DATA); /*!< dst, src, size */
-	  /*!< calculating the PEC for each Ics configuration register data */
-	  // pec10 = (uint16_t)pec10_calc_modular(temp, PEC10_WRITE);
-	  // data_pec = (uint16_t)pec10_calc(true,BYTES_IN_REG, &copyArray[0]);
-	  write_buf[cmd_index] = (uint8_t)(pec10 >> 8);
-	  cmd_index = cmd_index + 1;
-	  write_buf[cmd_index] = (uint8_t)pec10;
-	  cmd_index = cmd_index + 1;
-	}
+    /* 2. Prepare Command + PEC15 */
+    write_buf[0] = cmd[0];
+    write_buf[1] = cmd[1];
+    pec15 = Pec15_Calc(CMDSZ, cmd);
+    write_buf[2] = (uint8_t)(pec15 >> 8);
+    write_buf[3] = (uint8_t)pec15;
+    cmd_index = 4;
 
-	adbms6830_spi_write(dev, write_buf, tx_sz, 1);
+    /* 3. Pack Data + PEC10 in reverse order for daisy chain */
+    // The first configuration written is received by the last IC in the daisy chain
+    for (uint8_t current_ic = dev->num_ics; current_ic > 0; current_ic--)
+    {
+        src_addr = ((current_ic - 1) * TX_DATA);
+
+        // Copy the 6 bytes of data for this specific IC
+        for (uint8_t current_byte = 0; current_byte < TX_DATA; current_byte++)
+        {
+            write_buf[cmd_index] = tx_data[src_addr + current_byte];
+            temp[current_byte] = tx_data[src_addr + current_byte];
+            cmd_index++;
+        }
+
+        // Calculate the PEC10 for these 6 bytes
+        // Note: ADI's pec10_calc takes (bIsRxCmd, length, data). Write commands are false.
+        data_pec = pec10_calc(0, TX_DATA, temp);
+
+        // Append the 2 PEC bytes
+        write_buf[cmd_index] = (uint8_t)(data_pec >> 8);
+        cmd_index++;
+        write_buf[cmd_index] = (uint8_t)data_pec;
+        cmd_index++;
+    }
+
+    /* 4. Transmit over SPI */
+    adbms6830_spi_write(dev, write_buf, tx_sz, 1);
 }
 
 
 void adbms6830_rd48(adbms6830_driver_t* dev, uint8_t cmd[CMDSZ], uint8_t* rx_data)
 {
-	uint16_t pec15, received_pec, calculated_pec;
-	uint16_t rx_sz = RX_DATA * dev->num_ics;
-	uint8_t wrcmd[CMDSZ + PEC15SZ] = {0};
-	uint8_t src_addr = 0;
-	uint8_t temp[RX_DATA];
+    uint16_t pec15, received_pec, calculated_pec;
+    uint16_t rx_sz = RX_DATA * dev->num_ics;
+    uint8_t wrcmd[CMDSZ + PEC15SZ] = {0};
 
-	wrcmd[0] = cmd[0];
-	wrcmd[1] = cmd[1];
-	pec15 = Pec15_Calc(CMDSZ, cmd);
-	wrcmd[2] = (uint8_t)(pec15 >> 8);
-	wrcmd[3] = (uint8_t)pec15;
+    /* 1. Prepare Command + PEC15 */
+    wrcmd[0] = cmd[0];
+    wrcmd[1] = cmd[1];
+    pec15 = Pec15_Calc(CMDSZ, cmd);
+    wrcmd[2] = (uint8_t)(pec15 >> 8);
+    wrcmd[3] = (uint8_t)pec15;
 
-	adbms6830_spi_write_read(dev, wrcmd, CMDSZ + PEC15SZ, rx_data, rx_sz, 1);
+    /* 2. Wakeup the isoSPI Daisy Chain
+     * Crucial to ensure the ICs are ready to receive the SPI clock/data
+     */
+    adbms6830_wakeup(dev);
 
-    for (uint8_t current_ic = 0; current_ic < dev->num_ics; current_ic++)     /*!< executes for each ic in the daisy chain and packs the data */
+    /* 3. Send Command and Read Data
+     * Using your existing custom SPI wrapper
+     */
+    adbms6830_spi_write_read(dev, wrcmd, CMDSZ + PEC15SZ, rx_data, rx_sz, 1);
+
+    /* 4. Parse, Check PEC10, and Extract Command Counter */
+    for (uint8_t current_ic = 0; current_ic < dev->num_ics; current_ic++)
     {
-      for (uint8_t current_byte = 0; current_byte < (RX_DATA); current_byte++)
-      {
-        rx_data[(current_ic * RX_DATA) + current_byte] = rx_data[current_byte + (current_ic * RX_DATA)];
-      }
-      /*!< Get received pec value from ic*/
-      received_pec = (uint16_t)(((rx_data[(current_ic * RX_DATA) + (RX_DATA - 2)] & 0x03) << 8) | rx_data[(current_ic * RX_DATA) + (RX_DATA - 1)]);
-      /*!< Copy each ic correspond data + pec value for calculate data pec */
-      memcpy(temp, &rx_data[src_addr], RX_DATA);
-      src_addr = ((current_ic+1) * (RX_DATA));
-      /*!< Calculate data pec */
-      //calculated_pec = (uint16_t) pec10_calc(1, (RX_DATA - DPECSZ), temp);
-     //dev->ics[current_ic].rx_pec_error = (received_pec != calculated_pec);
+        // Calculate base index for this IC's data chunk
+        uint16_t ic_base_idx = current_ic * RX_DATA;
+
+        // Pointer to this specific IC's data for cleaner access
+        uint8_t* ic_data = &rx_data[ic_base_idx];
+
+        // Extract Command Counter (top 6 bits of the 7th byte)
+        // dev->ics[current_ic].cmd_cntr = (ic_data[RX_DATA - 2] >> 2);
+        cmd_cntr = (ic_data[RX_DATA - 2] >> 2);
+
+        // Extract Received PEC10 (bottom 2 bits of 7th byte + all 8 bits of 8th byte)
+        received_pec = (uint16_t)(((ic_data[RX_DATA - 2] & 0x03) << 8) | ic_data[RX_DATA - 1]);
+
+        // Calculate Expected PEC10
+        // The ADI pec10_calc expects `true` for Rx commands to include the command counter byte in the calculation
+        calculated_pec = pec10_calc(1, RX_DATA - 2, ic_data);
+
+        // Flag the error in the device struct for the application layer to handle
+        if (received_pec != calculated_pec)
+        {
+            // dev->ics[current_ic].rx_pec_error = 1; // PEC Mismatch - Data is corrupt
+        	rx_pec_error = 1;
+        }
+        else
+        {
+            // dev->ics[current_ic].rx_pec_error = 0; // Data is valid
+        	rx_pec_error = 0;
+        }
     }
 }
 
