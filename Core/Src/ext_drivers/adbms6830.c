@@ -12,6 +12,12 @@
 unsigned char shared_buf[BUFSZ] = {0};
 uint8_t write_buf[BUFSZ] = {0};
 
+#define RDCVALL_CMD         {0x00, 0x0C}
+
+#define RDCVALL_DATA_SZ     32   /* 16 cells x 2 bytes */
+
+#define RDCVALL_RX_DATA     34   /* 32 data bytes + 2 PEC/counter bytes */
+
 /* configuration registers commands */
 static uint8_t WRCFGA[2]        = { 0x00, 0x01 };
 static uint8_t WRCFGB[2]        = { 0x00, 0x24 };
@@ -237,52 +243,72 @@ void adBms6830_init(adbms6830_driver_t* dev,
 
 
 	// Array of commands for Registers A through F
-	uint8_t* cell_cmds[6] = {RDCVA, RDCVB, RDCVC, RDCVD, RDCVE, RDCVF};
-
-	// Registers A-E hold 3 cells each. Register F holds 1 cell (Cell 16).
-	uint8_t cells_in_reg[6] = {3, 3, 3, 3, 3, 1};
-
-	// Array to hold the converted float voltages locally (optional)
+//	uint8_t* cell_cmds[6] = {RDCVA, RDCVB, RDCVC, RDCVD, RDCVE, RDCVF};
+//
+//	// Registers A-E hold 3 cells each. Register F holds 1 cell (Cell 16).
+//	uint8_t cells_in_reg[6] = {3, 3, 3, 3, 3, 1};
+//
+//	// Array to hold the converted float voltages locally (optional)
 	float cell_volts[16];
+//
+//	for (uint8_t reg = 0; reg < 6; reg++)
+//	{
+//	    // 1. Read the current register (A, B, C, D, E, or F)
+//	    adbms6830_rd48(dev, cell_cmds[reg], shared_buf);
+//
+//	    // 2. Parse the data for each IC in the daisy chain
+//	    for (uint8_t ic = 0; ic < dev->num_ics; ic++)
+//	    {
+//	        uint8_t *d = &shared_buf[ic * RX_DATA];
+//
+//	        // Calculate the starting index for this register (0, 3, 6, 9, 12, or 15)
+//	        uint8_t base_idx = reg * 3;
+//
+//	        for (uint8_t i = 0; i < cells_in_reg[reg]; i++)
+//	        {
+//	            // Parse the 16-bit raw code (Little Endian: Low byte first, then High byte)
+//	            uint16_t raw_code = (d[(i * 2) + 1] << 8) | d[i * 2];
+//
+//	            // Calculate the absolute cell index (0 to 15)
+//	            uint8_t cell_idx = base_idx + i;
+//
+//	            // Store the raw code in your struct
+//	            dev->ics[ic].cell.c_codes[cell_idx] = raw_code;
+//
+//	            // Calculate the voltage in Volts
+//	            cell_volts[cell_idx] = ((raw_code + 10000) * 0.000150f);
+//
+//	            /* * Tip: If you need to access these float voltages elsewhere in your program,
+//	             * you should add a `float volts[16];` array to your `adbms6830_asic` struct
+//	             * and save it there:
+//	             * dev->ics[ic].cell.volts[cell_idx] = cell_volts[cell_idx];
+//	             */
+//	        }
+//	    }
+//	}
 
-	for (uint8_t reg = 0; reg < 6; reg++)
+	adbms6830_rd_cvall(dev, shared_buf);
+
+	// Parse the data for each IC in the daisy chain
+	for (uint8_t ic = 0; ic < dev->num_ics; ic++)
 	{
-	    // 1. Read the current register (A, B, C, D, E, or F)
-	    adbms6830_rd48(dev, cell_cmds[reg], shared_buf);
+	    uint8_t *d = &shared_buf[ic * RDCVALL_RX_DATA];
 
-	    // 2. Parse the data for each IC in the daisy chain
-	    for (uint8_t ic = 0; ic < dev->num_ics; ic++)
+	    for (uint8_t cell_idx = 0; cell_idx < 16; cell_idx++)
 	    {
-	        uint8_t *d = &shared_buf[ic * RX_DATA];
+	        // Parse the 16-bit raw code (Little Endian: Low byte first, then High byte)
+	        uint16_t raw_code = (d[(cell_idx * 2) + 1] << 8) | d[cell_idx * 2];
 
-	        // Calculate the starting index for this register (0, 3, 6, 9, 12, or 15)
-	        uint8_t base_idx = reg * 3;
+	        // Store the raw code in your struct
+	        dev->ics[ic].cell.c_codes[cell_idx] = raw_code;
 
-	        for (uint8_t i = 0; i < cells_in_reg[reg]; i++)
-	        {
-	            // Parse the 16-bit raw code (Little Endian: Low byte first, then High byte)
-	            uint16_t raw_code = (d[(i * 2) + 1] << 8) | d[i * 2];
-
-	            // Calculate the absolute cell index (0 to 15)
-	            uint8_t cell_idx = base_idx + i;
-
-	            // Store the raw code in your struct
-	            dev->ics[ic].cell.c_codes[cell_idx] = raw_code;
-
-	            // Calculate the voltage in Volts
-	            cell_volts[cell_idx] = ((raw_code + 10000) * 0.000150f);
-
-	            /* * Tip: If you need to access these float voltages elsewhere in your program,
-	             * you should add a `float volts[16];` array to your `adbms6830_asic` struct
-	             * and save it there:
-	             * dev->ics[ic].cell.volts[cell_idx] = cell_volts[cell_idx];
-	             */
-	        }
+	        // Calculate the voltage in Volts
+	        cell_volts[cell_idx] = ((raw_code + 10000) * 0.000150f);
 	    }
 	}
 
 	adbms6830_wakeup(dev);
-	goto debug_loop; // TODO: Remove if not doing debug
+//	goto debug_loop; // TODO: Remove if not doing debug
 
 }
 
@@ -655,5 +681,97 @@ void adbms6830_us_delay(adbms6830_driver_t* dev, uint16_t microseconds)
 	__HAL_TIM_SET_COUNTER(dev->htim, 0);
 	while (__HAL_TIM_GET_COUNTER(dev->htim) < microseconds);
 	return;
+}
+
+/* RDCVALL: Read All Cell Voltage Registers (Groups A-F)
+
+* CMD: CC[10:0] = 00000001100 -> 0x00, 0x0C
+
+* Returns 32 data bytes per IC (C1-C16, 2 bytes each)
+
+* + 2 bytes command counter/PEC10 = 34 bytes per IC total
+
+*
+
+* WARNING (per datasheet): RDCVALL is intended for single IC
+
+* applications only. In a daisy chain, a single PEC covers all
+
+* ICs' data — you cannot isolate which IC has corrupt data on
+
+* a PEC failure.
+
+*/
+
+
+
+/* WARNING: On a PEC failure for a given IC, you cannot determine
+ * which register group (A-F) contains the corrupt data — the
+ * entire 32-byte payload for that IC must be discarded and re-read.
+ * Use individual RDCVx commands if per-group error isolation is needed.
+ * For coherent data across multiple ICs, use SNAP/UNSNAP before reading.
+ */
+void adbms6830_rd_cvall(adbms6830_driver_t* dev, uint8_t* rx_data)
+
+{
+
+    uint16_t pec15, received_pec, calculated_pec;
+
+    uint16_t rx_sz = RDCVALL_RX_DATA * dev->num_ics;
+
+    uint8_t cmd[CMDSZ] = RDCVALL_CMD;
+
+    uint8_t wrcmd[CMDSZ + PEC15SZ] = {0};
+
+    /* 1. Prepare Command + PEC15 */
+
+    wrcmd[0] = cmd[0];
+
+    wrcmd[1] = cmd[1];
+
+    pec15 = Pec15_Calc(CMDSZ, cmd);
+
+    wrcmd[2] = (uint8_t)(pec15 >> 8);
+
+    wrcmd[3] = (uint8_t)pec15;
+
+    /* 2. Wakeup the isoSPI Daisy Chain */
+
+    adbms6830_wakeup(dev);
+
+    /* 3. Send Command and Read Data */
+
+    adbms6830_spi_write_read(dev, wrcmd, CMDSZ + PEC15SZ, rx_data, rx_sz, 1);
+
+    /* 4. Parse, Check PEC10, and Extract Command Counter
+
+     * Note: in a daisy chain, a PEC mismatch here cannot tell
+
+     * you which IC's data is corrupt — only that something in
+
+     * the full response is bad.
+
+     */
+
+    for (uint8_t current_ic = 0; current_ic < dev->num_ics; current_ic++)
+
+    {
+
+        uint16_t ic_base_idx = current_ic * RDCVALL_RX_DATA;
+
+        uint8_t* ic_data = &rx_data[ic_base_idx];
+
+        cmd_cntr = (ic_data[RDCVALL_RX_DATA - 2] >> 2);
+
+        received_pec = (uint16_t)(((ic_data[RDCVALL_RX_DATA - 2] & 0x03) << 8)
+
+                                 | ic_data[RDCVALL_RX_DATA - 1]);
+
+        calculated_pec = pec10_calc(1, RDCVALL_RX_DATA - 2, ic_data);
+
+        rx_pec_error = (received_pec != calculated_pec) ? 1 : 0;
+
+    }
+
 }
 
