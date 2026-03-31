@@ -33,4 +33,11 @@ void adbms6830_wakeup(adbms6830_driver_t* dev);
 
 void adbms6830_us_delay(adbms6830_driver_t* dev, uint16_t microseconds);
 
+void adbms6830_adcv(adbms6830_driver_t *dev, RD rd, CONT cont, DCP dcp, RSTF rstf, OW_C_S owcs);
+void adbms6830_start_adc_cell_voltage_measurement(adbms6830_driver_t *dev);
+void adbms6830_parse_cell(adbms6830_driver_t *dev, uint8_t *data, GRP grp);
+void adbms6830_read_cell_voltages(adbms6830_driver_t *dev);
+
+
+
 #endif /* INC_EXT_DRIVERS_ADBMS6830_FUNCTIONS_H_ */

@@ -151,15 +151,176 @@ void adbms6830_pack_cfgb(adbms6830_driver_t *dev);
 void adbms6830_pack_comm(adbms6830_driver_t* dev);
 void adbms6830_pack_clr_flag_data(adbms6830_driver_t* dev);
 
+//void adBms6830_init(adbms6830_driver_t* dev,
+//						   uint8_t num_ics,
+//						   adbms6830_asic* ics,
+//						   SPI_HandleTypeDef* hspi,
+//						   GPIO_TypeDef* cs_port_a,
+//						   GPIO_TypeDef* cs_port_b,
+//						   uint16_t cs_pin_a,
+//						   uint16_t cs_pin_b,
+//						   TIM_HandleTypeDef *htim)
+//{
+//	dev->num_ics = num_ics;
+//	dev->ics = ics;
+//	dev->hspi = hspi;
+//	dev->cs_port[0] = cs_port_a;
+//	dev->cs_port[1] = cs_port_b;
+//	dev->cs_pin[0] = cs_pin_a;
+//	dev->cs_pin[1] = cs_pin_b;
+//	dev->htim = htim;
+//
+//	// Set CS pins high
+//	dev->string = STRING_B;
+//	adbms6830_set_cs(dev, 1);
+//	dev->string = STRING_A;
+//	adbms6830_set_cs(dev, 1);
+//
+//	adbms6830_srst(dev);
+//	adbms6830_us_delay(dev, 300);
+//	// DELAY
+//
+//	adbms6830_reset_cfg(dev);
+//
+////    float c1_volt; //voltage in Volts
+////    float c2_volt; //voltage in Volts
+////    float c3_volt; //voltage in Volts
+////    start:
+//	debug_loop:
+//	// 1. WAKEUP AND WRITE CONFIGURATION
+//	// You MUST do this so dev->ics[i].tx_cfga.refon = PWR_UP is sent to the IC.
+//	adbms6830_wakeup(dev);
+//	adbms6830_wrcfga(dev);
+//	adbms6830_wrcfgb(dev);
+//
+//	// Wait ~3ms for the precision voltage reference to warm up and settle
+//	adbms6830_us_delay(dev, 3000);
+//
+//	// 2. START ADC CONVERSION (Only Once!)
+//	adbms6830_wakeup(dev);
+//	uint8_t cmd[2];
+//	cmd[0] = 0x02 + 1; // RD_ON = 1
+//	cmd[1] = (1<<7)+(0<<4)+(0<<2)+(0 & 0x03) + 0x60; // CONTINUOUS mode
+//	adbms6830_cmd(dev, cmd);
+//
+//	// 3. WAIT FOR THE FIRST CONVERSION CYCLE TO FINISH
+//	// Wait at least 3 to 5 milliseconds to be safe.
+//	adbms6830_us_delay(dev, 5000);
+//
+//	// 4. SNAP AND READ
+//	// Wakeup again just in case the isoSPI bus idled out during the 5ms delay
+//	adbms6830_wakeup(dev);
+//
+//	// Send SNAP
+//	cmd[0] = 0x00;
+//	cmd[1] = 0x2D;
+//	adbms6830_cmd(dev, cmd);
+//	adbms6830_us_delay(dev, 10); // 10us is fine for SNAP
+//
+////	// Read Register A
+////	adbms6830_rd48(dev, RDCVA, shared_buf);
+////	for (uint8_t ic = 0; ic < dev->num_ics; ic++)
+////	{
+////	    uint8_t *d = &shared_buf[ic * RX_DATA];
+////
+////	    uint16_t c1 = (d[1] << 8) | d[0];
+////	    uint16_t c2 = (d[3] << 8) | d[2];
+////	    uint16_t c3 = (d[5] << 8) | d[4];
+////
+////	    // Example: store or print
+////	    dev->ics[ic].cell.c_codes[0] = c1;
+////	    dev->ics[ic].cell.c_codes[1] = c2;
+////	    dev->ics[ic].cell.c_codes[2] = c3;
+////
+////	    // float c1_volt; //voltage in Volts
+////	    c1_volt = ((c1 + 10000) * 0.000150);
+////	    // float c2_volt; //voltage in Volts
+////	    c2_volt = ((c2 + 10000) * 0.000150);
+////	    // float c3_volt; //voltage in Volts
+////	    c3_volt = ((c3 + 10000) * 0.000150);
+////	}
+////	goto start;
+//
+//
+//	// Array of commands for Registers A through F
+////	uint8_t* cell_cmds[6] = {RDCVA, RDCVB, RDCVC, RDCVD, RDCVE, RDCVF};
+////
+////	// Registers A-E hold 3 cells each. Register F holds 1 cell (Cell 16).
+////	uint8_t cells_in_reg[6] = {3, 3, 3, 3, 3, 1};
+////
+////	// Array to hold the converted float voltages locally (optional)
+//	float cell_volts[16];
+////
+////	for (uint8_t reg = 0; reg < 6; reg++)
+////	{
+////	    // 1. Read the current register (A, B, C, D, E, or F)
+////	    adbms6830_rd48(dev, cell_cmds[reg], shared_buf);
+////
+////	    // 2. Parse the data for each IC in the daisy chain
+////	    for (uint8_t ic = 0; ic < dev->num_ics; ic++)
+////	    {
+////	        uint8_t *d = &shared_buf[ic * RX_DATA];
+////
+////	        // Calculate the starting index for this register (0, 3, 6, 9, 12, or 15)
+////	        uint8_t base_idx = reg * 3;
+////
+////	        for (uint8_t i = 0; i < cells_in_reg[reg]; i++)
+////	        {
+////	            // Parse the 16-bit raw code (Little Endian: Low byte first, then High byte)
+////	            uint16_t raw_code = (d[(i * 2) + 1] << 8) | d[i * 2];
+////
+////	            // Calculate the absolute cell index (0 to 15)
+////	            uint8_t cell_idx = base_idx + i;
+////
+////	            // Store the raw code in your struct
+////	            dev->ics[ic].cell.c_codes[cell_idx] = raw_code;
+////
+////	            // Calculate the voltage in Volts
+////	            cell_volts[cell_idx] = ((raw_code + 10000) * 0.000150f);
+////
+////	            /* * Tip: If you need to access these float voltages elsewhere in your program,
+////	             * you should add a `float volts[16];` array to your `adbms6830_asic` struct
+////	             * and save it there:
+////	             * dev->ics[ic].cell.volts[cell_idx] = cell_volts[cell_idx];
+////	             */
+////	        }
+////	    }
+////	}
+//
+//	adbms6830_rd_cvall(dev, shared_buf);
+//
+//	// Parse the data for each IC in the daisy chain
+//	for (uint8_t ic = 0; ic < dev->num_ics; ic++)
+//	{
+//	    uint8_t *d = &shared_buf[ic * RDCVALL_RX_DATA];
+//
+//	    for (uint8_t cell_idx = 0; cell_idx < 16; cell_idx++)
+//	    {
+//	        // Parse the 16-bit raw code (Little Endian: Low byte first, then High byte)
+//	        uint16_t raw_code = (d[(cell_idx * 2) + 1] << 8) | d[cell_idx * 2];
+//
+//	        // Store the raw code in your struct
+//	        dev->ics[ic].cell.c_codes[cell_idx] = raw_code;
+//
+//	        // Calculate the voltage in Volts
+//	        cell_volts[cell_idx] = ((raw_code + 10000) * 0.000150f);
+//	    }
+//	}
+//
+//	adbms6830_wakeup(dev);
+////	goto debug_loop; // TODO: Remove if not doing debug
+//
+//}
+
 void adBms6830_init(adbms6830_driver_t* dev,
-						   uint8_t num_ics,
-						   adbms6830_asic* ics,
-						   SPI_HandleTypeDef* hspi,
-						   GPIO_TypeDef* cs_port_a,
-						   GPIO_TypeDef* cs_port_b,
-						   uint16_t cs_pin_a,
-						   uint16_t cs_pin_b,
-						   TIM_HandleTypeDef *htim)
+					   uint8_t num_ics,
+					   adbms6830_asic* ics,
+					   SPI_HandleTypeDef* hspi,
+					   GPIO_TypeDef* cs_port_a,
+					   GPIO_TypeDef* cs_port_b,
+					   uint16_t cs_pin_a,
+					   uint16_t cs_pin_b,
+					   TIM_HandleTypeDef *htim)
 {
 	dev->num_ics = num_ics;
 	dev->ics = ics;
@@ -178,17 +339,10 @@ void adBms6830_init(adbms6830_driver_t* dev,
 
 	adbms6830_srst(dev);
 	adbms6830_us_delay(dev, 300);
-	// DELAY
 
 	adbms6830_reset_cfg(dev);
 
-//    float c1_volt; //voltage in Volts
-//    float c2_volt; //voltage in Volts
-//    float c3_volt; //voltage in Volts
-//    start:
-	debug_loop:
 	// 1. WAKEUP AND WRITE CONFIGURATION
-	// You MUST do this so dev->ics[i].tx_cfga.refon = PWR_UP is sent to the IC.
 	adbms6830_wakeup(dev);
 	adbms6830_wrcfga(dev);
 	adbms6830_wrcfgb(dev);
@@ -196,120 +350,24 @@ void adBms6830_init(adbms6830_driver_t* dev,
 	// Wait ~3ms for the precision voltage reference to warm up and settle
 	adbms6830_us_delay(dev, 3000);
 
-	// 2. START ADC CONVERSION (Only Once!)
-	adbms6830_wakeup(dev);
-	uint8_t cmd[2];
-	cmd[0] = 0x02 + 1; // RD_ON = 1
-	cmd[1] = (1<<7)+(0<<4)+(0<<2)+(0 & 0x03) + 0x60; // CONTINUOUS mode
-	adbms6830_cmd(dev, cmd);
+	// 2. START ADC CONVERSION
+	adbms6830_start_adc_cell_voltage_measurement(dev);
 
 	// 3. WAIT FOR THE FIRST CONVERSION CYCLE TO FINISH
-	// Wait at least 3 to 5 milliseconds to be safe.
 	adbms6830_us_delay(dev, 5000);
 
-	// 4. SNAP AND READ
-	// Wakeup again just in case the isoSPI bus idled out during the 5ms delay
-	adbms6830_wakeup(dev);
+	// 4. SNAP, READ, AND PARSE
+	adbms6830_read_cell_voltages(dev);
 
-	// Send SNAP
-	cmd[0] = 0x00;
-	cmd[1] = 0x2D;
-	adbms6830_cmd(dev, cmd);
-	adbms6830_us_delay(dev, 10); // 10us is fine for SNAP
-
-//	// Read Register A
-//	adbms6830_rd48(dev, RDCVA, shared_buf);
-//	for (uint8_t ic = 0; ic < dev->num_ics; ic++)
-//	{
-//	    uint8_t *d = &shared_buf[ic * RX_DATA];
-//
-//	    uint16_t c1 = (d[1] << 8) | d[0];
-//	    uint16_t c2 = (d[3] << 8) | d[2];
-//	    uint16_t c3 = (d[5] << 8) | d[4];
-//
-//	    // Example: store or print
-//	    dev->ics[ic].cell.c_codes[0] = c1;
-//	    dev->ics[ic].cell.c_codes[1] = c2;
-//	    dev->ics[ic].cell.c_codes[2] = c3;
-//
-//	    // float c1_volt; //voltage in Volts
-//	    c1_volt = ((c1 + 10000) * 0.000150);
-//	    // float c2_volt; //voltage in Volts
-//	    c2_volt = ((c2 + 10000) * 0.000150);
-//	    // float c3_volt; //voltage in Volts
-//	    c3_volt = ((c3 + 10000) * 0.000150);
-//	}
-//	goto start;
-
-
-	// Array of commands for Registers A through F
-//	uint8_t* cell_cmds[6] = {RDCVA, RDCVB, RDCVC, RDCVD, RDCVE, RDCVF};
-//
-//	// Registers A-E hold 3 cells each. Register F holds 1 cell (Cell 16).
-//	uint8_t cells_in_reg[6] = {3, 3, 3, 3, 3, 1};
-//
-//	// Array to hold the converted float voltages locally (optional)
+	// 5. CONVERT LAST IC'S CELL CODES TO VOLTS
 	float cell_volts[16];
-//
-//	for (uint8_t reg = 0; reg < 6; reg++)
-//	{
-//	    // 1. Read the current register (A, B, C, D, E, or F)
-//	    adbms6830_rd48(dev, cell_cmds[reg], shared_buf);
-//
-//	    // 2. Parse the data for each IC in the daisy chain
-//	    for (uint8_t ic = 0; ic < dev->num_ics; ic++)
-//	    {
-//	        uint8_t *d = &shared_buf[ic * RX_DATA];
-//
-//	        // Calculate the starting index for this register (0, 3, 6, 9, 12, or 15)
-//	        uint8_t base_idx = reg * 3;
-//
-//	        for (uint8_t i = 0; i < cells_in_reg[reg]; i++)
-//	        {
-//	            // Parse the 16-bit raw code (Little Endian: Low byte first, then High byte)
-//	            uint16_t raw_code = (d[(i * 2) + 1] << 8) | d[i * 2];
-//
-//	            // Calculate the absolute cell index (0 to 15)
-//	            uint8_t cell_idx = base_idx + i;
-//
-//	            // Store the raw code in your struct
-//	            dev->ics[ic].cell.c_codes[cell_idx] = raw_code;
-//
-//	            // Calculate the voltage in Volts
-//	            cell_volts[cell_idx] = ((raw_code + 10000) * 0.000150f);
-//
-//	            /* * Tip: If you need to access these float voltages elsewhere in your program,
-//	             * you should add a `float volts[16];` array to your `adbms6830_asic` struct
-//	             * and save it there:
-//	             * dev->ics[ic].cell.volts[cell_idx] = cell_volts[cell_idx];
-//	             */
-//	        }
-//	    }
-//	}
-
-	adbms6830_rd_cvall(dev, shared_buf);
-
-	// Parse the data for each IC in the daisy chain
-	for (uint8_t ic = 0; ic < dev->num_ics; ic++)
+	adbms6830_asic *last_ic = &dev->ics[dev->num_ics - 1];
+	for (uint8_t cell = 0u; cell < 16u; cell++)
 	{
-	    uint8_t *d = &shared_buf[ic * RDCVALL_RX_DATA];
-
-	    for (uint8_t cell_idx = 0; cell_idx < 16; cell_idx++)
-	    {
-	        // Parse the 16-bit raw code (Little Endian: Low byte first, then High byte)
-	        uint16_t raw_code = (d[(cell_idx * 2) + 1] << 8) | d[cell_idx * 2];
-
-	        // Store the raw code in your struct
-	        dev->ics[ic].cell.c_codes[cell_idx] = raw_code;
-
-	        // Calculate the voltage in Volts
-	        cell_volts[cell_idx] = ((raw_code + 10000) * 0.000150f);
-	    }
+		cell_volts[cell] = (last_ic->cell.c_codes[cell] + 10000) * 0.000150f;
 	}
 
 	adbms6830_wakeup(dev);
-//	goto debug_loop; // TODO: Remove if not doing debug
-
 }
 
 void adbms6830_reset_cfg(adbms6830_driver_t *dev)
@@ -775,3 +833,86 @@ void adbms6830_rd_cvall(adbms6830_driver_t* dev, uint8_t* rx_data)
 
 }
 
+void adbms6830_adcv(adbms6830_driver_t *dev, RD rd, CONT cont, DCP dcp, RSTF rstf, OW_C_S owcs)
+{
+    uint8_t cmd[2];
+    cmd[0] = 0x02u | (uint8_t)rd;
+    cmd[1] = ((uint8_t)cont << 7u) | ((uint8_t)dcp << 4u)
+           | ((uint8_t)rstf << 2u) | ((uint8_t)owcs & 0x03u) | 0x60u;
+    adbms6830_wakeup(dev);
+    adbms6830_cmd(dev, cmd);
+}
+
+void adbms6830_start_adc_cell_voltage_measurement(adbms6830_driver_t *dev)
+{
+    adbms6830_adcv(dev, RD_ON, CONTINUOUS, DCP_OFF, RSTF_OFF, OW_OFF_ALL_CH);
+}
+
+void adbms6830_parse_cell(adbms6830_driver_t *dev, uint8_t *data, GRP grp)
+{
+    for (uint8_t curr_ic = 0; curr_ic < (uint8_t)dev->num_ics; curr_ic++)
+    {
+        uint8_t *d = &data[curr_ic * RX_DATA];
+
+        switch (grp)
+        {
+        case A:
+            dev->ics[curr_ic].cell.c_codes[0]  = (int16_t)((uint16_t)d[0] | ((uint16_t)d[1] << 8u));
+            dev->ics[curr_ic].cell.c_codes[1]  = (int16_t)((uint16_t)d[2] | ((uint16_t)d[3] << 8u));
+            dev->ics[curr_ic].cell.c_codes[2]  = (int16_t)((uint16_t)d[4] | ((uint16_t)d[5] << 8u));
+            break;
+        case B:
+            dev->ics[curr_ic].cell.c_codes[3]  = (int16_t)((uint16_t)d[0] | ((uint16_t)d[1] << 8u));
+            dev->ics[curr_ic].cell.c_codes[4]  = (int16_t)((uint16_t)d[2] | ((uint16_t)d[3] << 8u));
+            dev->ics[curr_ic].cell.c_codes[5]  = (int16_t)((uint16_t)d[4] | ((uint16_t)d[5] << 8u));
+            break;
+        case C:
+            dev->ics[curr_ic].cell.c_codes[6]  = (int16_t)((uint16_t)d[0] | ((uint16_t)d[1] << 8u));
+            dev->ics[curr_ic].cell.c_codes[7]  = (int16_t)((uint16_t)d[2] | ((uint16_t)d[3] << 8u));
+            dev->ics[curr_ic].cell.c_codes[8]  = (int16_t)((uint16_t)d[4] | ((uint16_t)d[5] << 8u));
+            break;
+        case D:
+            dev->ics[curr_ic].cell.c_codes[9]  = (int16_t)((uint16_t)d[0] | ((uint16_t)d[1] << 8u));
+            dev->ics[curr_ic].cell.c_codes[10] = (int16_t)((uint16_t)d[2] | ((uint16_t)d[3] << 8u));
+            dev->ics[curr_ic].cell.c_codes[11] = (int16_t)((uint16_t)d[4] | ((uint16_t)d[5] << 8u));
+            break;
+        case E:
+            dev->ics[curr_ic].cell.c_codes[12] = (int16_t)((uint16_t)d[0] | ((uint16_t)d[1] << 8u));
+            dev->ics[curr_ic].cell.c_codes[13] = (int16_t)((uint16_t)d[2] | ((uint16_t)d[3] << 8u));
+            dev->ics[curr_ic].cell.c_codes[14] = (int16_t)((uint16_t)d[4] | ((uint16_t)d[5] << 8u));
+            break;
+        case F:
+            dev->ics[curr_ic].cell.c_codes[15] = (int16_t)((uint16_t)d[0] | ((uint16_t)d[1] << 8u));
+            break;
+        default:
+            break;
+        }
+
+        uint16_t received_pec = (uint16_t)(((d[RX_DATA - 2u] & 0x03u) << 8u)
+                                           | d[RX_DATA - 1u]);
+        uint16_t calc_pec     = pec10_calc(1, RX_DATA - 2, d);
+
+        dev->ics[curr_ic].cccrc.cmd_cntr = d[RX_DATA - 2u] >> 2u;
+        dev->ics[curr_ic].cccrc.cell_pec = (received_pec != calc_pec) ? 1u : 0u;
+    }
+}
+
+void adbms6830_read_cell_voltages(adbms6830_driver_t *dev)
+{
+    uint8_t snap_cmd[2]   = { 0x00u, 0x2Du };
+    uint8_t unsnap_cmd[2] = { 0x00u, 0x2Fu };
+
+    adbms6830_wakeup(dev);
+    adbms6830_cmd(dev, snap_cmd);
+    adbms6830_us_delay(dev, 10u);
+
+    adbms6830_rd48(dev, RDCVA, shared_buf); adbms6830_parse_cell(dev, shared_buf, A);
+    adbms6830_rd48(dev, RDCVB, shared_buf); adbms6830_parse_cell(dev, shared_buf, B);
+    adbms6830_rd48(dev, RDCVC, shared_buf); adbms6830_parse_cell(dev, shared_buf, C);
+    adbms6830_rd48(dev, RDCVD, shared_buf); adbms6830_parse_cell(dev, shared_buf, D);
+    adbms6830_rd48(dev, RDCVE, shared_buf); adbms6830_parse_cell(dev, shared_buf, E);
+    adbms6830_rd48(dev, RDCVF, shared_buf); adbms6830_parse_cell(dev, shared_buf, F);
+
+    adbms6830_wakeup(dev);
+    adbms6830_cmd(dev, unsnap_cmd);
+}
