@@ -11,19 +11,19 @@ void adbms_task_fn(void *argument);
 
 TaskHandle_t adbms_task_start(app_data_t *data)
 {
-	TaskHandle_t handle;
-	xTaskCreate(adbms_task_fn, "adbms task", 1024, (void *)data, ADBMS_PRIO, &handle);
-	return handle;
+    TaskHandle_t handle;
+    xTaskCreate(adbms_task_fn, "adbms task", 1024, (void *)data, ADBMS_PRIO, &handle);
+    return handle;
 }
 
 void adbms_task_fn(void *argument)
 {
-	app_data_t *data = (app_data_t *) argument;
-	accumulator_t *acc = &data->acc;
-	uint32_t entry;
+    app_data_t *data = (app_data_t *) argument;
+    accumulator_t *acc = &data->acc;
+    uint32_t entry;
 
-	for(;;)
-	{
+    for(;;)
+    {
         entry = osKernelGetTickCount();
 
         accumulator_read_volt(acc);
@@ -32,7 +32,7 @@ void adbms_task_fn(void *argument)
         accumulator_read_temp(acc);
 
         osDelayUntil(entry + (1000 / ADBMS_FREQ));
-	}
+    }
 }
 
 

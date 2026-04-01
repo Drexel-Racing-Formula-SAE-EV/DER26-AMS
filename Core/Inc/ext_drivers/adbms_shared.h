@@ -552,8 +552,8 @@ typedef struct
 
   uint8_t       soak      :3;
   uint8_t       vs10      :1;
-  uint8_t 	vs9       :1;
-  uint8_t 	vs8       :1;
+  uint8_t     vs9       :1;
+  uint8_t     vs8       :1;
   uint8_t       vs7       :1;
   uint8_t       vs6       :1;
 
@@ -584,27 +584,27 @@ typedef struct
 /*!< ADBMS2950 Configuration Register Group B structure */
 typedef struct
 {
-  uint8_t 	oc1ten    :1;
-  uint8_t 	oc1th     :7;
+  uint8_t     oc1ten    :1;
+  uint8_t     oc1th     :7;
 
-  uint8_t 	oc2ten    :1;
-  uint8_t 	oc2th     :7;
+  uint8_t     oc2ten    :1;
+  uint8_t     oc2th     :7;
 
-  uint8_t 	oc3ten    :1;
-  uint8_t 	oc3th     :7;
+  uint8_t     oc3ten    :1;
+  uint8_t     oc3th     :7;
 
-  uint8_t 	octsel    :2;
-  uint8_t 	reften    :1;
-  uint8_t 	ocdp      :1;
-  uint8_t 	ocdgt     :2;
+  uint8_t     octsel    :2;
+  uint8_t     reften    :1;
+  uint8_t     ocdp      :1;
+  uint8_t     ocdgt     :2;
 
-  uint8_t 	ocbx      :1;
-  uint8_t 	ocax      :1;
-  uint8_t 	ocmode    :2;
-  uint8_t 	oc3gc     :1;
-  uint8_t 	oc2gc     :1;
-  uint8_t 	oc1gc     :1;
-  uint8_t 	ocod      :1;
+  uint8_t     ocbx      :1;
+  uint8_t     ocax      :1;
+  uint8_t     ocmode    :2;
+  uint8_t     oc3gc     :1;
+  uint8_t     oc2gc     :1;
+  uint8_t     oc1gc     :1;
+  uint8_t     ocod      :1;
 
   uint8_t       gpio4c    :1;
   uint8_t       gpio3c    :1;
@@ -1003,8 +1003,8 @@ typedef struct
 
 typedef enum
 {
-	STRING_A = 0,
-	STRING_B
+    STRING_A = 0,
+    STRING_B
 } adbms_string;
 
 /* ADI1 command parameters structure */

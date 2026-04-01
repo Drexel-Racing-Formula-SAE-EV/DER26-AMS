@@ -120,27 +120,27 @@ uint16_t pec10_calc_modular(uint8_t * data, uint8_t PEC_Format)
     uint16_t len;
     switch (PEC_Format)
     {
-		case PEC10_WRITE:
-			data[6] = 0; // for write commands the command counter is all zero
-			// step through
-		case PEC10_READ:
-			len = 6;
-			break;
-		case PEC10_READ256:
-			len = 256;
-			break;
-		case PEC10_READ512:
-			len = 512;
-			break;
-		case PEC10_WRITE2:
-			data[2] = 0;
-			// step through
-		case PEC10_READ2:
-			len = 2;
-			break;
-		default:
-			return 0xFFFF;
-			break;
+        case PEC10_WRITE:
+            data[6] = 0; // for write commands the command counter is all zero
+            // step through
+        case PEC10_READ:
+            len = 6;
+            break;
+        case PEC10_READ256:
+            len = 256;
+            break;
+        case PEC10_READ512:
+            len = 512;
+            break;
+        case PEC10_WRITE2:
+            data[2] = 0;
+            // step through
+        case PEC10_READ2:
+            len = 2;
+            break;
+        default:
+            return 0xFFFF;
+            break;
     }
     //Perform modulo-2 division, a byte at a time.
     for (uint8_t pbyte = 0; pbyte < len; ++pbyte)

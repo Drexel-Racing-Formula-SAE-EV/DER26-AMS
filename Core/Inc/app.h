@@ -50,48 +50,48 @@
 
 typedef enum
 {
-	STATE_NULL,
-	STATE_START,
-	STATE_CHARGE,
-	STATE_DISCARGE,
-	STATE_BALANCE,
-	STATE_ERROR
+    STATE_NULL,
+    STATE_START,
+    STATE_CHARGE,
+    STATE_DISCARGE,
+    STATE_BALANCE,
+    STATE_ERROR
 } state_t;
 
 typedef struct
 {
-	float total_voltage;
-	float max_voltage;
-	float min_voltage;
-	float max_temp;
-	float avg_temp;
-	float current;
+    float total_voltage;
+    float max_voltage;
+    float min_voltage;
+    float max_temp;
+    float avg_temp;
+    float current;
 
-	bool hard_fault;
-	bool soft_fault;
+    bool hard_fault;
+    bool soft_fault;
 
-	bool fan_fault;
-	bool cli_fault;
-	bool canbus_fault;
-	bool current_fault;
+    bool fan_fault;
+    bool cli_fault;
+    bool canbus_fault;
+    bool current_fault;
 
-	bool air_state;
-	bool imd_ok;
-	imd_status_t imd_status;
+    bool air_state;
+    bool imd_ok;
+    imd_status_t imd_status;
     bool fan_state;
 
-	state_t state;
+    state_t state;
 
-	board_t board;
-	accumulator_t acc;
+    board_t board;
+    accumulator_t acc;
 
-	TaskHandle_t fan_task;
-	TaskHandle_t cli_task;
-	TaskHandle_t canbus_task;
-	TaskHandle_t air_task;
-	TaskHandle_t imd_task;
-	TaskHandle_t current_task;
-	TaskHandle_t adbms_task;
+    TaskHandle_t fan_task;
+    TaskHandle_t cli_task;
+    TaskHandle_t canbus_task;
+    TaskHandle_t air_task;
+    TaskHandle_t imd_task;
+    TaskHandle_t current_task;
+    TaskHandle_t adbms_task;
 } app_data_t;
 
 void app_create();

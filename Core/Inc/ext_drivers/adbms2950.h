@@ -75,34 +75,34 @@ typedef struct
 /* adbms2950 main driver */
 typedef struct
 {
-	float vbat[NVBATS]; // Actual battery voltage
-	float current[NVBATS]; // Actual current value
-	float temps[NAPMTEMPS]; // Current sensor NTC temps
+    float vbat[NVBATS]; // Actual battery voltage
+    float current[NVBATS]; // Actual current value
+    float temps[NAPMTEMPS]; // Current sensor NTC temps
 
-	float vbat_adc[NVBATS]; // VBAT ADC voltage
-	float vi_adc[NVIS]; // VI ADC voltage
-	float vtemp_adc[NAPMTEMPS];
+    float vbat_adc[NVBATS]; // VBAT ADC voltage
+    float vi_adc[NVIS]; // VI ADC voltage
+    float vtemp_adc[NAPMTEMPS];
   uint8_t num_ics;
   adbms2950_asic *ics;
   loop_manager_2950_t loop_manager;
   pladc_manager_t pladc_manager;
   adc_configuration_t config;
-	SPI_HandleTypeDef *hspi;
-	GPIO_TypeDef *cs_port[2];
-	uint16_t cs_pin[2];
-	adbms_string string;
-	TIM_HandleTypeDef *htim;
+    SPI_HandleTypeDef *hspi;
+    GPIO_TypeDef *cs_port[2];
+    uint16_t cs_pin[2];
+    adbms_string string;
+    TIM_HandleTypeDef *htim;
 } adbms2950_driver_t;
 
 void adbms2950_init(adbms2950_driver_t* dev,
-					uint8_t num_asics,
-					adbms2950_asic* ics,
-					SPI_HandleTypeDef* hspi,
-					GPIO_TypeDef* CSA_Port,
-					GPIO_TypeDef* CSB_Port,
-					uint16_t CSA_Pin,
-					uint16_t CSB_Pin,
-					TIM_HandleTypeDef* htim);
+                    uint8_t num_asics,
+                    adbms2950_asic* ics,
+                    SPI_HandleTypeDef* hspi,
+                    GPIO_TypeDef* CSA_Port,
+                    GPIO_TypeDef* CSB_Port,
+                    uint16_t CSA_Pin,
+                    uint16_t CSB_Pin,
+                    TIM_HandleTypeDef* htim);
 
 // Configuration
 void adbms2950_reset_cfg_regs(adbms2950_driver_t* dev);

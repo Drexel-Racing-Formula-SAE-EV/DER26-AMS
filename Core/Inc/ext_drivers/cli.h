@@ -23,7 +23,7 @@
 typedef struct {
     uint8_t c;
     unsigned int index;
-	UART_HandleTypeDef *huart;
+    UART_HandleTypeDef *huart;
     bool msg_pending;
     unsigned int msg_count;
     unsigned int msg_proc;

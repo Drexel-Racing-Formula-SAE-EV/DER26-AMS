@@ -33,9 +33,9 @@ app_data_t *data;
 cli_device_t *cli;
 command_t cmds[] =
 {
-	{"help", &help, "print help menu"},
-	{"fault", &get_faults, "gets the faults of the system"},
-	{"ver", &get_version, "gets the firmware version"}
+    {"help", &help, "print help menu"},
+    {"fault", &get_faults, "gets the faults of the system"},
+    {"ver", &get_version, "gets the firmware version"}
 };
 
 TaskHandle_t cli_task_start(app_data_t *data)
@@ -56,97 +56,97 @@ void cli_task_fn(void *arg)
     int ret = 0;
 
     snprintf(outline, CLI_LINESZ, "~~~~~~~~~~ DER AMS FW V%d.%d ~~~~~~~~~~", VER_MAJOR, VER_MINOR);
-	cli_printline(cli, outline);
-	cli_printline(cli, "Type 'help' for list of commands");
+    cli_printline(cli, outline);
+    cli_printline(cli, "Type 'help' for list of commands");
 
-	for(;;)
-	{
-		entry = osKernelGetTickCount();
-		if(cli->msg_pending == true)
-		{
-			taskENTER_CRITICAL();
-			memcpy(buf, cli->line, strlen(cli->line) + 1);
-			memset(cli->line, 0, strlen(cli->line) + 1);
-			n = tokenize(buf, tokens, MAXTOKS, " \t");
-			ret = cli_handle_cmd(n, tokens);
-			taskEXIT_CRITICAL();
-			data->cli_fault = ret;
-			cli->msg_pending = false;
-			cli->msg_proc++;
-		}
-		osDelayUntil(entry + (1000 / CLI_FREQ));
-	}
+    for(;;)
+    {
+        entry = osKernelGetTickCount();
+        if(cli->msg_pending == true)
+        {
+            taskENTER_CRITICAL();
+            memcpy(buf, cli->line, strlen(cli->line) + 1);
+            memset(cli->line, 0, strlen(cli->line) + 1);
+            n = tokenize(buf, tokens, MAXTOKS, " \t");
+            ret = cli_handle_cmd(n, tokens);
+            taskEXIT_CRITICAL();
+            data->cli_fault = ret;
+            cli->msg_pending = false;
+            cli->msg_proc++;
+        }
+        osDelayUntil(entry + (1000 / CLI_FREQ));
+    }
 }
 
 int cli_handle_cmd(int argc, char *argv[])
 {
-	int i;
-	int ret = 0;
-	bool cmd_found = false;
-	int num_cmds = sizeof(cmds) / sizeof(command_t);
+    int i;
+    int ret = 0;
+    bool cmd_found = false;
+    int num_cmds = sizeof(cmds) / sizeof(command_t);
 
-	for(i = 0; i < num_cmds; i++)
-	{
-		if(!strncmp(cmds[i].name, argv[0], CLI_LINESZ))
-		{
-			ret = cmds[i].func(argc, argv);
-			cli->msg_valid++;
-			cmd_found = true;
-			break;
-		}
-	}
-	if(!cmd_found) return cmd_not_found(argc, argv);
-	cli->ret = ret;
-	return ret;
+    for(i = 0; i < num_cmds; i++)
+    {
+        if(!strncmp(cmds[i].name, argv[0], CLI_LINESZ))
+        {
+            ret = cmds[i].func(argc, argv);
+            cli->msg_valid++;
+            cmd_found = true;
+            break;
+        }
+    }
+    if(!cmd_found) return cmd_not_found(argc, argv);
+    cli->ret = ret;
+    return ret;
 }
 
 int cmd_not_found(int argc, char *argv[])
 {
-	int ret = 0;
-	snprintf(outline, CLI_LINESZ, "Command not found: \'%s\'", argv[0]);
-	ret |= cli_printline(cli, outline);
-	ret |= cli_printline(cli, "Type 'help' for list of commands");
-	return ret;
+    int ret = 0;
+    snprintf(outline, CLI_LINESZ, "Command not found: \'%s\'", argv[0]);
+    ret |= cli_printline(cli, outline);
+    ret |= cli_printline(cli, "Type 'help' for list of commands");
+    return ret;
 }
 
 int help(int argc, char *argv[])
 {
-	int num_cmds;
-	int i;
-	int ret = 0;
+    int num_cmds;
+    int i;
+    int ret = 0;
 
-	ret |= cli_printline(cli, "---------- Help Menu ----------");
-	num_cmds = sizeof(cmds) / sizeof(command_t);
-	for(i = 0; i < num_cmds; i++)
-	{
-		snprintf(outline, CLI_LINESZ, "%s - %s", cmds[i].name, cmds[i].desc);
-		ret |= cli_printline(cli, outline);
-	}
-	return ret;
+    ret |= cli_printline(cli, "---------- Help Menu ----------");
+    num_cmds = sizeof(cmds) / sizeof(command_t);
+    for(i = 0; i < num_cmds; i++)
+    {
+        snprintf(outline, CLI_LINESZ, "%s - %s", cmds[i].name, cmds[i].desc);
+        ret |= cli_printline(cli, outline);
+    }
+    return ret;
 }
 
 int get_faults(int argc, char *argv[])
 {
-	int ret = 0;
-	ret |= cli_printline(cli, "System faults:");
-	snprintf(outline, CLI_LINESZ, "hard:   %d", data->hard_fault);
-	ret |= cli_printline(cli, outline);
-	snprintf(outline, CLI_LINESZ, "soft:   %d", data->soft_fault);
-	ret |= cli_printline(cli, outline);
-	snprintf(outline, CLI_LINESZ, "  cli:    %d", data->cli_fault);
-	ret |= cli_printline(cli, outline);
-	snprintf(outline, CLI_LINESZ, "  fan:    %d", data->fan_fault);
-	ret |= cli_printline(cli, outline);
-	snprintf(outline, CLI_LINESZ, "  canbus: %d", data->canbus_fault);
-	ret |= cli_printline(cli, outline);
-	return ret;
+    int ret = 0;
+    ret |= cli_printline(cli, "System faults:");
+    snprintf(outline, CLI_LINESZ, "hard:   %d", data->hard_fault);
+    ret |= cli_printline(cli, outline);
+    snprintf(outline, CLI_LINESZ, "soft:   %d", data->soft_fault);
+    ret |= cli_printline(cli, outline);
+    snprintf(outline, CLI_LINESZ, "  cli:    %d", data->cli_fault);
+    ret |= cli_printline(cli, outline);
+    snprintf(outline, CLI_LINESZ, "  fan:    %d", data->fan_fault);
+    ret |= cli_printline(cli, outline);
+    snprintf(outline, CLI_LINESZ, "  canbus: %d", data->canbus_fault);
+    ret |= cli_printline(cli, outline);
+    return ret;
 }
 
 int get_version(int argc, char *argv[])
 {
-	int ret = 0;
-	snprintf(outline, CLI_LINESZ, "v%d.%d", VER_MAJOR, VER_MINOR);
-	ret |= cli_printline(cli, outline);
-	return ret;
+    int ret = 0;
+    snprintf(outline, CLI_LINESZ, "v%d.%d", VER_MAJOR, VER_MINOR);
+    ret |= cli_printline(cli, outline);
+    return ret;
 }
 

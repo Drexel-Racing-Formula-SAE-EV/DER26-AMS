@@ -13,12 +13,12 @@
 
 typedef struct
 {
-	TIM_TypeDef *timer;
-	TIM_HandleTypeDef *htim;
-	int channel;
-	uint64_t max_timer_val;
-	volatile uint32_t *CCR;
-	float duty_cycle;
+    TIM_TypeDef *timer;
+    TIM_HandleTypeDef *htim;
+    int channel;
+    uint64_t max_timer_val;
+    volatile uint32_t *CCR;
+    float duty_cycle;
 } fan_t;
 
 int set_fan_percent(fan_t *fan, float percent);

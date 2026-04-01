@@ -13,20 +13,20 @@
 
 typedef struct
 {
-	ADC_HandleTypeDef *hadc1;
-	ADC_HandleTypeDef *hadc2;
+    ADC_HandleTypeDef *hadc1;
+    ADC_HandleTypeDef *hadc2;
 
-	CAN_HandleTypeDef *hcan1;
+    CAN_HandleTypeDef *hcan1;
 
-	SPI_HandleTypeDef *hspi6;
+    SPI_HandleTypeDef *hspi6;
 
-	TIM_HandleTypeDef *htim1;
-	TIM_HandleTypeDef *htim2;
-	TIM_HandleTypeDef *htim3;
-	TIM_HandleTypeDef *htim4;
-	TIM_HandleTypeDef *htim5;
+    TIM_HandleTypeDef *htim1;
+    TIM_HandleTypeDef *htim2;
+    TIM_HandleTypeDef *htim3;
+    TIM_HandleTypeDef *htim4;
+    TIM_HandleTypeDef *htim5;
 
-	UART_HandleTypeDef *huart3;
+    UART_HandleTypeDef *huart3;
 } stm32f767z_t;
 
 void stm32f767z_init(stm32f767z_t * dev);

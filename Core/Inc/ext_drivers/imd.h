@@ -55,18 +55,18 @@ typedef struct
 {
     bool OK_HS;
     imd_status_t status;
-	uint32_t clock_freq;
-	TIM_HandleTypeDef *htim;
-	TIM_TypeDef *tim;
-	HAL_TIM_ActiveChannel high_channel;
-	HAL_TIM_ActiveChannel total_channel;
-	GPIO_TypeDef *status_port;
-	uint16_t status_pin;
-	uint32_t high_count;
-	uint32_t total_count;
-	float duty;
-	float freq;
-	int ret;
+    uint32_t clock_freq;
+    TIM_HandleTypeDef *htim;
+    TIM_TypeDef *tim;
+    HAL_TIM_ActiveChannel high_channel;
+    HAL_TIM_ActiveChannel total_channel;
+    GPIO_TypeDef *status_port;
+    uint16_t status_pin;
+    uint32_t high_count;
+    uint32_t total_count;
+    float duty;
+    float freq;
+    int ret;
 } imd_t;
 
 /*

@@ -39,10 +39,10 @@ void imd_task_fn(void *argument){
 
     for(;;)
     {
-    	entry = osKernelGetTickCount();
-    	data->imd_status = imd->status;
-    	data->imd_ok = imd->OK_HS;
-    	osDelayUntil(entry + (1000 / IMD_FREQ));
+        entry = osKernelGetTickCount();
+        data->imd_status = imd->status;
+        data->imd_ok = imd->OK_HS;
+        osDelayUntil(entry + (1000 / IMD_FREQ));
     }
 
 }

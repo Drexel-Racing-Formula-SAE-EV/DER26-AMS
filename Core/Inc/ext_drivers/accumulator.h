@@ -30,26 +30,26 @@
 
 typedef struct
 {
-	float total_volt;
-	float max_temp;
-	float max_volt;
-	float min_volt;
+    float total_volt;
+    float max_temp;
+    float max_volt;
+    float min_volt;
 
-	adbms2950_asic apm_ics[NAPMS];
-	adbms2950_driver_t apm;
+    adbms2950_asic apm_ics[NAPMS];
+    adbms2950_driver_t apm;
 
-	adbms6830_asic smb_ics[NSMBS];
-	adbms6830_driver_t smb;
+    adbms6830_asic smb_ics[NSMBS];
+    adbms6830_driver_t smb;
 } accumulator_t;
 
 void accumulator_init(accumulator_t *dev,
-				      SPI_HandleTypeDef *hspi,
-					  GPIO_TypeDef *cs_port_a,
-					  GPIO_TypeDef *cs_port_b,
-					  uint16_t cs_pin_a,
-					  uint16_t cs_pin_b,
-					  TIM_HandleTypeDef* htim
-					  );
+                      SPI_HandleTypeDef *hspi,
+                      GPIO_TypeDef *cs_port_a,
+                      GPIO_TypeDef *cs_port_b,
+                      uint16_t cs_pin_a,
+                      uint16_t cs_pin_b,
+                      TIM_HandleTypeDef* htim
+                      );
 int accumulator_read_volt(accumulator_t *dev);
 int accumulator_read_temp(accumulator_t *dev);
 int accumulator_set_temp_ch(accumulator_t *dev, uint8_t channel);
