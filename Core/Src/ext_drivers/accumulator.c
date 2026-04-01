@@ -8,6 +8,7 @@
 #include "ext_drivers/accumulator.h"
 #include <math.h>
 
+void smb_read_voltage(adbms6830_driver_t* dev);
 void apm_read_vbadc_viadc(adbms2950_driver_t* apm);
 void apm_read_temps(adbms2950_driver_t* apm);
 
@@ -36,9 +37,31 @@ int accumulator_read_volt(accumulator_t *dev)
 {
 	int ret = 0;
 
-	apm_read_vbadc_viadc(&dev->apm);
+	smb_read_voltage(&dev->smb);
+//	apm_read_vbadc_viadc(&dev->apm);
 
     return ret;
+}
+
+void smb_read_voltage(adbms6830_driver_t* dev)
+{
+	adbms6830_wakeup(dev);
+	adbms6830_wrcfga(dev);
+	adbms6830_wrcfgb(dev);
+
+	// Wait ~3ms for the precision voltage reference to warm up and settle
+	adbms6830_us_delay(dev, 3000);
+
+	// 2. START ADC CONVERSION
+	adbms6830_start_adc_cell_voltage_measurement(dev);
+
+	// 3. WAIT FOR THE FIRST CONVERSION CYCLE TO FINISH
+	adbms6830_us_delay(dev, 5000);
+
+	// 4. SNAP, READ, AND PARSE
+	adbms6830_read_cell_voltages(dev);
+	adbms6830_wakeup(dev);
+
 }
 
 void apm_read_vbadc_viadc(adbms2950_driver_t* apm)

@@ -27,6 +27,7 @@ int cmd_not_found(int argc, char *argv[]);
 int help(int argc, char *argv[]);
 int get_faults(int argc, char *argv[]);
 int get_version(int argc, char *argv[]);
+int get_voltage(int argc, char *argv[]);
 
 char outline[CLI_LINESZ];
 app_data_t *data;
@@ -35,7 +36,8 @@ command_t cmds[] =
 {
 	{"help", &help, "print help menu"},
 	{"fault", &get_faults, "gets the faults of the system"},
-	{"ver", &get_version, "gets the firmware version"}
+	{"ver", &get_version, "gets the firmware version"},
+	{"volt", &get_voltage, "gets cell voltages for all SMBs"}
 };
 
 TaskHandle_t cli_task_start(app_data_t *data)
@@ -140,6 +142,28 @@ int get_faults(int argc, char *argv[])
 	snprintf(outline, CLI_LINESZ, "  canbus: %d", data->canbus_fault);
 	ret |= cli_printline(cli, outline);
 	return ret;
+}
+
+int get_voltage(int argc, char *argv[])
+{
+    int ret = 0;
+    adbms6830_driver_t *smb = &data->acc.smb;
+
+    for (int ic = 0; ic < smb->num_ics; ic++)
+    {
+        snprintf(outline, CLI_LINESZ, "--- SMB %d ---", ic);
+        ret |= cli_printline(cli, outline);
+
+        for (int cell = 0; cell < NCELLS; cell++)
+        {
+            float volt = (smb->ics[ic].cell.c_codes[cell] + 10000) * 0.000150f;
+            int whole   = (int)volt;
+            int decimal = (int)((volt - whole) * 10000);
+            snprintf(outline, CLI_LINESZ, "  C%-2d: %d.%04d V", cell + 1, whole, decimal);
+            ret |= cli_printline(cli, outline);
+        }
+    }
+    return ret;
 }
 
 int get_version(int argc, char *argv[])

@@ -342,32 +342,7 @@ void adBms6830_init(adbms6830_driver_t* dev,
 
 	adbms6830_reset_cfg(dev);
 
-	// 1. WAKEUP AND WRITE CONFIGURATION
-	adbms6830_wakeup(dev);
-	adbms6830_wrcfga(dev);
-	adbms6830_wrcfgb(dev);
-
-	// Wait ~3ms for the precision voltage reference to warm up and settle
-	adbms6830_us_delay(dev, 3000);
-
-	// 2. START ADC CONVERSION
-	adbms6830_start_adc_cell_voltage_measurement(dev);
-
-	// 3. WAIT FOR THE FIRST CONVERSION CYCLE TO FINISH
-	adbms6830_us_delay(dev, 5000);
-
-	// 4. SNAP, READ, AND PARSE
-	adbms6830_read_cell_voltages(dev);
-
-	// 5. CONVERT LAST IC'S CELL CODES TO VOLTS
-	float cell_volts[16];
-	adbms6830_asic *last_ic = &dev->ics[dev->num_ics - 1];
-	for (uint8_t cell = 0u; cell < 16u; cell++)
-	{
-		cell_volts[cell] = (last_ic->cell.c_codes[cell] + 10000) * 0.000150f;
-	}
-
-	adbms6830_wakeup(dev);
+//	adbms6830_wakeup(dev);
 }
 
 void adbms6830_reset_cfg(adbms6830_driver_t *dev)
@@ -741,98 +716,6 @@ void adbms6830_us_delay(adbms6830_driver_t* dev, uint16_t microseconds)
 	return;
 }
 
-/* RDCVALL: Read All Cell Voltage Registers (Groups A-F)
-
-* CMD: CC[10:0] = 00000001100 -> 0x00, 0x0C
-
-* Returns 32 data bytes per IC (C1-C16, 2 bytes each)
-
-* + 2 bytes command counter/PEC10 = 34 bytes per IC total
-
-*
-
-* WARNING (per datasheet): RDCVALL is intended for single IC
-
-* applications only. In a daisy chain, a single PEC covers all
-
-* ICs' data — you cannot isolate which IC has corrupt data on
-
-* a PEC failure.
-
-*/
-
-
-
-/* WARNING: On a PEC failure for a given IC, you cannot determine
- * which register group (A-F) contains the corrupt data — the
- * entire 32-byte payload for that IC must be discarded and re-read.
- * Use individual RDCVx commands if per-group error isolation is needed.
- * For coherent data across multiple ICs, use SNAP/UNSNAP before reading.
- */
-void adbms6830_rd_cvall(adbms6830_driver_t* dev, uint8_t* rx_data)
-
-{
-
-    uint16_t pec15, received_pec, calculated_pec;
-
-    uint16_t rx_sz = RDCVALL_RX_DATA * dev->num_ics;
-
-    uint8_t cmd[CMDSZ] = RDCVALL_CMD;
-
-    uint8_t wrcmd[CMDSZ + PEC15SZ] = {0};
-
-    /* 1. Prepare Command + PEC15 */
-
-    wrcmd[0] = cmd[0];
-
-    wrcmd[1] = cmd[1];
-
-    pec15 = Pec15_Calc(CMDSZ, cmd);
-
-    wrcmd[2] = (uint8_t)(pec15 >> 8);
-
-    wrcmd[3] = (uint8_t)pec15;
-
-    /* 2. Wakeup the isoSPI Daisy Chain */
-
-    adbms6830_wakeup(dev);
-
-    /* 3. Send Command and Read Data */
-
-    adbms6830_spi_write_read(dev, wrcmd, CMDSZ + PEC15SZ, rx_data, rx_sz, 1);
-
-    /* 4. Parse, Check PEC10, and Extract Command Counter
-
-     * Note: in a daisy chain, a PEC mismatch here cannot tell
-
-     * you which IC's data is corrupt — only that something in
-
-     * the full response is bad.
-
-     */
-
-    for (uint8_t current_ic = 0; current_ic < dev->num_ics; current_ic++)
-
-    {
-
-        uint16_t ic_base_idx = current_ic * RDCVALL_RX_DATA;
-
-        uint8_t* ic_data = &rx_data[ic_base_idx];
-
-        cmd_cntr = (ic_data[RDCVALL_RX_DATA - 2] >> 2);
-
-        received_pec = (uint16_t)(((ic_data[RDCVALL_RX_DATA - 2] & 0x03) << 8)
-
-                                 | ic_data[RDCVALL_RX_DATA - 1]);
-
-        calculated_pec = pec10_calc(1, RDCVALL_RX_DATA - 2, ic_data);
-
-        rx_pec_error = (received_pec != calculated_pec) ? 1 : 0;
-
-    }
-
-}
-
 void adbms6830_adcv(adbms6830_driver_t *dev, RD rd, CONT cont, DCP dcp, RSTF rstf, OW_C_S owcs)
 {
     uint8_t cmd[2];
@@ -916,3 +799,5 @@ void adbms6830_read_cell_voltages(adbms6830_driver_t *dev)
     adbms6830_wakeup(dev);
     adbms6830_cmd(dev, unsnap_cmd);
 }
+
+
