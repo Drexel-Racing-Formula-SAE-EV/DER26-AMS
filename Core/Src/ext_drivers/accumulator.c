@@ -8,7 +8,10 @@
 #include "ext_drivers/accumulator.h"
 #include <math.h>
 
+static uint8_t sensor_num = 0;
+
 void smb_read_voltage(adbms6830_driver_t* dev);
+void smb_read_temp(adbms6830_driver_t* dev);
 void apm_read_vbadc_viadc(adbms2950_driver_t* apm);
 void apm_read_temps(adbms2950_driver_t* apm);
 
@@ -39,6 +42,9 @@ int accumulator_read_volt(accumulator_t *dev)
 
 	smb_read_voltage(&dev->smb);
 //	apm_read_vbadc_viadc(&dev->apm);
+//	adbms6830_us_delay(&dev->smb, 5000);
+
+
 
     return ret;
 }
@@ -62,6 +68,28 @@ void smb_read_voltage(adbms6830_driver_t* dev)
 	adbms6830_read_cell_voltages(dev);
 	adbms6830_wakeup(dev);
 
+}
+
+void smb_read_temp(adbms6830_driver_t* dev)
+{
+//    adbms6830_wakeup(dev);
+//    adbms6830_wrcfga(dev);
+//    adbms6830_wrcfgb(dev);
+	adbms6830_wakeup(dev);
+	adbms6830_wrcfga(dev);
+	adbms6830_wrcfgb(dev);
+//    for (uint8_t sensor = 0; sensor < 24u; sensor++)
+//    {
+      sensor_num = ((sensor_num) % (NTEMPS / 3)) + 1u;
+      mux_read_gpio_voltage(dev, sensor_num - 1u);
+      adbms6830_us_delay(dev, 3000);
+      mux_read_gpio_voltage(dev, sensor_num + 7u);
+      adbms6830_us_delay(dev, 3000);
+      mux_read_gpio_voltage(dev, sensor_num + 15u);
+//	adbms6830_us_delay(dev, 50000u);
+//	adbms6830_us_delay(dev, 50000u);
+//	adbms6830_us_delay(dev, 50000u);
+//    }
 }
 
 void apm_read_vbadc_viadc(adbms2950_driver_t* apm)
@@ -95,7 +123,9 @@ int accumulator_read_temp(accumulator_t *dev)
 {
 	int error = 0;
 
-	apm_read_temps(&dev->apm);
+//	apm_read_temps(&dev->apm);
+
+	smb_read_temp(&dev->smb);
 
 	return error;
 }

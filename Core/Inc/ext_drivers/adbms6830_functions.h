@@ -38,6 +38,31 @@ void adbms6830_start_adc_cell_voltage_measurement(adbms6830_driver_t *dev);
 void adbms6830_parse_cell(adbms6830_driver_t *dev, uint8_t *data, GRP grp);
 void adbms6830_read_cell_voltages(adbms6830_driver_t *dev);
 
+///* I2C COMM primitives */
+//void adbms6830_i2c_write(adbms6830_driver_t *dev, uint8_t slave_addr, uint8_t data);
+//void adbms6830_i2c_read(adbms6830_driver_t *dev, uint8_t slave_addr, uint8_t *rx_data);
+//
+///* ADG728 mux control */
+//void adbms6830_mux_write(adbms6830_driver_t *dev, uint8_t slave_addr, uint8_t switch_mask);
+//void adbms6830_mux_select_channel(adbms6830_driver_t *dev, uint8_t slave_addr, uint8_t channel);
+//void adbms6830_mux_disable_all(adbms6830_driver_t *dev);
+//
+///* Aux voltage read — reads RDAUXA into dev->ics[].aux.a_codes[] */
+//void adbms6830_adax(adbms6830_driver_t *dev, uint8_t gpio_ch);
+//void adbms6830_parse_aux(adbms6830_driver_t *dev, uint8_t *data);
+//void adbms6830_read_aux_voltage(adbms6830_driver_t *dev, uint8_t gpio_ch);
+//
+///* Temperature read — selects mux channel, triggers ADAX, returns raw aux code */
+//void adbms6830_read_temp_raw(adbms6830_driver_t *dev, uint8_t sensor_num, int16_t *out);
+//void adbms6830_read_all_temps(adbms6830_driver_t *dev, uint8_t ic_num, uint8_t num_temps);
+//float adbms6830_convert_temp(adbms6830_driver_t *dev, uint8_t ic_num, uint8_t sensor_num, float vntc);
 
+//int  mux_read_gpio_voltage(adbms6830_driver_t *dev, uint8_t ic_idx, uint8_t sensor_num);
+int mux_read_gpio_voltage(adbms6830_driver_t *dev, uint8_t sensor_num);
+int  adbms6830_read_temp_raw(adbms6830_driver_t *dev, uint8_t ic_idx, int16_t *out_raw);
+float adbms6830_convert_temp(adbms6830_driver_t *dev, uint8_t ic_idx, uint8_t sensor_num, float vref);
+static void adbms6830_gpio_i2c_write(adbms6830_driver_t *dev,
+                                      uint8_t slave_addr,
+                                      uint8_t data_byte);
 
 #endif /* INC_EXT_DRIVERS_ADBMS6830_FUNCTIONS_H_ */

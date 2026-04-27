@@ -51,9 +51,9 @@ void app_create()
 	HAL_UART_Receive_IT(app.board.stm32f767z.huart3, &app.board.cli.c, 1);
 
 	assert(app.cli_task = cli_task_start(&app));
-	assert(app.fan_task = fan_task_start(&app));
+//	assert(app.fan_task = fan_task_start(&app));
 	//assert(app.canbus_task = canbus_task_start(&app));
-	assert(app.air_task = air_task_start(&app));
+//	assert(app.air_task = air_task_start(&app));
 	//assert(app.imd_task = imd_task_start(&app));
 	//assert(app.current_task = current_task_start(&app));
 	assert(app.adbms_task = adbms_task_start(&app));

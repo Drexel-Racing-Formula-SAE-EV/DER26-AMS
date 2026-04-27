@@ -26,7 +26,7 @@
 #define HVEN1 GPO1
 #define HVEN2 GPO2
 
-#define NSMBS 2
+#define NSMBS 1
 
 typedef struct
 {

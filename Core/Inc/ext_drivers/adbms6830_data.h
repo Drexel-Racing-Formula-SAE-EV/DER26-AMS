@@ -26,6 +26,7 @@ typedef struct
   fcv_ fcell;
   ax_  aux;
   rax_ raux;
+  temp_ temp;
   sta_ stata;
   stb_ statb;
   stc_ statc;

@@ -18,6 +18,41 @@ uint8_t write_buf[BUFSZ] = {0};
 
 #define RDCVALL_RX_DATA     34   /* 32 data bytes + 2 PEC/counter bytes */
 
+///* =========================================================================
+// * ICOMM / FCOMM nibble values (ADBMS6830 datasheet, COMM register)
+// * ========================================================================= */
+//#define ICOMM_START     0x6u  /* Generate I2C START then clock byte  */
+//#define ICOMM_BLANK     0x0u  /* No START, continue clocking         */
+//#define ICOMM_STOP      0x1u  /* Generate I2C STOP after byte        */
+//#define FCOMM_ACK       0x0u  /* Master ACK                          */
+//#define FCOMM_NACK_STOP 0x9u  /* Master NACK + STOP                  */
+//#define I2C_WRITE       0x00u
+//#define I2C_READ        0x01u
+//
+///* ADG728 I2C addresses (A1,A0 pins) */
+#define ADG728_U2_ADDR  0x4Cu  /* TEMP0-7  -> GPIO1 */
+#define ADG728_U3_ADDR  0x4Du  /* TEMP8-15 -> GPIO2 */
+#define ADG728_U4_ADDR  0x4Eu  /* TEMP16-23-> GPIO3 */
+//
+///* ADAX channel bytes for GPIO1/2/3 (CH enum value packed into cmd[1]) */
+#define ADAX_GPIO1  0x11u
+#define ADAX_GPIO2  0x12u
+#define ADAX_GPIO3  0x13u
+
+#define SENSORS_PER_MUX   8u
+#define ADAX_CMD_BYTE0    0x04u   /* ADAX base */
+#define ADAX_CMD_BYTE1    0x60u   /* CH=000 = all GPIOs, continuous off */
+
+/* WRCOMM / STCOMM copies — same bytes as in adg728_i2c.c but local
+ * to avoid pulling in the adBms_Application layer headers here.       */
+#define ICOMM_START_  0x6u
+#define ICOMM_BLANK_  0x0u
+#define ICOMM_STOP_   0x1u
+#define FCOMM_ACK_    0x0u
+#define FCOMM_NACK_STOP_ 0x9u
+
+
+
 /* configuration registers commands */
 static uint8_t WRCFGA[2]        = { 0x00, 0x01 };
 static uint8_t WRCFGB[2]        = { 0x00, 0x24 };
@@ -133,6 +168,13 @@ static uint8_t RDSID[2]         = { 0x00, 0x2C };
 static uint16_t cmd_cntr = 0;
 static uint16_t rx_pec_error = 0;
 
+/* Mux address and ADAX channel lookup by mux index (0=U2, 1=U3, 2=U4) */
+static const uint8_t MUX_ADDRS[3]    = { ADG728_U2_ADDR, ADG728_U3_ADDR, ADG728_U4_ADDR };
+static const uint8_t ADAX_CH[3]      = { ADAX_GPIO1,     ADAX_GPIO2,     ADAX_GPIO3     };
+
+/* RDAUXA a_codes[] index for GPIO1/2/3 */
+static const uint8_t GPIO_AUX_IDX[3] = { 0u, 1u, 2u };
+
 // SPI communication
 void adbms6830_set_cs(adbms6830_driver_t* dev, uint8_t state);
 void adbms6830_spi_write(adbms6830_driver_t* dev, uint8_t* data, uint16_t len, uint8_t use_cs);
@@ -151,166 +193,6 @@ void adbms6830_pack_cfgb(adbms6830_driver_t *dev);
 void adbms6830_pack_comm(adbms6830_driver_t* dev);
 void adbms6830_pack_clr_flag_data(adbms6830_driver_t* dev);
 
-//void adBms6830_init(adbms6830_driver_t* dev,
-//						   uint8_t num_ics,
-//						   adbms6830_asic* ics,
-//						   SPI_HandleTypeDef* hspi,
-//						   GPIO_TypeDef* cs_port_a,
-//						   GPIO_TypeDef* cs_port_b,
-//						   uint16_t cs_pin_a,
-//						   uint16_t cs_pin_b,
-//						   TIM_HandleTypeDef *htim)
-//{
-//	dev->num_ics = num_ics;
-//	dev->ics = ics;
-//	dev->hspi = hspi;
-//	dev->cs_port[0] = cs_port_a;
-//	dev->cs_port[1] = cs_port_b;
-//	dev->cs_pin[0] = cs_pin_a;
-//	dev->cs_pin[1] = cs_pin_b;
-//	dev->htim = htim;
-//
-//	// Set CS pins high
-//	dev->string = STRING_B;
-//	adbms6830_set_cs(dev, 1);
-//	dev->string = STRING_A;
-//	adbms6830_set_cs(dev, 1);
-//
-//	adbms6830_srst(dev);
-//	adbms6830_us_delay(dev, 300);
-//	// DELAY
-//
-//	adbms6830_reset_cfg(dev);
-//
-////    float c1_volt; //voltage in Volts
-////    float c2_volt; //voltage in Volts
-////    float c3_volt; //voltage in Volts
-////    start:
-//	debug_loop:
-//	// 1. WAKEUP AND WRITE CONFIGURATION
-//	// You MUST do this so dev->ics[i].tx_cfga.refon = PWR_UP is sent to the IC.
-//	adbms6830_wakeup(dev);
-//	adbms6830_wrcfga(dev);
-//	adbms6830_wrcfgb(dev);
-//
-//	// Wait ~3ms for the precision voltage reference to warm up and settle
-//	adbms6830_us_delay(dev, 3000);
-//
-//	// 2. START ADC CONVERSION (Only Once!)
-//	adbms6830_wakeup(dev);
-//	uint8_t cmd[2];
-//	cmd[0] = 0x02 + 1; // RD_ON = 1
-//	cmd[1] = (1<<7)+(0<<4)+(0<<2)+(0 & 0x03) + 0x60; // CONTINUOUS mode
-//	adbms6830_cmd(dev, cmd);
-//
-//	// 3. WAIT FOR THE FIRST CONVERSION CYCLE TO FINISH
-//	// Wait at least 3 to 5 milliseconds to be safe.
-//	adbms6830_us_delay(dev, 5000);
-//
-//	// 4. SNAP AND READ
-//	// Wakeup again just in case the isoSPI bus idled out during the 5ms delay
-//	adbms6830_wakeup(dev);
-//
-//	// Send SNAP
-//	cmd[0] = 0x00;
-//	cmd[1] = 0x2D;
-//	adbms6830_cmd(dev, cmd);
-//	adbms6830_us_delay(dev, 10); // 10us is fine for SNAP
-//
-////	// Read Register A
-////	adbms6830_rd48(dev, RDCVA, shared_buf);
-////	for (uint8_t ic = 0; ic < dev->num_ics; ic++)
-////	{
-////	    uint8_t *d = &shared_buf[ic * RX_DATA];
-////
-////	    uint16_t c1 = (d[1] << 8) | d[0];
-////	    uint16_t c2 = (d[3] << 8) | d[2];
-////	    uint16_t c3 = (d[5] << 8) | d[4];
-////
-////	    // Example: store or print
-////	    dev->ics[ic].cell.c_codes[0] = c1;
-////	    dev->ics[ic].cell.c_codes[1] = c2;
-////	    dev->ics[ic].cell.c_codes[2] = c3;
-////
-////	    // float c1_volt; //voltage in Volts
-////	    c1_volt = ((c1 + 10000) * 0.000150);
-////	    // float c2_volt; //voltage in Volts
-////	    c2_volt = ((c2 + 10000) * 0.000150);
-////	    // float c3_volt; //voltage in Volts
-////	    c3_volt = ((c3 + 10000) * 0.000150);
-////	}
-////	goto start;
-//
-//
-//	// Array of commands for Registers A through F
-////	uint8_t* cell_cmds[6] = {RDCVA, RDCVB, RDCVC, RDCVD, RDCVE, RDCVF};
-////
-////	// Registers A-E hold 3 cells each. Register F holds 1 cell (Cell 16).
-////	uint8_t cells_in_reg[6] = {3, 3, 3, 3, 3, 1};
-////
-////	// Array to hold the converted float voltages locally (optional)
-//	float cell_volts[16];
-////
-////	for (uint8_t reg = 0; reg < 6; reg++)
-////	{
-////	    // 1. Read the current register (A, B, C, D, E, or F)
-////	    adbms6830_rd48(dev, cell_cmds[reg], shared_buf);
-////
-////	    // 2. Parse the data for each IC in the daisy chain
-////	    for (uint8_t ic = 0; ic < dev->num_ics; ic++)
-////	    {
-////	        uint8_t *d = &shared_buf[ic * RX_DATA];
-////
-////	        // Calculate the starting index for this register (0, 3, 6, 9, 12, or 15)
-////	        uint8_t base_idx = reg * 3;
-////
-////	        for (uint8_t i = 0; i < cells_in_reg[reg]; i++)
-////	        {
-////	            // Parse the 16-bit raw code (Little Endian: Low byte first, then High byte)
-////	            uint16_t raw_code = (d[(i * 2) + 1] << 8) | d[i * 2];
-////
-////	            // Calculate the absolute cell index (0 to 15)
-////	            uint8_t cell_idx = base_idx + i;
-////
-////	            // Store the raw code in your struct
-////	            dev->ics[ic].cell.c_codes[cell_idx] = raw_code;
-////
-////	            // Calculate the voltage in Volts
-////	            cell_volts[cell_idx] = ((raw_code + 10000) * 0.000150f);
-////
-////	            /* * Tip: If you need to access these float voltages elsewhere in your program,
-////	             * you should add a `float volts[16];` array to your `adbms6830_asic` struct
-////	             * and save it there:
-////	             * dev->ics[ic].cell.volts[cell_idx] = cell_volts[cell_idx];
-////	             */
-////	        }
-////	    }
-////	}
-//
-//	adbms6830_rd_cvall(dev, shared_buf);
-//
-//	// Parse the data for each IC in the daisy chain
-//	for (uint8_t ic = 0; ic < dev->num_ics; ic++)
-//	{
-//	    uint8_t *d = &shared_buf[ic * RDCVALL_RX_DATA];
-//
-//	    for (uint8_t cell_idx = 0; cell_idx < 16; cell_idx++)
-//	    {
-//	        // Parse the 16-bit raw code (Little Endian: Low byte first, then High byte)
-//	        uint16_t raw_code = (d[(cell_idx * 2) + 1] << 8) | d[cell_idx * 2];
-//
-//	        // Store the raw code in your struct
-//	        dev->ics[ic].cell.c_codes[cell_idx] = raw_code;
-//
-//	        // Calculate the voltage in Volts
-//	        cell_volts[cell_idx] = ((raw_code + 10000) * 0.000150f);
-//	    }
-//	}
-//
-//	adbms6830_wakeup(dev);
-////	goto debug_loop; // TODO: Remove if not doing debug
-//
-//}
 
 void adBms6830_init(adbms6830_driver_t* dev,
 					   uint8_t num_ics,
@@ -342,7 +224,49 @@ void adBms6830_init(adbms6830_driver_t* dev,
 
 	adbms6830_reset_cfg(dev);
 
-//	adbms6830_wakeup(dev);
+	adbms6830_wakeup(dev);
+	adbms6830_wrcfga(dev);
+	adbms6830_wrcfgb(dev);
+
+	// Testing Code
+
+//	float temp_volts[24];
+//	float temp_volt;
+//
+//	for (uint8_t ic = 0; ic < dev->num_ics; ic++)
+//	{
+////	    adbms6830_read_all_temps(dev, ic, 24);
+//	    adbms6830_read_temp_raw(dev, 0, &dev->ics[0].temp.raw[0]);
+//
+//	    temp_volts[0] = adbms6830_convert_temp(dev, ic, 0, 5.0);
+////	    for (uint8_t sensor = 0; sensor < 24; sensor++)
+////	    {
+////	        temp_volts[sensor] = adbms6830_convert_temp(dev, ic, sensor, 5.0);
+////	    }
+//	}
+
+//	for (uint8_t sensor = 0; sensor < 24u; sensor++)
+//	{
+//	    mux_read_gpio_voltage(dev, sensor);
+//
+//	    for (uint8_t ic = 0; ic < dev->num_ics; ic++)
+//	    {
+//		float voltage = adbms6830_convert_temp(dev, ic, sensor, 5.0f);
+//
+//	    }
+//
+//	    adbms6830_us_delay(dev, 500u);
+//	}
+
+//	adbms6830_gpio_i2c_write(dev, ADG728_U2_ADDR, 0x01u);
+//	adbms6830_gpio_i2c_write(dev, ADG728_U3_ADDR, 0x00u);
+//	adbms6830_gpio_i2c_write(dev, ADG728_U4_ADDR, 0x00u);
+
+
+//	adbms6830_gpio_i2c_write(dev, ADG728_U2_ADDR, 0x00u);
+//	adbms6830_us_delay(dev, 10000);
+
+	adbms6830_wakeup(dev);
 }
 
 void adbms6830_reset_cfg(adbms6830_driver_t *dev)
@@ -801,3 +725,273 @@ void adbms6830_read_cell_voltages(adbms6830_driver_t *dev)
 }
 
 
+
+
+
+
+
+
+
+
+
+
+/* ---------------------------------------------------------------------------
+ * GPIO AUX channel mapping
+ *
+ * The three ADG728 mux outputs connect to:
+ *   U2 → GPIO1  (RDAUXA byte 0/1, a_codes[0])
+ *   U3 → GPIO2  (RDAUXA byte 2/3, a_codes[1])
+ *   U4 → GPIO3  (RDAUXA byte 4/5, a_codes[2])
+ *
+ * sensor_num  0–7  : U2, switch S1–S8, read from GPIO1 → a_codes[0]
+ * sensor_num  8–15 : U3, switch S1–S8, read from GPIO2 → a_codes[1]
+ * sensor_num 16–23 : U4, switch S1–S8, read from GPIO3 → a_codes[2]
+ * ------------------------------------------------------------------------- */
+
+/* ---------------------------------------------------------------------------
+ * adbms6830_gpio_i2c_write
+ *
+ * Issue a one-byte I2C write to a slave address via the ADBMS6830 COMM
+ * register on every IC in the daisy-chain.
+ * ------------------------------------------------------------------------- */
+static void adbms6830_gpio_i2c_write(adbms6830_driver_t *dev,
+                                      uint8_t slave_addr,
+                                      uint8_t data_byte)
+{
+    /* Pack COMM register: 3 slots                                          *
+     * Slot 0: START + address byte (write)                                 *
+     * Slot 1: data byte                                                    *
+     * Slot 2: STOP (data don't-care = 0xFF)                                */
+    for (int curr_ic = 0; curr_ic < dev->num_ics; curr_ic++)
+    {
+        dev->ics[curr_ic].comm.icomm[0] = ICOMM_START_;
+        dev->ics[curr_ic].comm.fcomm[0] = FCOMM_ACK_;
+        dev->ics[curr_ic].comm.data[0]  = (uint8_t)((slave_addr << 1u) | 0x00u);
+
+        dev->ics[curr_ic].comm.icomm[1] = ICOMM_BLANK_;
+        dev->ics[curr_ic].comm.fcomm[1] = FCOMM_ACK_;
+        dev->ics[curr_ic].comm.data[1]  = data_byte;
+
+        dev->ics[curr_ic].comm.icomm[2] = ICOMM_STOP_;
+        dev->ics[curr_ic].comm.fcomm[2] = FCOMM_NACK_STOP_;
+        dev->ics[curr_ic].comm.data[2]  = 0xFFu;
+    }
+
+    /* Serialise comm struct → tx_data bytes */
+    adbms6830_pack_comm(dev);
+
+    /* Flatten into shared_buf for wr48 */
+    for (int curr_ic = 0; curr_ic < dev->num_ics; curr_ic++)
+    {
+        for (uint8_t b = 0; b < TX_DATA; b++)
+        {
+            shared_buf[(curr_ic * TX_DATA) + b] = dev->ics[curr_ic].com.tx_data[b];
+        }
+    }
+
+//    adbms6830_wakeup(dev);
+
+    /* Write COMM register, then clock it out via STCOMM */
+//    taskENTER_CRITICAL();
+    adbms6830_wr48(dev, WRCOMM, shared_buf);
+
+    /* STCOMM: pulse CS low and clock 72 bits to push the I2C transaction  */
+    adbms6830_set_cs(dev, 0);
+    HAL_SPI_Transmit(dev->hspi, STCOMM, sizeof(STCOMM), SPI_TIMEOUT);
+    adbms6830_set_cs(dev, 1);
+//    taskEXIT_CRITICAL();
+}
+
+/* ---------------------------------------------------------------------------
+ * adbms6830_parse_aux_gpio
+ *
+ * Extract GPIO1/2/3 raw codes from an RDAUXA response buffer and store them
+ * into ax_.a_codes[0..2] for each IC.
+ * ------------------------------------------------------------------------- */
+static void adbms6830_parse_aux_gpio(adbms6830_driver_t *dev, uint8_t *data)
+{
+    for (uint8_t curr_ic = 0; curr_ic < dev->num_ics; curr_ic++)
+    {
+        uint8_t *d = &data[curr_ic * RX_DATA];
+
+        /* GPIO1 = AUX channel 0, GPIO2 = channel 1, GPIO3 = channel 2     */
+        dev->ics[curr_ic].aux.a_codes[0] = (int16_t)((uint16_t)d[0] | ((uint16_t)d[1] << 8u));
+        dev->ics[curr_ic].aux.a_codes[1] = (int16_t)((uint16_t)d[2] | ((uint16_t)d[3] << 8u));
+        dev->ics[curr_ic].aux.a_codes[2] = (int16_t)((uint16_t)d[4] | ((uint16_t)d[5] << 8u));
+
+        /* PEC + command counter */
+        uint16_t received_pec = (uint16_t)(((d[RX_DATA - 2u] & 0x03u) << 8u) | d[RX_DATA - 1u]);
+        uint16_t calc_pec     = pec10_calc(1, RX_DATA - 2, d);
+        dev->ics[curr_ic].cccrc.cmd_cntr = d[RX_DATA - 2u] >> 2u;
+        dev->ics[curr_ic].cccrc.aux_pec  = (received_pec != calc_pec) ? 1u : 0u;
+    }
+}
+
+/* ---------------------------------------------------------------------------
+ * adbms6830_read_temp_raw
+ *
+ * Select temperature sensor <sensor_num> (0–23) via its ADG728 mux, trigger
+ * a single AUX conversion, read back the GPIO voltage, and store the raw
+ * 16-bit ADC code into dev->ics[ic_idx].temp.raw[sensor_num].
+ *
+ * The ADG728 mapping is:
+ *   sensor  0–7  → U2 (0x4C), output on GPIO1 → a_codes[0]
+ *   sensor  8–15 → U3 (0x4D), output on GPIO2 → a_codes[1]
+ *   sensor 16–23 → U4 (0x4E), output on GPIO3 → a_codes[2]
+ *
+ * @param ic_idx     Index of the target IC in dev->ics[]
+ * @param sensor_num Temperature sensor index (0–23)
+ * @param out_raw    Pointer to receive the raw ADC code (may be NULL)
+ * @return  0 on success, -1 if arguments are out of range
+ * ------------------------------------------------------------------------- */
+int adbms6830_read_temp_raw(adbms6830_driver_t *dev,
+                             uint8_t ic_idx,
+                             int16_t *out_raw)
+{
+    /* Validate — caller must pass the sensor_num separately; we derive the
+     * mux address and GPIO channel from it.  The sensor_num is tracked
+     * outside this function (e.g. a loop over 0–23).  Here we just perform
+     * the measurement for whichever sensor is currently selected.
+     * This signature matches the existing call-site in adBms6830_init:
+     *   adbms6830_read_temp_raw(dev, 0, &dev->ics[0].temp.raw[0]);
+     * so ic_idx is the IC and out_raw points into temp.raw[sensor_num].    */
+
+    if (ic_idx >= (uint8_t)dev->num_ics || out_raw == NULL)
+    {
+        return -1;
+    }
+
+    /* 1. Trigger a single AUX conversion on all GPIO channels              */
+    uint8_t adax_cmd[2] = { ADAX_CMD_BYTE0, ADAX_CMD_BYTE1 };
+    adbms6830_wakeup(dev);
+
+
+    adbms6830_cmd(dev, adax_cmd);
+
+    /* Wait for conversion to complete (~1 ms for 7kHz mode)                */
+    adbms6830_us_delay(dev, 1200u);
+
+    /* 2. Read RDAUXA — contains GPIO1, GPIO2, GPIO3                        */
+    adbms6830_rd48(dev, RDAUXA, shared_buf);
+    adbms6830_parse_aux_gpio(dev, shared_buf);
+
+    /* 3. The caller supplies out_raw pointing at temp.raw[sensor_num].
+     * Store the GPIO voltage that corresponds to the active mux output.
+     * Since only one ADG728 switch is closed at a time, the relevant
+     * a_codes slot is determined by which mux device is selected.
+     * We read all three here and let the caller pick the right slot via
+     * out_raw; however, to keep things self-contained we also write the
+     * value through out_raw using the same gpio_ch logic.                  */
+
+    /* Derive gpio_ch from the position of out_raw within temp.raw[]        */
+    ptrdiff_t sensor_num = out_raw - dev->ics[ic_idx].temp.raw;
+    if (sensor_num < 0 || sensor_num >= 24)
+    {
+        /* Fall back: store GPIO1 reading */
+        *out_raw = dev->ics[ic_idx].aux.a_codes[0];
+        return 0;
+    }
+
+    uint8_t gpio_ch = (uint8_t)(sensor_num / SENSORS_PER_MUX); /* 0, 1, or 2 */
+    *out_raw = dev->ics[ic_idx].aux.a_codes[gpio_ch];
+
+    return 0;
+}
+
+/* ---------------------------------------------------------------------------
+ * mux_read_gpio_voltage
+ *
+ * Full cycle for a single temperature sensor:
+ *   1. Select <sensor_num> on the appropriate ADG728 via I2C COMM.
+ *   2. Trigger an AUX ADC conversion.
+ *   3. Read back the GPIO voltage (RDAUXA).
+ *   4. Store the raw code in dev->ics[ic_idx].temp.raw[sensor_num].
+ *
+ * All ICs in the daisy-chain receive the same mux command (broadcast), and
+ * the raw result is stored per-IC.
+ *
+ * @param ic_idx     IC to store the result for (0 … num_ics-1)
+ * @param sensor_num Sensor index 0–23
+ * @return  0 on success, -1 if arguments are out of range
+ * ------------------------------------------------------------------------- */
+
+int mux_read_gpio_voltage(adbms6830_driver_t *dev, uint8_t sensor_num)
+{
+    if (sensor_num >= 24u)
+    {
+        return -1;
+    }
+
+    uint8_t mux_idx    = sensor_num / SENSORS_PER_MUX;
+    uint8_t sw_pos     = sensor_num % SENSORS_PER_MUX;
+    uint8_t sw_mask    = (uint8_t)(1u << sw_pos);
+    uint8_t slave_addr = MUX_ADDRS[mux_idx];
+    uint8_t gpio_ch    = GPIO_AUX_IDX[mux_idx];
+
+
+    adbms6830_gpio_i2c_write(dev, slave_addr, sw_mask);
+    adbms6830_us_delay(dev, 2000u);
+
+    uint8_t adax_cmd[2] = { ADAX_CMD_BYTE0, ADAX_CH[mux_idx] };
+    adbms6830_wakeup(dev);
+//    adbms6830_wrcfga(dev);
+    adbms6830_cmd(dev, adax_cmd);
+    adbms6830_us_delay(dev, 4000u);
+
+    adbms6830_rd48(dev, RDAUXA, shared_buf);
+    adbms6830_parse_aux_gpio(dev, shared_buf);
+
+    /* Store result for every IC in the chain */
+    for (uint8_t ic = 0; ic < dev->num_ics; ic++)
+    {
+        dev->ics[ic].temp.raw[sensor_num] = dev->ics[ic].aux.a_codes[gpio_ch];
+    }
+
+    return 0;
+}
+
+/* ---------------------------------------------------------------------------
+ * adbms6830_convert_temp
+ *
+ * Convert a raw GPIO ADC code to a voltage in volts.
+ *
+ * The ADBMS6830 AUX ADC uses the same 16-bit LSB resolution as cell voltage:
+ *   V = raw_code * 150e-6  (150 µV per LSB)
+ *
+ * To convert voltage to temperature, apply your NTC/PTC transfer function
+ * outside this function using the returned voltage and the known pull-up/
+ * pull-down resistor values.
+ *
+ * @param dev        Driver handle
+ * @param ic_idx     IC index
+ * @param sensor_num Sensor index 0–23 (selects temp.raw[sensor_num])
+ * @param vref       Reference / supply voltage used for the divider (V)
+ *                   (not used in the raw-to-voltage step, kept for caller
+ *                    convenience so signature matches the existing call-site)
+ * @return Measured voltage at the GPIO pin in volts, or -1.0f on error.
+ * ------------------------------------------------------------------------- */
+float adbms6830_convert_temp(adbms6830_driver_t *dev,
+                              uint8_t ic_idx,
+                              uint8_t sensor_num,
+                              float vref)
+{
+    (void)vref;   /* reserved for NTC conversion in the application layer */
+
+    if (ic_idx >= (uint8_t)dev->num_ics || sensor_num >= 24u)
+    {
+        return -1.0f;
+    }
+
+    int16_t raw = dev->ics[ic_idx].temp.raw[sensor_num];
+
+    /* 150 µV per LSB (same scale as cell voltage registers) */
+    return (float)raw * 150.0e-6f;
+}
+
+float voltage_to_temp(float v) {
+    float R = 10000.0f * (5.0f - v) / v;
+    float x = log(R / 10000.0f);
+    float T = 1.0f / (3.354016435e-3f + 2.565235509e-4f*x
+                      + 2.605970121e-6f*x*x + 6.329261265e-8f*x*x*x) - 273.15f;
+    return T;
+}
