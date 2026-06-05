@@ -1,7 +1,9 @@
 Debug/*
+Release/*
 
 .settings/*
 .vscode/*
 *.launch
 
-DER25-AMS\ Debug.cfg
+*.cfg
+
