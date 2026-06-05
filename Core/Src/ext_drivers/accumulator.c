@@ -33,7 +33,7 @@ void accumulator_init(accumulator_t *dev,
 	// Init pack monitor, just on port A
 	// adbms2950_init(&dev->apm, NAPMS, dev->apm_ics, hspi, cs_port_a, cs_port_a, cs_pin_a, cs_pin_a, htim);
 
-	adBms6830_init(&dev->smb, NSMBS, dev->smb_ics, hspi, cs_port_a, cs_port_a, cs_pin_a, cs_pin_a, htim);
+	adBms6830_init(&dev->smb, NSMBS, dev->smb_ics, hspi, cs_port_b, cs_port_b, cs_pin_b, cs_pin_b, htim);
 }
 
 int accumulator_read_volt(accumulator_t *dev)

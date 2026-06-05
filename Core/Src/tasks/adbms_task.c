@@ -26,16 +26,16 @@ void adbms_task_fn(void *argument)
 	{
         entry = osKernelGetTickCount();
 
-
+//
         taskENTER_CRITICAL();
         accumulator_read_volt(acc);
         taskEXIT_CRITICAL();
 
         data->total_voltage = (acc->apm.vbat[0] + acc->apm.vbat[1]) / 2.0f;
 
-        taskENTER_CRITICAL();
-        accumulator_read_temp(acc);
-        taskEXIT_CRITICAL();
+//        taskENTER_CRITICAL();
+//        accumulator_read_temp(acc);
+//        taskEXIT_CRITICAL();
 
         osDelayUntil(entry + (1000 / ADBMS_FREQ));
 	}
