@@ -25,6 +25,7 @@ void accumulator_init(accumulator_t *dev,
 {
 	dev->total_volt = 0;
 	dev->max_temp = 0.0f;
+	dev->avg_temp = 0.0f;
 	dev->max_volt = 0.0f;
 	dev->min_volt = 0.0f;
 
@@ -33,7 +34,7 @@ void accumulator_init(accumulator_t *dev,
 	// Init pack monitor, just on port A
 	// adbms2950_init(&dev->apm, NAPMS, dev->apm_ics, hspi, cs_port_a, cs_port_a, cs_pin_a, cs_pin_a, htim);
 
-	adBms6830_init(&dev->smb, NSMBS, dev->smb_ics, hspi, cs_port_b, cs_port_b, cs_pin_b, cs_pin_b, htim);
+	adBms6830_init(&dev->smb, NSMBS, dev->smb_ics, hspi, cs_port_a, cs_port_a, cs_pin_a, cs_pin_a, htim);
 }
 
 int accumulator_read_volt(accumulator_t *dev)
@@ -52,8 +53,8 @@ int accumulator_read_volt(accumulator_t *dev)
 void smb_read_voltage(adbms6830_driver_t* dev)
 {
 	adbms6830_wakeup(dev);
-	adbms6830_wrcfga(dev);
-	adbms6830_wrcfgb(dev);
+//	adbms6830_wrcfga(dev);
+//	adbms6830_wrcfgb(dev);
 
 	// Wait ~3ms for the precision voltage reference to warm up and settle
 	adbms6830_us_delay(dev, 3000);
@@ -66,30 +67,49 @@ void smb_read_voltage(adbms6830_driver_t* dev)
 
 	// 4. SNAP, READ, AND PARSE
 	adbms6830_read_cell_voltages(dev);
-	adbms6830_wakeup(dev);
+//	adbms6830_us_delay(dev, 2000);
+//	adbms6830_wakeup(dev);
 
 }
 
 void smb_read_temp(adbms6830_driver_t* dev)
 {
-//    adbms6830_wakeup(dev);
-//    adbms6830_wrcfga(dev);
-//    adbms6830_wrcfgb(dev);
-	adbms6830_wakeup(dev);
-	adbms6830_wrcfga(dev);
-	adbms6830_wrcfgb(dev);
-//    for (uint8_t sensor = 0; sensor < 24u; sensor++)
-//    {
-      sensor_num = ((sensor_num) % (NTEMPS / 3)) + 1u;
-      mux_read_gpio_voltage(dev, sensor_num - 1u);
-      adbms6830_us_delay(dev, 3000);
-      mux_read_gpio_voltage(dev, sensor_num + 7u);
-      adbms6830_us_delay(dev, 3000);
-      mux_read_gpio_voltage(dev, sensor_num + 15u);
-//	adbms6830_us_delay(dev, 50000u);
-//	adbms6830_us_delay(dev, 50000u);
-//	adbms6830_us_delay(dev, 50000u);
-//    }
+//	adbms6830_wakeup(dev);
+//	adbms6830_wrcfga(dev);
+//	adbms6830_wrcfgb(dev);
+
+//	sensor_num = ((sensor_num) % (NTEMPS / 3)) + 1u;
+//	sensor_num = ((sensor_num) % (NTEMPS)) + 1u;
+//	adbms6830_us_delay(dev, 3000);
+//	mux_read_gpio_voltage(dev, sensor_num - 1u);
+//	adbms6830_us_delay(dev, 3000);
+//	adbms6830_wakeup(dev);
+//	adbms6830_us_delay(dev, 3000);
+
+    adbms6830_wakeup(dev);
+//    sensor_num = ((sensor_num) % (NTEMPS)) + 1u;
+    sensor_num = (sensor_num % (NTEMPS / 3)) + 1u;
+
+    mux_set_channel(dev, sensor_num - 1u);
+    adbms6830_us_delay(dev, 2000u);
+    mux_set_channel(dev, sensor_num + 7u);
+    adbms6830_us_delay(dev, 2000u);
+    mux_set_channel(dev, sensor_num + 15u);
+    adbms6830_us_delay(dev, 2000u);
+
+    adbms6830_wakeup(dev);
+    mux_read_gpio_voltage(dev, sensor_num - 1u);
+    adbms6830_us_delay(dev, 2000u);
+    mux_read_gpio_voltage(dev, sensor_num + 7u);
+    adbms6830_us_delay(dev, 2000u);
+    mux_read_gpio_voltage(dev, sensor_num + 15u);
+    adbms6830_us_delay(dev, 2000u);
+
+//	adbms6830_us_delay(dev, 3000);
+//	mux_read_gpio_voltage(dev, sensor_num + 7u);
+//	adbms6830_us_delay(dev, 3000);
+//	mux_read_gpio_voltage(dev, sensor_num + 15u);
+
 }
 
 void apm_read_vbadc_viadc(adbms2950_driver_t* apm)
@@ -180,4 +200,57 @@ float NXFT15XV103FEAB050_convert(float ratio)
 	double a = 104.517;
 	double b = 0.221876;
 	return a * pow(b, ratio);
+}
+
+float convert_adc_to_volt(int value)
+{
+	return (value + 10000) * .000150;
+}
+
+void adbms6830_update_cell_voltage_limits(accumulator_t *dev)
+{
+    int16_t max_code = INT16_MIN;
+    int16_t min_code = INT16_MAX;
+
+    for (uint8_t ic = 0; ic < dev->smb.num_ics; ic++)
+    {
+        for (uint8_t cell = 0u; cell < 15u; cell++)
+        {
+            int16_t v = dev->smb.ics[ic].cell.c_codes[cell];
+            if (v > max_code) max_code = v;
+            if (v < min_code) min_code = v;
+        }
+    }
+
+    dev->max_volt = convert_adc_to_volt(max_code);
+    dev->min_volt = convert_adc_to_volt(min_code);
+}
+
+
+void accumulator_update_temp_stats(accumulator_t *dev)
+{
+	float   max_temp = -273.15f;
+	float   sum_temp = 0.0f;
+	uint8_t count    = 0u;
+
+	for (uint8_t ic = 0; ic < dev->smb.num_ics; ic++)
+	{
+		for (uint8_t sensor = 0u; sensor < NTEMPS; sensor++)
+		{
+			int16_t raw = dev->smb.ics[ic].temp.raw[sensor];
+
+			if (raw == -1 || raw == INT16_MIN || raw == 0) continue;
+
+			float temp    = voltage_to_temp(raw);
+
+			if (temp < -40.0f || temp > 150.0f) continue;
+
+			if (temp > max_temp) max_temp = temp;
+			sum_temp += temp;
+			count++;
+		}
+	}
+
+	dev->max_temp = (count > 0u) ? max_temp  : 0.0f;
+	dev->avg_temp = (count > 0u) ? (sum_temp / (float)count) : 0.0f;
 }

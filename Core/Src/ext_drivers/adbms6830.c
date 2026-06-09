@@ -655,53 +655,118 @@ void adbms6830_start_adc_cell_voltage_measurement(adbms6830_driver_t *dev)
     adbms6830_adcv(dev, RD_ON, CONTINUOUS, DCP_OFF, RSTF_OFF, OW_OFF_ALL_CH);
 }
 
+//void adbms6830_parse_cell(adbms6830_driver_t *dev, uint8_t *data, GRP grp)
+//{
+//    for (uint8_t curr_ic = 0; curr_ic < (uint8_t)dev->num_ics; curr_ic++)
+//    {
+//        uint8_t *d = &data[curr_ic * RX_DATA];
+//
+//        switch (grp)
+//        {
+//        case A:
+//            dev->ics[curr_ic].cell.c_codes[0]  = (int16_t)((uint16_t)d[0] | ((uint16_t)d[1] << 8u));
+//            dev->ics[curr_ic].cell.c_codes[1]  = (int16_t)((uint16_t)d[2] | ((uint16_t)d[3] << 8u));
+//            dev->ics[curr_ic].cell.c_codes[2]  = (int16_t)((uint16_t)d[4] | ((uint16_t)d[5] << 8u));
+//            break;
+//        case B:
+//            dev->ics[curr_ic].cell.c_codes[3]  = (int16_t)((uint16_t)d[0] | ((uint16_t)d[1] << 8u));
+//            dev->ics[curr_ic].cell.c_codes[4]  = (int16_t)((uint16_t)d[2] | ((uint16_t)d[3] << 8u));
+//            dev->ics[curr_ic].cell.c_codes[5]  = (int16_t)((uint16_t)d[4] | ((uint16_t)d[5] << 8u));
+//            break;
+//        case C:
+//            dev->ics[curr_ic].cell.c_codes[6]  = (int16_t)((uint16_t)d[0] | ((uint16_t)d[1] << 8u));
+//            dev->ics[curr_ic].cell.c_codes[7]  = (int16_t)((uint16_t)d[2] | ((uint16_t)d[3] << 8u));
+//            dev->ics[curr_ic].cell.c_codes[8]  = (int16_t)((uint16_t)d[4] | ((uint16_t)d[5] << 8u));
+//            break;
+//        case D:
+//            dev->ics[curr_ic].cell.c_codes[9]  = (int16_t)((uint16_t)d[0] | ((uint16_t)d[1] << 8u));
+//            dev->ics[curr_ic].cell.c_codes[10] = (int16_t)((uint16_t)d[2] | ((uint16_t)d[3] << 8u));
+//            dev->ics[curr_ic].cell.c_codes[11] = (int16_t)((uint16_t)d[4] | ((uint16_t)d[5] << 8u));
+//            break;
+//        case E:
+//            dev->ics[curr_ic].cell.c_codes[12] = (int16_t)((uint16_t)d[0] | ((uint16_t)d[1] << 8u));
+//            dev->ics[curr_ic].cell.c_codes[13] = (int16_t)((uint16_t)d[2] | ((uint16_t)d[3] << 8u));
+//            dev->ics[curr_ic].cell.c_codes[14] = (int16_t)((uint16_t)d[4] | ((uint16_t)d[5] << 8u));
+//            break;
+//        case F:
+//            dev->ics[curr_ic].cell.c_codes[15] = (int16_t)((uint16_t)d[0] | ((uint16_t)d[1] << 8u));
+//            break;
+//        default:
+//            break;
+//        }
+//
+//        uint16_t received_pec = (uint16_t)(((d[RX_DATA - 2u] & 0x03u) << 8u)
+//                                           | d[RX_DATA - 1u]);
+//        uint16_t calc_pec     = pec10_calc(1, RX_DATA - 2, d);
+//
+//        dev->ics[curr_ic].cccrc.cmd_cntr = d[RX_DATA - 2u] >> 2u;
+//        dev->ics[curr_ic].cccrc.cell_pec = (received_pec != calc_pec) ? 1u : 0u;
+//    }
+//}
+
 void adbms6830_parse_cell(adbms6830_driver_t *dev, uint8_t *data, GRP grp)
 {
+    #define IS_VALID_CODE(lo, hi) \
+        (!((d[lo] == 0xFFu) && (d[hi] == 0xFFu)) && \
+         !((d[lo] == 0x00u) && (d[hi] == 0x80u)))
+
+    #define STORE_CODE(idx, byte_lo, byte_hi)                                       \
+    do {                                                                            \
+        if (IS_VALID_CODE(byte_lo, byte_hi)) {                                      \
+            dev->ics[curr_ic].cell.c_codes[idx] =                                   \
+                (int16_t)((uint16_t)d[byte_lo] | ((uint16_t)d[byte_hi] << 8u));    \
+        }                                                                           \
+    } while(0)
+
     for (uint8_t curr_ic = 0; curr_ic < (uint8_t)dev->num_ics; curr_ic++)
     {
         uint8_t *d = &data[curr_ic * RX_DATA];
 
+        uint16_t received_pec = (uint16_t)(((d[RX_DATA - 2u] & 0x03u) << 8u)
+                                           | d[RX_DATA - 1u]);
+        uint16_t calc_pec     = pec10_calc(1, RX_DATA - 2, d);
+        dev->ics[curr_ic].cccrc.cmd_cntr = d[RX_DATA - 2u] >> 2u;
+        dev->ics[curr_ic].cccrc.cell_pec = (received_pec != calc_pec) ? 1u : 0u;
+
+        if (dev->ics[curr_ic].cccrc.cell_pec) continue;
+
         switch (grp)
         {
         case A:
-            dev->ics[curr_ic].cell.c_codes[0]  = (int16_t)((uint16_t)d[0] | ((uint16_t)d[1] << 8u));
-            dev->ics[curr_ic].cell.c_codes[1]  = (int16_t)((uint16_t)d[2] | ((uint16_t)d[3] << 8u));
-            dev->ics[curr_ic].cell.c_codes[2]  = (int16_t)((uint16_t)d[4] | ((uint16_t)d[5] << 8u));
+            STORE_CODE(0,  0, 1);
+            STORE_CODE(1,  2, 3);
+            STORE_CODE(2,  4, 5);
             break;
         case B:
-            dev->ics[curr_ic].cell.c_codes[3]  = (int16_t)((uint16_t)d[0] | ((uint16_t)d[1] << 8u));
-            dev->ics[curr_ic].cell.c_codes[4]  = (int16_t)((uint16_t)d[2] | ((uint16_t)d[3] << 8u));
-            dev->ics[curr_ic].cell.c_codes[5]  = (int16_t)((uint16_t)d[4] | ((uint16_t)d[5] << 8u));
+            STORE_CODE(3,  0, 1);
+            STORE_CODE(4,  2, 3);
+            STORE_CODE(5,  4, 5);
             break;
         case C:
-            dev->ics[curr_ic].cell.c_codes[6]  = (int16_t)((uint16_t)d[0] | ((uint16_t)d[1] << 8u));
-            dev->ics[curr_ic].cell.c_codes[7]  = (int16_t)((uint16_t)d[2] | ((uint16_t)d[3] << 8u));
-            dev->ics[curr_ic].cell.c_codes[8]  = (int16_t)((uint16_t)d[4] | ((uint16_t)d[5] << 8u));
+            STORE_CODE(6,  0, 1);
+            STORE_CODE(7,  2, 3);
+            STORE_CODE(8,  4, 5);
             break;
         case D:
-            dev->ics[curr_ic].cell.c_codes[9]  = (int16_t)((uint16_t)d[0] | ((uint16_t)d[1] << 8u));
-            dev->ics[curr_ic].cell.c_codes[10] = (int16_t)((uint16_t)d[2] | ((uint16_t)d[3] << 8u));
-            dev->ics[curr_ic].cell.c_codes[11] = (int16_t)((uint16_t)d[4] | ((uint16_t)d[5] << 8u));
+            STORE_CODE(9,  0, 1);
+            STORE_CODE(10, 2, 3);
+            STORE_CODE(11, 4, 5);
             break;
         case E:
-            dev->ics[curr_ic].cell.c_codes[12] = (int16_t)((uint16_t)d[0] | ((uint16_t)d[1] << 8u));
-            dev->ics[curr_ic].cell.c_codes[13] = (int16_t)((uint16_t)d[2] | ((uint16_t)d[3] << 8u));
-            dev->ics[curr_ic].cell.c_codes[14] = (int16_t)((uint16_t)d[4] | ((uint16_t)d[5] << 8u));
+            STORE_CODE(12, 0, 1);
+            STORE_CODE(13, 2, 3);
+            STORE_CODE(14, 4, 5);
             break;
         case F:
-            dev->ics[curr_ic].cell.c_codes[15] = (int16_t)((uint16_t)d[0] | ((uint16_t)d[1] << 8u));
+            STORE_CODE(15, 0, 1);
             break;
         default:
             break;
         }
-
-        uint16_t received_pec = (uint16_t)(((d[RX_DATA - 2u] & 0x03u) << 8u)
-                                           | d[RX_DATA - 1u]);
-        uint16_t calc_pec     = pec10_calc(1, RX_DATA - 2, d);
-
-        dev->ics[curr_ic].cccrc.cmd_cntr = d[RX_DATA - 2u] >> 2u;
-        dev->ics[curr_ic].cccrc.cell_pec = (received_pec != calc_pec) ? 1u : 0u;
     }
+
+    #undef STORE_CODE
+    #undef IS_VALID_CODE
 }
 
 void adbms6830_read_cell_voltages(adbms6830_driver_t *dev)
@@ -723,16 +788,6 @@ void adbms6830_read_cell_voltages(adbms6830_driver_t *dev)
     adbms6830_wakeup(dev);
     adbms6830_cmd(dev, unsnap_cmd);
 }
-
-
-
-
-
-
-
-
-
-
 
 
 /* ---------------------------------------------------------------------------
@@ -808,23 +863,57 @@ static void adbms6830_gpio_i2c_write(adbms6830_driver_t *dev,
  * Extract GPIO1/2/3 raw codes from an RDAUXA response buffer and store them
  * into ax_.a_codes[0..2] for each IC.
  * ------------------------------------------------------------------------- */
+//static void adbms6830_parse_aux_gpio(adbms6830_driver_t *dev, uint8_t *data)
+//{
+//    for (uint8_t curr_ic = 0; curr_ic < dev->num_ics; curr_ic++)
+//    {
+//        uint8_t *d = &data[curr_ic * RX_DATA];
+//
+//        /* GPIO1 = AUX channel 0, GPIO2 = channel 1, GPIO3 = channel 2     */
+//        dev->ics[curr_ic].aux.a_codes[0] = (int16_t)((uint16_t)d[0] | ((uint16_t)d[1] << 8u));
+//        dev->ics[curr_ic].aux.a_codes[1] = (int16_t)((uint16_t)d[2] | ((uint16_t)d[3] << 8u));
+//        dev->ics[curr_ic].aux.a_codes[2] = (int16_t)((uint16_t)d[4] | ((uint16_t)d[5] << 8u));
+//
+//        /* PEC + command counter */
+//        uint16_t received_pec = (uint16_t)(((d[RX_DATA - 2u] & 0x03u) << 8u) | d[RX_DATA - 1u]);
+//        uint16_t calc_pec     = pec10_calc(1, RX_DATA - 2, d);
+//        dev->ics[curr_ic].cccrc.cmd_cntr = d[RX_DATA - 2u] >> 2u;
+//        dev->ics[curr_ic].cccrc.aux_pec  = (received_pec != calc_pec) ? 1u : 0u;
+//    }
+//}
+
 static void adbms6830_parse_aux_gpio(adbms6830_driver_t *dev, uint8_t *data)
 {
+    #define IS_VALID_CODE(lo, hi) \
+        (!((d[lo] == 0xFFu) && (d[hi] == 0xFFu)) && \
+         !((d[lo] == 0x00u) && (d[hi] == 0x80u)))
+
+    #define STORE_AUX(idx, byte_lo, byte_hi)                                        \
+    do {                                                                            \
+        if (IS_VALID_CODE(byte_lo, byte_hi)) {                                      \
+            dev->ics[curr_ic].aux.a_codes[idx] =                                    \
+                (int16_t)((uint16_t)d[byte_lo] | ((uint16_t)d[byte_hi] << 8u));    \
+        }                                                                           \
+    } while(0)
+
     for (uint8_t curr_ic = 0; curr_ic < dev->num_ics; curr_ic++)
     {
         uint8_t *d = &data[curr_ic * RX_DATA];
 
-        /* GPIO1 = AUX channel 0, GPIO2 = channel 1, GPIO3 = channel 2     */
-        dev->ics[curr_ic].aux.a_codes[0] = (int16_t)((uint16_t)d[0] | ((uint16_t)d[1] << 8u));
-        dev->ics[curr_ic].aux.a_codes[1] = (int16_t)((uint16_t)d[2] | ((uint16_t)d[3] << 8u));
-        dev->ics[curr_ic].aux.a_codes[2] = (int16_t)((uint16_t)d[4] | ((uint16_t)d[5] << 8u));
-
-        /* PEC + command counter */
         uint16_t received_pec = (uint16_t)(((d[RX_DATA - 2u] & 0x03u) << 8u) | d[RX_DATA - 1u]);
         uint16_t calc_pec     = pec10_calc(1, RX_DATA - 2, d);
         dev->ics[curr_ic].cccrc.cmd_cntr = d[RX_DATA - 2u] >> 2u;
         dev->ics[curr_ic].cccrc.aux_pec  = (received_pec != calc_pec) ? 1u : 0u;
+
+        if (dev->ics[curr_ic].cccrc.aux_pec) continue;
+
+        STORE_AUX(0, 0, 1);
+        STORE_AUX(1, 2, 3);
+        STORE_AUX(2, 4, 5);
     }
+
+    #undef STORE_AUX
+    #undef IS_VALID_CODE
 }
 
 /* ---------------------------------------------------------------------------
@@ -915,7 +1004,83 @@ int adbms6830_read_temp_raw(adbms6830_driver_t *dev,
  * @return  0 on success, -1 if arguments are out of range
  * ------------------------------------------------------------------------- */
 
-int mux_read_gpio_voltage(adbms6830_driver_t *dev, uint8_t sensor_num)
+//int mux_read_gpio_voltage(adbms6830_driver_t *dev, uint8_t sensor_num)
+//{
+//    if (sensor_num >= 24u)
+//    {
+//        return -1;
+//    }
+//
+////    uint8_t mux_idx    = sensor_num / SENSORS_PER_MUX;
+////    uint8_t sw_pos     = sensor_num % SENSORS_PER_MUX;
+////    uint8_t sw_mask    = (uint8_t)(1u << sw_pos);
+////    uint8_t slave_addr = MUX_ADDRS[mux_idx];
+////    uint8_t gpio_ch    = GPIO_AUX_IDX[mux_idx];
+////
+////    uint8_t sensor_num_n = (sensor_num + 1) % 24;
+////    uint8_t mux_idx_n    = sensor_num_n / SENSORS_PER_MUX;
+////	uint8_t sw_pos_n     = sensor_num_n % SENSORS_PER_MUX;
+////	uint8_t sw_mask_n    = (uint8_t)(1u << sw_pos);
+////	uint8_t slave_addr_n = MUX_ADDRS[mux_idx_n];
+////
+////    uint8_t adax_cmd[2] = { ADAX_CMD_BYTE0, ADAX_CH[mux_idx] };
+//////    adbms6830_wakeup(dev);
+////
+////    adbms6830_cmd(dev, adax_cmd);
+////    adbms6830_us_delay(dev, 4000u);
+////
+////    adbms6830_rd48(dev, RDAUXA, shared_buf);
+////    adbms6830_parse_aux_gpio(dev, shared_buf);
+////
+////    /* Store result for every IC in the chain */
+////    for (uint8_t ic = 0; ic < dev->num_ics; ic++)
+////    {
+////        dev->ics[ic].temp.raw[sensor_num] = dev->ics[ic].aux.a_codes[gpio_ch];
+////    }
+////
+////    adbms6830_gpio_i2c_write(dev, slave_addr_n, sw_mask_n);
+////	adbms6830_us_delay(dev, 2000u);
+////
+////
+////    return 0;
+//
+//    /* Current sensor MUX config */
+//    uint8_t mux_idx    = sensor_num / SENSORS_PER_MUX;
+//    uint8_t sw_pos     = sensor_num % SENSORS_PER_MUX;
+//    uint8_t sw_mask    = (uint8_t)(1u << sw_pos);
+//    uint8_t slave_addr = MUX_ADDRS[mux_idx];
+//    uint8_t gpio_ch    = GPIO_AUX_IDX[mux_idx];
+//
+//    /* Next sensor MUX config — written after the read to pre-stage for timing */
+//    uint8_t sensor_num_n = (sensor_num + 1u) % 24u;
+//    uint8_t mux_idx_n    = sensor_num_n / SENSORS_PER_MUX;
+//    uint8_t sw_pos_n     = sensor_num_n % SENSORS_PER_MUX;
+//    uint8_t sw_mask_n    = (uint8_t)(1u << sw_pos_n);   // BUG FIX: was sw_pos, not sw_pos_n
+//    uint8_t slave_addr_n = MUX_ADDRS[mux_idx_n];
+//
+//    /* Trigger ADC conversion on the current GPIO channel */
+//    uint8_t adax_cmd[2] = { ADAX_CMD_BYTE0, ADAX_CH[mux_idx] };
+//    adbms6830_wakeup(dev);
+//	adbms6830_cmd(dev, adax_cmd);
+//    adbms6830_us_delay(dev, 4000u);
+//
+//    /* Read back and parse the auxiliary GPIO result */
+//    adbms6830_rd48(dev, RDAUXA, shared_buf);
+//    adbms6830_parse_aux_gpio(dev, shared_buf);
+//
+//    /* Store raw ADC result for every IC in the chain */
+//    for (uint8_t ic = 0; ic < dev->num_ics; ic++)
+//    {
+//        dev->ics[ic].temp.raw[sensor_num] = dev->ics[ic].aux.a_codes[gpio_ch];
+//    }
+//
+//    /* Pre-stage the next MUX channel over I2C so it's settled before the next read */
+//    adbms6830_gpio_i2c_write(dev, slave_addr_n, sw_mask_n);
+//
+//    return 0;
+//}
+
+int mux_set_channel(adbms6830_driver_t *dev, uint8_t sensor_num)
 {
     if (sensor_num >= 24u)
     {
@@ -926,22 +1091,33 @@ int mux_read_gpio_voltage(adbms6830_driver_t *dev, uint8_t sensor_num)
     uint8_t sw_pos     = sensor_num % SENSORS_PER_MUX;
     uint8_t sw_mask    = (uint8_t)(1u << sw_pos);
     uint8_t slave_addr = MUX_ADDRS[mux_idx];
-    uint8_t gpio_ch    = GPIO_AUX_IDX[mux_idx];
-
 
     adbms6830_gpio_i2c_write(dev, slave_addr, sw_mask);
-    adbms6830_us_delay(dev, 2000u);
 
+    return 0;
+}
+
+
+int mux_read_gpio_voltage(adbms6830_driver_t *dev, uint8_t sensor_num)
+{
+    if (sensor_num >= 24u)
+    {
+        return -1;
+    }
+
+    uint8_t mux_idx = sensor_num / SENSORS_PER_MUX;
+    uint8_t gpio_ch = GPIO_AUX_IDX[mux_idx];
+
+    /* Trigger ADC conversion on the current GPIO channel */
     uint8_t adax_cmd[2] = { ADAX_CMD_BYTE0, ADAX_CH[mux_idx] };
-    adbms6830_wakeup(dev);
-//    adbms6830_wrcfga(dev);
     adbms6830_cmd(dev, adax_cmd);
     adbms6830_us_delay(dev, 4000u);
 
+    /* Read back and parse the auxiliary GPIO result */
     adbms6830_rd48(dev, RDAUXA, shared_buf);
     adbms6830_parse_aux_gpio(dev, shared_buf);
 
-    /* Store result for every IC in the chain */
+    /* Store raw ADC result for every IC in the chain */
     for (uint8_t ic = 0; ic < dev->num_ics; ic++)
     {
         dev->ics[ic].temp.raw[sensor_num] = dev->ics[ic].aux.a_codes[gpio_ch];
@@ -949,6 +1125,7 @@ int mux_read_gpio_voltage(adbms6830_driver_t *dev, uint8_t sensor_num)
 
     return 0;
 }
+
 
 /* ---------------------------------------------------------------------------
  * adbms6830_convert_temp
@@ -986,12 +1163,14 @@ float adbms6830_convert_temp(adbms6830_driver_t *dev,
 
     /* 150 µV per LSB (same scale as cell voltage registers) */
     return (float)raw * 150.0e-6f;
+
+
 }
 
 float voltage_to_temp(float v) {
-    float R = 10000.0f * (5.0f - v) / v;
-    float x = log(R / 10000.0f);
-    float T = 1.0f / (3.354016435e-3f + 2.565235509e-4f*x
-                      + 2.605970121e-6f*x*x + 6.329261265e-8f*x*x*x) - 273.15f;
+	float V = (10000 + v ) * .00015;
+    float R = 10000.0f * (5.0f - V) / V;
+    float x = logf(R / 10000.0f);
+    float T = 1.0f / (3.354016435e-3f + 2.565235509e-4f*x) -273.15f; //+ 2.605970121e-6f*x*x + 6.329261265e-8f*x*x*x) - 273.15f;
     return T;
 }

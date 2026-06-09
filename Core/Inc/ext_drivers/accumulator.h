@@ -26,12 +26,13 @@
 #define HVEN1 GPO1
 #define HVEN2 GPO2
 
-#define NSMBS 1
+#define NSMBS 5
 
 typedef struct
 {
 	float total_volt;
 	float max_temp;
+	float avg_temp;
 	float max_volt;
 	float min_volt;
 
@@ -56,5 +57,6 @@ int accumulator_set_temp_ch(accumulator_t *dev, uint8_t channel);
 int accumulator_stat_temp(accumulator_t *dev);
 int accumulator_set_mux_ch(accumulator_t *dev, uint8_t channel, uint8_t addr7);
 float NXFT15XV103FEAB050_convert(float ratio);
+void adbms6830_update_cell_voltage_limits(accumulator_t *dev);
 
 #endif /* INC_EXT_DRIVERS_ACCUMULATOR_H_ */

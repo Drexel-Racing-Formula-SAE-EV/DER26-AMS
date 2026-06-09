@@ -65,4 +65,7 @@ static void adbms6830_gpio_i2c_write(adbms6830_driver_t *dev,
                                       uint8_t slave_addr,
                                       uint8_t data_byte);
 
+float voltage_to_temp(float v);
+int mux_set_channel(adbms6830_driver_t *dev, uint8_t sensor_num);
+
 #endif /* INC_EXT_DRIVERS_ADBMS6830_FUNCTIONS_H_ */

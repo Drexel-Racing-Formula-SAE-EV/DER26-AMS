@@ -20,6 +20,7 @@
 #define VER_MINOR 1
 #define VER_BUG   0
 
+#define ERR_FREQ 20
 #define CLI_FREQ 20
 #define AIR_FREQ 2 // used to be 10
 #define CURRENT_FREQ 10
@@ -29,6 +30,7 @@
 #define CAN_FREQ 2
 
 // prios taken from DER24 defaults
+#define ERR_PRIO 17
 #define AIR_PRIO  7
 #define CAN_PRIO  8
 #define CLI_PRIO 14
@@ -43,7 +45,7 @@
 #define TO_MSB16(x) ((((uint16_t)x & 0xff00) >> 8) & 0xff)
 
 // TODO: check temp thresholds
-#define TEMP_THRESH_H 50.0
+#define TEMP_THRESH_H 60.0
 #define TEMP_THRESH_L 40.0
 #define OVERVOLT 4.2
 #define UNDERVOLT 2.5
@@ -74,6 +76,9 @@ typedef struct
 	bool cli_fault;
 	bool canbus_fault;
 	bool current_fault;
+	bool fuse_fault;
+	bool temp_fault;
+	bool voltage_fault;
 
 	bool air_state;
 	bool imd_ok;
@@ -87,6 +92,7 @@ typedef struct
 
 	TaskHandle_t fan_task;
 	TaskHandle_t cli_task;
+	TaskHandle_t error_task;
 	TaskHandle_t canbus_task;
 	TaskHandle_t air_task;
 	TaskHandle_t imd_task;
