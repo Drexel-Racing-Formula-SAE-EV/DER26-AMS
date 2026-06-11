@@ -30,6 +30,7 @@ int get_version(int argc, char *argv[]);
 int get_voltage(int argc, char *argv[]);
 int get_temperature(int argc, char *argv[]);
 int get_temperature_sensor(int argc, char *argv[]);
+int set_state(int argc, char *argv[]);
 
 char outline[CLI_LINESZ];
 app_data_t *data;
@@ -42,6 +43,17 @@ command_t cmds[] =
 	{"volt", &get_voltage, "gets cell voltages for all SMBs"},
 	{"temp", &get_temperature, "gets sensor temperatures for all SMBs"},
 	{"tempsns", &get_temperature_sensor, "gets one sensor: tempsns <ic> <sensor 0-23>"},
+	{"state", &set_state, "gets or sets the AMS state [charge|discharge]"}
+};
+
+char *state_str[] =
+{
+    "NULL",
+    "start",
+    "charge",
+    "discharge",
+    "balance",
+    "error"
 };
 
 TaskHandle_t cli_task_start(app_data_t *data)
@@ -144,6 +156,8 @@ int get_faults(int argc, char *argv[])
 	snprintf(outline, CLI_LINESZ, "  fan:    %d", data->fan_fault);
 	ret |= cli_printline(cli, outline);
 	snprintf(outline, CLI_LINESZ, "  canbus: %d", data->canbus_fault);
+	ret |= cli_printline(cli, outline);
+	snprintf(outline, CLI_LINESZ, "  charger: %d", data->charger_fault);
 	ret |= cli_printline(cli, outline);
 	return ret;
 }
@@ -273,5 +287,52 @@ int get_version(int argc, char *argv[])
 	snprintf(outline, CLI_LINESZ, "v%d.%d", VER_MAJOR, VER_MINOR);
 	ret |= cli_printline(cli, outline);
 	return ret;
+}
+
+int set_state(int argc, char *argv[])
+{
+    int ret = 0;
+
+    if(argc == 1)
+    {
+        snprintf(outline, CLI_LINESZ, "AMS State: %s", state_str[data->state]);
+        ret |= cli_printline(cli, outline);
+    }
+    else if(argc == 2)
+    {
+        if(!strcmp(argv[1], "charge")){
+        	data->state = STATE_CHARGE;
+        	data->board.charger.last_rx_tick = osKernelGetTickCount();
+        }
+        else if(!strcmp(argv[1], "discharge")) data->state = STATE_DISCARGE;
+        else
+        {
+            snprintf(outline, CLI_LINESZ, "ERROR: unrecognized state: %s", argv[1]);
+            cli_printline(cli, outline);
+            cli_printline(cli, "Usage: state [charge|discharge]");
+            return 1;
+        }
+
+        snprintf(outline, CLI_LINESZ, "AMS State: %s", state_str[data->state]);
+        ret |= cli_printline(cli, outline);
+
+        if(data->state == STATE_CHARGE)
+        {
+            HAL_CAN_ActivateNotification(data->board.canbus.hcan, CAN_IT_RX_FIFO0_MSG_PENDING);
+//            if(!data->air_state) ret |= cli_printline(cli, "AIRs are open. Try pressing SSA");
+        }
+        else
+        {
+            HAL_CAN_DeactivateNotification(data->board.canbus.hcan, CAN_IT_RX_FIFO0_MSG_PENDING);
+        }
+    }
+    else
+    {
+        cli_printline(cli, "ERROR: too many arguments");
+        cli_printline(cli, "Usage: state [charge|discharge]");
+        return 1;
+    }
+
+    return ret;
 }
 

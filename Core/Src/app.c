@@ -30,6 +30,9 @@ void app_create()
 	app.temp_fault = false;
 	app.voltage_fault = false;
 
+    app.charger_fault = false;
+    app.bms_state     = false;
+
 	app.air_state = false;
 	app.imd_ok = true;
 	app.imd_status = IMD_NORMAL;
@@ -56,11 +59,11 @@ void app_create()
 
 	assert(app.cli_task = cli_task_start(&app));
 	assert(app.fan_task = fan_task_start(&app));
-	assert(app.error_task = error_task_start(&app));
-//	assert(app.canbus_task = canbus_task_start(&app));
+//	assert(app.error_task = error_task_start(&app));
+	assert(app.canbus_task = canbus_task_start(&app));
 //	assert(app.air_task = air_task_start(&app));
-	//assert(app.imd_task = imd_task_start(&app));
-	//assert(app.current_task = current_task_start(&app));
+//	assert(app.imd_task = imd_task_start(&app));
+//	assert(app.current_task = current_task_start(&app));
 	assert(app.adbms_task = adbms_task_start(&app));
 
 	set_bms(1);
@@ -68,5 +71,6 @@ void app_create()
 
 void set_bms(bool state)
 {
+	app.bms_state = state;
 	HAL_GPIO_WritePin(BMS_OK_GPIO_Port, BMS_OK_Pin, state);
 }

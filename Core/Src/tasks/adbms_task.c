@@ -27,19 +27,31 @@ void adbms_task_fn(void *argument)
         entry = osKernelGetTickCount();
 
 //
+        // Turn off balancing before reading
+        accumulator_clear_balance(acc);
 
+        // Wait for cell voltages to recover from discharge load
+        osDelay(100);
+
+        // Now read voltages with no load on cells
         accumulator_read_volt(acc);
-
-
         adbms6830_update_cell_voltage_limits(acc);
-        data->max_voltage = (acc->max_volt);
-        data->min_voltage = (acc->min_volt);
+        data->max_voltage = acc->max_volt;
+        data->min_voltage = acc->min_volt;
 
         data->total_voltage = (acc->apm.vbat[0] + acc->apm.vbat[1]) / 2.0f;
 
-        if(data->min_voltage < UNDERVOLT && data->min_voltage != 0){
-			set_bms(0);
-		}
+
+        if(data->min_voltage < UNDERVOLT && data->min_voltage != 0)
+        {
+            set_bms(0);
+        }
+
+        // Resume balancing after clean read
+        if(data->state == STATE_CHARGE)
+        {
+            accumulator_set_balance(acc);
+        }
 
 //        taskENTER_CRITICAL();
 //        accumulator_read_temp(acc);

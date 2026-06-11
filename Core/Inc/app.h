@@ -85,6 +85,9 @@ typedef struct
 	imd_status_t imd_status;
     bool fan_state;
 
+    bool charger_fault;
+    bool bms_state;
+
 	state_t state;
 
 	board_t board;

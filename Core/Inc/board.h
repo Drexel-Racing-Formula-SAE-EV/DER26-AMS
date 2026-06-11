@@ -15,6 +15,7 @@
 #include "ext_drivers/canbus.h"
 #include "ext_drivers/current_sensor.h"
 #include "ext_drivers/accumulator.h"
+#include "ext_drivers/charger.h"
 
 #define NFANS 6
 
@@ -27,6 +28,7 @@ typedef struct
 	cli_device_t cli;
 	canbus_device_t canbus;
 	current_sensor_t current_sensor;
+	charger_t charger;
 } board_t;
 
 void board_init(board_t *board);

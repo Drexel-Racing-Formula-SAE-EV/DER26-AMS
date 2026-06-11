@@ -254,3 +254,39 @@ void accumulator_update_temp_stats(accumulator_t *dev)
 	dev->max_temp = (count > 0u) ? max_temp  : 0.0f;
 	dev->avg_temp = (count > 0u) ? (sum_temp / (float)count) : 0.0f;
 }
+
+int accumulator_set_balance(accumulator_t *dev)
+{
+    adbms6830_driver_t *smb = &dev->smb;
+    float min_v = dev->min_volt;
+
+    for(uint8_t ic = 0; ic < NSMBS; ic++)
+    {
+        uint16_t dcc_mask = 0;
+        for(uint8_t cell = 0; cell < NCELLS; cell++)
+        {
+            float v = convert_adc_to_volt(smb->ics[ic].cell.c_codes[cell]);
+            if((v - min_v) > BALANCE_THRESH)
+            {
+                dcc_mask |= (1 << cell);
+            }
+        }
+        smb->ics[ic].tx_cfgb.dcc = dcc_mask;
+    }
+
+    adbms6830_wakeup(smb);
+    adbms6830_wrcfgb(smb);
+    return 0;
+}
+
+int accumulator_clear_balance(accumulator_t *dev)
+{
+    adbms6830_driver_t *smb = &dev->smb;
+    for(uint8_t ic = 0; ic < NSMBS; ic++)
+    {
+        smb->ics[ic].tx_cfgb.dcc = 0;
+    }
+    adbms6830_wakeup(smb);
+    adbms6830_wrcfgb(smb);
+    return 0;
+}

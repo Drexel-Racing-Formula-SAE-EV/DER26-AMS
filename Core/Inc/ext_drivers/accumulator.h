@@ -20,6 +20,8 @@
 #define MUX_ADDR7_00 0x4C
 #define MUX_ADDR7_01 0x4D
 #define VNTC 5.0
+#define BALANCE_THRESH  0.010f   // 10mV
+
 
 /* APM Macros */
 #define NAPMS 1
@@ -58,5 +60,7 @@ int accumulator_stat_temp(accumulator_t *dev);
 int accumulator_set_mux_ch(accumulator_t *dev, uint8_t channel, uint8_t addr7);
 float NXFT15XV103FEAB050_convert(float ratio);
 void adbms6830_update_cell_voltage_limits(accumulator_t *dev);
+int accumulator_set_balance(accumulator_t *dev);
+int accumulator_clear_balance(accumulator_t *dev);
 
 #endif /* INC_EXT_DRIVERS_ACCUMULATOR_H_ */
