@@ -59,11 +59,11 @@ void app_create()
 
 	assert(app.cli_task = cli_task_start(&app));
 	assert(app.fan_task = fan_task_start(&app));
-//	assert(app.error_task = error_task_start(&app));
+	assert(app.error_task = error_task_start(&app));
 	assert(app.canbus_task = canbus_task_start(&app));
 //	assert(app.air_task = air_task_start(&app));
 //	assert(app.imd_task = imd_task_start(&app));
-//	assert(app.current_task = current_task_start(&app));
+	assert(app.current_task = current_task_start(&app));
 	assert(app.adbms_task = adbms_task_start(&app));
 
 	set_bms(1);

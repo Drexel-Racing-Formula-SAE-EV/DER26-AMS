@@ -31,6 +31,7 @@ int get_voltage(int argc, char *argv[]);
 int get_temperature(int argc, char *argv[]);
 int get_temperature_sensor(int argc, char *argv[]);
 int set_state(int argc, char *argv[]);
+int cause_fault(int argc, char *argv[]);
 
 char outline[CLI_LINESZ];
 app_data_t *data;
@@ -43,7 +44,8 @@ command_t cmds[] =
 	{"volt", &get_voltage, "gets cell voltages for all SMBs"},
 	{"temp", &get_temperature, "gets sensor temperatures for all SMBs"},
 	{"tempsns", &get_temperature_sensor, "gets one sensor: tempsns <ic> <sensor 0-23>"},
-	{"state", &set_state, "gets or sets the AMS state [charge|discharge]"}
+	{"state", &set_state, "gets or sets the AMS state [charge|discharge]"},
+	{"cause_fault", &cause_fault, "cause BMS fault for tech"},
 };
 
 char *state_str[] =
@@ -153,6 +155,8 @@ int get_faults(int argc, char *argv[])
 	ret |= cli_printline(cli, outline);
 	snprintf(outline, CLI_LINESZ, "  cli:    %d", data->cli_fault);
 	ret |= cli_printline(cli, outline);
+	snprintf(outline, CLI_LINESZ, " bms:    %d", data->bms_state);
+	ret |= cli_printline(cli, outline);
 	snprintf(outline, CLI_LINESZ, "  fan:    %d", data->fan_fault);
 	ret |= cli_printline(cli, outline);
 	snprintf(outline, CLI_LINESZ, "  canbus: %d", data->canbus_fault);
@@ -199,11 +203,23 @@ int get_temperature(int argc, char *argv[])
     {
 
 	//Purely For Testing function
-//	for (uint8_t sensor = 0; sensor < 24u; sensor++)
-//	{
+	for (uint8_t sensor = 0; sensor < 24u; sensor++)
+	{
 //	    mux_read_gpio_voltage(smb, sensor);
-//	    adbms6830_us_delay(smb, 50000u);
-//	}
+//	    adbms6830_us_delay(smb, 3000u);
+//
+//	    mux_read_gpio_voltage(dev, sensor_num - 1u);
+	    adbms6830_wakeup(smb);
+	//    sensor_num = ((sensor_num) % (NTEMPS)) + 1u;
+
+	    mux_set_channel(smb, sensor);
+	    adbms6830_us_delay(smb, 2000u);
+
+	    adbms6830_wakeup(smb);
+	    mux_read_gpio_voltage(smb, sensor);
+
+	    adbms6830_us_delay(smb, 2000u);
+	}
 	//Finished Testing
 
         snprintf(outline, CLI_LINESZ, "--- SMB %d ---", ic);
@@ -261,7 +277,15 @@ int get_temperature_sensor(int argc, char *argv[])
     }
 
     /* Poll just the requested sensor through the mux */
+//    mux_read_gpio_voltage(smb, sensor);
+
+    mux_set_channel(smb, sensor);
+    adbms6830_us_delay(smb, 2000u);
+
+    adbms6830_wakeup(smb);
     mux_read_gpio_voltage(smb, sensor);
+
+    adbms6830_us_delay(smb, 2000u);
 
     /* Read back the raw value and convert to voltage */
     float volt  = (smb->ics[ic].temp.raw[sensor] + 10000) * 0.000150f;
@@ -336,3 +360,11 @@ int set_state(int argc, char *argv[])
     return ret;
 }
 
+int cause_fault(int argc, char *argv[])
+{
+	int ret = 0;
+
+	set_bms(0);
+
+	return ret;
+};

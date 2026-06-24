@@ -56,7 +56,7 @@ void adbms_task_fn(void *argument)
 //        taskENTER_CRITICAL();
 //        accumulator_read_temp(acc);
 //        taskEXIT_CRITICAL();
-////
+//
 //        accumulator_update_temp_stats(acc);
 //        data->max_temp = (acc->max_temp);
 //        data->avg_temp = (acc->avg_temp);

@@ -29,12 +29,12 @@ void board_init(board_t *board)
 	canbus_device_init(&board->canbus, board->stm32f767z.hcan1);
 	charger_init(&board->charger, &board->canbus);
 	cli_device_init(&board->cli, board->stm32f767z.huart3);
-	/*current_sensor_init(&board->current_sensor,
-						&board->stm32f767z.hadc2,
-						&board->stm32f767z.hadc1,
+	current_sensor_init(&board->current_sensor,
+						board->stm32f767z.hadc2,
+						board->stm32f767z.hadc1,
 						CUR_SEN_CH_L,
 						CUR_SEN_CH_H
-					   );*/
+					   );
 
 	//imd_init(&board->imd, 84000000, &board->stm32f767z.htim5, TIM5, TIM_CHANNEL_2, TIM_CHANNEL_1, IMD_STATUS_MCU_GPIO_Port, IMD_STATUS_MCU_Pin);
 
