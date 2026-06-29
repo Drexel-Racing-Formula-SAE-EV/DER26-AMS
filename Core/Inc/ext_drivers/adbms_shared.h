@@ -30,7 +30,7 @@
 #define ALLREDVR_SIZE  22       /* ALL Redundant Voltage Reg. byte size*/
 
 #define WAKEUP_US_DELAY 250
-#define WAKEUP_BW_DELAY 10
+#define WAKEUP_BW_DELAY 100
 #define SPI_TIMEOUT 500
 #define BUFSZ 512
 
@@ -1544,5 +1544,10 @@ typedef struct
   LOOP_MEASURMENT MEASURE_RAUX;
   LOOP_MEASURMENT MEASURE_STAT;
 } loop_manager_6830_t;
+
+typedef struct
+{
+    int16_t raw[24];
+} temp_;
 
 #endif /* INC_EXT_DRIVERS_ADBMS_SHARED_H_ */

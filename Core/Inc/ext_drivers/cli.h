@@ -14,11 +14,30 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 #include "stm32f7xx_hal.h"
 
 #define CLI_LINESZ 128
 #define MAXTOKS (CLI_LINESZ / 2)
+
+
+static inline size_t cli_bounded_strlen(const char *s, size_t max_len)
+{
+    size_t len = 0u;
+
+    if(s == NULL)
+    {
+        return 0u;
+    }
+
+    while((len < max_len) && (s[len] != '\0'))
+    {
+        len++;
+    }
+
+    return len;
+}
 
 typedef struct {
     uint8_t c;

@@ -50,7 +50,7 @@ uint16_t Pec15_Calc(uint8_t len, uint8_t *data)
 uint16_t pec10_calc(uint8_t rx_cmd, int len, uint8_t *data)
 {
   uint16_t remainder = 16u; /*!< PEC_SEED;   0000010000 */
-  uint16_t polynom = 0x8F; /*!< x10 + x7 + x3 + x2 + x + 1 <- the CRC15 polynomial         100 1000 1111   48F */
+  uint16_t polynom = 0x8F; /*!< x10 + x7 + x3 + x2 + x + 1 <- the CRC10 polynomial         100 1000 1111   48F */
 
   /*!< Perform modulo-2 division, a byte at a time. */
   for (uint8_t pbyte = 0; pbyte < len; ++pbyte)
@@ -61,7 +61,7 @@ uint16_t pec10_calc(uint8_t rx_cmd, int len, uint8_t *data)
     for (uint8_t bit_ = 8u; bit_ > 0u; --bit_)
     {
       /*!< Try to divide the current data bit. */
-      if ((remainder & 0x200) > 0u)/*!<equivalent to remainder & 2^14 simply check for MSB */
+      if ((remainder & 0x200) > 0u)/*!<equivalent to remainder & 2^9 simply check for MSB */
       {
         remainder = (uint16_t)((remainder << 1u));
         remainder = (uint16_t)(remainder ^ polynom);

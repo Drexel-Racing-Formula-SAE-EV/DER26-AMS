@@ -26,6 +26,7 @@ typedef struct
   fcv_ fcell;
   ax_  aux;
   rax_ raux;
+  temp_ temp;
   sta_ stata;
   stb_ statb;
   stc_ statc;
@@ -61,6 +62,8 @@ typedef struct
   adc_command_config_t adc_config;
   threshold_config_t thresholds;
   loop_manager_6830_t loop_manager;
+
+  TIM_HandleTypeDef *htim;
 } adbms6830_driver_t;
 
 #endif /* INC_EXT_DRIVERS_ADBMS6830_DATA_H_ */

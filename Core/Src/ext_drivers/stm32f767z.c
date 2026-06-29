@@ -24,6 +24,11 @@ extern UART_HandleTypeDef huart3;
 
 void stm32f767z_init(stm32f767z_t * dev)
 {
+    if(dev == NULL)
+    {
+        return;
+    }
+
 	dev->hadc1 = &hadc1;
 	dev->hadc2 = &hadc2;
 
@@ -42,17 +47,34 @@ void stm32f767z_init(stm32f767z_t * dev)
 
 uint16_t stm32f767z_adc_read(ADC_HandleTypeDef *hadc)
 {
-	uint16_t count;
+	uint16_t count = 0u;
 
-	HAL_ADC_Start(hadc);
-	HAL_ADC_PollForConversion(hadc, HAL_MAX_DELAY);
-	count = HAL_ADC_GetValue(hadc);
-	HAL_ADC_Stop(hadc);
+    if(hadc == NULL)
+    {
+        return 0u;
+    }
+
+	if(HAL_ADC_Start(hadc) != HAL_OK)
+    {
+        return 0u;
+    }
+
+	if(HAL_ADC_PollForConversion(hadc, HAL_MAX_DELAY) == HAL_OK)
+    {
+        count = (uint16_t)HAL_ADC_GetValue(hadc);
+    }
+
+	(void)HAL_ADC_Stop(hadc);
 	return count;
 }
 
 HAL_StatusTypeDef stm32f767z_adc_switch_channel(ADC_HandleTypeDef *hadc, uint32_t channel)
 {
+    if(hadc == NULL)
+    {
+        return HAL_ERROR;
+    }
+
 	ADC_ChannelConfTypeDef sConfig = {0};
 	sConfig.Channel = channel;
 	sConfig.Rank = 1;

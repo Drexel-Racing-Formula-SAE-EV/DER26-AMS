@@ -223,15 +223,27 @@ void TIM7_IRQHandler(void)
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
     cli_device_t *cli = &app.board.cli;
-    // Use global huart3 for everything until by-value bug is fixed
-    if(huart->Instance != cli->huart->Instance) return;
+
+    if((huart == NULL) || (cli->huart == NULL) || (huart->Instance != cli->huart->Instance))
+    {
+        return;
+    }
+
     uint8_t c = cli->c;
+
+    if(cli->msg_pending)
+    {
+        /* Drop new input until the task copies the completed line. */
+        cli->index = 0;
+        (void)HAL_UART_Receive_IT(&huart3, &cli->c, 1);
+        return;
+    }
 
     if(c == '\r' || c == '\n')
     {
         if(cli->index > 0)
         {
-            HAL_UART_Transmit(&huart3, (uint8_t *)"\r\n", 2, 10);
+            (void)HAL_UART_Transmit(&huart3, (uint8_t *)"\r\n", 2, 10);
             cli->line[cli->index] = '\0';
             cli->index = 0;
             cli->msg_count++;
@@ -243,16 +255,16 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
         if(cli->index > 0)
         {
             cli->index--;
-            HAL_UART_Transmit(&huart3, (uint8_t *)"\b \b", 3, 10);
+            (void)HAL_UART_Transmit(&huart3, (uint8_t *)"\b \b", 3, 10);
         }
     }
     else if(cli->index < CLI_LINESZ - 1)
     {
         cli->line[cli->index++] = c;
-        HAL_UART_Transmit(&huart3, &c, 1, 10);
+        (void)HAL_UART_Transmit(&huart3, &c, 1, 10);
     }
 
     // Re-arm on the global
-    HAL_UART_Receive_IT(&huart3, &cli->c, 1);
+    (void)HAL_UART_Receive_IT(&huart3, &cli->c, 1);
 }
 /* USER CODE END 1 */

@@ -22,7 +22,13 @@ void imd_task_fn(void *argument);
 
 TaskHandle_t imd_task_start(app_data_t *data)
 {
-    TaskHandle_t handle;
+    TaskHandle_t handle = NULL;
+
+    if(data == NULL)
+    {
+        return NULL;
+    }
+
     // todo: appropriate task priority
     xTaskCreate(imd_task_fn, "imd task", 128, (void *) data, IMD_PRIO, &handle);
     return handle;
@@ -34,6 +40,12 @@ void imd_task_fn(void *argument){
     imd_t *imd;
 
     data = (app_data_t *) argument;
+    if(data == NULL)
+    {
+        vTaskDelete(NULL);
+        return;
+    }
+
     imd = &data->board.imd;
     uint32_t entry;
 

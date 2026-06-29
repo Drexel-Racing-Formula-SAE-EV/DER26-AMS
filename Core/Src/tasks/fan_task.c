@@ -5,52 +5,59 @@
  *      Author: Cassius Garcia
  */
 #include "tasks/fan_task.h"
-//#include "main.h"
 
 void fan_task_fn(void *argument);
 
 TaskHandle_t fan_task_start(app_data_t *data)
 {
-	TaskHandle_t handle;
-	xTaskCreate(fan_task_fn, "fan task", 128, (void *)data, FAN_PRIO, &handle);
-	return handle;
+    TaskHandle_t handle = NULL;
+
+    if(data == NULL)
+    {
+        return NULL;
+    }
+
+    xTaskCreate(fan_task_fn, "fan task", 128, (void *)data, FAN_PRIO, &handle);
+    return handle;
 }
 
 void fan_task_fn(void *argument)
 {
-	app_data_t *data = (app_data_t *) argument;
-	uint32_t entry;
-	int i;
+    app_data_t *data = (app_data_t *) argument;
+    if(data == NULL)
+    {
+        vTaskDelete(NULL);
+        return;
+    }
 
-	/*
-	for(i = 0; i < NFANS; i++) set_fan_percent(&data->board.fans[i], 100.0);
-	data->fan_state = true;
-	osDelay(2000);
-	for(i = 0; i < NFANS; i++) set_fan_percent(&data->board.fans[i], 0.0);
-	data->fan_state = false;
-	*/
-	float percent = 0.0;
-	for(;;)
-	{
-		entry = osKernelGetTickCount();
+    uint32_t entry;
+    float percent = 0.0f;
 
-		for(i = 0; i < NFANS; i++) set_fan_percent(&data->board.fans[i], percent);
-		percent += 10.0;
-		if(percent > 100.0) percent = 0.0;
+    for(;;)
+    {
+        entry = osKernelGetTickCount();
 
-		osDelay(1000);
-		/*
-		if(data->max_temp > TEMP_THRESH_H)
-		{
-			for(int i = 0; i < NFANS; i++) set_fan_percent(&data->board.fans[i], 100.0);
-			data->fan_state = true;
-		}
-		else if(data->max_temp < TEMP_THRESH_L)
-		{
-			for(int i = 0; i < NFANS; i++) set_fan_percent(&data->board.fans[i], 0.0);
-			data->fan_state = false;
-		}
-		*/
-		//osDelayUntil(entry + (1000 / FAN_FREQ));
-	}
+        if(data->max_temp >= TEMP_THRESH_H)
+        {
+            percent = 100.0f;
+            data->fan_state = true;
+        }
+        else if(data->max_temp <= TEMP_THRESH_L)
+        {
+            percent = 0.0f;
+            data->fan_state = false;
+        }
+        /* Between thresholds, keep the previous fan state for hysteresis. */
+
+        data->fan_fault = false;
+        for(int i = 0; i < NFANS; i++)
+        {
+            if(set_fan_percent(&data->board.fans[i], percent) != 0)
+            {
+                data->fan_fault = true;
+            }
+        }
+
+        osDelayUntil(entry + (1000 / FAN_FREQ));
+    }
 }

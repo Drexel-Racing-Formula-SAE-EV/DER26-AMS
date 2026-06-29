@@ -10,6 +10,11 @@
 // todo: better dummy init values
 void imd_init(imd_t *dev, uint32_t clock_freq, TIM_HandleTypeDef *htim, TIM_TypeDef *tim, HAL_TIM_ActiveChannel high_channel, HAL_TIM_ActiveChannel total_channel, GPIO_TypeDef *status_port, uint16_t status_pin)
 {
+    if(dev == NULL)
+    {
+        return;
+    }
+
 	dev->clock_freq = clock_freq;
 	dev->htim = htim;
 	dev->tim = tim;
@@ -26,13 +31,21 @@ void imd_init(imd_t *dev, uint32_t clock_freq, TIM_HandleTypeDef *htim, TIM_Type
 	dev->freq = 10.0;
 	dev->OK_HS = true;
 	dev->status = IMD_NORMAL;
-	HAL_TIM_Base_Start(htim);
-	HAL_TIM_IC_Start_IT(htim, total_channel);
-	HAL_TIM_IC_Start(htim, high_channel);
+    if(htim != NULL)
+    {
+	    (void)HAL_TIM_Base_Start(htim);
+	    (void)HAL_TIM_IC_Start_IT(htim, total_channel);
+	    (void)HAL_TIM_IC_Start(htim, high_channel);
+    }
 }
 
 int imd_read(imd_t *dev)
 {
+    if((dev == NULL) || (dev->htim == NULL) || (dev->status_port == NULL))
+    {
+        return 1;
+    }
+
 	dev->OK_HS = HAL_GPIO_ReadPin(dev->status_port, dev->status_pin);
 	dev->total_count = HAL_TIM_ReadCapturedValue(dev->htim, dev->total_channel);
 	if (dev->total_count != 0)

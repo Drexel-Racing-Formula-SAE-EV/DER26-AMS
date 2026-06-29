@@ -737,9 +737,8 @@ void adbms2950_spi_write_read(adbms2950_driver_t *dev,
 							  uint8_t rx_len,
 							  uint8_t use_cs)
 {
-	HAL_StatusTypeDef ret = 0;
 	if(use_cs) adbms2950_set_cs(dev, 0);
-	ret |= HAL_SPI_Transmit(dev->hspi, tx_Data, tx_len, 100);
-	ret |= HAL_SPI_Receive(dev->hspi, rx_data, rx_len, 100);
+	(void)HAL_SPI_Transmit(dev->hspi, tx_Data, tx_len, 100);
+	(void)HAL_SPI_Receive(dev->hspi, rx_data, rx_len, 100);
 	if(use_cs) adbms2950_set_cs(dev, 1);
 }
