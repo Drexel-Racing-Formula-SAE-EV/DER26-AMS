@@ -1,69 +1,30 @@
-# STM32CubeIDE / Eclipse build outputs
-Debug/
-Release/
-RelWithDebInfo/
-MinSizeRel/
-*.elf
-*.hex
-*.bin
-*.map
-*.list
-*.lst
-*.su
-*.cyclo
-*.o
-*.obj
-*.d
-*.dep
-
-# STM32CubeIDE / Eclipse local workspace metadata
+# Root local/editor junk
 .metadata/
-.settings/
-*.launch
-*.log
-*.tmp
+.vscode/
+.DS_Store
+Thumbs.db
 *.bak
 *.orig
 *.rej
-
-# VS Code local state
-.vscode/
-
-# Host test harness outputs
-host_tests/build/
-host_tests/*.exe
-host_tests/*.out
-host_tests/*.log
-host_tests/*.plist
-host_tests/scan-build*/
-host_tests/analyzer*/
-
-# Static analyzer outputs
+*.tmp
 *.plist
-scan-build*/
-analyzer*/
 
-# CMake/local build dirs
-build/
-out/
-cmake-build-*/
-CMakeFiles/
-CMakeCache.txt
-compile_commands.json
+# Nested project outputs
+AMS/Debug/
+AMS/Release/
+AMS/host_tests/build/
+AMS/host_tests/*.exe
+AMS/host_tests/*.out
+AMS/host_tests/*.log
 
-# Python/cache helpers
-__pycache__/
-*.py[cod]
-.pytest_cache/
-.mypy_cache/
-
-# OS/editor junk
-.DS_Store
-.AppleDouble
-.LSOverride
-._*
-Thumbs.db
-desktop.ini
-*~
-*.swp
-*.swo
+# HIL / ESP32 / Simulink generated junk
+HiL/**/build/
+HiL/**/managed_components/
+HiL/**/sdkconfig.old
+HiL/**/slprj/
+HiL/**/*_ert_rtw/
+HiL/**/*.slxc
+HiL/**/*.asv
+HiL/**/*.autosave
+HiL/**/codegen/
+HiL/**/*.log
