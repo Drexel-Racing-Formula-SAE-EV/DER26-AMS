@@ -1,4 +1,4 @@
-name: AMS Headless CI
+﻿name: AMS Headless CI
 
 on:
   pull_request:
@@ -28,8 +28,12 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+      - name: Manual checkout without external actions
+        run: |
+          git init .
+          git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git fetch --depth=1 origin "${GITHUB_REF}"
+          git checkout --force FETCH_HEAD
 
       - name: Check project structure
         run: bash ci/scripts/check_project_structure.sh
@@ -42,13 +46,13 @@ jobs:
     runs-on: ubuntu-latest
     needs: repo-checks
 
-    defaults:
-      run:
-        working-directory: AMS/host_tests
-
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+      - name: Manual checkout without external actions
+        run: |
+          git init .
+          git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git fetch --depth=1 origin "${GITHUB_REF}"
+          git checkout --force FETCH_HEAD
 
       - name: Install host tools
         run: |
@@ -56,36 +60,37 @@ jobs:
           sudo apt-get install -y build-essential gcc make
 
       - name: Run unit tests
+        working-directory: AMS/host_tests
         run: |
           make CC=gcc clean
           make CC=gcc unit | tee unit_test_output.txt
 
       - name: Run comprehensive host tests
+        working-directory: AMS/host_tests
         run: |
           make CC=gcc test | tee host_test_output.txt
 
-      - name: Upload host test output
-        uses: actions/upload-artifact@v4
+      - name: Print host test outputs
         if: always()
-        with:
-          name: ams-host-test-output
-          path: |
-            AMS/host_tests/unit_test_output.txt
-            AMS/host_tests/host_test_output.txt
-          if-no-files-found: warn
+        working-directory: AMS/host_tests
+        run: |
+          echo "===== unit_test_output.txt ====="
+          test -f unit_test_output.txt && cat unit_test_output.txt || true
+          echo "===== host_test_output.txt ====="
+          test -f host_test_output.txt && cat host_test_output.txt || true
 
   gcc-analyzer:
     name: GCC analyzer
     runs-on: ubuntu-latest
     needs: repo-checks
 
-    defaults:
-      run:
-        working-directory: AMS/host_tests
-
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+      - name: Manual checkout without external actions
+        run: |
+          git init .
+          git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git fetch --depth=1 origin "${GITHUB_REF}"
+          git checkout --force FETCH_HEAD
 
       - name: Install analyzer tools
         run: |
@@ -93,6 +98,7 @@ jobs:
           sudo apt-get install -y build-essential gcc make
 
       - name: Run GCC analyzer
+        working-directory: AMS/host_tests
         run: |
           make CC=gcc clean
           make CC=gcc analyze
@@ -105,8 +111,12 @@ jobs:
       - gcc-analyzer
 
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+      - name: Manual checkout without external actions
+        run: |
+          git init .
+          git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git fetch --depth=1 origin "${GITHUB_REF}"
+          git checkout --force FETCH_HEAD
 
       - name: Install ARM GCC toolchain
         run: |
@@ -125,16 +135,17 @@ jobs:
         run: |
           python3 ci/scripts/check_firmware_size.py --elf AMS/build/DER26-AMS.elf --max-text 180000 --max-data 8192 --max-bss 65536
 
-      - name: Upload STM32 firmware artifacts
-        uses: actions/upload-artifact@v4
+      - name: Print firmware build outputs
         if: always()
-        with:
-          name: stm32-ams-headless-build
-          path: |
-            AMS/build/DER26-AMS.elf
-            AMS/build/DER26-AMS.hex
-            AMS/build/DER26-AMS.bin
-            AMS/build/DER26-AMS.map
-            AMS/build/DER26-AMS.list
-            ci_artifacts/firmware_size_report.md
-          if-no-files-found: warn
+        run: |
+          echo "===== Firmware build directory ====="
+          ls -lh AMS/build || true
+          echo "===== Firmware size report ====="
+          test -f ci_artifacts/firmware_size_report.md && cat ci_artifacts/firmware_size_report.md || true
+
+      - name: Write firmware size to workflow summary
+        if: always()
+        run: |
+          if [ -f ci_artifacts/firmware_size_report.md ]; then
+            cat ci_artifacts/firmware_size_report.md >> "$GITHUB_STEP_SUMMARY"
+          fi
