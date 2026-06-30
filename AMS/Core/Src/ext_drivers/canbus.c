@@ -17,6 +17,71 @@
 
 extern app_data_t app;
 
+
+static uint16_t be_u16(const uint8_t *data)
+{
+    return (uint16_t)(((uint16_t)data[0] << 8) | data[1]);
+}
+
+static int16_t be_i16(const uint8_t *data)
+{
+    return (int16_t)be_u16(data);
+}
+
+static void canbus_parse_hil_frame(const CAN_RxHeaderTypeDef *rx_header, const uint8_t rx_data[8])
+{
+    if ((rx_header == NULL) || (rx_data == NULL) || (rx_header->IDE != CAN_ID_STD))
+    {
+        return;
+    }
+
+    uint32_t now = osKernelGetTickCount();
+
+    switch (rx_header->StdId)
+    {
+        case AMS_HIL_CAN_ID_MEAS:
+            if (rx_header->DLC >= 7U)
+            {
+                app.hil.meas.v_pack_V = (float)be_u16(&rx_data[0]) * 0.01f;
+                app.hil.meas.i_pack_A = (float)be_i16(&rx_data[2]) * 0.01f;
+                app.hil.meas.t_surf_C = (float)be_i16(&rx_data[4]) * 0.01f;
+                app.hil.meas.counter = rx_data[6];
+                app.hil.meas.last_rx_tick = now;
+                app.hil.meas.fresh = 1U;
+            }
+            break;
+
+        case AMS_HIL_CAN_ID_TRUTH:
+            if (rx_header->DLC >= 8U)
+            {
+                app.hil.truth.soc_true = (float)be_u16(&rx_data[0]) * 0.0001f;
+                app.hil.truth.t_core_C = (float)be_i16(&rx_data[2]) * 0.01f;
+                app.hil.truth.counter = rx_data[4];
+                app.hil.truth.plant_step = ((uint32_t)rx_data[5] << 16) |
+                                           ((uint32_t)rx_data[6] << 8)  |
+                                           ((uint32_t)rx_data[7]);
+                app.hil.truth.last_rx_tick = now;
+                app.hil.truth.fresh = 1U;
+            }
+            break;
+
+        case AMS_HIL_CAN_ID_SUMMARY:
+            if (rx_header->DLC >= 8U)
+            {
+                app.hil.summary.v_min_V = (float)be_u16(&rx_data[0]) * 0.001f;
+                app.hil.summary.v_max_V = (float)be_u16(&rx_data[2]) * 0.001f;
+                app.hil.summary.t_max_C = (float)be_i16(&rx_data[4]) * 0.01f;
+                app.hil.summary.t_avg_C = (float)be_i16(&rx_data[6]) * 0.01f;
+                app.hil.summary.last_rx_tick = now;
+                app.hil.summary.fresh = 1U;
+            }
+            break;
+
+        default:
+            break;
+    }
+}
+
 void canbus_device_init(canbus_device_t *dev, CAN_HandleTypeDef *hcan)
 {
     if(dev == NULL)
@@ -51,6 +116,8 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
 
     app.board.canbus.rx_packet.id = (rx_header.IDE == CAN_ID_EXT) ? rx_header.ExtId : rx_header.StdId;
     memcpy(app.board.canbus.rx_packet.data, rx_data, DATALEN);
+
+    canbus_parse_hil_frame(&rx_header, rx_data);
 
     if(rx_header.IDE != CAN_ID_EXT) return;
     if(rx_header.ExtId != CHARGER_RX_ID) return;

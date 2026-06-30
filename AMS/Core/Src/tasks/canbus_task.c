@@ -13,6 +13,7 @@
 #include "ext_drivers/canbus.h"
 #include "ext_drivers/charger.h"
 #include "app.h"
+#include "estimator/ams_soc_ekf.h"
 
 #include <math.h>
 
@@ -250,6 +251,72 @@ static HAL_StatusTypeDef send_ecu_ams_fans(canbus_device_t *canbus, const app_da
     return ret;
 }
 
+
+
+static uint16_t sat_u16_from_float(float x)
+{
+    if(!isfinite(x) || x <= 0.0f)
+    {
+        return 0u;
+    }
+    if(x >= 65535.0f)
+    {
+        return 65535u;
+    }
+    return (uint16_t)(x + 0.5f);
+}
+
+static int16_t sat_i16_from_float(float x)
+{
+    if(!isfinite(x))
+    {
+        return 0;
+    }
+    if(x >= 32767.0f)
+    {
+        return INT16_MAX;
+    }
+    if(x <= -32768.0f)
+    {
+        return INT16_MIN;
+    }
+    return (int16_t)((x >= 0.0f) ? (x + 0.5f) : (x - 0.5f));
+}
+
+static HAL_StatusTypeDef send_estimator_status(canbus_device_t *canbus, const app_data_t *data)
+{
+    if((data == NULL) ||
+       (data->estimator.enabled == 0u) ||
+       (data->estimator.instance_count == 0u) ||
+       (data->estimator.active_index >= data->estimator.instance_count) ||
+       (data->estimator.active_index >= AMS_EKF_MAX_INSTANCES))
+    {
+        return HAL_OK;
+    }
+
+    const ams_ekf_instance_t *inst = &data->estimator.inst[data->estimator.active_index];
+    if(inst->valid == 0u)
+    {
+        return HAL_OK;
+    }
+
+    uint8_t payload[8] = {0};
+    uint16_t soc_centi_pct = sat_u16_from_float(inst->soc * 10000.0f);
+    int16_t innov_mV = sat_i16_from_float(inst->innovation_V * 1000.0f);
+    uint16_t r0_0p01_mohm = sat_u16_from_float(inst->r0_ohm * 100000.0f);
+
+    payload[0] = data->estimator.active_index;
+    payload[1] = ams_estimator_status_flags(&data->estimator);
+    payload[2] = TO_MSB16(soc_centi_pct);
+    payload[3] = TO_LSB16(soc_centi_pct);
+    payload[4] = TO_MSB16((uint16_t)innov_mV);
+    payload[5] = TO_LSB16((uint16_t)innov_mV);
+    payload[6] = TO_MSB16(r0_0p01_mohm);
+    payload[7] = TO_LSB16(r0_0p01_mohm);
+
+    return canbus_send(canbus, CAN_ID_STD, AMS_ESTIMATOR_STATUS_CAN_ID, payload);
+}
+
 TaskHandle_t canbus_task_start(app_data_t *data)
 {
     TaskHandle_t handle = NULL;
@@ -299,6 +366,7 @@ void canbus_task_fn(void *arg)
             ret |= send_ecu_ams_voltages(canbus, data);
             ret |= send_ecu_ams_temps(canbus, data);
             ret |= send_ecu_ams_fans(canbus, data);
+            ret |= send_estimator_status(canbus, data);
 
             data->canbus_fault = (ret != HAL_OK);
             osDelayUntil(entry + (1000 / CAN_FREQ));

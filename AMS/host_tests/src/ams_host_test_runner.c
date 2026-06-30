@@ -96,11 +96,14 @@ uint16_t stm32f767z_adc_read(ADC_HandleTypeDef *hadc){ (void)hadc; return 2048; 
 #include "Core/Src/ext_drivers/imd.c"
 #include "Core/Src/ext_drivers/accumulator.c"
 #include "Core/Src/ext_drivers/canbus.c"
+#include "Core/Src/estimator/ams_estimator_lut.c"
+#include "Core/Src/estimator/ams_soc_ekf.c"
 #include "Core/Src/tasks/canbus_task.c"
 #include "Core/Src/tasks/adbms_task.c"
 #include "Core/Src/tasks/error_task.c"
 #include "Core/Src/tasks/fan_task.c"
 #include "Core/Src/tasks/current_task.c"
+#include "Core/Src/tasks/estimator_task.c"
 
 static uint16_t word_at(uint32_t frame, uint8_t word_index){ return ((uint16_t)tx_log[frame].data[word_index*2] << 8) | tx_log[frame].data[word_index*2+1]; }
 static int16_t code_for_volts(float v){ return (int16_t)((v / 0.000150f) - 10000.0f); }
@@ -208,6 +211,9 @@ static void run_one_fan_task_iteration(app_data_t *d){
 }
 static void run_one_current_task_iteration(app_data_t *d){
     if(setjmp(task_exit_jmp) == 0){ task_exit_after_delay_until = 1; current_task_fn(d); }
+}
+static void run_one_estimator_task_iteration(app_data_t *d){
+    if(setjmp(task_exit_jmp) == 0){ task_exit_after_delay_until = 1; estimator_task_fn(d); }
 }
 
 static void fill_nominal_pack(app_data_t *d, float base_v){
@@ -455,6 +461,316 @@ static void test_can_rx_filter_matrix(void){
     CHECK(app.board.charger.last_rx_tick == 7777u);
 }
 
+
+
+static float estimator_expected_voltage(const ams_ekf_config_t *cfg, float soc, float current_A, float temp_C, float r0_ohm){
+    float i_cell = current_A / cfg->parallel_cell_count;
+    return (float)cfg->series_group_count * (ams_p42a_ocv_v(soc, temp_C) - (r0_ohm * i_cell));
+}
+
+static void test_estimator_ra8m1_architecture_parity(void){
+    /*
+     * This guards the intended match to the working RA8M1 physics-only DAEKF:
+     * 3-state inner EKF, scalar outer R0 adaptation, adaptive R, feed-forward
+     * thermal observer, LUT OCV/R0/C1/tau1, and fixed R2/C2 slow branch.
+     */
+    CHECK(fabsf(AMS_EKF_INV_C2 - 8.3333333e-5f) < 1.0e-10f);
+    CHECK(fabsf(AMS_EKF_INV_TAU2 - 2.08333333e-2f) < 1.0e-8f);
+    CHECK(fabsf(AMS_EKF_INV_R2 - 250.0f) < 1.0e-4f);
+    CHECK(fabsf(AMS_EKF_INV_CC - 1.81818176e-2f) < 1.0e-8f);
+    CHECK(fabsf(AMS_EKF_INV_RCS - 6.66666687e-1f) < 1.0e-7f);
+    CHECK(fabsf(AMS_EKF_R0_MIN_OHM - 0.005f) < 1.0e-8f);
+    CHECK(fabsf(AMS_EKF_R0_MAX_OHM - 0.040f) < 1.0e-8f);
+
+    ams_ekf_config_t cfg;
+    ams_ekf_make_pack_config(&cfg);
+    cfg.r0_init_ohm = 0.20f;
+    ams_ekf_instance_t ekf;
+    ams_ekf_init(&ekf, &cfg);
+    CHECK(fabsf(ekf.r0_ohm - 0.040f) < 1.0e-7f);
+
+    cfg.r0_init_ohm = 0.0147f;
+    cfg.soc_init = 1.0f;
+    ams_ekf_init(&ekf, &cfg);
+
+    float v_nom = (float)cfg.series_group_count *
+                  (ams_p42a_ocv_v(ekf.soc, 25.0f) - (ekf.r0_ohm * 0.0f));
+    CHECK(ams_ekf_step(&ekf, 0.0f, v_nom, 25.0f, 0.1f));
+    CHECK(ekf.valid == 1u);
+    CHECK(ekf.soc >= 0.0f && ekf.soc <= 1.0f);
+    CHECK(isfinite(ekf.vp1_V));
+    CHECK(isfinite(ekf.vp2_V));
+    CHECK(isfinite(ekf.r_meas_V2));
+    CHECK(isfinite(ekf.t_core_C));
+}
+
+static void test_estimator_lut_and_config_matrix(void){
+    float prev_ocv = ams_p42a_ocv_v(0.0f, 25.0f);
+    CHECK(isfinite(prev_ocv));
+    for(int k=1; k<=100; k++){
+        float soc = (float)k / 100.0f;
+        float ocv = ams_p42a_ocv_v(soc, 25.0f);
+        CHECK(isfinite(ocv));
+        CHECK(ocv >= prev_ocv - 0.001f);
+        prev_ocv = ocv;
+    }
+    CHECK(ams_p42a_r0_ohm(0.5f, 25.0f) > 0.005f);
+    CHECK(ams_p42a_r0_ohm(0.5f, 25.0f) < 0.050f);
+    CHECK(ams_p42a_inv_c1(0.5f, 25.0f) > 0.0f);
+    CHECK(ams_p42a_neg_inv_tau1(0.5f, 25.0f) < 0.0f);
+    CHECK(ams_p42a_inv_r1_from_luts(0.0f, -0.1f) >= 0.0f);
+
+    ams_estimator_t est;
+    memset(&est, 0xA5, sizeof(est));
+    ams_estimator_init_default(&est);
+    CHECK(est.enabled == 1u);
+    CHECK(est.instance_count == 1u);
+    CHECK(est.inst[0].cfg.first_series_group == 0u);
+    CHECK(est.inst[0].cfg.series_group_count == 75u);
+
+    CHECK(ams_estimator_configure_segments(&est));
+    CHECK(est.instance_count == 5u);
+    for(uint8_t i=0; i<5u; i++){
+        CHECK(est.inst[i].cfg.first_series_group == (uint16_t)(15u * i));
+        CHECK(est.inst[i].cfg.series_group_count == 15u);
+        CHECK(est.inst[i].fault_flags == AMS_EKF_FAULT_NONE);
+    }
+
+    CHECK(ams_estimator_configure_even_split(&est, 10u));
+    CHECK(est.instance_count == 10u);
+    uint16_t first = 0u;
+    for(uint8_t i=0; i<10u; i++){
+        uint16_t expected_count = (i < 5u) ? 8u : 7u;
+        CHECK(est.inst[i].cfg.first_series_group == first);
+        CHECK(est.inst[i].cfg.series_group_count == expected_count);
+        first = (uint16_t)(first + expected_count);
+    }
+    CHECK(first == 75u);
+    CHECK(!ams_estimator_configure_even_split(&est, 0u));
+    CHECK(!ams_estimator_configure_even_split(&est, 11u));
+
+    ams_ekf_config_t bad;
+    ams_ekf_make_segment_config(&bad, 5u);
+    ams_ekf_instance_t ekf;
+    ams_ekf_init(&ekf, &bad);
+    CHECK((ekf.fault_flags & AMS_EKF_FAULT_BAD_CONFIG) != 0u);
+}
+
+static void test_estimator_step_faults_and_scalability(void){
+    ams_ekf_config_t cfg;
+    ams_ekf_instance_t ekf;
+    ams_ekf_make_pack_config(&cfg);
+    cfg.soc_init = 0.80f;
+    ams_ekf_init(&ekf, &cfg);
+    float v_nom = estimator_expected_voltage(&cfg, ekf.soc, 0.0f, 25.0f, ekf.r0_ohm);
+    CHECK(ams_ekf_step(&ekf, 0.0f, v_nom, 25.0f, 0.1f));
+    CHECK(ekf.valid == 1u);
+    CHECK(ekf.soc > 0.0f && ekf.soc <= 1.0f);
+    CHECK(isfinite(ekf.v_pred_V));
+
+    CHECK(!ams_ekf_step(&ekf, NAN, v_nom, 25.0f, 0.1f));
+    CHECK((ekf.fault_flags & AMS_EKF_FAULT_BAD_INPUT) != 0u);
+    CHECK(!ams_ekf_step(&ekf, 0.0f, 10.0f, 25.0f, 0.1f));
+    CHECK((ekf.fault_flags & AMS_EKF_FAULT_BAD_VOLTAGE) != 0u);
+    CHECK(!ams_ekf_step(&ekf, 2000.0f, v_nom, 25.0f, 0.1f));
+    CHECK((ekf.fault_flags & AMS_EKF_FAULT_BAD_CURRENT) != 0u);
+    CHECK(!ams_ekf_step(&ekf, 0.0f, v_nom, 130.0f, 0.1f));
+    CHECK((ekf.fault_flags & AMS_EKF_FAULT_BAD_TEMP) != 0u);
+
+    ams_ekf_init(&ekf, &cfg);
+    for(int k=0; k<200; k++){
+        float v = estimator_expected_voltage(&cfg, ekf.soc, 25.0f, 25.0f, ekf.r0_ohm);
+        CHECK(ams_ekf_step(&ekf, 25.0f, v, 25.0f, (k % 3 == 0) ? NAN : 0.1f));
+        CHECK(isfinite(ekf.soc));
+        CHECK(isfinite(ekf.r0_ohm));
+        CHECK(isfinite(ekf.t_core_C));
+        CHECK(ekf.r0_ohm >= 0.005f && ekf.r0_ohm <= 0.040f);
+    }
+    CHECK(ekf.step_count == 200u);
+    CHECK(ekf.soc >= 0.0f && ekf.soc <= 1.0f);
+
+    ams_estimator_t est;
+    ams_estimator_init_default(&est);
+    CHECK(ams_estimator_configure_even_split(&est, 10u));
+    for(uint8_t i=0; i<est.instance_count; i++){
+        ams_ekf_instance_t *inst = &est.inst[i];
+        float vv = estimator_expected_voltage(&inst->cfg, inst->soc, 10.0f, 25.0f, inst->r0_ohm);
+        CHECK(ams_ekf_step(inst, 10.0f, vv, 25.0f, 0.1f));
+        CHECK(inst->valid == 1u);
+    }
+    for(uint8_t i=0; i<est.instance_count; i++){
+        est.inst[i].soc = 0.50f + 0.01f * (float)i;
+        est.inst[i].r0_ohm = 0.010f + 0.001f * (float)i;
+        est.inst[i].t_core_C = 20.0f + (float)i;
+        est.inst[i].v_pred_V = (float)est.inst[i].cfg.series_group_count * 3.7f;
+        est.inst[i].innovation_V = 0.1f * (float)i;
+        est.inst[i].valid = 1u;
+    }
+    est.inst[6].fault_flags = AMS_EKF_FAULT_BAD_TEMP;
+    ams_estimator_refresh_summary(&est, AMS_ESTIMATOR_INPUT_HARDWARE, 999u);
+    CHECK((est.fault_flags & AMS_EKF_FAULT_BAD_TEMP) != 0u);
+    CHECK(est.pack_soc > 0.50f && est.pack_soc < 0.60f);
+    CHECK(est.pack_r0_ohm > 0.010f && est.pack_r0_ohm < 0.020f);
+    CHECK(fabsf(est.pack_v_pred_V - 277.5f) < 0.5f);
+    CHECK(est.pack_innovation_V > 4.0f && est.pack_innovation_V < 5.0f);
+}
+
+static void test_hil_parser_edge_cases(void){
+    static CAN_HandleTypeDef hcan;
+    init_fake_app(); app.board.canbus.hcan = &hcan;
+    memset(&fake_rx_hdr, 0, sizeof(fake_rx_hdr));
+    memset(fake_rx_data, 0xFF, sizeof(fake_rx_data));
+
+    fake_rx_hdr.IDE = CAN_ID_EXT; fake_rx_hdr.ExtId = AMS_HIL_CAN_ID_MEAS; fake_rx_hdr.DLC = 8;
+    HAL_CAN_RxFifo0MsgPendingCallback(&hcan);
+    CHECK(app.hil.meas.fresh == 0u);
+
+    fake_rx_hdr.IDE = CAN_ID_STD; fake_rx_hdr.StdId = AMS_HIL_CAN_ID_MEAS; fake_rx_hdr.DLC = 6;
+    HAL_CAN_RxFifo0MsgPendingCallback(&hcan);
+    CHECK(app.hil.meas.fresh == 0u);
+
+    fake_rx_hdr.DLC = 8;
+    fake_rx_data[0]=0x7B; fake_rx_data[1]=0x00; /* 314.88 V at 10 mV/count */
+    fake_rx_data[2]=0xFF; fake_rx_data[3]=0x38; /* -2.00 A at 10 mA/count */
+    fake_rx_data[4]=0x09; fake_rx_data[5]=0xC4; /* 25.00 C */
+    fake_rx_data[6]=3u; fake_tick=44u;
+    HAL_CAN_RxFifo0MsgPendingCallback(&hcan);
+    CHECK(app.hil.meas.fresh == 1u);
+    CHECK(app.hil.meas.last_rx_tick == 44u);
+    CHECK(fabsf(app.hil.meas.v_pack_V - 314.88f) < 0.02f);
+    CHECK(fabsf(app.hil.meas.i_pack_A + 2.00f) < 0.02f);
+
+    fake_rx_hdr.StdId = AMS_HIL_CAN_ID_SUMMARY; fake_rx_hdr.DLC = 8;
+    fake_rx_data[0]=0x0E; fake_rx_data[1]=0x10; /* 3.600 V */
+    fake_rx_data[2]=0x10; fake_rx_data[3]=0x04; /* 4.100 V */
+    fake_rx_data[4]=0x0A; fake_rx_data[5]=0x28; /* 26.00 C */
+    fake_rx_data[6]=0x09; fake_rx_data[7]=0xC4; /* 25.00 C */
+    fake_tick=55u;
+    HAL_CAN_RxFifo0MsgPendingCallback(&hcan);
+    CHECK(app.hil.summary.fresh == 1u);
+    CHECK(app.hil.summary.last_rx_tick == 55u);
+    CHECK(fabsf(app.hil.summary.v_min_V - 3.600f) < 0.002f);
+    CHECK(fabsf(app.hil.summary.v_max_V - 4.100f) < 0.002f);
+    CHECK(fabsf(app.hil.summary.t_max_C - 26.0f) < 0.02f);
+}
+
+static void test_estimator_task_hil_and_hardware_paths(void){
+    static CAN_HandleTypeDef hcan;
+    init_fake_app(); fill_nominal_pack(&app, 3.90f); app.board.canbus.hcan = &hcan;
+    app.current = 0.0f; fake_tick = 100u;
+    run_one_estimator_task_iteration(&app);
+    CHECK(app.estimator.input_source == AMS_ESTIMATOR_INPUT_HARDWARE);
+    CHECK(app.estimator.inst[0].valid == 1u);
+    CHECK(app.estimator_fault == false);
+    CHECK(app.estimator.pack_soc >= 0.0f && app.estimator.pack_soc <= 1.0f);
+
+    init_fake_app(); app.board.canbus.hcan = &hcan;
+    app.hil.meas.fresh = 1u;
+    app.hil.meas.last_rx_tick = 1000u;
+    app.hil.meas.v_pack_V = 310.0f;
+    app.hil.meas.i_pack_A = -5.0f;
+    app.hil.meas.t_surf_C = 24.0f;
+    fake_tick = 1100u;
+    run_one_estimator_task_iteration(&app);
+    CHECK(app.estimator.input_source == AMS_ESTIMATOR_INPUT_HIL_CAN);
+    CHECK(app.estimator.inst[0].valid == 1u);
+    CHECK((ams_estimator_status_flags(&app.estimator) & AMS_EKF_FLAG_HIL_SOURCE) != 0u);
+
+    init_fake_app(); app.board.canbus.hcan = &hcan;
+    app.hil.meas.fresh = 1u;
+    app.hil.meas.last_rx_tick = 1u;
+    app.hil.meas.v_pack_V = 310.0f;
+    app.hil.meas.i_pack_A = -5.0f;
+    app.hil.meas.t_surf_C = 24.0f;
+    fake_tick = 10000u;
+    run_one_estimator_task_iteration(&app);
+    CHECK(app.estimator.input_source == AMS_ESTIMATOR_INPUT_HARDWARE);
+    CHECK(app.estimator.inst[0].valid == 0u);
+    CHECK(app.estimator_fault == true);
+}
+
+static void test_estimator_status_packet_edges(void){
+    static CAN_HandleTypeDef hcan;
+    init_fake_app(); app.board.canbus.hcan = &hcan;
+    ams_estimator_init_default(&app.estimator);
+    tx_count = 0; tx_free_level = 3;
+    CHECK(send_estimator_status(&app.board.canbus, &app) == HAL_OK);
+    CHECK(tx_count == 0u);
+
+    app.estimator.inst[0].valid = 1u;
+    app.estimator.inst[0].soc = 0.4567f;
+    app.estimator.inst[0].innovation_V = -1.234f;
+    app.estimator.inst[0].r0_ohm = 0.01234f;
+    app.estimator.input_source = AMS_ESTIMATOR_INPUT_HARDWARE;
+    tx_count = 0;
+    CHECK(send_estimator_status(&app.board.canbus, &app) == HAL_OK);
+    CHECK(tx_count == 1u);
+    CHECK(tx_log[0].stdid == AMS_ESTIMATOR_STATUS_CAN_ID);
+    CHECK(tx_log[0].data[0] == 0u);
+    CHECK((tx_log[0].data[1] & AMS_EKF_FLAG_VALID) != 0u);
+    CHECK(word_at(0,1) == 4567u);
+    CHECK((int16_t)word_at(0,2) == -1234);
+    CHECK(word_at(0,3) == 1234u);
+
+    app.estimator.inst[0].soc = 10.0f;
+    app.estimator.inst[0].innovation_V = 1000.0f;
+    app.estimator.inst[0].r0_ohm = 10.0f;
+    tx_count = 0;
+    CHECK(send_estimator_status(&app.board.canbus, &app) == HAL_OK);
+    CHECK(word_at(0,1) == 65535u);
+    CHECK((int16_t)word_at(0,2) == INT16_MAX);
+    CHECK(word_at(0,3) == 65535u);
+}
+
+static void test_hil_parser_and_estimator_core(void){
+    static CAN_HandleTypeDef hcan;
+    init_fake_app(); app.board.canbus.hcan = &hcan;
+
+    memset(&fake_rx_hdr, 0, sizeof(fake_rx_hdr));
+    memset(fake_rx_data, 0, sizeof(fake_rx_data));
+    fake_rx_hdr.IDE = CAN_ID_STD; fake_rx_hdr.StdId = AMS_HIL_CAN_ID_MEAS; fake_rx_hdr.DLC = 8;
+    uint16_t v_10mV = 31500u; /* 315.00 V */
+    int16_t i_10mA = -1234;   /* -12.34 A */
+    int16_t t_cC = 2534;      /* 25.34 C */
+    fake_rx_data[0]=(uint8_t)(v_10mV>>8); fake_rx_data[1]=(uint8_t)v_10mV;
+    fake_rx_data[2]=(uint8_t)((uint16_t)i_10mA>>8); fake_rx_data[3]=(uint8_t)((uint16_t)i_10mA);
+    fake_rx_data[4]=(uint8_t)((uint16_t)t_cC>>8); fake_rx_data[5]=(uint8_t)((uint16_t)t_cC);
+    fake_rx_data[6]=77u; fake_tick=1234u;
+    HAL_CAN_RxFifo0MsgPendingCallback(&hcan);
+    CHECK(app.hil.meas.fresh == 1u);
+    CHECK(app.hil.meas.counter == 77u);
+    CHECK(fabsf(app.hil.meas.v_pack_V - 315.0f) < 0.02f);
+    CHECK(fabsf(app.hil.meas.i_pack_A + 12.34f) < 0.02f);
+    CHECK(fabsf(app.hil.meas.t_surf_C - 25.34f) < 0.02f);
+
+    fake_rx_hdr.StdId = AMS_HIL_CAN_ID_TRUTH; fake_rx_hdr.DLC = 8;
+    uint16_t soc_d2 = 9876u; int16_t tc_cC = 2601; uint32_t step = 0x00012345u;
+    fake_rx_data[0]=(uint8_t)(soc_d2>>8); fake_rx_data[1]=(uint8_t)soc_d2;
+    fake_rx_data[2]=(uint8_t)((uint16_t)tc_cC>>8); fake_rx_data[3]=(uint8_t)((uint16_t)tc_cC);
+    fake_rx_data[4]=78u; fake_rx_data[5]=(uint8_t)(step>>16); fake_rx_data[6]=(uint8_t)(step>>8); fake_rx_data[7]=(uint8_t)step;
+    HAL_CAN_RxFifo0MsgPendingCallback(&hcan);
+    CHECK(app.hil.truth.fresh == 1u);
+    CHECK(app.hil.truth.plant_step == step);
+    CHECK(fabsf(app.hil.truth.soc_true - 0.9876f) < 0.0002f);
+    CHECK(fabsf(app.hil.truth.t_core_C - 26.01f) < 0.02f);
+
+    ams_estimator_init_default(&app.estimator);
+    CHECK(app.estimator.instance_count == 1u);
+    CHECK(ams_ekf_step(&app.estimator.inst[0], app.hil.meas.i_pack_A, app.hil.meas.v_pack_V, app.hil.meas.t_surf_C, 0.1f));
+    ams_estimator_refresh_summary(&app.estimator, AMS_ESTIMATOR_INPUT_HIL_CAN, fake_tick);
+    CHECK(app.estimator.inst[0].valid == 1u);
+    CHECK(app.estimator.pack_soc >= 0.0f && app.estimator.pack_soc <= 1.0f);
+    CHECK(app.estimator.pack_r0_ohm >= 0.005f && app.estimator.pack_r0_ohm <= 0.040f);
+
+    tx_count = 0; tx_free_level = 3;
+    CHECK(send_estimator_status(&app.board.canbus, &app) == HAL_OK);
+    CHECK(tx_count == 1u);
+    CHECK(tx_log[0].ide == CAN_ID_STD);
+    CHECK(tx_log[0].stdid == AMS_ESTIMATOR_STATUS_CAN_ID);
+    CHECK((tx_log[0].data[1] & AMS_EKF_FLAG_VALID) != 0u);
+    CHECK((tx_log[0].data[1] & AMS_EKF_FLAG_HIL_SOURCE) != 0u);
+}
+
 static void test_charge_state_disable_matrix(void){
     static CAN_HandleTypeDef hcan;
     struct Case { bool hard_fault, voltage_fault, temp_fault, bms_state, hw, ot, input, sense, timeout; uint8_t disable; } cases[] = {
@@ -540,6 +856,13 @@ int main(void){
     test_can_telemetry_packets(); puts("PASS CAN telemetry packetization");
     test_telemetry_absent_segments_and_invalid_channels(); puts("PASS telemetry absent segments/invalid channels");
     test_charger_rx_and_tx(); puts("PASS charger RX/TX parse");
+    test_estimator_ra8m1_architecture_parity(); puts("PASS estimator RA8M1 architecture parity");
+    test_estimator_lut_and_config_matrix(); puts("PASS estimator LUT/config matrix");
+    test_estimator_step_faults_and_scalability(); puts("PASS estimator step faults/scalability");
+    test_hil_parser_edge_cases(); puts("PASS HIL parser edge cases");
+    test_hil_parser_and_estimator_core(); puts("PASS HIL parser and estimator core");
+    test_estimator_task_hil_and_hardware_paths(); puts("PASS estimator task HIL/hardware paths");
+    test_estimator_status_packet_edges(); puts("PASS estimator status packet edges");
     test_can_rx_filter_matrix(); puts("PASS CAN RX filter matrix");
     test_charge_state_disable_matrix(); puts("PASS charge-state disable matrix");
     test_fan_current_and_null_guards(); puts("PASS fan/current/null guards");

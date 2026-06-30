@@ -15,6 +15,7 @@
 #include "main.h"
 #include "board.h"
 #include "ext_drivers/accumulator.h"
+#include "estimator/ams_soc_ekf.h"
 
 #define VER_MAJOR 0
 #define VER_MINOR 1
@@ -28,6 +29,7 @@
 #define IMD_FREQ 10
 #define FAN_FREQ 5
 #define CAN_FREQ 2
+#define ESTIMATOR_FREQ 10
 
 // prios taken from DER24 defaults
 #define ERR_PRIO 17
@@ -38,6 +40,7 @@
 #define FAN_PRIO  7
 #define IMD_PRIO  6
 #define ADBMS_PRIO  9
+#define EST_PRIO 8
 
 #define ECU_CANBUS_ID 0x69u
 
@@ -79,6 +82,7 @@ typedef struct
 	bool fuse_fault;
 	bool temp_fault;
 	bool voltage_fault;
+	bool estimator_fault;
 
 	bool air_state;
 	bool imd_ok;
@@ -92,6 +96,8 @@ typedef struct
 
 	board_t board;
 	accumulator_t acc;
+	ams_estimator_t estimator;
+	ams_hil_input_t hil;
 
 	TaskHandle_t fan_task;
 	TaskHandle_t cli_task;
@@ -101,6 +107,7 @@ typedef struct
 	TaskHandle_t imd_task;
 	TaskHandle_t current_task;
 	TaskHandle_t adbms_task;
+	TaskHandle_t estimator_task;
 } app_data_t;
 
 void app_create();

@@ -18,6 +18,7 @@
 #include "tasks/imd_task.h"
 #include "tasks/current_task.h"
 #include <tasks/adbms_task.h>
+#include "tasks/estimator_task.h"
 
 app_data_t app = {0};
 
@@ -32,6 +33,7 @@ void app_create()
 	app.fuse_fault = false;
 	app.temp_fault = false;
 	app.voltage_fault = false;
+	app.estimator_fault = false;
 
     app.charger_fault = false;
     app.bms_state     = false;
@@ -68,6 +70,7 @@ void app_create()
 //	app.imd_task = imd_task_start(&app);
 	app.current_task = current_task_start(&app);
 	app.adbms_task = adbms_task_start(&app);
+	app.estimator_task = estimator_task_start(&app);
 
 	assert(app.cli_task != NULL);
 	assert(app.fan_task != NULL);
@@ -75,13 +78,15 @@ void app_create()
 	assert(app.canbus_task != NULL);
 	assert(app.current_task != NULL);
 	assert(app.adbms_task != NULL);
+	assert(app.estimator_task != NULL);
 
 	if((app.cli_task == NULL) ||
 	   (app.fan_task == NULL) ||
 	   (app.error_task == NULL) ||
 	   (app.canbus_task == NULL) ||
 	   (app.current_task == NULL) ||
-	   (app.adbms_task == NULL))
+	   (app.adbms_task == NULL) ||
+	   (app.estimator_task == NULL))
 	{
 		set_bms(0);
 		return;
