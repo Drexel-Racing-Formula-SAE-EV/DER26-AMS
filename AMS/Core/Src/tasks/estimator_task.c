@@ -207,8 +207,7 @@ void estimator_task_fn(void *argument)
 
     ams_estimator_init_default(&data->estimator);
 
-    uint32_t entry = osKernelGetTickCount();
-
+    uint32_t entry;
     for (;;)
     {
         entry = osKernelGetTickCount();
