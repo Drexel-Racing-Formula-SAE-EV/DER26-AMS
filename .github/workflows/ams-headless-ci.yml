@@ -1,0 +1,64 @@
+﻿name: AMS Headless CI
+
+on:
+  pull_request:
+    branches:
+      - main
+      - develop
+      - "feature/**"
+      - clean+fix+testHarness
+  push:
+    branches:
+      - main
+      - develop
+      - "feature/**"
+      - clean+fix+testHarness
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ams-headless-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  host-tests:
+    name: AMS host and unit tests
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: AMS/host_tests
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install host tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential gcc make
+
+      - name: Run unit tests
+        run: |
+          make CC=gcc clean
+          make CC=gcc unit | tee unit_test_output.txt
+
+      - name: Run comprehensive host tests
+        run: |
+          make CC=gcc test | tee host_test_output.txt
+
+      - name: Run GCC analyzer
+        run: |
+          make CC=gcc analyze
+
+      - name: Upload host test output
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ams-host-test-output
+          path: |
+            AMS/host_tests/unit_test_output.txt
+            AMS/host_tests/host_test_output.txt
+          if-no-files-found: warn

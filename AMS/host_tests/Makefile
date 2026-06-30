@@ -18,6 +18,11 @@ CLANG ?= clang
 
 SRC := src/ams_host_test_runner.c
 BIN := $(BUILD_DIR)/ams_host_tests
+UNIT_SRC := unit/ams_unit_test_runner.c
+UNIT_BIN := $(BUILD_DIR)/ams_unit_tests
+ESTIMATOR_SRC := \
+	$(AMS_ROOT)/Core/Src/estimator/ams_soc_ekf.c \
+	$(AMS_ROOT)/Core/Src/estimator/ams_estimator_lut.c
 
 COMMON_DEFS := \
 	-DSTM32F767xx \
@@ -49,13 +54,15 @@ WARN := \
 CFLAGS_COMMON := -std=c11 -g -O0 $(WARN) $(COMMON_DEFS) $(INC)
 LDLIBS := -lm
 
-.PHONY: help check-root compile test asan ubsan analyze clang-analyze clean list make-build-dir
+.PHONY: help check-root compile unit test ci asan ubsan analyze clang-analyze clean list make-build-dir
 
 help:
 	@echo "DER26 AMS host test harness"
 	@echo ""
 	@echo "Targets:"
-	@echo "  make test          Build and run normal host tests"
+	@echo "  make unit          Build and run isolated unit tests"
+	@echo "  make test          Build and run comprehensive host tests"
+	@echo "  make ci            Run unit, comprehensive, and analyzer targets"
 	@echo "  make asan          Build and run with AddressSanitizer + UBSan"
 	@echo "  make ubsan         Build and run with UBSan only"
 	@echo "  make analyze       Run GCC static analyzer on the harness TU"
@@ -70,12 +77,20 @@ check-root:
 	@test -d "$(AMS_ROOT)/Core/Inc" || (echo "ERROR: AMS_ROOT does not point to AMS repo root: $(AMS_ROOT)"; exit 2)
 	@test -f "$(AMS_ROOT)/Core/Src/tasks/canbus_task.c" || (echo "ERROR: missing Core/Src/tasks/canbus_task.c under AMS_ROOT"; exit 2)
 	@test -f "$(AMS_ROOT)/Core/Src/ext_drivers/accumulator.c" || (echo "ERROR: missing Core/Src/ext_drivers/accumulator.c under AMS_ROOT"; exit 2)
+	@test -f "$(AMS_ROOT)/Core/Src/estimator/ams_soc_ekf.c" || (echo "ERROR: missing Core/Src/estimator/ams_soc_ekf.c under AMS_ROOT"; exit 2)
+	@test -f "$(AMS_ROOT)/Core/Src/estimator/ams_estimator_lut.c" || (echo "ERROR: missing Core/Src/estimator/ams_estimator_lut.c under AMS_ROOT"; exit 2)
 
 make-build-dir:
 	@mkdir -p "$(BUILD_DIR)"
 
 compile: check-root make-build-dir
 	$(CC) $(CFLAGS_COMMON) $(SRC) -o $(BIN) $(LDLIBS)
+
+unit: check-root make-build-dir
+	$(CC) $(CFLAGS_COMMON) $(UNIT_SRC) $(ESTIMATOR_SRC) -o $(UNIT_BIN) $(LDLIBS)
+	$(UNIT_BIN)
+
+ci: unit test analyze
 
 # Normal run: catches logic regressions and compile/link problems.
 test: compile
