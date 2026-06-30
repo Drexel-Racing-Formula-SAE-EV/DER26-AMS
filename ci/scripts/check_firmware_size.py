@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 
 import argparse
 import subprocess
@@ -13,14 +13,24 @@ def parse_size(elf: Path) -> dict[str, int]:
         capture_output=True,
     )
 
-    lines = result.stdout.strip().splitlines()
+    lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
     if len(lines) < 2:
-        raise RuntimeError("Unexpected arm-none-eabi-size output")
+        raise RuntimeError(f"Unexpected arm-none-eabi-size output: {result.stdout!r}")
 
     header = lines[0].split()
     values = lines[1].split()
 
-    return {k: int(v, 16) if k == "hex" else int(v) for k, v in zip(header, values)}
+    parsed = {}
+
+    for key, value in zip(header, values):
+        if key in ("text", "data", "bss", "dec"):
+            parsed[key] = int(value)
+
+    missing = [key for key in ("text", "data", "bss") if key not in parsed]
+    if missing:
+        raise RuntimeError(f"Missing size fields {missing} from output: {result.stdout!r}")
+
+    return parsed
 
 
 def main() -> int:
@@ -47,7 +57,11 @@ def main() -> int:
             print(f"ERROR: {name} exceeds limit")
             failed = True
 
-    return 1 if failed else 0
+    if failed:
+        return 1
+
+    print("Firmware size check passed.")
+    return 0
 
 
 if __name__ == "__main__":
