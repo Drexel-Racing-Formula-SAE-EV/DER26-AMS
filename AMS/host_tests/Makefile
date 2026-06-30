@@ -1,4 +1,4 @@
-# DER26 AMS reusable host-side test harness
+﻿# DER26 AMS reusable host-side test harness
 #
 # Intended location:
 #   <AMS repo root>/host_tests/Makefile
@@ -80,6 +80,9 @@ check-root:
 	@test -f "$(AMS_ROOT)/Core/Src/estimator/ams_soc_ekf.c" || (echo "ERROR: missing Core/Src/estimator/ams_soc_ekf.c under AMS_ROOT"; exit 2)
 	@test -f "$(AMS_ROOT)/Core/Src/estimator/ams_estimator_lut.c" || (echo "ERROR: missing Core/Src/estimator/ams_estimator_lut.c under AMS_ROOT"; exit 2)
 
+
+build:
+	mkdir -p $(BUILD_DIR)
 make-build-dir:
 	@mkdir -p "$(BUILD_DIR)"
 
