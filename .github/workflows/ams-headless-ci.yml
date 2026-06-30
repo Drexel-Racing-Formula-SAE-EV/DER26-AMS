@@ -1,4 +1,4 @@
-﻿name: AMS Headless CI
+name: AMS Headless CI
 
 on:
   pull_request:
@@ -23,9 +23,24 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  host-tests:
-    name: AMS host and unit tests
+  repo-checks:
+    name: Repo checks
     runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Check project structure
+        run: bash ci/scripts/check_project_structure.sh
+
+      - name: Check repo hygiene
+        run: bash ci/scripts/check_repo_hygiene.sh
+
+  host-tests:
+    name: AMS unit and host tests
+    runs-on: ubuntu-latest
+    needs: repo-checks
 
     defaults:
       run:
@@ -49,10 +64,6 @@ jobs:
         run: |
           make CC=gcc test | tee host_test_output.txt
 
-      - name: Run GCC analyzer
-        run: |
-          make CC=gcc analyze
-
       - name: Upload host test output
         uses: actions/upload-artifact@v4
         if: always()
@@ -61,4 +72,69 @@ jobs:
           path: |
             AMS/host_tests/unit_test_output.txt
             AMS/host_tests/host_test_output.txt
+          if-no-files-found: warn
+
+  gcc-analyzer:
+    name: GCC analyzer
+    runs-on: ubuntu-latest
+    needs: repo-checks
+
+    defaults:
+      run:
+        working-directory: AMS/host_tests
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install analyzer tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential gcc make
+
+      - name: Run GCC analyzer
+        run: |
+          make CC=gcc clean
+          make CC=gcc analyze
+
+  stm32-headless-build:
+    name: STM32 headless ARM-GCC build
+    runs-on: ubuntu-latest
+    needs:
+      - host-tests
+      - gcc-analyzer
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install ARM GCC toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc-arm-none-eabi binutils-arm-none-eabi libnewlib-arm-none-eabi make python3
+
+      - name: Build AMS firmware headlessly
+        run: bash ci/stm32/build_ams_headless_gcc.sh
+
+      - name: Generate firmware size report
+        run: |
+          mkdir -p ci_artifacts
+          python3 ci/scripts/firmware_size_report.py --elf AMS/build/DER26-AMS.elf --out ci_artifacts/firmware_size_report.md
+
+      - name: Check firmware size limits
+        run: |
+          python3 ci/scripts/check_firmware_size.py --elf AMS/build/DER26-AMS.elf --max-text 180000 --max-data 8192 --max-bss 65536
+
+      - name: Upload STM32 firmware artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stm32-ams-headless-build
+          path: |
+            AMS/build/DER26-AMS.elf
+            AMS/build/DER26-AMS.hex
+            AMS/build/DER26-AMS.bin
+            AMS/build/DER26-AMS.map
+            AMS/build/DER26-AMS.list
+            ci_artifacts/firmware_size_report.md
           if-no-files-found: warn

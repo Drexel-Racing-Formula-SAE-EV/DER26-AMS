@@ -28,3 +28,6 @@ HiL/**/*.asv
 HiL/**/*.autosave
 HiL/**/codegen/
 HiL/**/*.log
+# CI/headless build outputs
+AMS/build/
+ci_artifacts/
