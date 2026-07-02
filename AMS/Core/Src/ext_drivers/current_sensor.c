@@ -162,8 +162,9 @@ float current_sensor_convert(current_sensor_t *dev)
         return 0.0f;
     }
 
-    if(((dev->count_high_fresh != dev->count_low_fresh) ||
-        (!dev->last_read_ok && (dev->count_high_fresh || dev->count_low_fresh))))
+    if((!dev->last_read_ok) ||
+       (!dev->count_high_fresh) ||
+       (!dev->count_low_fresh))
     {
         current_sensor_set_invalid(dev, CURRENT_SENSOR_REASON_ADC_READ);
         return dev->current;

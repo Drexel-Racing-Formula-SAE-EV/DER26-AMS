@@ -413,7 +413,9 @@ static void MX_SPI6_Init(void)
   hspi6.Init.Mode = SPI_MODE_MASTER;
   hspi6.Init.Direction = SPI_DIRECTION_2LINES;
   hspi6.Init.DataSize = SPI_DATASIZE_8BIT;
-  hspi6.Init.CLKPolarity = SPI_POLARITY_LOW;
+  /* ADBMS6830 isoSPI interface supports SPI mode 0 or mode 3.
+     Use mode 3 for bring-up to avoid the previous invalid mode-1 setup. */
+  hspi6.Init.CLKPolarity = SPI_POLARITY_HIGH;
   hspi6.Init.CLKPhase = SPI_PHASE_2EDGE;
   hspi6.Init.NSS = SPI_NSS_SOFT;
   hspi6.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_256;
@@ -800,7 +802,10 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOD_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOE, CS_A_Pin|CS_B_Pin|BMS_OK_Pin, GPIO_PIN_RESET);
+  /* CS lines are active low. Keep both isoSPI chip-selects deselected
+     immediately at GPIO init; BMS_OK remains low until safety checks pass. */
+  HAL_GPIO_WritePin(GPIOE, CS_A_Pin|CS_B_Pin, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(GPIOE, BMS_OK_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pins : CS_A_Pin CS_B_Pin BMS_OK_Pin */
   GPIO_InitStruct.Pin = CS_A_Pin|CS_B_Pin|BMS_OK_Pin;

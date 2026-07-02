@@ -13,6 +13,8 @@
 #include "estimator/ams_estimator_lut.h"
 #include "ext_drivers/current_sensor.h"
 #include "ext_drivers/stm32f767z.h"
+#include "ext_drivers/adbms6830_functions.h"
+#include "ext_drivers/voltage_fault.h"
 
 #include <math.h>
 #include <stdbool.h>
@@ -59,8 +61,90 @@ uint16_t stm32f767z_adc_read(ADC_HandleTypeDef *hadc)
     return stm32f767z_adc_read_checked(hadc, 5u).count;
 }
 
+
+static uint8_t unit_spi_last_tx[BUFSZ];
+static uint8_t unit_spi_last_txrx_tx[BUFSZ];
+static uint8_t unit_spi_txrx_response[BUFSZ];
+static uint16_t unit_spi_last_tx_len = 0u;
+static uint16_t unit_spi_last_txrx_len = 0u;
+static uint32_t unit_spi_tx_calls = 0u;
+static uint32_t unit_spi_txrx_calls = 0u;
+static uint32_t unit_gpio_write_calls = 0u;
+static GPIO_PinState unit_gpio_states[64];
+static HAL_StatusTypeDef unit_spi_tx_status = HAL_OK;
+static HAL_StatusTypeDef unit_spi_txrx_status = HAL_OK;
+
+static void unit_spi_reset(void)
+{
+    memset(unit_spi_last_tx, 0, sizeof(unit_spi_last_tx));
+    memset(unit_spi_last_txrx_tx, 0, sizeof(unit_spi_last_txrx_tx));
+    memset(unit_spi_txrx_response, 0, sizeof(unit_spi_txrx_response));
+    memset(unit_gpio_states, 0, sizeof(unit_gpio_states));
+    unit_spi_last_tx_len = 0u;
+    unit_spi_last_txrx_len = 0u;
+    unit_spi_tx_calls = 0u;
+    unit_spi_txrx_calls = 0u;
+    unit_gpio_write_calls = 0u;
+    unit_spi_tx_status = HAL_OK;
+    unit_spi_txrx_status = HAL_OK;
+}
+
+HAL_StatusTypeDef HAL_SPI_Transmit(SPI_HandleTypeDef *hspi, uint8_t *pData, uint16_t Size, uint32_t Timeout)
+{
+    (void)Timeout;
+    if((hspi == NULL) || (pData == NULL) || (Size > BUFSZ))
+    {
+        return HAL_ERROR;
+    }
+
+    memcpy(unit_spi_last_tx, pData, Size);
+    unit_spi_last_tx_len = Size;
+    unit_spi_tx_calls++;
+    return unit_spi_tx_status;
+}
+
+HAL_StatusTypeDef HAL_SPI_TransmitReceive(SPI_HandleTypeDef *hspi,
+                                           uint8_t *pTxData,
+                                           uint8_t *pRxData,
+                                           uint16_t Size,
+                                           uint32_t Timeout)
+{
+    (void)Timeout;
+    if((hspi == NULL) || (pTxData == NULL) || (pRxData == NULL) || (Size > BUFSZ))
+    {
+        return HAL_ERROR;
+    }
+
+    memcpy(unit_spi_last_txrx_tx, pTxData, Size);
+    unit_spi_last_txrx_len = Size;
+    unit_spi_txrx_calls++;
+    memcpy(pRxData, unit_spi_txrx_response, Size);
+    return unit_spi_txrx_status;
+}
+
+void HAL_GPIO_WritePin(GPIO_TypeDef *GPIOx, uint16_t GPIO_Pin, GPIO_PinState PinState)
+{
+    (void)GPIOx;
+    if(GPIO_Pin < (uint16_t)(sizeof(unit_gpio_states) / sizeof(unit_gpio_states[0])))
+    {
+        unit_gpio_states[GPIO_Pin] = PinState;
+    }
+    unit_gpio_write_calls++;
+}
+
 #include "Core/Src/ext_drivers/current_sensor.c"
 #include "Core/Src/ext_drivers/current_fault.c"
+#include "Core/Src/ext_drivers/voltage_fault.c"
+#if defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-variable"
+#pragma GCC diagnostic ignored "-Wimplicit-fallthrough"
+#endif
+#include "Core/Src/ext_drivers/adbms_shared.c"
+#include "Core/Src/ext_drivers/adbms6830.c"
+#if defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
 
 #define TEST_EPS_SMALL 1.0e-5f
 #define TEST_EPS_MED   1.0e-3f
@@ -471,6 +555,14 @@ static void unit_adc_set_status_sequence(HAL_StatusTypeDef high_status, HAL_Stat
     unit_adc_read_index = 0u;
 }
 
+
+static void unit_current_sensor_mark_fresh(current_sensor_t *sensor)
+{
+    sensor->last_read_ok = true;
+    sensor->count_high_fresh = true;
+    sensor->count_low_fresh = true;
+}
+
 static void test_current_sensor_conversion_zero_and_range_selection(void)
 {
     current_sensor_t sensor = {0};
@@ -478,6 +570,7 @@ static void test_current_sensor_conversion_zero_and_range_selection(void)
 
     sensor.count_high = unit_adc_count_for_sensor_voltage(2.5f);
     sensor.count_low = unit_adc_count_for_sensor_voltage(2.5f);
+    unit_current_sensor_mark_fresh(&sensor);
     current = current_sensor_convert(&sensor);
 
     EXPECT_TRUE(sensor.current_valid);
@@ -490,6 +583,7 @@ static void test_current_sensor_conversion_zero_and_range_selection(void)
     sensor = (current_sensor_t){0};
     sensor.count_high = unit_adc_count_for_sensor_voltage(2.55f);
     sensor.count_low = unit_adc_count_for_sensor_voltage(3.3f);
+    unit_current_sensor_mark_fresh(&sensor);
     current = current_sensor_convert(&sensor);
 
     EXPECT_TRUE(sensor.current_valid);
@@ -501,6 +595,7 @@ static void test_current_sensor_conversion_zero_and_range_selection(void)
     sensor = (current_sensor_t){0};
     sensor.count_high = unit_adc_count_for_sensor_voltage(2.65f);
     sensor.count_low = unit_adc_count_for_sensor_voltage(4.75f);
+    unit_current_sensor_mark_fresh(&sensor);
     current = current_sensor_convert(&sensor);
 
     EXPECT_TRUE(sensor.current_valid);
@@ -514,6 +609,7 @@ static void test_current_sensor_invalid_conditions(void)
 
     sensor.count_high = unit_adc_count_for_sensor_voltage(4.75f);
     sensor.count_low = unit_adc_count_for_sensor_voltage(4.75f);
+    unit_current_sensor_mark_fresh(&sensor);
     (void)current_sensor_convert(&sensor);
     EXPECT_FALSE(sensor.current_valid);
     EXPECT_TRUE(sensor.reason == CURRENT_SENSOR_REASON_SENSOR_SATURATION);
@@ -521,6 +617,7 @@ static void test_current_sensor_invalid_conditions(void)
     sensor = (current_sensor_t){0};
     sensor.count_high = unit_adc_count_for_sensor_voltage(2.5f);
     sensor.count_low = unit_adc_count_for_sensor_voltage(3.3f);
+    unit_current_sensor_mark_fresh(&sensor);
     (void)current_sensor_convert(&sensor);
     EXPECT_FALSE(sensor.current_valid);
     EXPECT_TRUE(sensor.reason == CURRENT_SENSOR_REASON_CHANNEL_MISMATCH);
@@ -528,9 +625,20 @@ static void test_current_sensor_invalid_conditions(void)
     sensor = (current_sensor_t){0};
     sensor.count_high = 3900u;
     sensor.count_low = unit_adc_count_for_sensor_voltage(2.5f);
+    unit_current_sensor_mark_fresh(&sensor);
     (void)current_sensor_convert(&sensor);
     EXPECT_FALSE(sensor.current_valid);
     EXPECT_TRUE(sensor.reason == CURRENT_SENSOR_REASON_ADC_IMPLAUSIBLE);
+
+    sensor = (current_sensor_t){0};
+    sensor.count_high = unit_adc_count_for_sensor_voltage(2.5f);
+    sensor.count_low = unit_adc_count_for_sensor_voltage(2.5f);
+    sensor.last_read_ok = false;
+    sensor.count_high_fresh = true;
+    sensor.count_low_fresh = false;
+    (void)current_sensor_convert(&sensor);
+    EXPECT_FALSE(sensor.current_valid);
+    EXPECT_TRUE(sensor.reason == CURRENT_SENSOR_REASON_ADC_READ);
 
     EXPECT_TRUE(strcmp(current_sensor_reason_str(CURRENT_SENSOR_REASON_ADC_READ), "adc_read") == 0);
     EXPECT_TRUE(strcmp(current_sensor_range_str(CURRENT_SENSOR_RANGE_50A), "50A") == 0);
@@ -635,6 +743,402 @@ static void test_current_fault_policy(void)
     EXPECT_TRUE(strcmp(current_fault_mode_str(CURRENT_FAULT_MODE_DRIVE), "drive") == 0);
 }
 
+
+static void test_current_sensor_requires_fresh_pair_and_channel_mapping(void)
+{
+    current_sensor_t sensor = {0};
+
+    sensor.count_high = unit_adc_count_for_sensor_voltage(2.5625f); /* 25A on 800A channel */
+    sensor.count_low = unit_adc_count_for_sensor_voltage(3.5000f);  /* 25A on 50A channel */
+    sensor.last_read_ok = true;
+    sensor.count_high_fresh = true;
+    sensor.count_low_fresh = false;
+    (void)current_sensor_convert(&sensor);
+    EXPECT_FALSE(sensor.current_valid);
+    EXPECT_TRUE(sensor.reason == CURRENT_SENSOR_REASON_ADC_READ);
+
+    sensor = (current_sensor_t){0};
+    sensor.count_high = unit_adc_count_for_sensor_voltage(2.5625f);
+    sensor.count_low = unit_adc_count_for_sensor_voltage(3.5000f);
+    unit_current_sensor_mark_fresh(&sensor);
+    (void)current_sensor_convert(&sensor);
+    EXPECT_TRUE(sensor.current_valid);
+    EXPECT_TRUE(sensor.selected_range == CURRENT_SENSOR_RANGE_50A);
+    EXPECT_NEAR(sensor.current_50a, 25.0f, 0.30f);
+    EXPECT_NEAR(sensor.current_800a, 25.0f, 1.00f);
+    EXPECT_NEAR(sensor.current, 25.0f, 0.30f);
+
+    sensor = (current_sensor_t){0};
+    sensor.count_high = unit_adc_count_for_sensor_voltage(2.7000f); /* 80A on 800A channel */
+    sensor.count_low = unit_adc_count_for_sensor_voltage(4.7500f);  /* 50A channel saturated */
+    unit_current_sensor_mark_fresh(&sensor);
+    (void)current_sensor_convert(&sensor);
+    EXPECT_TRUE(sensor.current_valid);
+    EXPECT_TRUE(sensor.selected_range == CURRENT_SENSOR_RANGE_800A);
+    EXPECT_NEAR(sensor.current, 80.0f, 1.50f);
+}
+
+static void test_current_fault_threshold_edges_and_recovery(void)
+{
+    current_fault_state_t fault;
+
+    current_fault_init(&fault);
+    current_fault_update(&fault,
+                         CURRENT_FAULT_MODE_DRIVE,
+                         75.0f,
+                         true,
+                         CURRENT_SENSOR_REASON_OK,
+                         20u);
+    EXPECT_TRUE(fault.warning);
+    EXPECT_FALSE(fault.pending);
+    EXPECT_FALSE(fault.confirmed);
+    EXPECT_TRUE(fault.reason == CURRENT_FAULT_REASON_DISCHARGE_WARNING);
+
+    current_fault_update(&fault,
+                         CURRENT_FAULT_MODE_DRIVE,
+                         0.0f,
+                         true,
+                         CURRENT_SENSOR_REASON_OK,
+                         20u);
+    EXPECT_FALSE(fault.warning);
+    EXPECT_FALSE(fault.pending);
+    EXPECT_FALSE(fault.confirmed);
+    EXPECT_FALSE(fault.latched);
+
+    current_fault_init(&fault);
+    for(uint8_t i = 0u; i < 4u; i++)
+    {
+        current_fault_update(&fault,
+                             CURRENT_FAULT_MODE_DRIVE,
+                             125.0f,
+                             true,
+                             CURRENT_SENSOR_REASON_OK,
+                             20u);
+    }
+    EXPECT_TRUE(fault.pending);
+    EXPECT_FALSE(fault.confirmed);
+    current_fault_update(&fault,
+                         CURRENT_FAULT_MODE_DRIVE,
+                         125.0f,
+                         true,
+                         CURRENT_SENSOR_REASON_OK,
+                         20u);
+    EXPECT_TRUE(fault.confirmed);
+    EXPECT_TRUE(fault.latched);
+    EXPECT_TRUE(fault.latched_reason == CURRENT_FAULT_REASON_DISCHARGE_FAST_OVERCURRENT);
+
+    current_fault_reset_latch(&fault);
+    EXPECT_FALSE(fault.latched);
+    EXPECT_TRUE(fault.latched_reason == CURRENT_FAULT_REASON_NONE);
+
+    current_fault_init(&fault);
+    for(uint8_t i = 0u; i < 25u; i++)
+    {
+        current_fault_update(&fault,
+                             CURRENT_FAULT_MODE_CHARGE,
+                             -12.5f,
+                             true,
+                             CURRENT_SENSOR_REASON_OK,
+                             20u);
+    }
+    EXPECT_TRUE(fault.confirmed);
+    EXPECT_TRUE(fault.latched_reason == CURRENT_FAULT_REASON_CHARGE_OVERCURRENT);
+
+    current_fault_init(&fault);
+    for(uint8_t i = 0u; i < 25u; i++)
+    {
+        current_fault_update(&fault,
+                             CURRENT_FAULT_MODE_DRIVE,
+                             -26.0f,
+                             true,
+                             CURRENT_SENSOR_REASON_OK,
+                             20u);
+    }
+    EXPECT_TRUE(fault.warning);
+    EXPECT_FALSE(fault.confirmed);
+    EXPECT_FALSE(fault.latched);
+    EXPECT_TRUE(fault.reason == CURRENT_FAULT_REASON_REGEN_UNEXPECTED);
+}
+
+static void unit_fill_voltage_acc(accumulator_t *acc,
+                                  uint16_t min_mv,
+                                  uint16_t max_mv,
+                                  bool startup_done,
+                                  bool full_usable,
+                                  bool full_updated)
+{
+    if(acc == NULL)
+    {
+        return;
+    }
+
+    memset(acc, 0, sizeof(*acc));
+    acc->voltage_startup_scan_complete = startup_done;
+    acc->voltage_full_usable = full_usable;
+    acc->voltage_full_updated = full_updated;
+    acc->usable_voltage_count = full_usable ? AMS_EXPECTED_CELL_COUNT : (AMS_EXPECTED_CELL_COUNT - 1u);
+    acc->updated_voltage_count = full_updated ? AMS_EXPECTED_CELL_COUNT : (AMS_EXPECTED_CELL_COUNT - 1u);
+    acc->max_voltage_mv = max_mv;
+    acc->min_voltage_mv = min_mv;
+    acc->max_voltage_seg = 2u;
+    acc->max_voltage_cell = 7u;
+    acc->min_voltage_seg = 4u;
+    acc->min_voltage_cell = 14u;
+}
+
+static void test_voltage_fault_thresholds_latch_and_reset(void)
+{
+    voltage_fault_state_t vf;
+    accumulator_t v_acc;
+
+    voltage_fault_init(&vf);
+    unit_fill_voltage_acc(&v_acc, 3300u, 4149u, true, true, true);
+    voltage_fault_update(&vf, &v_acc);
+    EXPECT_TRUE(vf.voltage_valid);
+    EXPECT_FALSE(vf.warning);
+    EXPECT_FALSE(vf.confirmed);
+    EXPECT_TRUE(vf.reason == VOLTAGE_FAULT_REASON_NONE);
+
+    unit_fill_voltage_acc(&v_acc, 3300u, CELL_OV_WARN_MV, true, true, true);
+    voltage_fault_update(&vf, &v_acc);
+    EXPECT_TRUE(vf.warning);
+    EXPECT_FALSE(vf.charge_stop);
+    EXPECT_TRUE(vf.reason == VOLTAGE_FAULT_REASON_OV_WARNING);
+
+    unit_fill_voltage_acc(&v_acc, 3300u, CELL_CHARGE_STOP_MV, true, true, true);
+    voltage_fault_update(&vf, &v_acc);
+    EXPECT_TRUE(vf.warning);
+    EXPECT_TRUE(vf.charge_stop);
+    EXPECT_FALSE(vf.confirmed);
+    EXPECT_TRUE(vf.reason == VOLTAGE_FAULT_REASON_CHARGE_STOP);
+
+    unit_fill_voltage_acc(&v_acc, 3300u, CELL_OV_HARD_MV, true, true, true);
+    voltage_fault_update(&vf, &v_acc);
+    EXPECT_TRUE(vf.confirmed);
+    EXPECT_TRUE(vf.latched);
+    EXPECT_TRUE(vf.overvoltage_fault);
+    EXPECT_TRUE(vf.latched_reason == VOLTAGE_FAULT_REASON_OV_HARD);
+    EXPECT_TRUE(vf.max_cell_segment == 2u);
+    EXPECT_TRUE(vf.max_cell_index == 7u);
+
+    voltage_fault_reset_latch(&vf);
+    EXPECT_FALSE(vf.latched);
+    EXPECT_TRUE(vf.latched_reason == VOLTAGE_FAULT_REASON_NONE);
+
+    unit_fill_voltage_acc(&v_acc, 3300u, CELL_OV_SEVERE_MV, true, true, true);
+    voltage_fault_update(&vf, &v_acc);
+    EXPECT_TRUE(vf.latched_reason == VOLTAGE_FAULT_REASON_OV_SEVERE);
+
+    voltage_fault_reset_latch(&vf);
+    unit_fill_voltage_acc(&v_acc, CELL_UV_SOFT_MV, 4100u, true, true, true);
+    voltage_fault_update(&vf, &v_acc);
+    EXPECT_TRUE(vf.warning);
+    EXPECT_FALSE(vf.confirmed);
+    EXPECT_TRUE(vf.reason == VOLTAGE_FAULT_REASON_UV_SOFT);
+
+    unit_fill_voltage_acc(&v_acc, CELL_UV_HARD_MV, 4100u, true, true, true);
+    voltage_fault_update(&vf, &v_acc);
+    EXPECT_TRUE(vf.confirmed);
+    EXPECT_TRUE(vf.undervoltage_fault);
+    EXPECT_TRUE(vf.latched_reason == VOLTAGE_FAULT_REASON_UV_HARD);
+
+    voltage_fault_reset_latch(&vf);
+    unit_fill_voltage_acc(&v_acc, CELL_UV_SEVERE_MV, 4100u, true, true, true);
+    voltage_fault_update(&vf, &v_acc);
+    EXPECT_TRUE(vf.latched_reason == VOLTAGE_FAULT_REASON_UV_SEVERE);
+}
+
+static void test_voltage_fault_read_failure_precedence_and_strings(void)
+{
+    voltage_fault_state_t vf;
+    accumulator_t v_acc;
+
+    voltage_fault_init(&vf);
+    voltage_fault_update(&vf, NULL);
+    EXPECT_TRUE(vf.confirmed);
+    EXPECT_TRUE(vf.read_fault);
+    EXPECT_TRUE(vf.reason == VOLTAGE_FAULT_REASON_NOT_READY);
+
+    unit_fill_voltage_acc(&v_acc, 3300u, 4100u, false, false, false);
+    voltage_fault_update(&vf, &v_acc);
+    EXPECT_TRUE(vf.confirmed);
+    EXPECT_TRUE(vf.reason == VOLTAGE_FAULT_REASON_NOT_READY);
+
+    unit_fill_voltage_acc(&v_acc, 3300u, 4100u, true, false, false);
+    v_acc.stale_voltage_count = 1u;
+    voltage_fault_update(&vf, &v_acc);
+    EXPECT_TRUE(vf.confirmed);
+    EXPECT_TRUE(vf.reason == VOLTAGE_FAULT_REASON_STALE_SCAN);
+
+    unit_fill_voltage_acc(&v_acc, 3300u, 4100u, true, false, false);
+    v_acc.pec_fail_cell_count = 3u;
+    voltage_fault_update(&vf, &v_acc);
+    EXPECT_TRUE(vf.confirmed);
+    EXPECT_TRUE(vf.reason == VOLTAGE_FAULT_REASON_PEC_FAILURE);
+    EXPECT_TRUE(vf.pec_fail_cell_count == 3u);
+
+    unit_fill_voltage_acc(&v_acc, 3300u, 4100u, true, true, false);
+    v_acc.pec_fail_cell_count = 1u;
+    voltage_fault_update(&vf, &v_acc);
+    EXPECT_TRUE(vf.voltage_valid);
+    EXPECT_TRUE(vf.warning);
+    EXPECT_FALSE(vf.confirmed);
+    EXPECT_TRUE(vf.reason == VOLTAGE_FAULT_REASON_PEC_FAILURE);
+
+    EXPECT_TRUE(strcmp(voltage_fault_reason_str(VOLTAGE_FAULT_REASON_CHARGE_STOP), "charge_stop") == 0);
+    EXPECT_TRUE(strcmp(voltage_fault_reason_str(VOLTAGE_FAULT_REASON_OPEN_WIRE_RESERVED), "open_wire_reserved") == 0);
+}
+
+static void unit_adbms_make_valid_read_packet(uint8_t *dst, uint8_t seed, uint8_t cmd_counter, bool corrupt_pec)
+{
+    for(uint8_t i = 0u; i < (RX_DATA - 2u); i++)
+    {
+        dst[i] = (uint8_t)(seed + i);
+    }
+
+    dst[RX_DATA - 2u] = (uint8_t)(cmd_counter << 2u);
+    dst[RX_DATA - 1u] = 0u;
+
+    uint16_t pec = pec10_calc(1u, RX_DATA - 2u, dst);
+    dst[RX_DATA - 2u] = (uint8_t)((cmd_counter << 2u) | ((pec >> 8u) & 0x03u));
+    dst[RX_DATA - 1u] = (uint8_t)pec;
+
+    if(corrupt_pec)
+    {
+        dst[RX_DATA - 1u] ^= 0x5Au;
+    }
+}
+
+static void unit_adbms_init_driver(adbms6830_driver_t *dev,
+                                   adbms6830_asic *ics,
+                                   SPI_HandleTypeDef *spi,
+                                   GPIO_TypeDef *gpio_a,
+                                   GPIO_TypeDef *gpio_b,
+                                   uint8_t num_ics)
+{
+    adBms6830_init(dev, num_ics, ics, spi, gpio_a, gpio_b, 3u, 4u, NULL);
+    unit_spi_reset();
+    dev->string = STRING_B;
+    adbms6830_spi_debug_clear(dev);
+}
+
+static void test_adbms_spi_debug_write_and_full_duplex_paths(void)
+{
+    adbms6830_driver_t dev;
+    adbms6830_asic ics[2];
+    SPI_HandleTypeDef spi;
+    GPIO_TypeDef gpio_a;
+    GPIO_TypeDef gpio_b;
+    uint8_t tx[4] = {0xAAu, 0x55u, 0x12u, 0x34u};
+    uint8_t rx[8];
+
+    unit_spi_reset();
+    memset(&dev, 0, sizeof(dev));
+    memset(ics, 0, sizeof(ics));
+    memset(&spi, 0, sizeof(spi));
+    memset(&gpio_a, 0, sizeof(gpio_a));
+    memset(&gpio_b, 0, sizeof(gpio_b));
+    unit_adbms_init_driver(&dev, ics, &spi, &gpio_a, &gpio_b, 2u);
+
+    EXPECT_TRUE(adbms6830_spi_write(&dev, tx, sizeof(tx), 1u) == HAL_OK);
+    EXPECT_TRUE(unit_spi_tx_calls == 1u);
+    EXPECT_TRUE(unit_spi_last_tx_len == sizeof(tx));
+    EXPECT_TRUE(unit_gpio_states[4u] == GPIO_PIN_SET);
+    EXPECT_TRUE(dev.spi_debug.tx_count == 1u);
+    EXPECT_TRUE(dev.spi_debug.rx_count == 0u);
+    EXPECT_TRUE(dev.spi_debug.last_tx_len == sizeof(tx));
+    EXPECT_TRUE(dev.spi_debug.last_rx_len == 0u);
+    EXPECT_TRUE(dev.spi_debug.last_status == HAL_OK);
+    EXPECT_TRUE(memcmp(dev.spi_debug.last_tx_preview, tx, sizeof(tx)) == 0);
+
+    unit_spi_tx_status = HAL_TIMEOUT;
+    EXPECT_TRUE(adbms6830_spi_write(&dev, tx, sizeof(tx), 1u) == HAL_TIMEOUT);
+    EXPECT_TRUE(dev.spi_debug.error_count == 1u);
+    EXPECT_TRUE(dev.spi_debug.last_status == HAL_TIMEOUT);
+
+    unit_spi_reset();
+    adbms6830_spi_debug_clear(&dev);
+    memset(rx, 0, sizeof(rx));
+    for(uint8_t i = 0u; i < sizeof(rx); i++)
+    {
+        unit_spi_txrx_response[sizeof(tx) + i] = (uint8_t)(0xC0u + i);
+    }
+
+    EXPECT_TRUE(adbms6830_spi_write_read(&dev, tx, sizeof(tx), rx, sizeof(rx), 1u) == HAL_OK);
+    EXPECT_TRUE(unit_spi_txrx_calls == 1u);
+    EXPECT_TRUE(unit_spi_last_txrx_len == (sizeof(tx) + sizeof(rx)));
+    EXPECT_TRUE(memcmp(unit_spi_last_txrx_tx, tx, sizeof(tx)) == 0);
+    for(uint8_t i = 0u; i < sizeof(rx); i++)
+    {
+        EXPECT_TRUE(unit_spi_last_txrx_tx[sizeof(tx) + i] == 0xFFu);
+        EXPECT_TRUE(rx[i] == (uint8_t)(0xC0u + i));
+    }
+    EXPECT_TRUE(dev.spi_debug.tx_count == 1u);
+    EXPECT_TRUE(dev.spi_debug.rx_count == 1u);
+    EXPECT_TRUE(dev.spi_debug.last_total_len == (sizeof(tx) + sizeof(rx)));
+    EXPECT_TRUE(memcmp(dev.spi_debug.last_rx_preview, rx, sizeof(rx)) == 0);
+
+    unit_spi_txrx_status = HAL_ERROR;
+    memset(rx, 0xA5, sizeof(rx));
+    EXPECT_TRUE(adbms6830_spi_write_read(&dev, tx, sizeof(tx), rx, sizeof(rx), 1u) == HAL_ERROR);
+    for(uint8_t i = 0u; i < sizeof(rx); i++)
+    {
+        EXPECT_TRUE(rx[i] == 0u);
+    }
+    EXPECT_TRUE(dev.spi_debug.error_count == 1u);
+    EXPECT_TRUE(dev.spi_debug.last_status == HAL_ERROR);
+}
+
+static void test_adbms_spi_debug_rd48_pec_masks_and_clear(void)
+{
+    adbms6830_driver_t dev;
+    adbms6830_asic ics[2];
+    SPI_HandleTypeDef spi;
+    GPIO_TypeDef gpio_a;
+    GPIO_TypeDef gpio_b;
+    uint8_t rx[RX_DATA * 2u];
+
+    unit_spi_reset();
+    memset(&dev, 0, sizeof(dev));
+    memset(ics, 0, sizeof(ics));
+    memset(&spi, 0, sizeof(spi));
+    memset(&gpio_a, 0, sizeof(gpio_a));
+    memset(&gpio_b, 0, sizeof(gpio_b));
+    unit_adbms_init_driver(&dev, ics, &spi, &gpio_a, &gpio_b, 2u);
+
+    unit_adbms_make_valid_read_packet(&unit_spi_txrx_response[CMDSZ + PEC15SZ], 0x10u, 3u, false);
+    unit_adbms_make_valid_read_packet(&unit_spi_txrx_response[CMDSZ + PEC15SZ + RX_DATA], 0x20u, 4u, false);
+    adbms6830_rd48(&dev, RDCFGA, rx);
+
+    EXPECT_TRUE(unit_spi_txrx_calls == 1u);
+    EXPECT_TRUE(dev.spi_debug.last_op == ADBMS6830_SPI_OP_RD48);
+    EXPECT_TRUE(dev.spi_debug.last_cmd[0] == RDCFGA[0]);
+    EXPECT_TRUE(dev.spi_debug.last_cmd[1] == RDCFGA[1]);
+    EXPECT_TRUE(dev.spi_debug.last_read_pec_pass_mask == 0x0003u);
+    EXPECT_TRUE(dev.spi_debug.last_read_pec_fail_mask == 0x0000u);
+    EXPECT_TRUE(dev.spi_debug.last_cmd_counter[0] == 3u);
+    EXPECT_TRUE(dev.spi_debug.last_cmd_counter[1] == 4u);
+    EXPECT_TRUE(dev.spi_debug.error_count == 0u);
+
+    unit_spi_reset();
+    adbms6830_spi_debug_clear(&dev);
+    unit_adbms_make_valid_read_packet(&unit_spi_txrx_response[CMDSZ + PEC15SZ], 0x30u, 1u, false);
+    unit_adbms_make_valid_read_packet(&unit_spi_txrx_response[CMDSZ + PEC15SZ + RX_DATA], 0x40u, 2u, true);
+    adbms6830_rd48(&dev, RDCFGA, rx);
+
+    EXPECT_TRUE(dev.spi_debug.last_read_pec_pass_mask == 0x0001u);
+    EXPECT_TRUE(dev.spi_debug.last_read_pec_fail_mask == 0x0002u);
+    EXPECT_TRUE(dev.spi_debug.error_count == 1u);
+
+    adbms6830_spi_debug_enable(&dev, false);
+    adbms6830_spi_debug_clear(&dev);
+    EXPECT_FALSE(dev.spi_debug.enabled);
+    EXPECT_TRUE(dev.spi_debug.last_status == HAL_OK);
+    adbms6830_spi_debug_enable(&dev, true);
+    EXPECT_TRUE(dev.spi_debug.enabled);
+    EXPECT_TRUE(strcmp(adbms6830_spi_op_str(ADBMS6830_SPI_OP_PROBE), "probe") == 0);
+}
+
 static void run_test(const char *name, void (*fn)(void))
 {
     int before = g_failures;
@@ -661,10 +1165,16 @@ int main(void)
     run_test("estimator summary aggregation", test_estimator_summary_aggregation);
     run_test("estimator status flags", test_estimator_status_flags);
     run_test("coulomb count baseline", test_coulomb_count_baseline);
+    run_test("voltage fault thresholds/latch", test_voltage_fault_thresholds_latch_and_reset);
+    run_test("voltage fault read failure/strings", test_voltage_fault_read_failure_precedence_and_strings);
+    run_test("ADBMS SPI debug write/full-duplex", test_adbms_spi_debug_write_and_full_duplex_paths);
+    run_test("ADBMS SPI rd48 PEC masks", test_adbms_spi_debug_rd48_pec_masks_and_clear);
     run_test("current sensor conversion/range", test_current_sensor_conversion_zero_and_range_selection);
     run_test("current sensor invalid conditions", test_current_sensor_invalid_conditions);
+    run_test("current sensor fresh pair/channel mapping", test_current_sensor_requires_fresh_pair_and_channel_mapping);
     run_test("current sensor ADC status path", test_current_sensor_read_adc_status_path);
     run_test("current fault policy", test_current_fault_policy);
+    run_test("current fault threshold edges/recovery", test_current_fault_threshold_edges_and_recovery);
 
     if (g_failures != 0)
     {

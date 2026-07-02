@@ -10,9 +10,46 @@
 
 #include "ext_drivers/adbms_shared.h"
 #include <stdint.h>
+#include <stdbool.h>
 #include "stm32f7xx_hal.h"
 
 #define ADBMS6830_MAX_TRACKED_ICS 16u
+
+#define ADBMS6830_SPI_DEBUG_PREVIEW_BYTES 16u
+
+typedef enum
+{
+  ADBMS6830_SPI_OP_NONE = 0,
+  ADBMS6830_SPI_OP_CMD,
+  ADBMS6830_SPI_OP_WR48,
+  ADBMS6830_SPI_OP_RD48,
+  ADBMS6830_SPI_OP_STCOMM,
+  ADBMS6830_SPI_OP_PROBE
+} adbms6830_spi_op_t;
+
+typedef struct
+{
+  bool enabled;
+  uint32_t tx_count;
+  uint32_t rx_count;
+  uint32_t error_count;
+  adbms6830_spi_op_t last_op;
+  adbms_string last_string;
+  HAL_StatusTypeDef last_status;
+  HAL_StatusTypeDef last_tx_status;
+  HAL_StatusTypeDef last_rx_status;
+  HAL_StatusTypeDef last_xfer_status;
+  uint8_t last_cmd[2];
+  uint16_t last_tx_len;
+  uint16_t last_rx_len;
+  uint16_t last_total_len;
+  uint16_t last_read_pec_pass_mask;
+  uint16_t last_read_pec_fail_mask;
+  uint8_t last_cmd_counter[ADBMS6830_MAX_TRACKED_ICS];
+  uint8_t last_tx_preview[ADBMS6830_SPI_DEBUG_PREVIEW_BYTES];
+  uint8_t last_rx_preview[ADBMS6830_SPI_DEBUG_PREVIEW_BYTES];
+} adbms6830_spi_debug_t;
+
 
 /* BMS ic main structure */
 typedef struct
@@ -74,6 +111,8 @@ typedef struct
    */
   uint16_t last_cell_updated_mask[ADBMS6830_MAX_TRACKED_ICS];
   uint16_t last_cell_pec_mask[ADBMS6830_MAX_TRACKED_ICS];
+
+  adbms6830_spi_debug_t spi_debug;
 } adbms6830_driver_t;
 
 #endif /* INC_EXT_DRIVERS_ADBMS6830_DATA_H_ */

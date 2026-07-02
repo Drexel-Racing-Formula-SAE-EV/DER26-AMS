@@ -338,6 +338,13 @@ static void fake_adc_set_status_sequence(HAL_StatusTypeDef high_status, HAL_Stat
     fake_adc_read_index = 0u;
 }
 
+static void host_current_sensor_mark_fresh(current_sensor_t *sensor)
+{
+    sensor->last_read_ok = true;
+    sensor->count_high_fresh = true;
+    sensor->count_low_fresh = true;
+}
+
 static void test_current_sensor_measurement_model(void)
 {
     current_sensor_t cs = {0};
@@ -345,6 +352,7 @@ static void test_current_sensor_measurement_model(void)
 
     cs.count_high = adc_count_for_sensor_voltage(2.5f);
     cs.count_low = adc_count_for_sensor_voltage(2.5f);
+    host_current_sensor_mark_fresh(&cs);
     current = current_sensor_convert(&cs);
     CHECK(cs.current_valid == true);
     CHECK(cs.reason == CURRENT_SENSOR_REASON_OK);
@@ -356,6 +364,7 @@ static void test_current_sensor_measurement_model(void)
     cs = (current_sensor_t){0};
     cs.count_high = adc_count_for_sensor_voltage(2.55f);  /* +20 A on 2.5 mV/A / C_SENSE_H */
     cs.count_low = adc_count_for_sensor_voltage(3.3f);    /* +20 A on 40 mV/A / C_SENSE_L */
+    host_current_sensor_mark_fresh(&cs);
     current = current_sensor_convert(&cs);
     CHECK(cs.current_valid == true);
     CHECK(cs.selected_range == CURRENT_SENSOR_RANGE_50A);
@@ -366,6 +375,7 @@ static void test_current_sensor_measurement_model(void)
     cs = (current_sensor_t){0};
     cs.count_high = adc_count_for_sensor_voltage(2.65f);  /* +60 A on 800 A / C_SENSE_H */
     cs.count_low = adc_count_for_sensor_voltage(4.75f);   /* 50 A channel at clamp / C_SENSE_L */
+    host_current_sensor_mark_fresh(&cs);
     current = current_sensor_convert(&cs);
     CHECK(cs.current_valid == true);
     CHECK(cs.selected_range == CURRENT_SENSOR_RANGE_800A);
@@ -374,6 +384,7 @@ static void test_current_sensor_measurement_model(void)
     cs = (current_sensor_t){0};
     cs.count_high = adc_count_for_sensor_voltage(4.75f);
     cs.count_low = adc_count_for_sensor_voltage(4.75f);
+    host_current_sensor_mark_fresh(&cs);
     (void)current_sensor_convert(&cs);
     CHECK(cs.current_valid == false);
     CHECK(cs.reason == CURRENT_SENSOR_REASON_SENSOR_SATURATION);
@@ -381,6 +392,7 @@ static void test_current_sensor_measurement_model(void)
     cs = (current_sensor_t){0};
     cs.count_high = adc_count_for_sensor_voltage(2.5f);   /* 0 A on 800 A / C_SENSE_H */
     cs.count_low = adc_count_for_sensor_voltage(3.3f);    /* +20 A on 50 A / C_SENSE_L */
+    host_current_sensor_mark_fresh(&cs);
     (void)current_sensor_convert(&cs);
     CHECK(cs.current_valid == false);
     CHECK(cs.reason == CURRENT_SENSOR_REASON_CHANNEL_MISMATCH);
@@ -388,9 +400,20 @@ static void test_current_sensor_measurement_model(void)
     cs = (current_sensor_t){0};
     cs.count_high = 3900u;
     cs.count_low = adc_count_for_sensor_voltage(2.5f);
+    host_current_sensor_mark_fresh(&cs);
     (void)current_sensor_convert(&cs);
     CHECK(cs.current_valid == false);
     CHECK(cs.reason == CURRENT_SENSOR_REASON_ADC_IMPLAUSIBLE);
+
+    cs = (current_sensor_t){0};
+    cs.count_high = adc_count_for_sensor_voltage(2.5f);
+    cs.count_low = adc_count_for_sensor_voltage(2.5f);
+    cs.last_read_ok = false;
+    cs.count_high_fresh = true;
+    cs.count_low_fresh = false;
+    (void)current_sensor_convert(&cs);
+    CHECK(cs.current_valid == false);
+    CHECK(cs.reason == CURRENT_SENSOR_REASON_ADC_READ);
 
     CHECK(strcmp(current_sensor_reason_str(CURRENT_SENSOR_REASON_SENSOR_SATURATION), "sensor_saturation") == 0);
     CHECK(strcmp(current_sensor_range_str(CURRENT_SENSOR_RANGE_800A), "800A") == 0);
@@ -552,7 +575,7 @@ static void test_fault_matrix_extra(void){
     CHECK(app.current_sensor_fault == true);
     CHECK(app.current_fault == true);
     run_one_error_task_iteration(&app);
-    CHECK(app.soft_fault == true); CHECK(app.hard_fault == false); CHECK(app.bms_state == true);
+    CHECK(app.soft_fault == true); CHECK(app.hard_fault == false); CHECK(app.bms_state == false);
 
     // 9) Error task hard-fault aggregation must drop BMS for each hard fault source.
     init_fake_app(); app.temp_fault=true; app.bms_state=true; bms_pin_state=GPIO_PIN_SET; run_one_error_task_iteration(&app); CHECK(app.hard_fault==true && app.bms_state==false);

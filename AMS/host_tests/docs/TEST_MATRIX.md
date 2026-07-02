@@ -24,6 +24,21 @@ Unit-only additions:
 
 | Unit test | Purpose |
 |---|---|
+| `test_current_sensor_conversion_zero_and_range_selection` | Verifies explicit DHAB conversion at zero current, 50A-range selection, and 800A fallback when the 50A channel saturates. |
+| `test_current_sensor_invalid_conditions` | Verifies sensor saturation, 50A/800A channel mismatch, implausible ADC rails, stale/missing channel data, and reason/range strings. |
+| `test_current_sensor_requires_fresh_pair_and_channel_mapping` | Regression test for the stale-channel bug: conversion requires both ADC channels fresh and preserves C_SENSE_L=50A / C_SENSE_H=800A mapping. |
+| `test_current_sensor_read_adc_status_path` | Verifies checked ADC status propagation for normal reads, timeout/error reads, and null ADC handles. |
 | `test_current_fault_policy` | Verifies discharge debounce, precharge fast trip, persistent sensor-fault confirmation, and placeholder regen-unexpected warning policy. |
+| `test_current_fault_threshold_edges_and_recovery` | Verifies warning-only recovery, fast-trip debounce/latch timing, latch reset behavior, charge overcurrent, and regen-disabled placeholder behavior. |
+| `test_voltage_fault_thresholds_latch_and_reset` | Verifies voltage threshold boundaries for OV warning, charge stop, hard/severe OV, soft/hard/severe UV, latched reasons, and cell location propagation. |
+| `test_voltage_fault_read_failure_precedence_and_strings` | Verifies not-ready, partial/stale/PEC read-fault precedence, warning-only partial usable scans, and voltage fault reason strings. |
+| `test_adbms_spi_debug_write_and_full_duplex_paths` | Verifies SPI debug state for write and full-duplex read paths, CS wrapping, dummy-byte TX padding, RX extraction, HAL error propagation, and debug counters/previews. |
+| `test_adbms_spi_debug_rd48_pec_masks_and_clear` | Verifies `rd48` debug command capture, PEC pass/fail masks across multiple ICs, command-counter capture, debug clear/enable behavior, and SPI op strings. |
 
 Add every hardware-discovered bug as a new host regression case when possible.
+
+Hardware bring-up notes:
+
+| Area | Purpose |
+|---|---|
+| ADBMS isoSPI debug CLI | Firmware now exposes `spi status`, `spi probe`, `spi clear`, `spi enable`, and `spi disable` for board-side SPI/isoSPI bring-up. This is hardware-debug support; host tests still cover safety logic, not physical SPI timing or transformer/isoSPI behavior. |

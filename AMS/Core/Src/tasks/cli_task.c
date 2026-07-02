@@ -32,7 +32,10 @@ int get_version(int argc, char *argv[]);
 int get_voltage(int argc, char *argv[]);
 int get_temperature(int argc, char *argv[]);
 int get_temperature_sensor(int argc, char *argv[]);
+
+
 int get_current(int argc, char *argv[]);
+int get_spi_debug(int argc, char *argv[]);
 int set_state(int argc, char *argv[]);
 int cause_fault(int argc, char *argv[]);
 
@@ -48,6 +51,7 @@ command_t cmds[] =
 	{"temp", &get_temperature, "gets sensor temperatures for all SMBs"},
 	{"tempsns", &get_temperature_sensor, "gets one sensor: tempsns <ic> <sensor 0-23>"},
 	{"current", &get_current, "gets current sensor raw counts/voltages/status"},
+	{"spi", &get_spi_debug, "ADBMS isoSPI debug: spi [status|probe|clear|enable|disable]"},
 	{"state", &set_state, "gets or sets the AMS state [charge|discharge]"},
 	{"cause_fault", &cause_fault, "cause BMS fault for tech"},
 };
@@ -109,6 +113,50 @@ static void cli_fixed3(float value, int *whole, int *decimal)
 
     *whole = scaled / 1000;
     *decimal = abs(scaled % 1000);
+}
+
+
+static const char *cli_hal_status_str(HAL_StatusTypeDef status)
+{
+    switch(status)
+    {
+    case HAL_OK:      return "OK";
+    case HAL_ERROR:   return "ERROR";
+    case HAL_BUSY:    return "BUSY";
+    case HAL_TIMEOUT: return "TIMEOUT";
+    default:          return "UNKNOWN";
+    }
+}
+
+static const char *cli_spi_polarity_str(uint32_t polarity)
+{
+    return (polarity == SPI_POLARITY_HIGH) ? "HIGH" : "LOW";
+}
+
+static const char *cli_spi_phase_str(uint32_t phase)
+{
+    return (phase == SPI_PHASE_2EDGE) ? "2EDGE" : "1EDGE";
+}
+
+static int cli_print_hex_preview(const char *label, const uint8_t *buf, uint16_t len)
+{
+    char hexbuf[72];
+    size_t off = 0u;
+    uint16_t count;
+
+    if((label == NULL) || (buf == NULL))
+    {
+        return cli_printline(cli, "hex preview unavailable");
+    }
+
+    count = (len > ADBMS6830_SPI_DEBUG_PREVIEW_BYTES) ? ADBMS6830_SPI_DEBUG_PREVIEW_BYTES : len;
+    off += (size_t)snprintf(hexbuf + off, sizeof(hexbuf) - off, "%s", label);
+    for(uint16_t i = 0u; (i < count) && (off < sizeof(hexbuf)); i++)
+    {
+        off += (size_t)snprintf(hexbuf + off, sizeof(hexbuf) - off, " %02X", buf[i]);
+    }
+
+    return cli_printline(cli, hexbuf);
 }
 
 static bool cli_raw_temp_to_values(int16_t raw, float *voltage_out, float *temp_out)
@@ -470,6 +518,112 @@ int get_temperature_sensor(int argc, char *argv[])
     }
 
     ret |= cli_printline(cli, outline);
+
+    return ret;
+}
+
+
+
+int get_spi_debug(int argc, char *argv[])
+{
+    int ret = 0;
+    adbms6830_driver_t *smb = &data->acc.smb;
+    const adbms6830_spi_debug_t *dbg;
+    HAL_StatusTypeDef probe_status;
+    SPI_HandleTypeDef *hspi = smb->hspi;
+
+    if((argc >= 2) && (argv[1] != NULL))
+    {
+        if(!strcmp(argv[1], "clear"))
+        {
+            adbms6830_spi_debug_clear(smb);
+            ret |= cli_printline(cli, "ADBMS SPI debug counters cleared");
+        }
+        else if(!strcmp(argv[1], "enable"))
+        {
+            adbms6830_spi_debug_enable(smb, true);
+            ret |= cli_printline(cli, "ADBMS SPI debug enabled");
+        }
+        else if(!strcmp(argv[1], "disable"))
+        {
+            adbms6830_spi_debug_enable(smb, false);
+            ret |= cli_printline(cli, "ADBMS SPI debug disabled");
+        }
+        else if(!strcmp(argv[1], "probe"))
+        {
+            probe_status = adbms6830_spi_probe_rdcfga(smb);
+            snprintf(outline, CLI_LINESZ, "RDCFGA probe status: %s", cli_hal_status_str(probe_status));
+            ret |= cli_printline(cli, outline);
+        }
+        else if(strcmp(argv[1], "status"))
+        {
+            ret |= cli_printline(cli, "Usage: spi [status|probe|clear|enable|disable]");
+            return ret;
+        }
+    }
+
+    dbg = adbms6830_spi_debug_get(smb);
+    if(dbg == NULL)
+    {
+        ret |= cli_printline(cli, "ADBMS SPI debug unavailable");
+        return ret;
+    }
+
+    if(hspi != NULL)
+    {
+        snprintf(outline, CLI_LINESZ,
+                 "SPI6 mode CPOL:%s CPHA:%s prescaler:%lu firstbit:%s",
+                 cli_spi_polarity_str(hspi->Init.CLKPolarity),
+                 cli_spi_phase_str(hspi->Init.CLKPhase),
+                 (unsigned long)hspi->Init.BaudRatePrescaler,
+                 (hspi->Init.FirstBit == SPI_FIRSTBIT_MSB) ? "MSB" : "LSB");
+        ret |= cli_printline(cli, outline);
+    }
+    else
+    {
+        ret |= cli_printline(cli, "SPI handle is NULL");
+    }
+
+    snprintf(outline, CLI_LINESZ,
+             "dbg en:%d op:%s string:%u status:%s tx:%lu rx:%lu err:%lu",
+             dbg->enabled,
+             adbms6830_spi_op_str(dbg->last_op),
+             (unsigned)dbg->last_string,
+             cli_hal_status_str(dbg->last_status),
+             (unsigned long)dbg->tx_count,
+             (unsigned long)dbg->rx_count,
+             (unsigned long)dbg->error_count);
+    ret |= cli_printline(cli, outline);
+
+    snprintf(outline, CLI_LINESZ,
+             "cmd:%02X %02X len tx:%u rx:%u total:%u",
+             dbg->last_cmd[0],
+             dbg->last_cmd[1],
+             (unsigned)dbg->last_tx_len,
+             (unsigned)dbg->last_rx_len,
+             (unsigned)dbg->last_total_len);
+    ret |= cli_printline(cli, outline);
+
+    snprintf(outline, CLI_LINESZ,
+             "HAL tx:%s rx:%s xfer:%s PEC pass:0x%04X fail:0x%04X",
+             cli_hal_status_str(dbg->last_tx_status),
+             cli_hal_status_str(dbg->last_rx_status),
+             cli_hal_status_str(dbg->last_xfer_status),
+             dbg->last_read_pec_pass_mask,
+             dbg->last_read_pec_fail_mask);
+    ret |= cli_printline(cli, outline);
+
+    snprintf(outline, CLI_LINESZ,
+             "cmdcnt IC0:%u IC1:%u IC2:%u IC3:%u IC4:%u",
+             dbg->last_cmd_counter[0],
+             dbg->last_cmd_counter[1],
+             dbg->last_cmd_counter[2],
+             dbg->last_cmd_counter[3],
+             dbg->last_cmd_counter[4]);
+    ret |= cli_printline(cli, outline);
+
+    ret |= cli_print_hex_preview("TX:", dbg->last_tx_preview, ADBMS6830_SPI_DEBUG_PREVIEW_BYTES);
+    ret |= cli_print_hex_preview("RX:", dbg->last_rx_preview, ADBMS6830_SPI_DEBUG_PREVIEW_BYTES);
 
     return ret;
 }

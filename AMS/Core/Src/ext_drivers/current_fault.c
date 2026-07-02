@@ -43,8 +43,8 @@
 #define CURRENT_REGEN_UNEXPECTED_A           5.0f
 #define CURRENT_REGEN_WARN_A                 20.0f
 #define CURRENT_REGEN_TRIP_A                 25.0f
-#define CURRENT_REGEN_FAST_TRIP_A            40.0f
-#define CURRENT_REGEN_EXTREME_A              80.0f
+#define CURRENT_REGEN_FAST_TRIP_A            30.0f
+#define CURRENT_REGEN_EXTREME_A              50.0f
 #define CURRENT_REGEN_TRIP_MS                500u
 #define CURRENT_REGEN_FAST_TRIP_MS           100u
 

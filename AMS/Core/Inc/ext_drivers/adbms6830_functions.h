@@ -9,6 +9,7 @@
 #define INC_EXT_DRIVERS_ADBMS6830_FUNCTIONS_H_
 
 #include <stdint.h>
+#include <stdbool.h>
 #include "ext_drivers/adbms6830_data.h"
 
 void adBms6830_init(adbms6830_driver_t* dev,
@@ -37,6 +38,13 @@ void adbms6830_adcv(adbms6830_driver_t *dev, RD rd, CONT cont, DCP dcp, RSTF rst
 void adbms6830_start_adc_cell_voltage_measurement(adbms6830_driver_t *dev);
 void adbms6830_parse_cell(adbms6830_driver_t *dev, uint8_t *data, GRP grp);
 void adbms6830_read_cell_voltages(adbms6830_driver_t *dev);
+
+
+void adbms6830_spi_debug_enable(adbms6830_driver_t *dev, bool enable);
+void adbms6830_spi_debug_clear(adbms6830_driver_t *dev);
+const adbms6830_spi_debug_t *adbms6830_spi_debug_get(const adbms6830_driver_t *dev);
+const char *adbms6830_spi_op_str(adbms6830_spi_op_t op);
+HAL_StatusTypeDef adbms6830_spi_probe_rdcfga(adbms6830_driver_t *dev);
 
 ///* I2C COMM primitives */
 //void adbms6830_i2c_write(adbms6830_driver_t *dev, uint8_t slave_addr, uint8_t data);
