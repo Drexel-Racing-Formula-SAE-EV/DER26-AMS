@@ -11,12 +11,56 @@
 
 #include "estimator/ams_soc_ekf.h"
 #include "estimator/ams_estimator_lut.h"
+#include "ext_drivers/current_sensor.h"
+#include "ext_drivers/stm32f767z.h"
 
 #include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+
+static uint16_t unit_adc_read_counts[2] = {0u, 0u};
+static HAL_StatusTypeDef unit_adc_read_statuses[2] = {HAL_OK, HAL_OK};
+static uint32_t unit_adc_read_index = 0u;
+
+HAL_StatusTypeDef stm32f767z_adc_switch_channel(ADC_HandleTypeDef *hadc, uint32_t channel)
+{
+    (void)channel;
+    return (hadc != NULL) ? HAL_OK : HAL_ERROR;
+}
+
+stm32f767z_adc_read_result_t stm32f767z_adc_read_checked(ADC_HandleTypeDef *hadc, uint32_t timeout_ms)
+{
+    (void)timeout_ms;
+    stm32f767z_adc_read_result_t result = { HAL_ERROR, 0u };
+    uint32_t idx;
+
+    if(hadc == NULL)
+    {
+        return result;
+    }
+
+    idx = unit_adc_read_index;
+    if(idx > 1u)
+    {
+        idx = 1u;
+    }
+
+    result.status = unit_adc_read_statuses[idx];
+    result.count = (result.status == HAL_OK) ? unit_adc_read_counts[idx] : 0u;
+    unit_adc_read_index++;
+    return result;
+}
+
+uint16_t stm32f767z_adc_read(ADC_HandleTypeDef *hadc)
+{
+    return stm32f767z_adc_read_checked(hadc, 5u).count;
+}
+
+#include "Core/Src/ext_drivers/current_sensor.c"
+#include "Core/Src/ext_drivers/current_fault.c"
 
 #define TEST_EPS_SMALL 1.0e-5f
 #define TEST_EPS_MED   1.0e-3f
@@ -399,6 +443,198 @@ static void test_coulomb_count_baseline(void)
     EXPECT_TRUE((ams_estimator_status_flags(&est) & AMS_EKF_FLAG_CC_FALLBACK) != 0U);
 }
 
+static uint16_t unit_adc_count_for_mcu_voltage(float voltage_v)
+{
+    return (uint16_t)((voltage_v * 4095.0f / 3.3f) + 0.5f);
+}
+
+static uint16_t unit_adc_count_for_sensor_voltage(float sensor_voltage_v)
+{
+    return unit_adc_count_for_mcu_voltage(sensor_voltage_v * 0.6f);
+}
+
+static void unit_adc_set_sequence(uint16_t high_count, uint16_t low_count)
+{
+    unit_adc_read_counts[0] = high_count;
+    unit_adc_read_counts[1] = low_count;
+    unit_adc_read_statuses[0] = HAL_OK;
+    unit_adc_read_statuses[1] = HAL_OK;
+    unit_adc_read_index = 0u;
+}
+
+static void unit_adc_set_status_sequence(HAL_StatusTypeDef high_status, HAL_StatusTypeDef low_status)
+{
+    unit_adc_read_counts[0] = 0u;
+    unit_adc_read_counts[1] = 0u;
+    unit_adc_read_statuses[0] = high_status;
+    unit_adc_read_statuses[1] = low_status;
+    unit_adc_read_index = 0u;
+}
+
+static void test_current_sensor_conversion_zero_and_range_selection(void)
+{
+    current_sensor_t sensor = {0};
+    float current;
+
+    sensor.count_high = unit_adc_count_for_sensor_voltage(2.5f);
+    sensor.count_low = unit_adc_count_for_sensor_voltage(2.5f);
+    current = current_sensor_convert(&sensor);
+
+    EXPECT_TRUE(sensor.current_valid);
+    EXPECT_TRUE(sensor.reason == CURRENT_SENSOR_REASON_OK);
+    EXPECT_TRUE(sensor.selected_range == CURRENT_SENSOR_RANGE_50A);
+    EXPECT_NEAR(current, 0.0f, 0.05f);
+    EXPECT_NEAR(sensor.sensor_voltage_high, 2.5f, 0.01f);
+    EXPECT_NEAR(sensor.sensor_voltage_low, 2.5f, 0.01f);
+
+    sensor = (current_sensor_t){0};
+    sensor.count_high = unit_adc_count_for_sensor_voltage(2.55f);
+    sensor.count_low = unit_adc_count_for_sensor_voltage(3.3f);
+    current = current_sensor_convert(&sensor);
+
+    EXPECT_TRUE(sensor.current_valid);
+    EXPECT_TRUE(sensor.selected_range == CURRENT_SENSOR_RANGE_50A);
+    EXPECT_NEAR(current, 20.0f, 0.25f);
+    EXPECT_NEAR(sensor.current_50a, 20.0f, 0.25f);
+    EXPECT_NEAR(sensor.current_800a, 20.0f, 1.0f);
+
+    sensor = (current_sensor_t){0};
+    sensor.count_high = unit_adc_count_for_sensor_voltage(2.65f);
+    sensor.count_low = unit_adc_count_for_sensor_voltage(4.75f);
+    current = current_sensor_convert(&sensor);
+
+    EXPECT_TRUE(sensor.current_valid);
+    EXPECT_TRUE(sensor.selected_range == CURRENT_SENSOR_RANGE_800A);
+    EXPECT_NEAR(current, 60.0f, 1.0f);
+}
+
+static void test_current_sensor_invalid_conditions(void)
+{
+    current_sensor_t sensor = {0};
+
+    sensor.count_high = unit_adc_count_for_sensor_voltage(4.75f);
+    sensor.count_low = unit_adc_count_for_sensor_voltage(4.75f);
+    (void)current_sensor_convert(&sensor);
+    EXPECT_FALSE(sensor.current_valid);
+    EXPECT_TRUE(sensor.reason == CURRENT_SENSOR_REASON_SENSOR_SATURATION);
+
+    sensor = (current_sensor_t){0};
+    sensor.count_high = unit_adc_count_for_sensor_voltage(2.5f);
+    sensor.count_low = unit_adc_count_for_sensor_voltage(3.3f);
+    (void)current_sensor_convert(&sensor);
+    EXPECT_FALSE(sensor.current_valid);
+    EXPECT_TRUE(sensor.reason == CURRENT_SENSOR_REASON_CHANNEL_MISMATCH);
+
+    sensor = (current_sensor_t){0};
+    sensor.count_high = 3900u;
+    sensor.count_low = unit_adc_count_for_sensor_voltage(2.5f);
+    (void)current_sensor_convert(&sensor);
+    EXPECT_FALSE(sensor.current_valid);
+    EXPECT_TRUE(sensor.reason == CURRENT_SENSOR_REASON_ADC_IMPLAUSIBLE);
+
+    EXPECT_TRUE(strcmp(current_sensor_reason_str(CURRENT_SENSOR_REASON_ADC_READ), "adc_read") == 0);
+    EXPECT_TRUE(strcmp(current_sensor_range_str(CURRENT_SENSOR_RANGE_50A), "50A") == 0);
+}
+
+static void test_current_sensor_read_adc_status_path(void)
+{
+    static ADC_HandleTypeDef adc_high;
+    static ADC_HandleTypeDef adc_low;
+    current_sensor_t sensor;
+
+    current_sensor_init(&sensor, &adc_low, &adc_high, 14u, 1u);
+    unit_adc_set_sequence(unit_adc_count_for_sensor_voltage(2.5f),
+                          unit_adc_count_for_sensor_voltage(2.5f));
+    EXPECT_TRUE(current_sensor_read_adc(&sensor));
+    EXPECT_TRUE(sensor.last_read_ok);
+    EXPECT_TRUE(sensor.count_high == unit_adc_count_for_sensor_voltage(2.5f));
+    EXPECT_TRUE(sensor.count_low == unit_adc_count_for_sensor_voltage(2.5f));
+
+    current_sensor_init(&sensor, &adc_low, &adc_high, 14u, 1u);
+    unit_adc_set_status_sequence(HAL_TIMEOUT, HAL_OK);
+    EXPECT_FALSE(current_sensor_read_adc(&sensor));
+    EXPECT_FALSE(sensor.last_read_ok);
+    EXPECT_FALSE(sensor.current_valid);
+    EXPECT_TRUE(sensor.reason == CURRENT_SENSOR_REASON_ADC_READ);
+
+    current_sensor_init(&sensor, NULL, &adc_high, 14u, 1u);
+    EXPECT_FALSE(current_sensor_read_adc(&sensor));
+    EXPECT_TRUE(sensor.reason == CURRENT_SENSOR_REASON_ADC_READ);
+}
+
+
+static void test_current_fault_policy(void)
+{
+    current_fault_state_t fault;
+
+    current_fault_init(&fault);
+    for(int i = 0; i < 24; i++)
+    {
+        current_fault_update(&fault,
+                             CURRENT_FAULT_MODE_DRIVE,
+                             90.0f,
+                             true,
+                             CURRENT_SENSOR_REASON_OK,
+                             20u);
+    }
+    EXPECT_FALSE(fault.confirmed);
+    EXPECT_TRUE(fault.pending);
+    EXPECT_TRUE(fault.pending_reason == CURRENT_FAULT_REASON_DISCHARGE_OVERCURRENT);
+
+    current_fault_update(&fault,
+                         CURRENT_FAULT_MODE_DRIVE,
+                         90.0f,
+                         true,
+                         CURRENT_SENSOR_REASON_OK,
+                         20u);
+    EXPECT_TRUE(fault.confirmed);
+    EXPECT_TRUE(fault.latched);
+    EXPECT_TRUE(fault.latched_reason == CURRENT_FAULT_REASON_DISCHARGE_OVERCURRENT);
+
+    current_fault_init(&fault);
+    current_fault_update(&fault,
+                         CURRENT_FAULT_MODE_PRECHARGE,
+                         2.5f,
+                         true,
+                         CURRENT_SENSOR_REASON_OK,
+                         20u);
+    EXPECT_TRUE(fault.pending);
+    EXPECT_FALSE(fault.confirmed);
+    current_fault_update(&fault,
+                         CURRENT_FAULT_MODE_PRECHARGE,
+                         2.5f,
+                         true,
+                         CURRENT_SENSOR_REASON_OK,
+                         20u);
+    EXPECT_TRUE(fault.confirmed);
+    EXPECT_TRUE(fault.latched_reason == CURRENT_FAULT_REASON_PRECHARGE_FAST_OVERCURRENT);
+
+    current_fault_init(&fault);
+    for(int i = 0; i < 25; i++)
+    {
+        current_fault_update(&fault,
+                             CURRENT_FAULT_MODE_DRIVE,
+                             0.0f,
+                             false,
+                             CURRENT_SENSOR_REASON_ADC_READ,
+                             20u);
+    }
+    EXPECT_TRUE(fault.sensor_fault);
+    EXPECT_TRUE(fault.reason == CURRENT_FAULT_REASON_SENSOR_ADC_READ);
+
+    current_fault_init(&fault);
+    current_fault_update(&fault,
+                         CURRENT_FAULT_MODE_DRIVE,
+                         -6.0f,
+                         true,
+                         CURRENT_SENSOR_REASON_OK,
+                         20u);
+    EXPECT_TRUE(fault.warning);
+    EXPECT_TRUE(fault.reason == CURRENT_FAULT_REASON_REGEN_UNEXPECTED);
+    EXPECT_TRUE(strcmp(current_fault_reason_str(CURRENT_FAULT_REASON_PRECHARGE_OVERCURRENT), "precharge_overcurrent") == 0);
+    EXPECT_TRUE(strcmp(current_fault_mode_str(CURRENT_FAULT_MODE_DRIVE), "drive") == 0);
+}
+
 static void run_test(const char *name, void (*fn)(void))
 {
     int before = g_failures;
@@ -425,6 +661,10 @@ int main(void)
     run_test("estimator summary aggregation", test_estimator_summary_aggregation);
     run_test("estimator status flags", test_estimator_status_flags);
     run_test("coulomb count baseline", test_coulomb_count_baseline);
+    run_test("current sensor conversion/range", test_current_sensor_conversion_zero_and_range_selection);
+    run_test("current sensor invalid conditions", test_current_sensor_invalid_conditions);
+    run_test("current sensor ADC status path", test_current_sensor_read_adc_status_path);
+    run_test("current fault policy", test_current_fault_policy);
 
     if (g_failures != 0)
     {

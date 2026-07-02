@@ -30,6 +30,13 @@ typedef struct
 } stm32f767z_t;
 
 void stm32f767z_init(stm32f767z_t * dev);
+typedef struct
+{
+    HAL_StatusTypeDef status;
+    uint16_t count;
+} stm32f767z_adc_read_result_t;
+
+stm32f767z_adc_read_result_t stm32f767z_adc_read_checked(ADC_HandleTypeDef *hadc, uint32_t timeout_ms);
 uint16_t stm32f767z_adc_read(ADC_HandleTypeDef *hadc);
 HAL_StatusTypeDef stm32f767z_adc_switch_channel(ADC_HandleTypeDef *hadc, uint32_t channel);
 

@@ -47,27 +47,37 @@ void stm32f767z_init(stm32f767z_t * dev)
 	dev->huart3 = &huart3;
 }
 
-uint16_t stm32f767z_adc_read(ADC_HandleTypeDef *hadc)
+stm32f767z_adc_read_result_t stm32f767z_adc_read_checked(ADC_HandleTypeDef *hadc, uint32_t timeout_ms)
 {
-	uint16_t count = 0u;
+    stm32f767z_adc_read_result_t result = { HAL_ERROR, 0u };
 
     if(hadc == NULL)
     {
-        return 0u;
+        return result;
     }
 
-	if(HAL_ADC_Start(hadc) != HAL_OK)
+    if(HAL_ADC_Start(hadc) != HAL_OK)
     {
-        return 0u;
+        return result;
     }
 
-	if(HAL_ADC_PollForConversion(hadc, ADC_POLL_TIMEOUT_MS) == HAL_OK)
+    if(HAL_ADC_PollForConversion(hadc, timeout_ms) == HAL_OK)
     {
-        count = (uint16_t)HAL_ADC_GetValue(hadc);
+        result.count = (uint16_t)HAL_ADC_GetValue(hadc);
+        result.status = HAL_OK;
+    }
+    else
+    {
+        result.status = HAL_TIMEOUT;
     }
 
-	(void)HAL_ADC_Stop(hadc);
-	return count;
+    (void)HAL_ADC_Stop(hadc);
+    return result;
+}
+
+uint16_t stm32f767z_adc_read(ADC_HandleTypeDef *hadc)
+{
+    return stm32f767z_adc_read_checked(hadc, ADC_POLL_TIMEOUT_MS).count;
 }
 
 HAL_StatusTypeDef stm32f767z_adc_switch_channel(ADC_HandleTypeDef *hadc, uint32_t channel)

@@ -30,6 +30,15 @@ void app_create()
 	app.cli_fault = false;
 	app.canbus_fault = false;
 	app.current_fault = true;
+	app.current_sensor_fault = true;
+	app.current_overcurrent_warning = false;
+	app.current_overcurrent_pending = false;
+	app.current_overcurrent_fault = false;
+	app.current_fault_latched = false;
+	app.current_fault_reason = CURRENT_FAULT_REASON_SENSOR_NOT_READY;
+	app.current_fault_latched_reason = CURRENT_FAULT_REASON_NONE;
+	app.current_fault_mode = CURRENT_FAULT_MODE_IDLE;
+	current_fault_init(&app.current_fault_state);
 	app.fuse_fault = false;
 	app.temp_fault = false;
 	app.voltage_fault = false;
@@ -51,6 +60,9 @@ void app_create()
 	app.max_voltage = 0.0;
 	app.min_voltage = 0.0;
 	app.current = 0.0;
+	app.current_valid = false;
+	app.current_selected_range = CURRENT_SENSOR_RANGE_UNKNOWN;
+	app.current_meas_reason = CURRENT_SENSOR_REASON_ADC_READ;
 
 	board_init(&app.board);
 	set_bms(0);

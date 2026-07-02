@@ -38,6 +38,14 @@ static HAL_StatusTypeDef fake_rx_status = HAL_OK;
 static jmp_buf task_exit_jmp;
 static int task_exit_after_delay_until = 0;
 static int fake_mux_write_enable = 1;
+static uint16_t fake_adc_read_counts[2] = {2048u, 2048u};
+static HAL_StatusTypeDef fake_adc_read_statuses[2] = {HAL_OK, HAL_OK};
+static uint32_t fake_adc_read_index = 0u;
+
+static uint16_t adc_count_for_mcu_voltage(float v);
+static uint16_t adc_count_for_sensor_voltage(float v);
+static void fake_adc_set_two_read_sequence(uint16_t high_count, uint16_t low_count);
+static void fake_adc_set_status_sequence(HAL_StatusTypeDef high_status, HAL_StatusTypeDef low_status);
 
 uint32_t osKernelGetTickCount(void){ return fake_tick; }
 osStatus_t osDelay(uint32_t ticks){ fake_tick += ticks; return osOK; }
@@ -87,12 +95,28 @@ int mux_set_channel(adbms6830_driver_t *dev, uint8_t sensor_num){ (void)dev; ret
 
 void adbms2950_gpo_set(adbms2950_driver_t *dev, GPO gp, CFGA_GPO state){(void)dev;(void)gp;(void)state;} void adbms2950_wakeup(adbms2950_driver_t *dev){(void)dev;} void adbms2950_wrcfga(adbms2950_driver_t *dev){(void)dev;} void adbms2950_rdcfga(adbms2950_driver_t *dev){(void)dev;} void adbms2950_rdvb(adbms2950_driver_t *dev){(void)dev;} void adbms2950_rdi(adbms2950_driver_t *dev){(void)dev;} void adbms2950_adv(adbms2950_driver_t *dev, adv_ *adv){(void)dev;(void)adv;} void adbms2950_plv(adbms2950_driver_t *dev){(void)dev;} void adbms2950_rdv1d(adbms2950_driver_t *dev){(void)dev;}
 HAL_StatusTypeDef stm32f767z_adc_switch_channel(ADC_HandleTypeDef *hadc, uint32_t channel){ (void)channel; return hadc ? HAL_OK : HAL_ERROR; }
-uint16_t stm32f767z_adc_read(ADC_HandleTypeDef *hadc){ (void)hadc; return 2048; }
+stm32f767z_adc_read_result_t stm32f767z_adc_read_checked(ADC_HandleTypeDef *hadc, uint32_t timeout_ms){
+    (void)timeout_ms;
+    stm32f767z_adc_read_result_t r = { HAL_ERROR, 0u };
+    uint32_t idx;
+
+    if(!hadc) return r;
+
+    idx = fake_adc_read_index;
+    if(idx > 1u) idx = 1u;
+
+    r.status = fake_adc_read_statuses[idx];
+    r.count = (r.status == HAL_OK) ? fake_adc_read_counts[idx] : 0u;
+    fake_adc_read_index++;
+    return r;
+}
+uint16_t stm32f767z_adc_read(ADC_HandleTypeDef *hadc){ return stm32f767z_adc_read_checked(hadc, 5u).count; }
 
 // Include actual implementation files so static helpers in canbus_task are testable.
 #include "Core/Src/ext_drivers/charger.c"
 #include "Core/Src/ext_drivers/fans.c"
 #include "Core/Src/ext_drivers/current_sensor.c"
+#include "Core/Src/ext_drivers/current_fault.c"
 #include "Core/Src/ext_drivers/imd.c"
 #include "Core/Src/ext_drivers/accumulator.c"
 #include "Core/Src/ext_drivers/canbus.c"
@@ -118,7 +142,7 @@ static float ntc_voltage_for_temp_c(float temp_c){
 static int16_t raw_for_temp_c(float temp_c){ return raw_for_ntc_voltage(ntc_voltage_for_temp_c(temp_c)); }
 #define CHECK(cond) do{ if(!(cond)){ fprintf(stderr,"FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); exit(1);} }while(0)
 
-static void init_fake_app(void){ memset(&app,0,sizeof(app)); app.acc.smb.num_ics = NSMBS; app.acc.smb.ics = app.acc.smb_ics; }
+static void init_fake_app(void){ memset(&app,0,sizeof(app)); app.acc.smb.num_ics = NSMBS; app.acc.smb.ics = app.acc.smb_ics; current_fault_init(&app.current_fault_state); app.current_meas_reason = CURRENT_SENSOR_REASON_ADC_READ; app.current_fault_reason = CURRENT_FAULT_REASON_SENSOR_NOT_READY; }
 
 static void test_accumulator_stats_and_balance(void){
     init_fake_app();
@@ -191,7 +215,7 @@ static void test_charger_rx_and_tx(void){
     CHECK(app.board.charger.voltage_sense_fail == true);
     CHECK(app.board.charger.rx_count == 1u);
 
-    app.state=STATE_CHARGE; app.hard_fault=false; app.voltage_fault=false; app.temp_fault=false; app.bms_state=true; app.board.charger.hardware_fail=false; app.board.charger.overtemp_fail=false; app.board.charger.input_volt_fail=false; app.board.charger.voltage_sense_fail=false; app.board.charger.communication_fail=false; app.board.charger.last_rx_tick=fake_tick;
+    app.state=STATE_CHARGE; app.current_valid=true; app.hard_fault=false; app.voltage_fault=false; app.temp_fault=false; app.bms_state=true; app.board.charger.hardware_fail=false; app.board.charger.overtemp_fail=false; app.board.charger.input_volt_fail=false; app.board.charger.voltage_sense_fail=false; app.board.charger.communication_fail=false; app.board.charger.last_rx_tick=fake_tick;
     tx_count=0; tx_free_level=3; CHECK(canbus_send(&app.board.canbus, CAN_ID_EXT, CCS_CANBUS_ID, (uint8_t[8]){0x0C,0x30,0,0x0A,0,0,0,0}) == HAL_OK);
     CHECK(tx_count == 1u && tx_log[0].ide == CAN_ID_EXT && tx_log[0].extid == CCS_CANBUS_ID);
 }
@@ -229,7 +253,7 @@ static void test_task_iterations_with_injected_signals(void){
     run_one_canbus_task_iteration(&app);
     CHECK(tx_count == 62u); CHECK(app.canbus_fault == false); CHECK(app.board.charger.target_voltage == 0.0f);
 
-    init_fake_app(); fill_nominal_pack(&app, 3.700f); app.board.canbus.hcan = &hcan; app.state = STATE_CHARGE; app.bms_state=true; app.board.charger.last_rx_tick=1000; fake_tick=1000; tx_count=0; tx_free_level=3;
+    init_fake_app(); fill_nominal_pack(&app, 3.700f); app.board.canbus.hcan = &hcan; app.state = STATE_CHARGE; app.current_valid=true; app.bms_state=true; app.board.charger.last_rx_tick=1000; fake_tick=1000; tx_count=0; tx_free_level=3;
     run_one_canbus_task_iteration(&app);
     CHECK(tx_count == 1u); CHECK(tx_log[0].ide == CAN_ID_EXT); CHECK(tx_log[0].extid == CCS_CANBUS_ID); CHECK(tx_log[0].data[4] == 0u); CHECK(app.canbus_fault == false); CHECK(app.charger_fault == false);
 
@@ -237,11 +261,11 @@ static void test_task_iterations_with_injected_signals(void){
     run_one_canbus_task_iteration(&app);
     CHECK(tx_count == 1u); CHECK(tx_log[0].data[4] == 1u); CHECK(app.board.charger.communication_fail == true); CHECK(app.charger_fault == true); CHECK(app.bms_state == false); CHECK(bms_pin_state == GPIO_PIN_RESET);
 
-    init_fake_app(); fill_nominal_pack(&app, 3.700f); app.state = STATE_CHARGE; app.bms_state=true; app.acc.smb_ics[0].cell.c_codes[0] = code_for_volts(4.000f); fake_tick=0;
+    init_fake_app(); fill_nominal_pack(&app, 3.700f); app.state = STATE_CHARGE; app.current_valid=true; app.bms_state=true; app.acc.smb_ics[0].cell.c_codes[0] = code_for_volts(4.000f); fake_tick=0;
     run_one_adbms_task_iteration(&app);
     CHECK(app.voltage_fault == false); CHECK(app.temp_fault == false); CHECK(app.max_voltage > 3.99f); CHECK(app.min_voltage > 3.69f); CHECK(app.acc.smb_ics[0].tx_cfgb.dcc != 0u);
 
-    init_fake_app(); fill_nominal_pack(&app, 3.700f); app.state = STATE_DISCARGE; app.bms_state=false; bms_pin_state=GPIO_PIN_RESET; fake_tick=0;
+    init_fake_app(); fill_nominal_pack(&app, 3.700f); app.state = STATE_DISCARGE; app.current_valid=true; app.bms_state=false; bms_pin_state=GPIO_PIN_RESET; fake_tick=0;
     run_one_adbms_task_iteration(&app);
     CHECK(app.voltage_fault == false); CHECK(app.temp_fault == false); CHECK(app.bms_state == true); CHECK(bms_pin_state == GPIO_PIN_SET);
 
@@ -261,8 +285,8 @@ static void test_task_iterations_with_injected_signals(void){
     app.max_temp = TEMP_THRESH_H + 1.0f; run_one_fan_task_iteration(&app); CHECK(app.fan_state == true); for(int i=0;i<NFANS;i++) CHECK(app.board.fans[i].duty_cycle == 100.0f);
     app.max_temp = TEMP_THRESH_L - 1.0f; run_one_fan_task_iteration(&app); CHECK(app.fan_state == false); for(int i=0;i<NFANS;i++) CHECK(app.board.fans[i].duty_cycle == 0.0f);
 
-    static ADC_HandleTypeDef adc1, adc2; init_fake_app(); app.board.current_sensor.hadc_high=&adc1; app.board.current_sensor.hadc_low=&adc2; run_one_current_task_iteration(&app); CHECK(app.current_fault == false);
-    init_fake_app(); app.board.current_sensor.hadc_high=NULL; app.board.current_sensor.hadc_low=&adc2; app.current = 12.3f; app.board.current_sensor.current = 45.6f; run_one_current_task_iteration(&app); CHECK(app.current_fault == true); CHECK(fabsf(app.current - 12.3f) < 0.001f);
+    static ADC_HandleTypeDef adc1, adc2; init_fake_app(); app.board.current_sensor.hadc_high=&adc1; app.board.current_sensor.hadc_low=&adc2; fake_adc_set_two_read_sequence(adc_count_for_sensor_voltage(2.5f), adc_count_for_sensor_voltage(2.5f)); run_one_current_task_iteration(&app); CHECK(app.current_fault == false); CHECK(app.current_valid == true);
+    init_fake_app(); app.board.current_sensor.hadc_high=NULL; app.board.current_sensor.hadc_low=&adc2; app.current = 12.3f; app.board.current_sensor.current = 45.6f; run_one_current_task_iteration(&app); CHECK(app.current_fault == false); CHECK(app.current_sensor_fault == false); CHECK(fabsf(app.current - 12.3f) < 0.001f);
 }
 
 static uint16_t adc_count_for_mcu_voltage(float v)
@@ -275,10 +299,174 @@ static uint16_t adc_count_for_sensor_voltage(float v)
     return adc_count_for_mcu_voltage(v * 0.6f);
 }
 
+static void fake_adc_set_two_read_sequence(uint16_t high_count, uint16_t low_count)
+{
+    fake_adc_read_counts[0] = high_count;
+    fake_adc_read_counts[1] = low_count;
+    fake_adc_read_statuses[0] = HAL_OK;
+    fake_adc_read_statuses[1] = HAL_OK;
+    fake_adc_read_index = 0u;
+}
+
+static void fake_adc_set_status_sequence(HAL_StatusTypeDef high_status, HAL_StatusTypeDef low_status)
+{
+    fake_adc_read_statuses[0] = high_status;
+    fake_adc_read_statuses[1] = low_status;
+    fake_adc_read_counts[0] = 0u;
+    fake_adc_read_counts[1] = 0u;
+    fake_adc_read_index = 0u;
+}
+
+static void test_current_sensor_measurement_model(void)
+{
+    current_sensor_t cs = {0};
+    float current;
+
+    cs.count_high = adc_count_for_sensor_voltage(2.5f);
+    cs.count_low = adc_count_for_sensor_voltage(2.5f);
+    current = current_sensor_convert(&cs);
+    CHECK(cs.current_valid == true);
+    CHECK(cs.reason == CURRENT_SENSOR_REASON_OK);
+    CHECK(cs.selected_range == CURRENT_SENSOR_RANGE_50A);
+    CHECK(fabsf(current) < 0.05f);
+    CHECK(fabsf(cs.sensor_voltage_high - 2.5f) < 0.01f);
+    CHECK(fabsf(cs.sensor_voltage_low - 2.5f) < 0.01f);
+
+    cs = (current_sensor_t){0};
+    cs.count_high = adc_count_for_sensor_voltage(2.55f);  /* +20 A on 2.5 mV/A / C_SENSE_H */
+    cs.count_low = adc_count_for_sensor_voltage(3.3f);    /* +20 A on 40 mV/A / C_SENSE_L */
+    current = current_sensor_convert(&cs);
+    CHECK(cs.current_valid == true);
+    CHECK(cs.selected_range == CURRENT_SENSOR_RANGE_50A);
+    CHECK(fabsf(current - 20.0f) < 0.25f);
+    CHECK(fabsf(cs.current_50a - 20.0f) < 0.25f);
+    CHECK(fabsf(cs.current_800a - 20.0f) < 1.0f);
+
+    cs = (current_sensor_t){0};
+    cs.count_high = adc_count_for_sensor_voltage(2.65f);  /* +60 A on 800 A / C_SENSE_H */
+    cs.count_low = adc_count_for_sensor_voltage(4.75f);   /* 50 A channel at clamp / C_SENSE_L */
+    current = current_sensor_convert(&cs);
+    CHECK(cs.current_valid == true);
+    CHECK(cs.selected_range == CURRENT_SENSOR_RANGE_800A);
+    CHECK(fabsf(current - 60.0f) < 1.0f);
+
+    cs = (current_sensor_t){0};
+    cs.count_high = adc_count_for_sensor_voltage(4.75f);
+    cs.count_low = adc_count_for_sensor_voltage(4.75f);
+    (void)current_sensor_convert(&cs);
+    CHECK(cs.current_valid == false);
+    CHECK(cs.reason == CURRENT_SENSOR_REASON_SENSOR_SATURATION);
+
+    cs = (current_sensor_t){0};
+    cs.count_high = adc_count_for_sensor_voltage(2.5f);   /* 0 A on 800 A / C_SENSE_H */
+    cs.count_low = adc_count_for_sensor_voltage(3.3f);    /* +20 A on 50 A / C_SENSE_L */
+    (void)current_sensor_convert(&cs);
+    CHECK(cs.current_valid == false);
+    CHECK(cs.reason == CURRENT_SENSOR_REASON_CHANNEL_MISMATCH);
+
+    cs = (current_sensor_t){0};
+    cs.count_high = 3900u;
+    cs.count_low = adc_count_for_sensor_voltage(2.5f);
+    (void)current_sensor_convert(&cs);
+    CHECK(cs.current_valid == false);
+    CHECK(cs.reason == CURRENT_SENSOR_REASON_ADC_IMPLAUSIBLE);
+
+    CHECK(strcmp(current_sensor_reason_str(CURRENT_SENSOR_REASON_SENSOR_SATURATION), "sensor_saturation") == 0);
+    CHECK(strcmp(current_sensor_range_str(CURRENT_SENSOR_RANGE_800A), "800A") == 0);
+}
+
+static void test_current_task_measurement_state(void)
+{
+    static ADC_HandleTypeDef adc1, adc2;
+
+    init_fake_app();
+    app.board.current_sensor.hadc_high = &adc1;
+    app.board.current_sensor.hadc_low = &adc2;
+    app.current = 99.0f;
+    fake_adc_set_two_read_sequence(adc_count_for_sensor_voltage(2.5f),
+                                   adc_count_for_sensor_voltage(2.5f));
+    run_one_current_task_iteration(&app);
+    CHECK(app.current_valid == true);
+    CHECK(app.current_fault == false);
+    CHECK(app.current_meas_reason == CURRENT_SENSOR_REASON_OK);
+    CHECK(app.current_selected_range == CURRENT_SENSOR_RANGE_50A);
+    CHECK(fabsf(app.current) < 0.05f);
+
+    init_fake_app();
+    app.board.current_sensor.hadc_high = &adc1;
+    app.board.current_sensor.hadc_low = &adc2;
+    app.current = 12.3f;
+    fake_adc_set_status_sequence(HAL_TIMEOUT, HAL_OK);
+    run_one_current_task_iteration(&app);
+    CHECK(app.current_valid == false);
+    CHECK(app.current_fault == false);
+    CHECK(app.current_sensor_fault == false);
+    CHECK(app.current_meas_reason == CURRENT_SENSOR_REASON_ADC_READ);
+    CHECK(fabsf(app.current - 12.3f) < 0.001f);
+
+    for(int i = 0; i < 25; i++)
+    {
+        fake_adc_set_status_sequence(HAL_TIMEOUT, HAL_OK);
+        run_one_current_task_iteration(&app);
+    }
+    CHECK(app.current_sensor_fault == true);
+    CHECK(app.current_fault == true);
+    CHECK(app.current_fault_reason == CURRENT_FAULT_REASON_SENSOR_ADC_READ);
+}
+
+
+static void test_current_task_threshold_faults(void)
+{
+    static ADC_HandleTypeDef adc1, adc2;
+
+    init_fake_app();
+    app.state = STATE_DISCARGE;
+    app.bms_state = true;
+    bms_pin_state = GPIO_PIN_SET;
+    app.board.current_sensor.hadc_high = &adc1;
+    app.board.current_sensor.hadc_low = &adc2;
+
+    for(int i = 0; i < 25; i++)
+    {
+        fake_adc_set_two_read_sequence(adc_count_for_sensor_voltage(2.725f),  /* +90 A on 800 A / C_SENSE_H */
+                                       adc_count_for_sensor_voltage(4.75f));   /* 50 A channel clamped / C_SENSE_L */
+        run_one_current_task_iteration(&app);
+    }
+
+    CHECK(app.current_valid == true);
+    CHECK(app.current_selected_range == CURRENT_SENSOR_RANGE_800A);
+    CHECK(fabsf(app.current - 90.0f) < 1.0f);
+    CHECK(app.current_overcurrent_fault == true);
+    CHECK(app.current_fault_latched == true);
+    CHECK(app.current_fault == true);
+    CHECK(app.current_fault_latched_reason == CURRENT_FAULT_REASON_DISCHARGE_OVERCURRENT);
+    CHECK(app.bms_state == false);
+    CHECK(bms_pin_state == GPIO_PIN_RESET);
+
+    init_fake_app();
+    app.state = STATE_START;
+    app.bms_state = true;
+    bms_pin_state = GPIO_PIN_SET;
+    app.board.current_sensor.hadc_high = &adc1;
+    app.board.current_sensor.hadc_low = &adc2;
+
+    for(int i = 0; i < 2; i++)
+    {
+        fake_adc_set_two_read_sequence(adc_count_for_sensor_voltage(2.50625f), /* +2.5 A on 800 A / C_SENSE_H */
+                                       adc_count_for_sensor_voltage(2.6f));     /* +2.5 A on 50 A / C_SENSE_L */
+        run_one_current_task_iteration(&app);
+    }
+
+    CHECK(app.current_valid == true);
+    CHECK(fabsf(app.current - 2.5f) < 0.2f);
+    CHECK(app.current_overcurrent_fault == true);
+    CHECK(app.current_fault_latched == true);
+    CHECK(app.current_fault_latched_reason == CURRENT_FAULT_REASON_PRECHARGE_FAST_OVERCURRENT);
+    CHECK(app.bms_state == false);
+}
+
 static void test_fan_current_and_null_guards(void){
     fan_t fan={0}; uint32_t ccr=999; static TIM_HandleTypeDef htim; CHECK(fan_init(NULL,NULL,NULL,0,NULL,1) != 0); CHECK(fan_init(&fan,NULL,&htim,1000,&ccr,1)==0); CHECK(ccr==0u); CHECK(set_fan_percent(&fan,120.0f)==0 && ccr==1000u && fabsf(fan.duty_cycle-100.0f)<0.01f); CHECK(set_fan_percent(&fan,-10.0f)==0 && ccr==0u && fabsf(fan.duty_cycle)<0.01f);
-    current_sensor_t cs={0}; cs.count_low=adc_count_for_sensor_voltage(2.5f); cs.count_high=adc_count_for_sensor_voltage(2.5f); float current=current_sensor_convert(&cs); CHECK(current > -1.0f && current < 1.0f); CHECK(fabsf(cs.sensor_voltage_low - 2.5f) < 0.01f);
-    cs.count_low=adc_count_for_sensor_voltage(3.1f); cs.count_high=adc_count_for_sensor_voltage(4.0f); current=current_sensor_convert(&cs); CHECK(fabsf(current - cs.current_high) < 0.001f);
     CHECK(current_sensor_convert(NULL) == 0.0f);
     CHECK(accumulator_set_balance(NULL) == -1); CHECK(accumulator_clear_balance(NULL) == -1); accumulator_update_voltage_stats(NULL); accumulator_update_temp_stats(NULL);
     CHECK(imd_read(NULL) == 1); imd_init(NULL, 0, NULL, NULL, 0, 0, NULL, 0);
@@ -290,32 +478,32 @@ static void test_fault_matrix_extra(void){
     static ADC_HandleTypeDef adc1;
 
     // 1) Overvoltage must hard-disable BMS and clear balancing.
-    init_fake_app(); fill_nominal_pack(&app, 3.700f); app.state=STATE_CHARGE; app.bms_state=true; bms_pin_state=GPIO_PIN_SET; app.acc.smb_ics[1].cell.c_codes[4]=code_for_volts(4.250f);
+    init_fake_app(); fill_nominal_pack(&app, 3.700f); app.state=STATE_CHARGE; app.current_valid=true; app.bms_state=true; bms_pin_state=GPIO_PIN_SET; app.acc.smb_ics[1].cell.c_codes[4]=code_for_volts(4.250f);
     run_one_adbms_task_iteration(&app);
     CHECK(app.voltage_fault == true); CHECK(app.bms_state == false); CHECK(bms_pin_state == GPIO_PIN_RESET);
     for(int ic=0; ic<NSMBS; ic++) CHECK(app.acc.smb_ics[ic].tx_cfgb.dcc == 0u);
 
     // 2) All invalid cell readings must fail safe. A pack with no valid cell data cannot be considered safe.
-    init_fake_app(); app.acc.smb.num_ics=NSMBS; app.acc.smb.ics=app.acc.smb_ics; app.state=STATE_CHARGE; app.bms_state=true; bms_pin_state=GPIO_PIN_SET;
+    init_fake_app(); app.acc.smb.num_ics=NSMBS; app.acc.smb.ics=app.acc.smb_ics; app.state=STATE_CHARGE; app.current_valid=true; app.bms_state=true; bms_pin_state=GPIO_PIN_SET;
     for(int ic=0; ic<NSMBS; ic++) for(int c=0;c<NCELLS;c++) app.acc.smb_ics[ic].cell.c_codes[c] = 0;
     run_one_adbms_task_iteration(&app);
     CHECK(app.voltage_fault == true); CHECK(app.bms_state == false); CHECK(bms_pin_state == GPIO_PIN_RESET);
 
     // 3) High temperature must hard-disable BMS and prevent balancing.
-    init_fake_app(); fill_nominal_pack(&app, 3.700f); app.state=STATE_CHARGE; app.bms_state=true; bms_pin_state=GPIO_PIN_SET;
+    init_fake_app(); fill_nominal_pack(&app, 3.700f); app.state=STATE_CHARGE; app.current_valid=true; app.bms_state=true; bms_pin_state=GPIO_PIN_SET;
     for(int ic=0; ic<NSMBS; ic++) for(int s=0;s<NTEMPS;s++) app.acc.smb_ics[ic].temp.raw[s] = raw_for_ntc_voltage(4.5f); // very hot NTC divider result
     run_one_adbms_task_iteration(&app);
     CHECK(app.temp_fault == true); CHECK(app.bms_state == false); CHECK(bms_pin_state == GPIO_PIN_RESET);
     for(int ic=0; ic<NSMBS; ic++) CHECK(app.acc.smb_ics[ic].tx_cfgb.dcc == 0u);
 
     // 4) Charger-reported faults must command disable in charge state.
-    init_fake_app(); fill_nominal_pack(&app, 3.700f); app.board.canbus.hcan=&hcan; app.state=STATE_CHARGE; app.bms_state=true; app.board.charger.last_rx_tick=1000; fake_tick=1000;
+    init_fake_app(); fill_nominal_pack(&app, 3.700f); app.board.canbus.hcan=&hcan; app.state=STATE_CHARGE; app.current_valid=true; app.bms_state=true; app.board.charger.last_rx_tick=1000; fake_tick=1000;
     app.board.charger.hardware_fail=true; app.board.charger.overtemp_fail=false; app.board.charger.input_volt_fail=false; app.board.charger.voltage_sense_fail=false; tx_count=0; tx_free_level=3; bms_pin_state=GPIO_PIN_SET;
     run_one_canbus_task_iteration(&app);
     CHECK(app.charger_fault == true); CHECK(app.bms_state == false); CHECK(tx_count == 1u); CHECK(tx_log[0].data[4] == 1u);
 
     // 5) Pre-existing hard fault must command charger disable even without charger self-fault.
-    init_fake_app(); fill_nominal_pack(&app, 3.700f); app.board.canbus.hcan=&hcan; app.state=STATE_CHARGE; app.bms_state=true; app.hard_fault=true; app.board.charger.last_rx_tick=1000; fake_tick=1000; tx_count=0; tx_free_level=3;
+    init_fake_app(); fill_nominal_pack(&app, 3.700f); app.board.canbus.hcan=&hcan; app.state=STATE_CHARGE; app.current_valid=true; app.bms_state=true; app.hard_fault=true; app.board.charger.last_rx_tick=1000; fake_tick=1000; tx_count=0; tx_free_level=3;
     run_one_canbus_task_iteration(&app);
     CHECK(tx_count == 1u); CHECK(tx_log[0].data[4] == 1u); CHECK(app.bms_state == false);
 
@@ -332,9 +520,15 @@ static void test_fault_matrix_extra(void){
     run_one_error_task_iteration(&app);
     CHECK(app.soft_fault == true); CHECK(app.hard_fault == false); CHECK(app.bms_state == true);
 
-    // 8) Current ADC missing must set current fault and become a soft fault only.
+    // 8) Current ADC missing is allowed one transient sample, then becomes a soft sensor fault after confirmation.
     init_fake_app(); app.board.current_sensor.hadc_high=&adc1; app.board.current_sensor.hadc_low=NULL; app.bms_state=true; bms_pin_state=GPIO_PIN_SET;
     run_one_current_task_iteration(&app);
+    CHECK(app.current_fault == false);
+    for(int i = 0; i < 25; i++)
+    {
+        run_one_current_task_iteration(&app);
+    }
+    CHECK(app.current_sensor_fault == true);
     CHECK(app.current_fault == true);
     run_one_error_task_iteration(&app);
     CHECK(app.soft_fault == true); CHECK(app.hard_fault == false); CHECK(app.bms_state == true);
@@ -427,7 +621,7 @@ static void test_temp_invalid_and_cold_valid_fault_behavior(void){
     fill_nominal_pack(&app, 3.700f);
     int16_t raw0c = raw_for_temp_c(0.0f);
     for(int ic=0; ic<NSMBS; ic++) for(int s=0; s<NTEMPS; s++) app.acc.smb_ics[ic].temp.raw[s] = raw0c;
-    app.state = STATE_DISCARGE; app.bms_state = true; bms_pin_state = GPIO_PIN_SET; fake_tick = 0;
+    app.state = STATE_DISCARGE; app.current_valid = true; app.bms_state = true; bms_pin_state = GPIO_PIN_SET; fake_tick = 0;
     run_one_adbms_task_iteration(&app);
     CHECK(app.voltage_fault == false);
     CHECK(app.temp_fault == false);
@@ -810,7 +1004,7 @@ static void test_charge_state_disable_matrix(void){
     };
     for(size_t i=0; i<sizeof(cases)/sizeof(cases[0]); i++){
         init_fake_app(); fill_nominal_pack(&app, 3.700f); charger_init(&app.board.charger, &app.board.canbus);
-        app.board.canbus.hcan = &hcan; app.state = STATE_CHARGE;
+        app.board.canbus.hcan = &hcan; app.state = STATE_CHARGE; app.current_valid = true;
         app.hard_fault = cases[i].hard_fault; app.voltage_fault = cases[i].voltage_fault; app.temp_fault = cases[i].temp_fault; app.bms_state = cases[i].bms_state;
         app.board.charger.hardware_fail = cases[i].hw; app.board.charger.overtemp_fail = cases[i].ot; app.board.charger.input_volt_fail = cases[i].input; app.board.charger.voltage_sense_fail = cases[i].sense;
         fake_tick = cases[i].timeout ? 6001u : 1000u;
@@ -888,6 +1082,9 @@ int main(void){
     test_estimator_status_packet_edges(); puts("PASS estimator status packet edges");
     test_can_rx_filter_matrix(); puts("PASS CAN RX filter matrix");
     test_charge_state_disable_matrix(); puts("PASS charge-state disable matrix");
+    test_current_sensor_measurement_model(); puts("PASS current sensor measurement model");
+    test_current_task_measurement_state(); puts("PASS current task measurement state");
+    test_current_task_threshold_faults(); puts("PASS current task threshold faults");
     test_fan_current_and_null_guards(); puts("PASS fan/current/null guards");
     test_periods_and_driver_edge_cases(); puts("PASS periods and driver edge cases");
     test_task_iterations_with_injected_signals(); puts("PASS one-iteration task injection tests");

@@ -398,6 +398,8 @@ void canbus_task_fn(void *arg)
                                    data->hard_fault ||
                                    data->voltage_fault ||
                                    data->temp_fault ||
+                                   data->current_fault ||
+                                   !data->current_valid ||
                                    !data->bms_state);
 
             data->charger_fault = charger_hw_fault;

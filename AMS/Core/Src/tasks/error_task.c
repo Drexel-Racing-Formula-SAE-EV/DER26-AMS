@@ -54,11 +54,15 @@ void error_task_fn(void *arg)
         data->hard_fault = (data->fuse_fault ||
                             data->temp_fault ||
                             data->voltage_fault ||
-                            data->charger_fault);
+                            data->charger_fault ||
+                            data->current_overcurrent_fault ||
+                            data->current_fault_latched);
 
         data->soft_fault = (data->cli_fault ||
                             data->canbus_fault ||
-                            data->current_fault ||
+                            data->current_sensor_fault ||
+                            data->current_overcurrent_warning ||
+                            data->current_overcurrent_pending ||
                             data->fan_fault);
 
         if(data->hard_fault)

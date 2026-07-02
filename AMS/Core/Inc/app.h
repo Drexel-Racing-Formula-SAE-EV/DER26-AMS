@@ -16,6 +16,7 @@
 #include "board.h"
 #include "ext_drivers/accumulator.h"
 #include "estimator/ams_soc_ekf.h"
+#include "ext_drivers/current_fault.h"
 
 #define VER_MAJOR 0
 #define VER_MINOR 1
@@ -24,7 +25,7 @@
 #define ERR_FREQ 20
 #define CLI_FREQ 20
 #define AIR_FREQ 2 // used to be 10
-#define CURRENT_FREQ 10
+#define CURRENT_FREQ 50
 #define ADBMS_FREQ 1 // was 10, testing with 1
 #define IMD_FREQ 10
 #define FAN_FREQ 5
@@ -71,6 +72,9 @@ typedef struct
 	float max_temp;
 	float avg_temp;
 	float current;
+	bool current_valid;
+	current_sensor_range_t current_selected_range;
+	current_sensor_reason_t current_meas_reason;
 
 	bool hard_fault;
 	bool soft_fault;
@@ -79,6 +83,15 @@ typedef struct
 	bool cli_fault;
 	bool canbus_fault;
 	bool current_fault;
+	bool current_sensor_fault;
+	bool current_overcurrent_warning;
+	bool current_overcurrent_pending;
+	bool current_overcurrent_fault;
+	bool current_fault_latched;
+	current_fault_reason_t current_fault_reason;
+	current_fault_reason_t current_fault_latched_reason;
+	current_fault_mode_t current_fault_mode;
+	current_fault_state_t current_fault_state;
 	bool fuse_fault;
 	bool temp_fault;
 	bool voltage_fault;

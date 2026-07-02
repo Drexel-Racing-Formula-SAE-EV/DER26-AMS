@@ -32,6 +32,7 @@ int get_version(int argc, char *argv[]);
 int get_voltage(int argc, char *argv[]);
 int get_temperature(int argc, char *argv[]);
 int get_temperature_sensor(int argc, char *argv[]);
+int get_current(int argc, char *argv[]);
 int set_state(int argc, char *argv[]);
 int cause_fault(int argc, char *argv[]);
 
@@ -46,6 +47,7 @@ command_t cmds[] =
 	{"volt", &get_voltage, "gets cell voltages for all SMBs"},
 	{"temp", &get_temperature, "gets sensor temperatures for all SMBs"},
 	{"tempsns", &get_temperature_sensor, "gets one sensor: tempsns <ic> <sensor 0-23>"},
+	{"current", &get_current, "gets current sensor raw counts/voltages/status"},
 	{"state", &set_state, "gets or sets the AMS state [charge|discharge]"},
 	{"cause_fault", &cause_fault, "cause BMS fault for tech"},
 };
@@ -81,6 +83,32 @@ static uint8_t smb_ic_count(const adbms6830_driver_t *smb)
     }
 
     return (smb->num_ics > NSMBS) ? (uint8_t)NSMBS : (uint8_t)smb->num_ics;
+}
+
+static void cli_fixed1(float value, int *whole, int *decimal)
+{
+    int scaled = (int)roundf(value * 10.0f);
+
+    if(whole == NULL || decimal == NULL)
+    {
+        return;
+    }
+
+    *whole = scaled / 10;
+    *decimal = abs(scaled % 10);
+}
+
+static void cli_fixed3(float value, int *whole, int *decimal)
+{
+    int scaled = (int)roundf(value * 1000.0f);
+
+    if(whole == NULL || decimal == NULL)
+    {
+        return;
+    }
+
+    *whole = scaled / 1000;
+    *decimal = abs(scaled % 1000);
 }
 
 static bool cli_raw_temp_to_values(int16_t raw, float *voltage_out, float *temp_out)
@@ -394,6 +422,73 @@ int get_temperature_sensor(int argc, char *argv[])
         snprintf(outline, CLI_LINESZ, "SMB %d | Sensor %d: raw %d invalid", ic, sensor, raw);
     }
 
+    ret |= cli_printline(cli, outline);
+
+    return ret;
+}
+
+
+int get_current(int argc, char *argv[])
+{
+    int ret = 0;
+    int whole = 0;
+    int decimal = 0;
+    current_sensor_t *cs = &data->board.current_sensor;
+
+    (void)argc;
+    (void)argv;
+
+    snprintf(outline, CLI_LINESZ, "Current valid:%d fault:%d sensor:%d oc:%d latch:%d",
+             data->current_valid,
+             data->current_fault,
+             data->current_sensor_fault,
+             data->current_overcurrent_fault,
+             data->current_fault_latched);
+    ret |= cli_printline(cli, outline);
+
+    snprintf(outline, CLI_LINESZ, "Meas:%s range:%s mode:%s fault:%s",
+             current_sensor_reason_str(data->current_meas_reason),
+             current_sensor_range_str(data->current_selected_range),
+             current_fault_mode_str(data->current_fault_mode),
+             current_fault_reason_str(data->current_fault_reason));
+    ret |= cli_printline(cli, outline);
+
+    snprintf(outline, CLI_LINESZ, "Current warn:%d pending:%d pend_ms:%lu latch_reason:%s",
+             data->current_overcurrent_warning,
+             data->current_overcurrent_pending,
+             (unsigned long)data->current_fault_state.pending_ms,
+             current_fault_reason_str(data->current_fault_latched_reason));
+    ret |= cli_printline(cli, outline);
+
+    snprintf(outline, CLI_LINESZ, "ADC raw H:%u L:%u", cs->count_high, cs->count_low);
+    ret |= cli_printline(cli, outline);
+
+    cli_fixed3(cs->voltage_high, &whole, &decimal);
+    snprintf(outline, CLI_LINESZ, "ADC H: %d.%03d V", whole, decimal);
+    ret |= cli_printline(cli, outline);
+
+    cli_fixed3(cs->voltage_low, &whole, &decimal);
+    snprintf(outline, CLI_LINESZ, "ADC L: %d.%03d V", whole, decimal);
+    ret |= cli_printline(cli, outline);
+
+    cli_fixed3(cs->sensor_voltage_high, &whole, &decimal);
+    snprintf(outline, CLI_LINESZ, "DHAB H: %d.%03d V", whole, decimal);
+    ret |= cli_printline(cli, outline);
+
+    cli_fixed3(cs->sensor_voltage_low, &whole, &decimal);
+    snprintf(outline, CLI_LINESZ, "DHAB L: %d.%03d V", whole, decimal);
+    ret |= cli_printline(cli, outline);
+
+    cli_fixed1(cs->current_50a, &whole, &decimal);
+    snprintf(outline, CLI_LINESZ, "I_50A: %d.%01d A", whole, decimal);
+    ret |= cli_printline(cli, outline);
+
+    cli_fixed1(cs->current_800a, &whole, &decimal);
+    snprintf(outline, CLI_LINESZ, "I_800A: %d.%01d A", whole, decimal);
+    ret |= cli_printline(cli, outline);
+
+    cli_fixed1(cs->current, &whole, &decimal);
+    snprintf(outline, CLI_LINESZ, "I_selected: %d.%01d A", whole, decimal);
     ret |= cli_printline(cli, outline);
 
     return ret;
