@@ -7,10 +7,15 @@
 
 #include "ext_drivers/adbms2950.h"
 #include "ext_drivers/adbms_shared.h"
+#include <stddef.h>
 #include <string.h>
 
 uint8_t buf[BUFSZ] = {0};
 uint8_t wrbuf[BUFSZ] = {0};
+static uint8_t adbms2950_spi_txrx_tx_buf[BUFSZ] = {0};
+static uint8_t adbms2950_spi_txrx_rx_buf[BUFSZ] = {0};
+
+#define ADBMS2950_SPI_DUMMY_BYTE 0xFFu
 
 /*!< configuration registers commands */
 uint8_t WRCFGA[2]        = { 0x00, 0x01 };
@@ -131,11 +136,16 @@ uint8_t TM_48[2]       = { 0x00, 0x0E };        // LION: RDSVE
 void adbms2950_cmd(adbms2950_driver_t* dev, uint8_t cmd[CMDSZ]);
 void adbms2950_wr48(adbms2950_driver_t* dev, uint8_t cmd[CMDSZ], uint8_t* tx_data);
 void adbms2950_rd48(adbms2950_driver_t* dev, uint8_t cmd[CMDSZ], uint8_t* rx_data);
+static HAL_StatusTypeDef adbms2950_cmd_checked(adbms2950_driver_t* dev, uint8_t cmd[CMDSZ]);
+static HAL_StatusTypeDef adbms2950_wr48_checked(adbms2950_driver_t* dev, uint8_t cmd[CMDSZ], uint8_t* tx_data);
+static HAL_StatusTypeDef adbms2950_rd48_checked(adbms2950_driver_t* dev, uint8_t cmd[CMDSZ], uint8_t* rx_data);
 
 // SPI communication
 void adbms2950_set_cs(adbms2950_driver_t* dev, uint8_t state);
-void adbms2950_spi_write(adbms2950_driver_t* dev, uint8_t* data, uint16_t len, uint8_t use_cs);
-void adbms2950_spi_write_read(adbms2950_driver_t *dev, uint8_t* tx_Data, uint8_t tx_len, uint8_t* rx_data, uint8_t rx_len, uint8_t use_cs);
+HAL_StatusTypeDef adbms2950_spi_write(adbms2950_driver_t* dev, uint8_t* data, uint16_t len, uint8_t use_cs);
+HAL_StatusTypeDef adbms2950_spi_write_read(adbms2950_driver_t *dev, uint8_t* tx_Data, uint16_t tx_len, uint8_t* rx_data, uint16_t rx_len, uint8_t use_cs);
+static void adbms2950_spi_debug_note_tx(adbms2950_driver_t *dev, adbms2950_spi_op_t op, const uint8_t *cmd, const uint8_t *tx, uint16_t tx_len, uint16_t rx_len);
+static void adbms2950_spi_debug_note_rx(adbms2950_driver_t *dev, const uint8_t *rx, uint16_t rx_len, HAL_StatusTypeDef status);
 
 // Data parsing
 void adbms2950_parse_cfga(adbms2950_driver_t* dev, uint8_t* data);
@@ -152,7 +162,150 @@ void adbms2950_pack_cfgb(adbms2950_driver_t* dev);
 uint16_t Pec15_Calc(uint8_t len, uint8_t *data);
 uint16_t pec10_calc(uint8_t rx_cmd, int len, uint8_t *data);
 uint16_t pec10_calc_modular(uint8_t * data, uint8_t PEC_Format);
+
 uint16_t pec10_calc_int(uint16_t remainder, uint8_t bit);
+
+static uint16_t adbms2950_min_u16(uint16_t a, uint16_t b)
+{
+	return (a < b) ? a : b;
+}
+
+void adbms2950_spi_debug_enable(adbms2950_driver_t *dev, bool enable)
+{
+	if(dev == NULL)
+	{
+		return;
+	}
+
+	dev->spi_debug.enabled = enable;
+}
+
+void adbms2950_spi_debug_clear(adbms2950_driver_t *dev)
+{
+	bool was_enabled;
+
+	if(dev == NULL)
+	{
+		return;
+	}
+
+	was_enabled = dev->spi_debug.enabled;
+	memset(&dev->spi_debug, 0, sizeof(dev->spi_debug));
+	dev->spi_debug.enabled = was_enabled;
+	dev->spi_debug.last_status = HAL_OK;
+	dev->spi_debug.last_tx_status = HAL_OK;
+	dev->spi_debug.last_rx_status = HAL_OK;
+	dev->spi_debug.last_xfer_status = HAL_OK;
+}
+
+const adbms2950_spi_debug_t *adbms2950_spi_debug_get(const adbms2950_driver_t *dev)
+{
+	return (dev == NULL) ? NULL : &dev->spi_debug;
+}
+
+const char *adbms2950_spi_op_str(adbms2950_spi_op_t op)
+{
+	switch(op)
+	{
+	case ADBMS2950_SPI_OP_NONE:  return "none";
+	case ADBMS2950_SPI_OP_CMD:   return "cmd";
+	case ADBMS2950_SPI_OP_WR48:  return "wr48";
+	case ADBMS2950_SPI_OP_RD48:  return "rd48";
+	case ADBMS2950_SPI_OP_PROBE: return "probe";
+	default:                     return "unknown";
+	}
+}
+
+static void adbms2950_spi_debug_note_tx(adbms2950_driver_t *dev,
+										adbms2950_spi_op_t op,
+										const uint8_t *cmd,
+										const uint8_t *tx,
+										uint16_t tx_len,
+										uint16_t rx_len)
+{
+	uint16_t preview_len;
+
+	if((dev == NULL) || (!dev->spi_debug.enabled))
+	{
+		return;
+	}
+
+	dev->spi_debug.last_op = op;
+	dev->spi_debug.last_string = dev->string;
+	dev->spi_debug.last_tx_len = tx_len;
+	dev->spi_debug.last_rx_len = rx_len;
+	dev->spi_debug.last_total_len = (uint16_t)(tx_len + rx_len);
+	dev->spi_debug.last_read_pec_pass_mask = 0u;
+	dev->spi_debug.last_read_pec_fail_mask = 0u;
+	memset(dev->spi_debug.last_cmd_counter, 0, sizeof(dev->spi_debug.last_cmd_counter));
+	memset(dev->spi_debug.last_tx_preview, 0, sizeof(dev->spi_debug.last_tx_preview));
+	memset(dev->spi_debug.last_rx_preview, 0, sizeof(dev->spi_debug.last_rx_preview));
+
+	if(cmd != NULL)
+	{
+		dev->spi_debug.last_cmd[0] = cmd[0];
+		dev->spi_debug.last_cmd[1] = cmd[1];
+	}
+	else
+	{
+		dev->spi_debug.last_cmd[0] = 0u;
+		dev->spi_debug.last_cmd[1] = 0u;
+	}
+
+	if((tx != NULL) && (tx_len > 0u))
+	{
+		preview_len = adbms2950_min_u16(tx_len, ADBMS2950_SPI_DEBUG_PREVIEW_BYTES);
+		memcpy(dev->spi_debug.last_tx_preview, tx, preview_len);
+	}
+}
+
+static void adbms2950_spi_debug_note_rx(adbms2950_driver_t *dev,
+										const uint8_t *rx,
+										uint16_t rx_len,
+										HAL_StatusTypeDef status)
+{
+	uint16_t preview_len;
+
+	if((dev == NULL) || (!dev->spi_debug.enabled))
+	{
+		return;
+	}
+
+	if((rx != NULL) && (rx_len > 0u))
+	{
+		preview_len = adbms2950_min_u16(rx_len, ADBMS2950_SPI_DEBUG_PREVIEW_BYTES);
+		memcpy(dev->spi_debug.last_rx_preview, rx, preview_len);
+	}
+
+	dev->spi_debug.last_status = status;
+	dev->spi_debug.last_xfer_status = status;
+}
+
+HAL_StatusTypeDef adbms2950_spi_probe_rdcfga(adbms2950_driver_t *dev)
+{
+	HAL_StatusTypeDef status;
+
+	if(dev == NULL)
+	{
+		return HAL_ERROR;
+	}
+
+	adbms2950_spi_debug_enable(dev, true);
+	adbms2950_wakeup(dev);
+
+	if(dev->spi_debug.enabled)
+	{
+		dev->spi_debug.last_op = ADBMS2950_SPI_OP_PROBE;
+	}
+
+	status = adbms2950_rd48_checked(dev, RDCFGA, buf);
+	if(status == HAL_OK)
+	{
+		adbms2950_parse_cfga(dev, buf);
+	}
+
+	return status;
+}
 
 void adbms2950_init(adbms2950_driver_t *dev,
 					uint8_t num_asics,
@@ -172,6 +325,13 @@ void adbms2950_init(adbms2950_driver_t *dev,
 	dev->cs_pin[0] = CSA_Pin;
 	dev->cs_pin[1] = CSB_Pin;
 	dev->htim = htim;
+
+	memset(&dev->spi_debug, 0, sizeof(dev->spi_debug));
+	dev->spi_debug.enabled = true;
+	dev->spi_debug.last_status = HAL_OK;
+	dev->spi_debug.last_tx_status = HAL_OK;
+	dev->spi_debug.last_rx_status = HAL_OK;
+	dev->spi_debug.last_xfer_status = HAL_OK;
 
 	// Set CS pins high
 	dev->string = STRING_B;
@@ -221,65 +381,126 @@ void adbms2950_init(adbms2950_driver_t *dev,
 	adbms2950_us_delay(dev, 8000);
 }
 
+
 void adbms2950_cmd(adbms2950_driver_t* dev, uint8_t cmd[CMDSZ])
 {
+	(void)adbms2950_cmd_checked(dev, cmd);
+}
+
+static HAL_StatusTypeDef adbms2950_cmd_checked(adbms2950_driver_t* dev, uint8_t cmd[CMDSZ])
+{
 	uint16_t pec15;
+
+	if((dev == NULL) || (cmd == NULL))
+	{
+		return HAL_ERROR;
+	}
+
 	wrbuf[0] = cmd[0];
 	wrbuf[1] = cmd[1];
 	pec15 = Pec15_Calc(CMDSZ, cmd);
 	wrbuf[2] = (uint8_t)(pec15 >> 8);
 	wrbuf[3] = (uint8_t)pec15;
 
-	adbms2950_spi_write(dev, wrbuf, CMDSZ + PEC15SZ, 1);
+	if(dev->spi_debug.enabled)
+	{
+		dev->spi_debug.last_op = ADBMS2950_SPI_OP_CMD;
+	}
+
+	return adbms2950_spi_write(dev, wrbuf, CMDSZ + PEC15SZ, 1);
 }
 
 void adbms2950_wr48(adbms2950_driver_t* dev, uint8_t cmd[CMDSZ], uint8_t* tx_data)
 {
+	(void)adbms2950_wr48_checked(dev, cmd, tx_data);
+}
+
+static HAL_StatusTypeDef adbms2950_wr48_checked(adbms2950_driver_t* dev,
+										uint8_t cmd[CMDSZ],
+										uint8_t* tx_data)
+{
 	uint16_t pec15;
 	uint16_t pec10;
-	uint16_t tx_sz = CMDSZ + PEC15SZ + ((TX_DATA + DPECSZ) * dev->num_ics);
+	uint16_t tx_sz;
 	uint16_t cmd_index;
-	uint8_t src_addr = 0;
+	uint8_t src_addr = 0u;
 	uint8_t temp[TX_DATA];
+
+	if((dev == NULL) || (cmd == NULL) || (tx_data == NULL) || (dev->num_ics == 0u))
+	{
+		return HAL_ERROR;
+	}
+
+	tx_sz = CMDSZ + PEC15SZ + ((TX_DATA + DPECSZ) * (uint16_t)dev->num_ics);
+	if(tx_sz > BUFSZ)
+	{
+		return HAL_ERROR;
+	}
+
+	adbms2950_wakeup(dev);
 
 	wrbuf[0] = cmd[0];
 	wrbuf[1] = cmd[1];
 	pec15 = Pec15_Calc(CMDSZ, cmd);
 	wrbuf[2] = (uint8_t)(pec15 >> 8);
 	wrbuf[3] = (uint8_t)pec15;
-	cmd_index = 4;
+	cmd_index = 4u;
 
-    for (uint8_t current_ic = dev->num_ics; current_ic > 0; current_ic--)
+    for (uint8_t current_ic = dev->num_ics; current_ic > 0u; current_ic--)
     {
-      src_addr = ((current_ic-1) * TX_DATA);
+      src_addr = (uint8_t)((current_ic - 1u) * TX_DATA);
       /*!< The first configuration written is received by the last IC in the daisy chain */
-      for (uint8_t current_byte = 0; current_byte < TX_DATA; current_byte++)
+      for (uint8_t current_byte = 0u; current_byte < TX_DATA; current_byte++)
       {
-        wrbuf[cmd_index] = tx_data[((current_ic-1)*6)+current_byte];
-        cmd_index = cmd_index + 1;
+        wrbuf[cmd_index] = tx_data[src_addr + current_byte];
+        cmd_index = cmd_index + 1u;
       }
       /*!< Copy each ic correspond data + pec value for calculate data pec */
       memcpy(temp, &tx_data[src_addr], TX_DATA); /*!< dst, src, size */
       /*!< calculating the PEC for each Ics configuration register data */
       pec10 = (uint16_t)pec10_calc_modular(temp, PEC10_WRITE);
-      // data_pec = (uint16_t)pec10_calc(true,BYTES_IN_REG, &copyArray[0]);
       wrbuf[cmd_index] = (uint8_t)(pec10 >> 8);
-      cmd_index = cmd_index + 1;
+      cmd_index = cmd_index + 1u;
       wrbuf[cmd_index] = (uint8_t)pec10;
-      cmd_index = cmd_index + 1;
+      cmd_index = cmd_index + 1u;
     }
 
-	adbms2950_spi_write(dev, wrbuf, tx_sz, 1);
+	if(dev->spi_debug.enabled)
+	{
+		dev->spi_debug.last_op = ADBMS2950_SPI_OP_WR48;
+	}
+
+	return adbms2950_spi_write(dev, wrbuf, tx_sz, 1);
 }
 
 void adbms2950_rd48(adbms2950_driver_t* dev, uint8_t cmd[CMDSZ], uint8_t* rx_data)
 {
+	(void)adbms2950_rd48_checked(dev, cmd, rx_data);
+}
+
+static HAL_StatusTypeDef adbms2950_rd48_checked(adbms2950_driver_t* dev,
+										uint8_t cmd[CMDSZ],
+										uint8_t* rx_data)
+{
 	uint16_t pec15;
-	uint16_t rx_sz = RX_DATA * dev->num_ics;
+	uint16_t rx_sz;
 	uint8_t wrcmd[CMDSZ + PEC15SZ] = {0};
-	uint8_t src_addr = 0;
-	uint16_t received_pec, calculated_pec;
-	uint8_t temp[RX_DATA]; // should technically be RX_DATA but this is the rd48 and is only used for this size transmission
+	uint8_t src_addr = 0u;
+	uint16_t received_pec;
+	uint16_t calculated_pec;
+	uint8_t temp[RX_DATA];
+	HAL_StatusTypeDef status;
+
+	if((dev == NULL) || (cmd == NULL) || (rx_data == NULL) || (dev->num_ics == 0u))
+	{
+		return HAL_ERROR;
+	}
+
+	rx_sz = RX_DATA * (uint16_t)dev->num_ics;
+	if(rx_sz > BUFSZ)
+	{
+		return HAL_ERROR;
+	}
 
 	wrcmd[0] = cmd[0];
 	wrcmd[1] = cmd[1];
@@ -287,24 +508,48 @@ void adbms2950_rd48(adbms2950_driver_t* dev, uint8_t cmd[CMDSZ], uint8_t* rx_dat
 	wrcmd[2] = (uint8_t)(pec15 >> 8);
 	wrcmd[3] = (uint8_t)pec15;
 
-	adbms2950_spi_write_read(dev, wrcmd, CMDSZ + PEC15SZ, rx_data, rx_sz, 1);
+	adbms2950_wakeup(dev);
 
-    for (uint8_t current_ic = 0; current_ic < dev->num_ics; current_ic++)     /*!< executes for each ic in the daisy chain and packs the data */
+	if(dev->spi_debug.enabled)
+	{
+		dev->spi_debug.last_op = ADBMS2950_SPI_OP_RD48;
+	}
+
+	status = adbms2950_spi_write_read(dev, wrcmd, CMDSZ + PEC15SZ, rx_data, rx_sz, 1);
+	if(status != HAL_OK)
+	{
+		return status;
+	}
+
+    for (uint8_t current_ic = 0u; current_ic < dev->num_ics; current_ic++)
     {
-      for (uint8_t current_byte = 0; current_byte < (RX_DATA); current_byte++)
-      {
-        rx_data[(current_ic * RX_DATA) + current_byte] = rx_data[current_byte + (current_ic * RX_DATA)];
-      }
-      /*!< Get received pec value from ic*/
-      received_pec = (uint16_t)(((rx_data[(current_ic * RX_DATA) + (RX_DATA - 2)] & 0x03) << 8) | rx_data[(current_ic * RX_DATA) + (RX_DATA - 1)]);
-      /*!< Copy each ic correspond data + pec value for calculate data pec */
+      uint8_t cmd_counter;
+      received_pec = (uint16_t)(((rx_data[(current_ic * RX_DATA) + (RX_DATA - 2u)] & 0x03u) << 8u) |
+                                rx_data[(current_ic * RX_DATA) + (RX_DATA - 1u)]);
       memcpy(temp, &rx_data[src_addr], RX_DATA);
-      src_addr = ((current_ic+1) * (RX_DATA));
-      /*!< Calculate data pec */
-      calculated_pec = (uint16_t) pec10_calc(1, (RX_DATA - DPECSZ), temp);
+      src_addr = (uint8_t)((current_ic + 1u) * RX_DATA);
+      calculated_pec = (uint16_t)pec10_calc(1, (RX_DATA - DPECSZ), temp);
+      cmd_counter = (uint8_t)(rx_data[(current_ic * RX_DATA) + (RX_DATA - 2u)] >> 2u);
 
+      dev->ics[current_ic].rx_cmd_cntr = cmd_counter;
       dev->ics[current_ic].rx_pec_error = (received_pec != calculated_pec);
+
+      if(dev->spi_debug.enabled && (current_ic < ADBMS2950_MAX_TRACKED_ICS))
+      {
+        dev->spi_debug.last_cmd_counter[current_ic] = cmd_counter;
+        if(dev->ics[current_ic].rx_pec_error)
+        {
+          dev->spi_debug.last_read_pec_fail_mask |= (uint16_t)(1u << current_ic);
+          dev->spi_debug.error_count++;
+        }
+        else
+        {
+          dev->spi_debug.last_read_pec_pass_mask |= (uint16_t)(1u << current_ic);
+        }
+      }
     }
+
+	return HAL_OK;
 }
 
 void adbms2950_reset_cfg_regs(adbms2950_driver_t* dev)
@@ -735,32 +980,112 @@ void adbms2950_us_delay(adbms2950_driver_t* dev, uint16_t microseconds)
 	return;
 }
 
-void adbms2950_spi_write(adbms2950_driver_t* dev, uint8_t* data, uint16_t len, uint8_t use_cs)
+
+HAL_StatusTypeDef adbms2950_spi_write(adbms2950_driver_t* dev, uint8_t* data, uint16_t len, uint8_t use_cs)
 {
-	if((dev == NULL) || (dev->hspi == NULL) || (data == NULL))
+	HAL_StatusTypeDef status;
+
+	if((dev == NULL) || (dev->hspi == NULL) || (data == NULL) || (len == 0u))
 	{
-		return;
+		return HAL_ERROR;
 	}
 
-	if(use_cs) adbms2950_set_cs(dev, 0);
-	HAL_SPI_Transmit(dev->hspi, data, len, SPI_TIMEOUT);
-	if(use_cs) adbms2950_set_cs(dev, 1);
+	adbms2950_spi_debug_note_tx(dev, dev->spi_debug.last_op, data, data, len, 0u);
+
+	if(use_cs)
+	{
+		adbms2950_set_cs(dev, 0);
+	}
+
+	status = HAL_SPI_Transmit(dev->hspi, data, len, SPI_TIMEOUT);
+
+	if(use_cs)
+	{
+		adbms2950_set_cs(dev, 1);
+	}
+
+	if(dev->spi_debug.enabled)
+	{
+		dev->spi_debug.tx_count++;
+		dev->spi_debug.last_tx_status = status;
+		dev->spi_debug.last_status = status;
+		if(status != HAL_OK)
+		{
+			dev->spi_debug.error_count++;
+		}
+	}
+
+	return status;
 }
 
-void adbms2950_spi_write_read(adbms2950_driver_t *dev,
-							  uint8_t* tx_Data,
-							  uint8_t tx_len,
-							  uint8_t* rx_data,
-							  uint8_t rx_len,
-							  uint8_t use_cs)
+HAL_StatusTypeDef adbms2950_spi_write_read(adbms2950_driver_t *dev,
+										  uint8_t* tx_Data,
+										  uint16_t tx_len,
+										  uint8_t* rx_data,
+										  uint16_t rx_len,
+										  uint8_t use_cs)
 {
-	if((dev == NULL) || (dev->hspi == NULL) || (tx_Data == NULL) || (rx_data == NULL))
+	HAL_StatusTypeDef status;
+	uint16_t total_len;
+
+	if((dev == NULL) || (dev->hspi == NULL) || (tx_Data == NULL) ||
+	   (rx_data == NULL) || (tx_len == 0u) || (rx_len == 0u))
 	{
-		return;
+		return HAL_ERROR;
 	}
 
-	if(use_cs) adbms2950_set_cs(dev, 0);
-	(void)HAL_SPI_Transmit(dev->hspi, tx_Data, tx_len, 100);
-	(void)HAL_SPI_Receive(dev->hspi, rx_data, rx_len, 100);
-	if(use_cs) adbms2950_set_cs(dev, 1);
+	total_len = (uint16_t)(tx_len + rx_len);
+	if(total_len > BUFSZ)
+	{
+		return HAL_ERROR;
+	}
+
+	memset(adbms2950_spi_txrx_tx_buf, ADBMS2950_SPI_DUMMY_BYTE, total_len);
+	memset(adbms2950_spi_txrx_rx_buf, 0, total_len);
+	memcpy(adbms2950_spi_txrx_tx_buf, tx_Data, tx_len);
+
+	adbms2950_spi_debug_note_tx(dev, dev->spi_debug.last_op, tx_Data, adbms2950_spi_txrx_tx_buf, tx_len, rx_len);
+
+	if(use_cs)
+	{
+		adbms2950_set_cs(dev, 0);
+	}
+
+	status = HAL_SPI_TransmitReceive(dev->hspi,
+								  adbms2950_spi_txrx_tx_buf,
+								  adbms2950_spi_txrx_rx_buf,
+								  total_len,
+								  SPI_TIMEOUT);
+
+	if(use_cs)
+	{
+		adbms2950_set_cs(dev, 1);
+	}
+
+	if(status == HAL_OK)
+	{
+		memcpy(rx_data, &adbms2950_spi_txrx_rx_buf[tx_len], rx_len);
+	}
+	else
+	{
+		memset(rx_data, 0, rx_len);
+	}
+
+	if(dev->spi_debug.enabled)
+	{
+		dev->spi_debug.tx_count++;
+		dev->spi_debug.rx_count++;
+		dev->spi_debug.last_tx_status = status;
+		dev->spi_debug.last_rx_status = status;
+		dev->spi_debug.last_xfer_status = status;
+		dev->spi_debug.last_status = status;
+		if(status != HAL_OK)
+		{
+			dev->spi_debug.error_count++;
+		}
+	}
+
+	adbms2950_spi_debug_note_rx(dev, rx_data, rx_len, status);
+
+	return status;
 }

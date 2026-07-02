@@ -73,8 +73,14 @@ void accumulator_init(accumulator_t *dev,
         (void)HAL_TIM_Base_Start(htim);
     }
 
-	// Init pack monitor, just on port A
-	// adbms2950_init(&dev->apm, NAPMS, dev->apm_ics, hspi, cs_port_a, cs_port_a, cs_pin_a, cs_pin_a, htim);
+	// Init pack monitor, just on port A. Disabled by default until ADBMS2950
+	// NDA documentation and board bring-up are complete.
+#if AMS_ENABLE_APM_2950_DEBUG
+	adbms2950_init(&dev->apm, NAPMS, dev->apm_ics, hspi, cs_port_a, cs_port_a, cs_pin_a, cs_pin_a, htim);
+#else
+	memset(&dev->apm, 0, sizeof(dev->apm));
+	memset(dev->apm_ics, 0, sizeof(dev->apm_ics));
+#endif
 
 	adBms6830_init(&dev->smb, NSMBS, dev->smb_ics, hspi, cs_port_b, cs_port_b, cs_pin_b, cs_pin_b, htim);
 }

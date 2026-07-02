@@ -11,6 +11,42 @@
 #include "ext_drivers/adbms_shared.h"
 #include "ext_drivers/adbms2950_defs.h"
 #include "stm32f7xx_hal.h"
+#include <stdbool.h>
+
+#define ADBMS2950_MAX_TRACKED_ICS 16u
+#define ADBMS2950_SPI_DEBUG_PREVIEW_BYTES 16u
+
+typedef enum
+{
+  ADBMS2950_SPI_OP_NONE = 0,
+  ADBMS2950_SPI_OP_CMD,
+  ADBMS2950_SPI_OP_WR48,
+  ADBMS2950_SPI_OP_RD48,
+  ADBMS2950_SPI_OP_PROBE
+} adbms2950_spi_op_t;
+
+typedef struct
+{
+  bool enabled;
+  uint32_t tx_count;
+  uint32_t rx_count;
+  uint32_t error_count;
+  adbms2950_spi_op_t last_op;
+  adbms_string last_string;
+  HAL_StatusTypeDef last_status;
+  HAL_StatusTypeDef last_tx_status;
+  HAL_StatusTypeDef last_rx_status;
+  HAL_StatusTypeDef last_xfer_status;
+  uint8_t last_cmd[2];
+  uint16_t last_tx_len;
+  uint16_t last_rx_len;
+  uint16_t last_total_len;
+  uint16_t last_read_pec_pass_mask;
+  uint16_t last_read_pec_fail_mask;
+  uint8_t last_cmd_counter[ADBMS2950_MAX_TRACKED_ICS];
+  uint8_t last_tx_preview[ADBMS2950_SPI_DEBUG_PREVIEW_BYTES];
+  uint8_t last_rx_preview[ADBMS2950_SPI_DEBUG_PREVIEW_BYTES];
+} adbms2950_spi_debug_t;
 
 /*!< ADBMS2950 IC main structure */
 typedef struct
@@ -92,6 +128,7 @@ typedef struct
 	uint16_t cs_pin[2];
 	adbms_string string;
 	TIM_HandleTypeDef *htim;
+	adbms2950_spi_debug_t spi_debug;
 } adbms2950_driver_t;
 
 void adbms2950_init(adbms2950_driver_t* dev,
@@ -129,5 +166,15 @@ void adbms2950_gpo_set(adbms2950_driver_t* dev, GPO gpo, CFGA_GPO state);
 void adbms2950_wakeup(adbms2950_driver_t *dev);
 // Utility
 void adbms2950_us_delay(adbms2950_driver_t* dev, uint16_t microseconds);
+
+void adbms2950_spi_debug_enable(adbms2950_driver_t *dev, bool enable);
+void adbms2950_spi_debug_clear(adbms2950_driver_t *dev);
+const adbms2950_spi_debug_t *adbms2950_spi_debug_get(const adbms2950_driver_t *dev);
+const char *adbms2950_spi_op_str(adbms2950_spi_op_t op);
+HAL_StatusTypeDef adbms2950_spi_probe_rdcfga(adbms2950_driver_t *dev);
+
+/* Low-level SPI helpers are exposed for APM bring-up/debug and host tests. */
+HAL_StatusTypeDef adbms2950_spi_write(adbms2950_driver_t *dev, uint8_t *data, uint16_t len, uint8_t use_cs);
+HAL_StatusTypeDef adbms2950_spi_write_read(adbms2950_driver_t *dev, uint8_t *tx_data, uint16_t tx_len, uint8_t *rx_data, uint16_t rx_len, uint8_t use_cs);
 
 #endif /* INC_EXT_DRIVERS_ADBMS2950_H_ */

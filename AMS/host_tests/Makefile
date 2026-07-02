@@ -24,6 +24,9 @@ ESTIMATOR_SRC := \
 	$(AMS_ROOT)/Core/Src/estimator/ams_soc_ekf.c \
 	$(AMS_ROOT)/Core/Src/estimator/ams_estimator_lut.c
 
+ADBMS2950_SRC := \
+	$(AMS_ROOT)/Core/Src/ext_drivers/adbms2950.c
+
 COMMON_DEFS := \
 	-DSTM32F767xx \
 	-DUSE_HAL_DRIVER \
@@ -90,7 +93,7 @@ compile: check-root make-build-dir
 	$(CC) $(CFLAGS_COMMON) $(SRC) -o $(BIN) $(LDLIBS)
 
 unit: check-root make-build-dir
-	$(CC) $(CFLAGS_COMMON) $(UNIT_SRC) $(ESTIMATOR_SRC) -o $(UNIT_BIN) $(LDLIBS)
+	$(CC) $(CFLAGS_COMMON) $(UNIT_SRC) $(ESTIMATOR_SRC) $(ADBMS2950_SRC) -o $(UNIT_BIN) $(LDLIBS)
 	$(UNIT_BIN)
 
 ci: unit test analyze

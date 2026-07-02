@@ -34,6 +34,8 @@ Unit-only additions:
 | `test_voltage_fault_read_failure_precedence_and_strings` | Verifies not-ready, partial/stale/PEC read-fault precedence, warning-only partial usable scans, and voltage fault reason strings. |
 | `test_adbms_spi_debug_write_and_full_duplex_paths` | Verifies SPI debug state for write and full-duplex read paths, CS wrapping, dummy-byte TX padding, RX extraction, HAL error propagation, and debug counters/previews. |
 | `test_adbms_spi_debug_rd48_pec_masks_and_clear` | Verifies `rd48` debug command capture, PEC pass/fail masks across multiple ICs, command-counter capture, debug clear/enable behavior, and SPI op strings. |
+| `test_adbms2950_spi_debug_write_and_full_duplex_paths` | Verifies ADBMS2950/APM SPI write and full-duplex read debug state, CS wrapping, dummy-byte TX padding, RX extraction, HAL error propagation, and counters/previews. |
+| `test_adbms2950_spi_probe_pec_masks_and_clear` | Verifies ADBMS2950/APM RDCFGA probe debug capture, PEC pass/fail masks, command-counter capture, debug clear/enable behavior, and SPI op strings. |
 
 Add every hardware-discovered bug as a new host regression case when possible.
 
@@ -41,4 +43,5 @@ Hardware bring-up notes:
 
 | Area | Purpose |
 |---|---|
-| ADBMS isoSPI debug CLI | Firmware now exposes `spi status`, `spi probe`, `spi clear`, `spi enable`, and `spi disable` for board-side SPI/isoSPI bring-up. This is hardware-debug support; host tests still cover safety logic, not physical SPI timing or transformer/isoSPI behavior. |
+| ADBMS6830 SPI debug CLI | Firmware exposes `spi status`, `spi probe`, `spi clear`, `spi enable`, and `spi disable` for board-side ADBMS6830 chain bring-up. This is hardware-debug support; host tests still cover firmware transaction/debug logic, not physical SPI timing or cable integrity. |
+| ADBMS2950/APM SPI debug CLI | Firmware exposes `apm status`, `apm probe`, `apm clear`, `apm enable`, and `apm disable`. APM initialization remains gated behind `AMS_ENABLE_APM_2950_DEBUG=1` until the NDA datasheet and board bring-up are complete. |

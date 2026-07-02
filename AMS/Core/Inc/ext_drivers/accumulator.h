@@ -29,6 +29,13 @@
 
 
 /* APM Macros */
+/* Keep the ADBMS2950/APM off the normal AMS loop until board bring-up is
+ * complete. Set to 1 locally to initialize the APM path for CLI-only probing.
+ */
+#ifndef AMS_ENABLE_APM_2950_DEBUG
+#define AMS_ENABLE_APM_2950_DEBUG 0
+#endif
+
 #define NAPMS 1
 #define HVEN1 GPO1
 #define HVEN2 GPO2

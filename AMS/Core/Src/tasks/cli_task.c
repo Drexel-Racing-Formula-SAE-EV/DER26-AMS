@@ -36,6 +36,7 @@ int get_temperature_sensor(int argc, char *argv[]);
 
 int get_current(int argc, char *argv[]);
 int get_spi_debug(int argc, char *argv[]);
+int get_apm_debug(int argc, char *argv[]);
 int set_state(int argc, char *argv[]);
 int cause_fault(int argc, char *argv[]);
 
@@ -51,7 +52,8 @@ command_t cmds[] =
 	{"temp", &get_temperature, "gets sensor temperatures for all SMBs"},
 	{"tempsns", &get_temperature_sensor, "gets one sensor: tempsns <ic> <sensor 0-23>"},
 	{"current", &get_current, "gets current sensor raw counts/voltages/status"},
-	{"spi", &get_spi_debug, "ADBMS isoSPI debug: spi [status|probe|clear|enable|disable]"},
+	{"spi", &get_spi_debug, "ADBMS6830 SPI debug: spi [status|probe|clear|enable|disable]"},
+	{"apm", &get_apm_debug, "ADBMS2950/APM debug: apm [status|probe|clear|enable|disable]"},
 	{"state", &set_state, "gets or sets the AMS state [charge|discharge]"},
 	{"cause_fault", &cause_fault, "cause BMS fault for tech"},
 };
@@ -624,6 +626,122 @@ int get_spi_debug(int argc, char *argv[])
 
     ret |= cli_print_hex_preview("TX:", dbg->last_tx_preview, ADBMS6830_SPI_DEBUG_PREVIEW_BYTES);
     ret |= cli_print_hex_preview("RX:", dbg->last_rx_preview, ADBMS6830_SPI_DEBUG_PREVIEW_BYTES);
+
+    return ret;
+}
+
+
+
+int get_apm_debug(int argc, char *argv[])
+{
+    int ret = 0;
+    adbms2950_driver_t *apm = &data->acc.apm;
+    const adbms2950_spi_debug_t *dbg;
+    HAL_StatusTypeDef probe_status;
+    SPI_HandleTypeDef *hspi = apm->hspi;
+
+    if((apm->hspi == NULL) || (apm->num_ics == 0u))
+    {
+        ret |= cli_printline(cli, "ADBMS2950/APM not initialized");
+        ret |= cli_printline(cli, "Build with AMS_ENABLE_APM_2950_DEBUG=1 for CLI-only APM probing");
+        dbg = adbms2950_spi_debug_get(apm);
+        if(dbg == NULL)
+        {
+            return ret;
+        }
+    }
+    else if((argc >= 2) && (argv[1] != NULL))
+    {
+        if(!strcmp(argv[1], "clear"))
+        {
+            adbms2950_spi_debug_clear(apm);
+            ret |= cli_printline(cli, "ADBMS2950 SPI debug counters cleared");
+        }
+        else if(!strcmp(argv[1], "enable"))
+        {
+            adbms2950_spi_debug_enable(apm, true);
+            ret |= cli_printline(cli, "ADBMS2950 SPI debug enabled");
+        }
+        else if(!strcmp(argv[1], "disable"))
+        {
+            adbms2950_spi_debug_enable(apm, false);
+            ret |= cli_printline(cli, "ADBMS2950 SPI debug disabled");
+        }
+        else if(!strcmp(argv[1], "probe"))
+        {
+            probe_status = adbms2950_spi_probe_rdcfga(apm);
+            snprintf(outline, CLI_LINESZ, "ADBMS2950 RDCFGA probe status: %s", cli_hal_status_str(probe_status));
+            ret |= cli_printline(cli, outline);
+        }
+        else if(strcmp(argv[1], "status"))
+        {
+            ret |= cli_printline(cli, "Usage: apm [status|probe|clear|enable|disable]");
+            return ret;
+        }
+    }
+
+    dbg = adbms2950_spi_debug_get(apm);
+    if(dbg == NULL)
+    {
+        ret |= cli_printline(cli, "ADBMS2950 SPI debug unavailable");
+        return ret;
+    }
+
+    if(hspi != NULL)
+    {
+        snprintf(outline, CLI_LINESZ,
+                 "SPI6 mode CPOL:%s CPHA:%s prescaler:%lu firstbit:%s",
+                 cli_spi_polarity_str(hspi->Init.CLKPolarity),
+                 cli_spi_phase_str(hspi->Init.CLKPhase),
+                 (unsigned long)hspi->Init.BaudRatePrescaler,
+                 (hspi->Init.FirstBit == SPI_FIRSTBIT_MSB) ? "MSB" : "LSB");
+        ret |= cli_printline(cli, outline);
+    }
+    else
+    {
+        ret |= cli_printline(cli, "SPI handle is NULL");
+    }
+
+    snprintf(outline, CLI_LINESZ,
+             "apm dbg en:%d op:%s string:%u status:%s tx:%lu rx:%lu err:%lu ics:%u",
+             dbg->enabled,
+             adbms2950_spi_op_str(dbg->last_op),
+             (unsigned)dbg->last_string,
+             cli_hal_status_str(dbg->last_status),
+             (unsigned long)dbg->tx_count,
+             (unsigned long)dbg->rx_count,
+             (unsigned long)dbg->error_count,
+             (unsigned)apm->num_ics);
+    ret |= cli_printline(cli, outline);
+
+    snprintf(outline, CLI_LINESZ,
+             "cmd:%02X %02X len tx:%u rx:%u total:%u",
+             dbg->last_cmd[0],
+             dbg->last_cmd[1],
+             (unsigned)dbg->last_tx_len,
+             (unsigned)dbg->last_rx_len,
+             (unsigned)dbg->last_total_len);
+    ret |= cli_printline(cli, outline);
+
+    snprintf(outline, CLI_LINESZ,
+             "HAL tx:%s rx:%s xfer:%s PEC pass:0x%04X fail:0x%04X",
+             cli_hal_status_str(dbg->last_tx_status),
+             cli_hal_status_str(dbg->last_rx_status),
+             cli_hal_status_str(dbg->last_xfer_status),
+             dbg->last_read_pec_pass_mask,
+             dbg->last_read_pec_fail_mask);
+    ret |= cli_printline(cli, outline);
+
+    snprintf(outline, CLI_LINESZ,
+             "cmdcnt IC0:%u IC1:%u IC2:%u IC3:%u",
+             dbg->last_cmd_counter[0],
+             dbg->last_cmd_counter[1],
+             dbg->last_cmd_counter[2],
+             dbg->last_cmd_counter[3]);
+    ret |= cli_printline(cli, outline);
+
+    ret |= cli_print_hex_preview("APM TX:", dbg->last_tx_preview, ADBMS2950_SPI_DEBUG_PREVIEW_BYTES);
+    ret |= cli_print_hex_preview("APM RX:", dbg->last_rx_preview, ADBMS2950_SPI_DEBUG_PREVIEW_BYTES);
 
     return ret;
 }

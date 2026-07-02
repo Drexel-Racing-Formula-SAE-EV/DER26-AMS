@@ -14,6 +14,7 @@
 #include "ext_drivers/current_sensor.h"
 #include "ext_drivers/stm32f767z.h"
 #include "ext_drivers/adbms6830_functions.h"
+#include "ext_drivers/adbms2950.h"
 #include "ext_drivers/voltage_fault.h"
 
 #include <math.h>
@@ -1139,6 +1140,137 @@ static void test_adbms_spi_debug_rd48_pec_masks_and_clear(void)
     EXPECT_TRUE(strcmp(adbms6830_spi_op_str(ADBMS6830_SPI_OP_PROBE), "probe") == 0);
 }
 
+
+static void unit_adbms2950_init_driver(adbms2950_driver_t *dev,
+                                       adbms2950_asic *ics,
+                                       SPI_HandleTypeDef *spi,
+                                       GPIO_TypeDef *gpio_a,
+                                       GPIO_TypeDef *gpio_b,
+                                       uint8_t num_ics)
+{
+    memset(dev, 0, sizeof(*dev));
+    memset(ics, 0, sizeof(adbms2950_asic) * num_ics);
+    dev->num_ics = num_ics;
+    dev->ics = ics;
+    dev->hspi = spi;
+    dev->cs_port[0] = gpio_a;
+    dev->cs_port[1] = gpio_b;
+    dev->cs_pin[0] = 5u;
+    dev->cs_pin[1] = 6u;
+    dev->string = STRING_A;
+    adbms2950_spi_debug_clear(dev);
+    adbms2950_spi_debug_enable(dev, true);
+    unit_spi_reset();
+}
+
+static void test_adbms2950_spi_debug_write_and_full_duplex_paths(void)
+{
+    adbms2950_driver_t dev;
+    adbms2950_asic ics[1];
+    SPI_HandleTypeDef spi;
+    GPIO_TypeDef gpio_a;
+    GPIO_TypeDef gpio_b;
+    uint8_t tx[4] = {0x11u, 0x22u, 0x33u, 0x44u};
+    uint8_t rx[6];
+
+    memset(&spi, 0, sizeof(spi));
+    memset(&gpio_a, 0, sizeof(gpio_a));
+    memset(&gpio_b, 0, sizeof(gpio_b));
+    unit_adbms2950_init_driver(&dev, ics, &spi, &gpio_a, &gpio_b, 1u);
+
+    EXPECT_TRUE(adbms2950_spi_write(&dev, tx, sizeof(tx), 1u) == HAL_OK);
+    EXPECT_TRUE(unit_spi_tx_calls == 1u);
+    EXPECT_TRUE(unit_spi_last_tx_len == sizeof(tx));
+    EXPECT_TRUE(unit_gpio_states[5u] == GPIO_PIN_SET);
+    EXPECT_TRUE(dev.spi_debug.tx_count == 1u);
+    EXPECT_TRUE(dev.spi_debug.rx_count == 0u);
+    EXPECT_TRUE(dev.spi_debug.last_tx_len == sizeof(tx));
+    EXPECT_TRUE(dev.spi_debug.last_rx_len == 0u);
+    EXPECT_TRUE(dev.spi_debug.last_status == HAL_OK);
+    EXPECT_TRUE(memcmp(dev.spi_debug.last_tx_preview, tx, sizeof(tx)) == 0);
+
+    unit_spi_tx_status = HAL_BUSY;
+    EXPECT_TRUE(adbms2950_spi_write(&dev, tx, sizeof(tx), 1u) == HAL_BUSY);
+    EXPECT_TRUE(dev.spi_debug.error_count == 1u);
+    EXPECT_TRUE(dev.spi_debug.last_status == HAL_BUSY);
+
+    unit_spi_reset();
+    adbms2950_spi_debug_clear(&dev);
+    memset(rx, 0, sizeof(rx));
+    for(uint8_t i = 0u; i < sizeof(rx); i++)
+    {
+        unit_spi_txrx_response[sizeof(tx) + i] = (uint8_t)(0x90u + i);
+    }
+
+    EXPECT_TRUE(adbms2950_spi_write_read(&dev, tx, sizeof(tx), rx, sizeof(rx), 1u) == HAL_OK);
+    EXPECT_TRUE(unit_spi_txrx_calls == 1u);
+    EXPECT_TRUE(unit_spi_last_txrx_len == (sizeof(tx) + sizeof(rx)));
+    EXPECT_TRUE(memcmp(unit_spi_last_txrx_tx, tx, sizeof(tx)) == 0);
+    for(uint8_t i = 0u; i < sizeof(rx); i++)
+    {
+        EXPECT_TRUE(unit_spi_last_txrx_tx[sizeof(tx) + i] == 0xFFu);
+        EXPECT_TRUE(rx[i] == (uint8_t)(0x90u + i));
+    }
+    EXPECT_TRUE(dev.spi_debug.tx_count == 1u);
+    EXPECT_TRUE(dev.spi_debug.rx_count == 1u);
+    EXPECT_TRUE(dev.spi_debug.last_total_len == (sizeof(tx) + sizeof(rx)));
+    EXPECT_TRUE(memcmp(dev.spi_debug.last_rx_preview, rx, sizeof(rx)) == 0);
+
+    unit_spi_txrx_status = HAL_TIMEOUT;
+    memset(rx, 0xA5, sizeof(rx));
+    EXPECT_TRUE(adbms2950_spi_write_read(&dev, tx, sizeof(tx), rx, sizeof(rx), 1u) == HAL_TIMEOUT);
+    for(uint8_t i = 0u; i < sizeof(rx); i++)
+    {
+        EXPECT_TRUE(rx[i] == 0u);
+    }
+    EXPECT_TRUE(dev.spi_debug.error_count == 1u);
+    EXPECT_TRUE(dev.spi_debug.last_status == HAL_TIMEOUT);
+}
+
+static void test_adbms2950_spi_probe_pec_masks_and_clear(void)
+{
+    adbms2950_driver_t dev;
+    adbms2950_asic ics[1];
+    SPI_HandleTypeDef spi;
+    GPIO_TypeDef gpio_a;
+    GPIO_TypeDef gpio_b;
+
+    memset(&spi, 0, sizeof(spi));
+    memset(&gpio_a, 0, sizeof(gpio_a));
+    memset(&gpio_b, 0, sizeof(gpio_b));
+    unit_adbms2950_init_driver(&dev, ics, &spi, &gpio_a, &gpio_b, 1u);
+
+    unit_adbms_make_valid_read_packet(&unit_spi_txrx_response[CMDSZ + PEC15SZ], 0x50u, 6u, false);
+    EXPECT_TRUE(adbms2950_spi_probe_rdcfga(&dev) == HAL_OK);
+    EXPECT_TRUE(unit_spi_txrx_calls == 1u);
+    EXPECT_TRUE(dev.spi_debug.last_cmd[0] == 0x00u);
+    EXPECT_TRUE(dev.spi_debug.last_cmd[1] == 0x02u);
+    EXPECT_TRUE(dev.spi_debug.last_read_pec_pass_mask == 0x0001u);
+    EXPECT_TRUE(dev.spi_debug.last_read_pec_fail_mask == 0x0000u);
+    EXPECT_TRUE(dev.spi_debug.last_cmd_counter[0] == 6u);
+    EXPECT_TRUE(dev.ics[0].rx_cmd_cntr == 6u);
+    EXPECT_TRUE(dev.ics[0].rx_pec_error == 0u);
+    EXPECT_TRUE(dev.spi_debug.error_count == 0u);
+
+    unit_spi_reset();
+    adbms2950_spi_debug_clear(&dev);
+    unit_adbms_make_valid_read_packet(&unit_spi_txrx_response[CMDSZ + PEC15SZ], 0x60u, 2u, true);
+    EXPECT_TRUE(adbms2950_spi_probe_rdcfga(&dev) == HAL_OK);
+    EXPECT_TRUE(dev.spi_debug.last_read_pec_pass_mask == 0x0000u);
+    EXPECT_TRUE(dev.spi_debug.last_read_pec_fail_mask == 0x0001u);
+    EXPECT_TRUE(dev.ics[0].rx_pec_error == 1u);
+    EXPECT_TRUE(dev.spi_debug.error_count == 1u);
+
+    adbms2950_spi_debug_enable(&dev, false);
+    adbms2950_spi_debug_clear(&dev);
+    EXPECT_FALSE(dev.spi_debug.enabled);
+    EXPECT_TRUE(dev.spi_debug.last_status == HAL_OK);
+    adbms2950_spi_debug_enable(&dev, true);
+    EXPECT_TRUE(dev.spi_debug.enabled);
+    EXPECT_TRUE(strcmp(adbms2950_spi_op_str(ADBMS2950_SPI_OP_PROBE), "probe") == 0);
+    EXPECT_TRUE(strcmp(adbms2950_spi_op_str((adbms2950_spi_op_t)99), "unknown") == 0);
+}
+
 static void run_test(const char *name, void (*fn)(void))
 {
     int before = g_failures;
@@ -1169,6 +1301,8 @@ int main(void)
     run_test("voltage fault read failure/strings", test_voltage_fault_read_failure_precedence_and_strings);
     run_test("ADBMS SPI debug write/full-duplex", test_adbms_spi_debug_write_and_full_duplex_paths);
     run_test("ADBMS SPI rd48 PEC masks", test_adbms_spi_debug_rd48_pec_masks_and_clear);
+    run_test("ADBMS2950 SPI write/full-duplex", test_adbms2950_spi_debug_write_and_full_duplex_paths);
+    run_test("ADBMS2950 SPI probe PEC masks", test_adbms2950_spi_probe_pec_masks_and_clear);
     run_test("current sensor conversion/range", test_current_sensor_conversion_zero_and_range_selection);
     run_test("current sensor invalid conditions", test_current_sensor_invalid_conditions);
     run_test("current sensor fresh pair/channel mapping", test_current_sensor_requires_fresh_pair_and_channel_mapping);
