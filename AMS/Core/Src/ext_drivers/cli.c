@@ -14,6 +14,8 @@
 
 #include "ext_drivers/cli.h"
 
+#define CLI_TX_TIMEOUT_MS 20u
+
 void cli_device_init(cli_device_t *dev, UART_HandleTypeDef *huart)
 {
     if(dev == NULL)
@@ -50,8 +52,8 @@ int cli_printline(cli_device_t *dev, char *line)
 	else
 	{
 		//while(osMutexAcquire(app.board.stm32f767.uart3_mutex, 0) != osOK) osDelay(5);
-		ret |= HAL_UART_Transmit(dev->huart, (uint8_t *)line, (uint16_t)line_len, HAL_MAX_DELAY);
-		ret |= HAL_UART_Transmit(dev->huart, (uint8_t *)nl, 2u, HAL_MAX_DELAY);
+		ret |= HAL_UART_Transmit(dev->huart, (uint8_t *)line, (uint16_t)line_len, CLI_TX_TIMEOUT_MS);
+		ret |= HAL_UART_Transmit(dev->huart, (uint8_t *)nl, 2u, CLI_TX_TIMEOUT_MS);
 		//osMutexRelease(app.board.stm32f767.uart3_mutex);
 	}
 	return ret;

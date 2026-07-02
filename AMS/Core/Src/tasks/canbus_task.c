@@ -20,6 +20,12 @@
 void canbus_task_fn(void *arg);
 
 #define ECU_SEG_CELLS 15u
+/*
+ * Hardware has 24 thermistors per SMB (3x ADG728 muxes into GPIO1/2/3).
+ * The ECU telemetry contract currently exports 17 temps per segment in six
+ * packets. Keep this as an interface choice unless the ECU/dashboard packet
+ * contract is changed with the rest of the vehicle.
+ */
 #define ECU_SEG_TEMPS 17u
 #define ECU_FANS      10u
 #define CAN_TX_TIMEOUT_TICKS 10u
@@ -101,7 +107,7 @@ static HAL_StatusTypeDef send_ams_packet(canbus_device_t *canbus,
 static uint16_t cell_mv_for_ecu(const app_data_t *data, uint8_t seg, uint8_t cell)
 {
     if((data == NULL) ||
-       (seg >= (uint8_t)data->acc.smb.num_ics) ||
+       (seg >= accumulator_configured_smb_count(&data->acc)) ||
        (cell >= NCELLS))
     {
         return 0u;
@@ -125,7 +131,7 @@ static uint16_t cell_mv_for_ecu(const app_data_t *data, uint8_t seg, uint8_t cel
 static uint16_t temp_deci_c_for_ecu(const app_data_t *data, uint8_t seg, uint8_t sensor)
 {
     if((data == NULL) ||
-       (seg >= (uint8_t)data->acc.smb.num_ics) ||
+       (seg >= accumulator_configured_smb_count(&data->acc)) ||
        (sensor >= NTEMPS))
     {
         return 0u;
@@ -295,13 +301,14 @@ static HAL_StatusTypeDef send_estimator_status(canbus_device_t *canbus, const ap
     }
 
     const ams_ekf_instance_t *inst = &data->estimator.inst[data->estimator.active_index];
-    if(inst->valid == 0u)
+    if((inst->valid == 0u) && (data->estimator.cc_valid == 0u))
     {
         return HAL_OK;
     }
 
     uint8_t payload[8] = {0};
-    uint16_t soc_centi_pct = sat_u16_from_float(inst->soc * 10000.0f);
+    float soc = (inst->valid != 0u) ? inst->soc : data->estimator.cc_soc;
+    uint16_t soc_centi_pct = sat_u16_from_float(soc * 10000.0f);
     int16_t innov_mV = sat_i16_from_float(inst->innovation_V * 1000.0f);
     uint16_t r0_0p01_mohm = sat_u16_from_float(inst->r0_ohm * 100000.0f);
 

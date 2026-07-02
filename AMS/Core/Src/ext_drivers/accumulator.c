@@ -10,6 +10,16 @@
 
 static uint8_t sensor_num = 0;
 
+uint8_t accumulator_configured_smb_count(const accumulator_t *dev)
+{
+    if((dev == NULL) || (dev->smb.num_ics <= 0))
+    {
+        return 0u;
+    }
+
+    return (dev->smb.num_ics > NSMBS) ? (uint8_t)NSMBS : (uint8_t)dev->smb.num_ics;
+}
+
 void smb_read_voltage(adbms6830_driver_t* dev);
 void smb_read_temp(adbms6830_driver_t* dev);
 void apm_read_vbadc_viadc(adbms2950_driver_t* apm);
@@ -276,7 +286,7 @@ void accumulator_update_voltage_stats(accumulator_t *dev)
     float total = 0.0f;
     uint16_t valid_count = 0u;
 
-    uint8_t ic_count = (dev->smb.num_ics > NSMBS) ? (uint8_t)NSMBS : (uint8_t)dev->smb.num_ics;
+    uint8_t ic_count = accumulator_configured_smb_count(dev);
 
     for (uint8_t ic = 0; ic < ic_count; ic++)
     {
@@ -331,7 +341,7 @@ void accumulator_update_temp_stats(accumulator_t *dev)
 	float   sum_temp = 0.0f;
 	uint8_t count    = 0u;
 
-	uint8_t ic_count = (dev->smb.num_ics > NSMBS) ? (uint8_t)NSMBS : (uint8_t)dev->smb.num_ics;
+	uint8_t ic_count = accumulator_configured_smb_count(dev);
 
 	for (uint8_t ic = 0; ic < ic_count; ic++)
 	{
@@ -366,7 +376,7 @@ int accumulator_set_balance(accumulator_t *dev)
     adbms6830_driver_t *smb = &dev->smb;
     float min_v = dev->min_volt;
 
-    uint8_t ic_count = (smb->num_ics > NSMBS) ? (uint8_t)NSMBS : (uint8_t)smb->num_ics;
+    uint8_t ic_count = accumulator_configured_smb_count(dev);
 
     for(uint8_t ic = 0; ic < ic_count; ic++)
     {
@@ -406,7 +416,7 @@ int accumulator_clear_balance(accumulator_t *dev)
     }
 
     adbms6830_driver_t *smb = &dev->smb;
-    uint8_t ic_count = (smb->num_ics > NSMBS) ? (uint8_t)NSMBS : (uint8_t)smb->num_ics;
+    uint8_t ic_count = accumulator_configured_smb_count(dev);
 
     for(uint8_t ic = 0; ic < ic_count; ic++)
     {

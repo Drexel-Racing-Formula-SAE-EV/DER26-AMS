@@ -19,6 +19,8 @@
 
 typedef struct {
     uint32_t id;
+    uint32_t ide;
+    uint32_t dlc;
     uint8_t data[DATALEN];
 } canbus_packet_t;
 

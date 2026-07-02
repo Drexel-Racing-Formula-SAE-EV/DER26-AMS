@@ -55,6 +55,7 @@ extern "C" {
 #define AMS_EKF_FLAG_FAULTED        0x04U
 #define AMS_EKF_FLAG_STALE          0x08U
 #define AMS_EKF_FLAG_CLAMPED        0x10U
+#define AMS_EKF_FLAG_CC_FALLBACK    0x20U
 
 typedef enum
 {
@@ -119,6 +120,9 @@ typedef struct
     float pack_v_pred_V;
     float pack_innovation_V;
     float pack_t_core_C;
+    float cc_soc;
+    uint8_t cc_valid;
+    uint32_t cc_step_count;
 
     ams_ekf_instance_t inst[AMS_EKF_MAX_INSTANCES];
 } ams_estimator_t;
@@ -177,6 +181,8 @@ void ams_estimator_init_default(ams_estimator_t *est);
 bool ams_estimator_configure_pack(ams_estimator_t *est);
 bool ams_estimator_configure_segments(ams_estimator_t *est);
 bool ams_estimator_configure_even_split(ams_estimator_t *est, uint8_t instance_count);
+void ams_estimator_cc_reset(ams_estimator_t *est, float soc_init);
+bool ams_estimator_cc_step(ams_estimator_t *est, float i_pack_A, float dt_s);
 void ams_estimator_refresh_summary(ams_estimator_t *est,
                                    ams_estimator_input_source_t source,
                                    uint32_t tick);

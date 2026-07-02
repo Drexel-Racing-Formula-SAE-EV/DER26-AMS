@@ -358,11 +358,20 @@ int get_temperature_sensor(int argc, char *argv[])
     /* Poll just the requested sensor through the mux */
 //    mux_read_gpio_voltage(smb, sensor);
 
-    mux_set_channel(smb, sensor);
+    if(mux_set_channel(smb, (uint8_t)sensor) != 0)
+    {
+        ret |= cli_printline(cli, "Error: failed to select temp mux channel");
+        return ret;
+    }
+
     adbms6830_us_delay(smb, 2000u);
 
     adbms6830_wakeup(smb);
-    mux_read_gpio_voltage(smb, sensor);
+    if(mux_read_gpio_voltage(smb, (uint8_t)sensor) != 0)
+    {
+        ret |= cli_printline(cli, "Error: failed to read temp mux channel");
+        return ret;
+    }
 
     adbms6830_us_delay(smb, 2000u);
 

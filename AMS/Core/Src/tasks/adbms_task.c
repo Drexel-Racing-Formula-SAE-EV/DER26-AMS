@@ -79,6 +79,13 @@ void adbms_task_fn(void *argument)
             set_bms(0);
         }
 
+        bool bms_ok_ready = (!data->voltage_fault &&
+                             !data->temp_fault &&
+                             !data->fuse_fault &&
+                             !data->charger_fault &&
+                             !data->current_fault);
+        set_bms(bms_ok_ready);
+
         // Resume balancing only after both voltage and temperature checks are clean.
         if((data->state == STATE_CHARGE) &&
            !data->voltage_fault &&
@@ -95,6 +102,4 @@ void adbms_task_fn(void *argument)
         osDelayUntil(entry + (1000 / ADBMS_FREQ));
 	}
 }
-
-
 

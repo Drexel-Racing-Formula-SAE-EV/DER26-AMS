@@ -713,11 +713,23 @@ void adbms2950_wakeup(adbms2950_driver_t *dev)
 
 void adbms2950_set_cs(adbms2950_driver_t* dev, uint8_t state)
 {
+	if((dev == NULL) ||
+	   (dev->string > STRING_B) ||
+	   (dev->cs_port[dev->string] == NULL))
+	{
+		return;
+	}
+
 	HAL_GPIO_WritePin(dev->cs_port[dev->string], dev->cs_pin[dev->string], state);
 }
 
 void adbms2950_us_delay(adbms2950_driver_t* dev, uint16_t microseconds)
 {
+	if((dev == NULL) || (dev->htim == NULL))
+	{
+		return;
+	}
+
 	__HAL_TIM_SET_COUNTER(dev->htim, 0);
 	while (__HAL_TIM_GET_COUNTER(dev->htim) < microseconds);
 	return;
@@ -725,6 +737,11 @@ void adbms2950_us_delay(adbms2950_driver_t* dev, uint16_t microseconds)
 
 void adbms2950_spi_write(adbms2950_driver_t* dev, uint8_t* data, uint16_t len, uint8_t use_cs)
 {
+	if((dev == NULL) || (dev->hspi == NULL) || (data == NULL))
+	{
+		return;
+	}
+
 	if(use_cs) adbms2950_set_cs(dev, 0);
 	HAL_SPI_Transmit(dev->hspi, data, len, SPI_TIMEOUT);
 	if(use_cs) adbms2950_set_cs(dev, 1);
@@ -737,6 +754,11 @@ void adbms2950_spi_write_read(adbms2950_driver_t *dev,
 							  uint8_t rx_len,
 							  uint8_t use_cs)
 {
+	if((dev == NULL) || (dev->hspi == NULL) || (tx_Data == NULL) || (rx_data == NULL))
+	{
+		return;
+	}
+
 	if(use_cs) adbms2950_set_cs(dev, 0);
 	(void)HAL_SPI_Transmit(dev->hspi, tx_Data, tx_len, 100);
 	(void)HAL_SPI_Receive(dev->hspi, rx_data, rx_len, 100);

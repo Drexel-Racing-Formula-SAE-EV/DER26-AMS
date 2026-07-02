@@ -361,6 +361,44 @@ static void test_estimator_status_flags(void)
     EXPECT_TRUE((flags & AMS_EKF_FLAG_STALE) != 0U);
 }
 
+static void test_coulomb_count_baseline(void)
+{
+    ams_estimator_t est;
+    ams_estimator_init_default(&est);
+
+    EXPECT_TRUE(est.cc_valid == 1U);
+    EXPECT_NEAR(est.cc_soc, 1.0f, TEST_EPS_SMALL);
+
+    EXPECT_TRUE(ams_estimator_cc_step(&est, 60.0f, 60.0f));
+    EXPECT_TRUE(est.cc_soc < 1.0f);
+    float after_discharge = est.cc_soc;
+
+    EXPECT_TRUE(ams_estimator_cc_step(&est, -30.0f, 60.0f));
+    EXPECT_TRUE(est.cc_soc > after_discharge);
+    EXPECT_TRUE(est.cc_soc <= 1.0f);
+
+    float before_bad_sample = est.cc_soc;
+    EXPECT_FALSE(ams_estimator_cc_step(&est, NAN, 0.1f));
+    EXPECT_TRUE(est.cc_valid == 1U);
+    EXPECT_NEAR(est.cc_soc, before_bad_sample, TEST_EPS_SMALL);
+
+    EXPECT_FALSE(ams_estimator_cc_step(&est, 1500.1f, 0.1f));
+    EXPECT_TRUE(est.cc_valid == 1U);
+    EXPECT_NEAR(est.cc_soc, before_bad_sample, TEST_EPS_SMALL);
+
+    EXPECT_TRUE(ams_estimator_cc_step(&est, 20.0f, 0.1f));
+    EXPECT_TRUE(est.cc_soc < before_bad_sample);
+
+    ams_estimator_cc_reset(&est, 0.50f);
+    EXPECT_TRUE(est.cc_valid == 1U);
+    EXPECT_NEAR(est.cc_soc, 0.50f, TEST_EPS_SMALL);
+
+    est.inst[0].valid = 0U;
+    ams_estimator_refresh_summary(&est, AMS_ESTIMATOR_INPUT_HARDWARE, 77U);
+    EXPECT_NEAR(est.pack_soc, est.cc_soc, TEST_EPS_SMALL);
+    EXPECT_TRUE((ams_estimator_status_flags(&est) & AMS_EKF_FLAG_CC_FALLBACK) != 0U);
+}
+
 static void run_test(const char *name, void (*fn)(void))
 {
     int before = g_failures;
@@ -386,6 +424,7 @@ int main(void)
     run_test("200-step numerical stability", test_200_step_numerical_stability);
     run_test("estimator summary aggregation", test_estimator_summary_aggregation);
     run_test("estimator status flags", test_estimator_status_flags);
+    run_test("coulomb count baseline", test_coulomb_count_baseline);
 
     if (g_failures != 0)
     {

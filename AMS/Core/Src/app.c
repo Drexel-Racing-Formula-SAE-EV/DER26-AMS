@@ -29,7 +29,7 @@ void app_create()
 	app.fan_fault = false;
 	app.cli_fault = false;
 	app.canbus_fault = false;
-	app.current_fault = false;
+	app.current_fault = true;
 	app.fuse_fault = false;
 	app.temp_fault = false;
 	app.voltage_fault = false;
@@ -53,6 +53,8 @@ void app_create()
 	app.current = 0.0;
 
 	board_init(&app.board);
+	set_bms(0);
+
 	accumulator_init(&app.acc,
 					 app.board.stm32f767z.hspi6,
 					 CS_A_GPIO_Port,
@@ -92,7 +94,7 @@ void app_create()
 		return;
 	}
 
-	set_bms(1);
+	/* BMS_OK is asserted by adbms_task after the first clean measurement pass. */
 }
 
 void set_bms(bool state)

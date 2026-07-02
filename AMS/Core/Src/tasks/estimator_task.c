@@ -91,7 +91,7 @@ static bool collect_group_voltage(const app_data_t *data,
 
     float sum_v = 0.0f;
     uint16_t count = 0U;
-    uint8_t ic_count = (data->acc.smb.num_ics > NSMBS) ? (uint8_t)NSMBS : (uint8_t)data->acc.smb.num_ics;
+    uint8_t ic_count = accumulator_configured_smb_count(&data->acc);
 
     for (uint16_t n = 0U; n < cfg->series_group_count; n++)
     {
@@ -128,7 +128,7 @@ static bool collect_group_temp(const app_data_t *data,
 
     float sum = 0.0f;
     uint16_t count = 0U;
-    uint8_t ic_count = (data->acc.smb.num_ics > NSMBS) ? (uint8_t)NSMBS : (uint8_t)data->acc.smb.num_ics;
+    uint8_t ic_count = accumulator_configured_smb_count(&data->acc);
 
     uint8_t first_seg = (uint8_t)(cfg->first_series_group / NCELLS);
     uint8_t last_seg = (uint8_t)((cfg->first_series_group + cfg->series_group_count - 1U) / NCELLS);
@@ -207,10 +207,13 @@ void estimator_task_fn(void *argument)
 
     ams_estimator_init_default(&data->estimator);
 
+    uint32_t last_entry = osKernelGetTickCount();
     uint32_t entry;
     for (;;)
     {
         entry = osKernelGetTickCount();
+        float cc_dt_s = (float)(entry - last_entry) / 1000.0f;
+        last_entry = entry;
 
         if ((data->estimator.enabled == 0U) || (data->estimator.instance_count == 0U))
         {
@@ -224,6 +227,9 @@ void estimator_task_fn(void *argument)
         {
             source = AMS_ESTIMATOR_INPUT_HIL_CAN;
         }
+
+        float cc_current_A = use_hil ? data->hil.meas.i_pack_A : data->current;
+        (void)ams_estimator_cc_step(&data->estimator, cc_current_A, cc_dt_s);
 
         for (uint8_t i = 0U; (i < data->estimator.instance_count) && (i < AMS_EKF_MAX_INSTANCES); i++)
         {

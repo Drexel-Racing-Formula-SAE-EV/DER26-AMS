@@ -64,6 +64,7 @@ int accumulator_set_mux_ch(accumulator_t *dev, uint8_t channel, uint8_t addr7);
 float NXFT15XV103FEAB050_convert(float ratio);
 void accumulator_update_voltage_stats(accumulator_t *dev);
 void accumulator_update_temp_stats(accumulator_t *dev);
+uint8_t accumulator_configured_smb_count(const accumulator_t *dev);
 int accumulator_set_balance(accumulator_t *dev);
 int accumulator_clear_balance(accumulator_t *dev);
 

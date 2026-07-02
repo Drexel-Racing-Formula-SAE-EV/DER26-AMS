@@ -440,6 +440,52 @@ bool ams_estimator_configure_even_split(ams_estimator_t *est, uint8_t instance_c
     return (first == AMS_EKF_PACK_SERIES_GROUPS);
 }
 
+void ams_estimator_cc_reset(ams_estimator_t *est, float soc_init)
+{
+    if (est == NULL)
+    {
+        return;
+    }
+
+    est->cc_soc = clampf_local(soc_init, 0.0f, 1.0f);
+    est->cc_valid = 1U;
+    est->cc_step_count = 0U;
+}
+
+bool ams_estimator_cc_step(ams_estimator_t *est, float i_pack_A, float dt_s)
+{
+    if (est == NULL)
+    {
+        return false;
+    }
+
+    if (!isfinite(i_pack_A) || (fabsf(i_pack_A) > 1500.0f))
+    {
+        return false;
+    }
+
+    float dt = dt_s;
+    if ((!isfinite(dt)) || (dt <= 0.0f))
+    {
+        dt = AMS_EKF_DEFAULT_DT_S;
+    }
+    dt = clampf_local(dt, 0.001f, 1.0f);
+
+    if (est->cc_valid == 0U)
+    {
+        return false;
+    }
+
+    float i_cell_A = i_pack_A / AMS_EKF_PACK_PARALLEL_CELLS;
+    float q_nom_inv = 1.0f / (3600.0f * AMS_EKF_CELL_CAPACITY_AH);
+
+    /* Positive current is discharge in the ESP32 plant and EKF convention. */
+    est->cc_soc -= q_nom_inv * i_cell_A * dt;
+    est->cc_soc = clampf_local(est->cc_soc, 0.0f, 1.0f);
+    est->cc_step_count++;
+    return true;
+}
+
 void ams_estimator_init_default(ams_estimator_t *est)
 {
     if (est == NULL)
@@ -449,6 +495,7 @@ void ams_estimator_init_default(ams_estimator_t *est)
 
     memset(est, 0, sizeof(*est));
     est->input_source = AMS_ESTIMATOR_INPUT_NONE;
+    ams_estimator_cc_reset(est, AMS_EKF_DEFAULT_SOC_INIT);
     (void)ams_estimator_configure_pack(est);
 }
 
@@ -514,6 +561,14 @@ void ams_estimator_refresh_summary(ams_estimator_t *est,
         est->pack_v_pred_V = v_pred_sum;
         est->pack_innovation_V = innov_sum;
     }
+    else if (est->cc_valid != 0U)
+    {
+        est->pack_soc = est->cc_soc;
+        est->pack_r0_ohm = active->r0_ohm;
+        est->pack_v_pred_V = active->v_pred_V;
+        est->pack_innovation_V = active->innovation_V;
+        est->pack_t_core_C = active->t_core_C;
+    }
     else
     {
         est->pack_soc = active->soc;
@@ -557,6 +612,10 @@ uint8_t ams_estimator_status_flags(const ams_estimator_t *est)
     if (((active->fault_flags | est->fault_flags) & AMS_EKF_FAULT_CLAMPED) != 0UL)
     {
         flags |= AMS_EKF_FLAG_CLAMPED;
+    }
+    if ((active->valid == 0U) && (est->cc_valid != 0U))
+    {
+        flags |= AMS_EKF_FLAG_CC_FALLBACK;
     }
 
     return flags;

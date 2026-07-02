@@ -241,6 +241,14 @@ static void test_task_iterations_with_injected_signals(void){
     run_one_adbms_task_iteration(&app);
     CHECK(app.voltage_fault == false); CHECK(app.temp_fault == false); CHECK(app.max_voltage > 3.99f); CHECK(app.min_voltage > 3.69f); CHECK(app.acc.smb_ics[0].tx_cfgb.dcc != 0u);
 
+    init_fake_app(); fill_nominal_pack(&app, 3.700f); app.state = STATE_DISCARGE; app.bms_state=false; bms_pin_state=GPIO_PIN_RESET; fake_tick=0;
+    run_one_adbms_task_iteration(&app);
+    CHECK(app.voltage_fault == false); CHECK(app.temp_fault == false); CHECK(app.bms_state == true); CHECK(bms_pin_state == GPIO_PIN_SET);
+
+    init_fake_app(); fill_nominal_pack(&app, 3.700f); app.state = STATE_DISCARGE; app.current_fault=true; app.bms_state=false; bms_pin_state=GPIO_PIN_RESET; fake_tick=0;
+    run_one_adbms_task_iteration(&app);
+    CHECK(app.voltage_fault == false); CHECK(app.temp_fault == false); CHECK(app.bms_state == false); CHECK(bms_pin_state == GPIO_PIN_RESET);
+
     init_fake_app(); fill_nominal_pack(&app, 3.700f); app.state = STATE_CHARGE; app.bms_state=true; app.acc.smb_ics[2].cell.c_codes[3] = code_for_volts(2.400f); fake_tick=0; bms_pin_state=GPIO_PIN_SET;
     run_one_adbms_task_iteration(&app);
     CHECK(app.voltage_fault == true); CHECK(app.bms_state == false); CHECK(bms_pin_state == GPIO_PIN_RESET); for(int ic=0; ic<NSMBS; ic++) CHECK(app.acc.smb_ics[ic].tx_cfgb.dcc == 0u);
@@ -254,12 +262,23 @@ static void test_task_iterations_with_injected_signals(void){
     app.max_temp = TEMP_THRESH_L - 1.0f; run_one_fan_task_iteration(&app); CHECK(app.fan_state == false); for(int i=0;i<NFANS;i++) CHECK(app.board.fans[i].duty_cycle == 0.0f);
 
     static ADC_HandleTypeDef adc1, adc2; init_fake_app(); app.board.current_sensor.hadc_high=&adc1; app.board.current_sensor.hadc_low=&adc2; run_one_current_task_iteration(&app); CHECK(app.current_fault == false);
-    init_fake_app(); app.board.current_sensor.hadc_high=NULL; app.board.current_sensor.hadc_low=&adc2; run_one_current_task_iteration(&app); CHECK(app.current_fault == true);
+    init_fake_app(); app.board.current_sensor.hadc_high=NULL; app.board.current_sensor.hadc_low=&adc2; app.current = 12.3f; app.board.current_sensor.current = 45.6f; run_one_current_task_iteration(&app); CHECK(app.current_fault == true); CHECK(fabsf(app.current - 12.3f) < 0.001f);
+}
+
+static uint16_t adc_count_for_mcu_voltage(float v)
+{
+    return (uint16_t)((v * 4095.0f / 3.3f) + 0.5f);
+}
+
+static uint16_t adc_count_for_sensor_voltage(float v)
+{
+    return adc_count_for_mcu_voltage(v * 0.6f);
 }
 
 static void test_fan_current_and_null_guards(void){
     fan_t fan={0}; uint32_t ccr=999; static TIM_HandleTypeDef htim; CHECK(fan_init(NULL,NULL,NULL,0,NULL,1) != 0); CHECK(fan_init(&fan,NULL,&htim,1000,&ccr,1)==0); CHECK(ccr==0u); CHECK(set_fan_percent(&fan,120.0f)==0 && ccr==1000u && fabsf(fan.duty_cycle-100.0f)<0.01f); CHECK(set_fan_percent(&fan,-10.0f)==0 && ccr==0u && fabsf(fan.duty_cycle)<0.01f);
-    current_sensor_t cs={0}; cs.count_low=3102; cs.count_high=3102; float current=current_sensor_convert(&cs); CHECK(current > -1.0f && current < 1.0f); cs.count_low=4095; cs.count_high=3000; current=current_sensor_convert(&cs); CHECK(fabsf(current - cs.current_high) < 0.001f);
+    current_sensor_t cs={0}; cs.count_low=adc_count_for_sensor_voltage(2.5f); cs.count_high=adc_count_for_sensor_voltage(2.5f); float current=current_sensor_convert(&cs); CHECK(current > -1.0f && current < 1.0f); CHECK(fabsf(cs.sensor_voltage_low - 2.5f) < 0.01f);
+    cs.count_low=adc_count_for_sensor_voltage(3.1f); cs.count_high=adc_count_for_sensor_voltage(4.0f); current=current_sensor_convert(&cs); CHECK(fabsf(current - cs.current_high) < 0.001f);
     CHECK(current_sensor_convert(NULL) == 0.0f);
     CHECK(accumulator_set_balance(NULL) == -1); CHECK(accumulator_clear_balance(NULL) == -1); accumulator_update_voltage_stats(NULL); accumulator_update_temp_stats(NULL);
     CHECK(imd_read(NULL) == 1); imd_init(NULL, 0, NULL, NULL, 0, 0, NULL, 0);
@@ -695,7 +714,11 @@ static void test_estimator_status_packet_edges(void){
     ams_estimator_init_default(&app.estimator);
     tx_count = 0; tx_free_level = 3;
     CHECK(send_estimator_status(&app.board.canbus, &app) == HAL_OK);
-    CHECK(tx_count == 0u);
+    CHECK(tx_count == 1u);
+    CHECK(tx_log[0].stdid == AMS_ESTIMATOR_STATUS_CAN_ID);
+    CHECK((tx_log[0].data[1] & AMS_EKF_FLAG_VALID) == 0u);
+    CHECK((tx_log[0].data[1] & AMS_EKF_FLAG_CC_FALLBACK) != 0u);
+    CHECK(word_at(0,1) == 10000u);
 
     app.estimator.inst[0].valid = 1u;
     app.estimator.inst[0].soc = 0.4567f;

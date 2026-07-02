@@ -492,6 +492,11 @@ void adbms6830_pack_clr_flag_data(adbms6830_driver_t* dev)
 
 void adbms6830_spi_write(adbms6830_driver_t* dev, uint8_t* data, uint16_t len, uint8_t use_cs)
 {
+	if((dev == NULL) || (dev->hspi == NULL) || (data == NULL))
+	{
+		return;
+	}
+
 	if(use_cs) adbms6830_set_cs(dev, 0);
 	HAL_SPI_Transmit(dev->hspi, data, len, SPI_TIMEOUT);
 	if(use_cs) adbms6830_set_cs(dev, 1);
@@ -622,12 +627,24 @@ void adbms6830_rd48(adbms6830_driver_t* dev, uint8_t cmd[CMDSZ], uint8_t* rx_dat
 // SPI communication
 void adbms6830_set_cs(adbms6830_driver_t* dev, uint8_t state)
 {
+	if((dev == NULL) ||
+	   (dev->string > STRING_B) ||
+	   (dev->cs_port[dev->string] == NULL))
+	{
+		return;
+	}
+
 	HAL_GPIO_WritePin(dev->cs_port[dev->string], dev->cs_pin[dev->string], state);
 }
 
 
 void adbms6830_spi_write_read(adbms6830_driver_t *dev, uint8_t* tx_Data, uint8_t tx_len, uint8_t* rx_data, uint8_t rx_len, uint8_t use_cs)
 {
+	if((dev == NULL) || (dev->hspi == NULL) || (tx_Data == NULL) || (rx_data == NULL))
+	{
+		return;
+	}
+
 	if(use_cs) adbms6830_set_cs(dev, 0);
 	(void)HAL_SPI_Transmit(dev->hspi, tx_Data, tx_len, 100);
 	(void)HAL_SPI_Receive(dev->hspi, rx_data, rx_len, 100);
@@ -636,6 +653,11 @@ void adbms6830_spi_write_read(adbms6830_driver_t *dev, uint8_t* tx_Data, uint8_t
 
 void adbms6830_us_delay(adbms6830_driver_t* dev, uint16_t microseconds)
 {
+	if((dev == NULL) || (dev->htim == NULL))
+	{
+		return;
+	}
+
 	__HAL_TIM_SET_COUNTER(dev->htim, 0);
 	while (__HAL_TIM_GET_COUNTER(dev->htim) < microseconds);
 	return;
@@ -946,7 +968,8 @@ int adbms6830_read_temp_raw(adbms6830_driver_t *dev,
      *   adbms6830_read_temp_raw(dev, 0, &dev->ics[0].temp.raw[0]);
      * so ic_idx is the IC and out_raw points into temp.raw[sensor_num].    */
 
-    if (ic_idx >= (uint8_t)dev->num_ics || out_raw == NULL)
+    if ((dev == NULL) || (dev->ics == NULL) || (dev->num_ics <= 0) ||
+        (ic_idx >= (uint8_t)dev->num_ics) || (out_raw == NULL))
     {
         return -1;
     }
@@ -1083,7 +1106,7 @@ int adbms6830_read_temp_raw(adbms6830_driver_t *dev,
 
 int mux_set_channel(adbms6830_driver_t *dev, uint8_t sensor_num)
 {
-    if (sensor_num >= 24u)
+    if ((dev == NULL) || (dev->ics == NULL) || (dev->num_ics <= 0) || (sensor_num >= 24u))
     {
         return -1;
     }
@@ -1101,7 +1124,7 @@ int mux_set_channel(adbms6830_driver_t *dev, uint8_t sensor_num)
 
 int mux_read_gpio_voltage(adbms6830_driver_t *dev, uint8_t sensor_num)
 {
-    if (sensor_num >= 24u)
+    if ((dev == NULL) || (dev->ics == NULL) || (dev->num_ics <= 0) || (sensor_num >= 24u))
     {
         return -1;
     }
@@ -1119,7 +1142,8 @@ int mux_read_gpio_voltage(adbms6830_driver_t *dev, uint8_t sensor_num)
     adbms6830_parse_aux_gpio(dev, shared_buf);
 
     /* Store raw ADC result for every IC in the chain */
-    for (uint8_t ic = 0; ic < dev->num_ics; ic++)
+    uint8_t ic_count = (dev->num_ics > 255) ? 255u : (uint8_t)dev->num_ics;
+    for (uint8_t ic = 0; ic < ic_count; ic++)
     {
         dev->ics[ic].temp.raw[sensor_num] = dev->ics[ic].aux.a_codes[gpio_ch];
     }
@@ -1155,7 +1179,8 @@ float adbms6830_convert_temp(adbms6830_driver_t *dev,
 {
     (void)vref;   /* reserved for NTC conversion in the application layer */
 
-    if (ic_idx >= (uint8_t)dev->num_ics || sensor_num >= 24u)
+    if ((dev == NULL) || (dev->ics == NULL) || (dev->num_ics <= 0) ||
+        (ic_idx >= (uint8_t)dev->num_ics) || (sensor_num >= 24u))
     {
         return -1.0f;
     }

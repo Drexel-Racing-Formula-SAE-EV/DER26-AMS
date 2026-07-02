@@ -114,8 +114,13 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
 
     if(HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO0, &rx_header, rx_data) != HAL_OK) return;
 
+    uint32_t rx_len = (rx_header.DLC <= DATALEN) ? rx_header.DLC : DATALEN;
+
     app.board.canbus.rx_packet.id = (rx_header.IDE == CAN_ID_EXT) ? rx_header.ExtId : rx_header.StdId;
-    memcpy(app.board.canbus.rx_packet.data, rx_data, DATALEN);
+    app.board.canbus.rx_packet.ide = rx_header.IDE;
+    app.board.canbus.rx_packet.dlc = rx_len;
+    memset(app.board.canbus.rx_packet.data, 0, sizeof(app.board.canbus.rx_packet.data));
+    memcpy(app.board.canbus.rx_packet.data, rx_data, rx_len);
 
     canbus_parse_hil_frame(&rx_header, rx_data);
 

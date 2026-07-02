@@ -38,31 +38,14 @@ void current_task_fn(void *argument)
     {
         entry = osKernelGetTickCount();
 
-        if((current_sensor->hadc_high == NULL) || (current_sensor->hadc_low == NULL))
+        bool current_ok = current_sensor_read_adc(current_sensor);
+        app_data->current_fault = !current_ok;
+
+        if(current_ok)
         {
-            app_data->current_fault = true;
+            (void)current_sensor_convert(current_sensor);
+            app_data->current = current_sensor->current;
         }
-        else
-        {
-            HAL_StatusTypeDef ret_high = stm32f767z_adc_switch_channel(current_sensor->hadc_high,
-                                                                       current_sensor->channel_high);
-            if(ret_high == HAL_OK)
-            {
-                current_sensor->count_high = stm32f767z_adc_read(current_sensor->hadc_high);
-            }
-
-            HAL_StatusTypeDef ret_low = stm32f767z_adc_switch_channel(current_sensor->hadc_low,
-                                                                      current_sensor->channel_low);
-            if(ret_low == HAL_OK)
-            {
-                current_sensor->count_low = stm32f767z_adc_read(current_sensor->hadc_low);
-            }
-
-            app_data->current_fault = ((ret_high != HAL_OK) || (ret_low != HAL_OK));
-        }
-
-        current_sensor_convert(current_sensor);
-        app_data->current = current_sensor->current;
 
         osDelayUntil(entry + (1000 / CURRENT_FREQ));
     }

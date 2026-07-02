@@ -7,6 +7,8 @@
 
 #include "ext_drivers/stm32f767z.h"
 
+#define ADC_POLL_TIMEOUT_MS 5u
+
 extern ADC_HandleTypeDef hadc1;
 extern ADC_HandleTypeDef hadc2;
 
@@ -59,7 +61,7 @@ uint16_t stm32f767z_adc_read(ADC_HandleTypeDef *hadc)
         return 0u;
     }
 
-	if(HAL_ADC_PollForConversion(hadc, HAL_MAX_DELAY) == HAL_OK)
+	if(HAL_ADC_PollForConversion(hadc, ADC_POLL_TIMEOUT_MS) == HAL_OK)
     {
         count = (uint16_t)HAL_ADC_GetValue(hadc);
     }
@@ -81,4 +83,3 @@ HAL_StatusTypeDef stm32f767z_adc_switch_channel(ADC_HandleTypeDef *hadc, uint32_
 	sConfig.SamplingTime = ADC_SAMPLETIME_3CYCLES;
 	return HAL_ADC_ConfigChannel(hadc, &sConfig);
 }
-
