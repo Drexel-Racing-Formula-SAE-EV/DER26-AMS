@@ -143,6 +143,8 @@ void current_sensor_init(current_sensor_t *dev,
     dev->current = 0.0f;
     dev->count_high = 0u;
     dev->count_low = 0u;
+    dev->count_high_fresh = false;
+    dev->count_low_fresh = false;
     dev->last_read_ok = false;
     dev->current_valid = false;
     dev->selected_range = CURRENT_SENSOR_RANGE_UNKNOWN;
@@ -158,6 +160,13 @@ float current_sensor_convert(current_sensor_t *dev)
     if(dev == NULL)
     {
         return 0.0f;
+    }
+
+    if(((dev->count_high_fresh != dev->count_low_fresh) ||
+        (!dev->last_read_ok && (dev->count_high_fresh || dev->count_low_fresh))))
+    {
+        current_sensor_set_invalid(dev, CURRENT_SENSOR_REASON_ADC_READ);
+        return dev->current;
     }
 
     dev->voltage_low  = current_sensor_adc_count_to_voltage(dev->count_low);
@@ -259,6 +268,10 @@ bool current_sensor_read_adc(current_sensor_t *dev)
         return false;
     }
 
+    dev->count_high_fresh = false;
+    dev->count_low_fresh = false;
+    dev->last_read_ok = false;
+
     if((dev->hadc_high == NULL) || (dev->hadc_low == NULL))
     {
         dev->last_read_ok = false;
@@ -274,6 +287,11 @@ bool current_sensor_read_adc(current_sensor_t *dev)
     }
 
     high_result = stm32f767z_adc_read_checked(dev->hadc_high, CURRENT_ADC_TIMEOUT_MS);
+    if(high_result.status == HAL_OK)
+    {
+        dev->count_high = high_result.count;
+        dev->count_high_fresh = true;
+    }
     if(high_result.status != HAL_OK)
     {
         dev->last_read_ok = false;
@@ -289,6 +307,11 @@ bool current_sensor_read_adc(current_sensor_t *dev)
     }
 
     low_result = stm32f767z_adc_read_checked(dev->hadc_low, CURRENT_ADC_TIMEOUT_MS);
+    if(low_result.status == HAL_OK)
+    {
+        dev->count_low = low_result.count;
+        dev->count_low_fresh = true;
+    }
     if(low_result.status != HAL_OK)
     {
         dev->last_read_ok = false;
@@ -296,8 +319,6 @@ bool current_sensor_read_adc(current_sensor_t *dev)
         return false;
     }
 
-    dev->count_high = high_result.count;
-    dev->count_low = low_result.count;
     dev->last_read_ok = true;
     return true;
 }

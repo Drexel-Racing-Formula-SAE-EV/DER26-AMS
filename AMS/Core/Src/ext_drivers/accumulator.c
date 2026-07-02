@@ -7,6 +7,7 @@
 
 #include "ext_drivers/accumulator.h"
 #include <math.h>
+#include <string.h>
 
 static uint8_t sensor_num = 0;
 
@@ -45,6 +46,27 @@ void accumulator_init(accumulator_t *dev,
 	dev->min_volt = 0.0f;
 	dev->valid_voltage_count = 0u;
 	dev->valid_temp_count = 0u;
+	dev->updated_voltage_count = 0u;
+	dev->usable_voltage_count = 0u;
+	dev->stale_voltage_count = 0u;
+	dev->pec_fail_cell_count = 0u;
+	dev->max_voltage_mv = 0u;
+	dev->min_voltage_mv = 0u;
+	dev->max_voltage_seg = 0u;
+	dev->max_voltage_cell = 0u;
+	dev->min_voltage_seg = 0u;
+	dev->min_voltage_cell = 0u;
+	dev->voltage_full_updated = false;
+	dev->voltage_full_usable = false;
+	dev->voltage_startup_scan_complete = false;
+	memset(dev->cell_voltage_mv, 0, sizeof(dev->cell_voltage_mv));
+	memset(dev->cell_voltage_valid, 0, sizeof(dev->cell_voltage_valid));
+	memset(dev->cell_voltage_last_update_ms, 0, sizeof(dev->cell_voltage_last_update_ms));
+	memset(dev->cell_voltage_consecutive_misses, 0, sizeof(dev->cell_voltage_consecutive_misses));
+	memset(dev->updated_voltage_mask, 0, sizeof(dev->updated_voltage_mask));
+	memset(dev->usable_voltage_mask, 0, sizeof(dev->usable_voltage_mask));
+	memset(dev->pec_fail_voltage_mask, 0, sizeof(dev->pec_fail_voltage_mask));
+	memset(dev->stale_voltage_mask, 0, sizeof(dev->stale_voltage_mask));
 
 	if(htim != NULL)
     {
@@ -274,55 +296,226 @@ float convert_adc_to_volt(int value)
 	return (value + 10000) * .000150;
 }
 
+static uint16_t accumulator_code_to_mv(int16_t code)
+{
+    if((code == 0) || (code == INT16_MIN))
+    {
+        return 0u;
+    }
+
+    float volts = convert_adc_to_volt(code);
+
+    if(!isfinite(volts) || (volts < 0.0f))
+    {
+        return 0u;
+    }
+
+    if(volts >= 65.535f)
+    {
+        return UINT16_MAX;
+    }
+
+    return (uint16_t)((volts * 1000.0f) + 0.5f);
+}
+
+static uint16_t accumulator_expected_cell_count(const accumulator_t *dev)
+{
+    uint8_t ic_count = accumulator_configured_smb_count(dev);
+    return (uint16_t)(ic_count * NCELLS);
+}
+
+static uint16_t accumulator_count_bits(uint16_t mask)
+{
+    uint16_t count = 0u;
+
+    while(mask != 0u)
+    {
+        count += (uint16_t)(mask & 1u);
+        mask >>= 1u;
+    }
+
+    return count;
+}
+
+bool accumulator_cell_voltage_usable(const accumulator_t *dev, uint8_t seg, uint8_t cell)
+{
+    if((dev == NULL) || (seg >= NSMBS) || (cell >= NCELLS))
+    {
+        return false;
+    }
+
+    return ((dev->usable_voltage_mask[seg] & (uint16_t)(1u << cell)) != 0u);
+}
+
+uint16_t accumulator_cell_voltage_mv(const accumulator_t *dev, uint8_t seg, uint8_t cell)
+{
+    if((dev == NULL) || (seg >= NSMBS) || (cell >= NCELLS))
+    {
+        return 0u;
+    }
+
+    return accumulator_cell_voltage_usable(dev, seg, cell) ? dev->cell_voltage_mv[seg][cell] : 0u;
+}
+
 void accumulator_update_voltage_stats(accumulator_t *dev)
+{
+    accumulator_update_voltage_stats_at(dev, 0u);
+}
+
+void accumulator_update_voltage_stats_at(accumulator_t *dev, uint32_t now_ms)
 {
     if(dev == NULL)
     {
         return;
     }
 
-    int16_t max_code = INT16_MIN;
-    int16_t min_code = INT16_MAX;
+    uint32_t now = now_ms;
+    uint16_t expected_count = accumulator_expected_cell_count(dev);
+    uint16_t updated_count = 0u;
+    uint16_t usable_count = 0u;
+    uint16_t stale_count = 0u;
+    uint16_t pec_fail_count = 0u;
+    uint16_t max_mv = 0u;
+    uint16_t min_mv = UINT16_MAX;
     float total = 0.0f;
-    uint16_t valid_count = 0u;
+
+    uint8_t max_seg = 0u;
+    uint8_t max_cell = 0u;
+    uint8_t min_seg = 0u;
+    uint8_t min_cell = 0u;
 
     uint8_t ic_count = accumulator_configured_smb_count(dev);
 
-    for (uint8_t ic = 0; ic < ic_count; ic++)
+    for(uint8_t ic = 0u; ic < NSMBS; ic++)
     {
-        for (uint8_t cell = 0u; cell < NCELLS; cell++)
+        dev->updated_voltage_mask[ic] = 0u;
+        dev->usable_voltage_mask[ic] = 0u;
+        dev->pec_fail_voltage_mask[ic] = 0u;
+        dev->stale_voltage_mask[ic] = 0u;
+    }
+
+    for(uint8_t ic = 0u; ic < ic_count; ic++)
+    {
+        uint16_t read_updated_mask = 0u;
+        uint16_t read_pec_mask = 0u;
+
+        if(ic < ADBMS6830_MAX_TRACKED_ICS)
         {
-            int16_t code = dev->smb.ics[ic].cell.c_codes[cell];
+            read_updated_mask = dev->smb.last_cell_updated_mask[ic];
+            read_pec_mask = dev->smb.last_cell_pec_mask[ic];
+        }
 
-            /* Skip obvious uninitialized / invalid readings. */
-            if ((code == 0) || (code == INT16_MIN))
+        dev->pec_fail_voltage_mask[ic] = (uint16_t)(read_pec_mask & ((1u << NCELLS) - 1u));
+        pec_fail_count += accumulator_count_bits(dev->pec_fail_voltage_mask[ic]);
+
+        for(uint8_t cell = 0u; cell < NCELLS; cell++)
+        {
+            uint16_t bit = (uint16_t)(1u << cell);
+            bool updated_this_scan = ((read_updated_mask & bit) != 0u);
+            bool usable = false;
+
+            if(updated_this_scan)
             {
-                continue;
+                int16_t code = dev->smb.ics[ic].cell.c_codes[cell];
+                uint16_t mv = accumulator_code_to_mv(code);
+
+                if((mv >= ACCUMULATOR_CELL_VALID_MIN_MV) &&
+                   (mv <= ACCUMULATOR_CELL_VALID_MAX_MV))
+                {
+                    dev->cell_voltage_mv[ic][cell] = mv;
+                    dev->cell_voltage_valid[ic][cell] = true;
+                    dev->cell_voltage_last_update_ms[ic][cell] = now;
+                    dev->cell_voltage_consecutive_misses[ic][cell] = 0u;
+                    dev->updated_voltage_mask[ic] |= bit;
+                    updated_count++;
+                }
+                else
+                {
+                    if(dev->cell_voltage_consecutive_misses[ic][cell] < UINT8_MAX)
+                    {
+                        dev->cell_voltage_consecutive_misses[ic][cell]++;
+                    }
+                }
+            }
+            else
+            {
+                if(dev->cell_voltage_consecutive_misses[ic][cell] < UINT8_MAX)
+                {
+                    dev->cell_voltage_consecutive_misses[ic][cell]++;
+                }
             }
 
-            float v = convert_adc_to_volt(code);
-            if ((v < 0.5f) || (v > 5.0f))
+            if(dev->cell_voltage_valid[ic][cell])
             {
-                continue;
+                uint32_t age_ms = (now >= dev->cell_voltage_last_update_ms[ic][cell]) ?
+                                  (now - dev->cell_voltage_last_update_ms[ic][cell]) : 0u;
+
+                usable = (age_ms <= ACCUMULATOR_CELL_STALE_TIMEOUT_MS) &&
+                         (dev->cell_voltage_consecutive_misses[ic][cell] <= ACCUMULATOR_CELL_MAX_CONSEC_MISSES);
+
+                if(usable)
+                {
+                    uint16_t mv = dev->cell_voltage_mv[ic][cell];
+                    dev->usable_voltage_mask[ic] |= bit;
+                    usable_count++;
+                    total += ((float)mv / 1000.0f);
+
+                    if(mv > max_mv)
+                    {
+                        max_mv = mv;
+                        max_seg = ic;
+                        max_cell = cell;
+                    }
+                    if(mv < min_mv)
+                    {
+                        min_mv = mv;
+                        min_seg = ic;
+                        min_cell = cell;
+                    }
+                }
             }
 
-            if (code > max_code) max_code = code;
-            if (code < min_code) min_code = code;
-            total += v;
-            valid_count++;
+            if(!usable)
+            {
+                dev->stale_voltage_mask[ic] |= bit;
+                stale_count++;
+            }
         }
     }
 
-    dev->valid_voltage_count = valid_count;
+    dev->updated_voltage_count = updated_count;
+    dev->usable_voltage_count = usable_count;
+    dev->stale_voltage_count = stale_count;
+    dev->pec_fail_cell_count = pec_fail_count;
+    dev->valid_voltage_count = usable_count;
+    dev->voltage_full_updated = (expected_count > 0u) && (updated_count == expected_count);
+    dev->voltage_full_usable = (expected_count > 0u) && (usable_count == expected_count);
 
-    if (valid_count > 0u)
+    if(dev->voltage_full_updated)
     {
-        dev->max_volt = convert_adc_to_volt(max_code);
-        dev->min_volt = convert_adc_to_volt(min_code);
+        dev->voltage_startup_scan_complete = true;
+    }
+
+    if(usable_count > 0u)
+    {
+        dev->max_voltage_mv = max_mv;
+        dev->min_voltage_mv = min_mv;
+        dev->max_voltage_seg = max_seg;
+        dev->max_voltage_cell = max_cell;
+        dev->min_voltage_seg = min_seg;
+        dev->min_voltage_cell = min_cell;
+        dev->max_volt = (float)max_mv / 1000.0f;
+        dev->min_volt = (float)min_mv / 1000.0f;
         dev->total_volt = total;
     }
     else
     {
+        dev->max_voltage_mv = 0u;
+        dev->min_voltage_mv = 0u;
+        dev->max_voltage_seg = 0u;
+        dev->max_voltage_cell = 0u;
+        dev->min_voltage_seg = 0u;
+        dev->min_voltage_cell = 0u;
         dev->max_volt = 0.0f;
         dev->min_volt = 0.0f;
         dev->total_volt = 0.0f;
@@ -368,13 +561,13 @@ void accumulator_update_temp_stats(accumulator_t *dev)
 
 int accumulator_set_balance(accumulator_t *dev)
 {
-    if((dev == NULL) || (dev->min_volt <= 0.0f) || (dev->valid_voltage_count == 0u))
+    if((dev == NULL) || !dev->voltage_full_usable || (dev->min_voltage_mv == 0u))
     {
         return -1;
     }
 
     adbms6830_driver_t *smb = &dev->smb;
-    float min_v = dev->min_volt;
+    uint16_t min_mv = dev->min_voltage_mv;
 
     uint8_t ic_count = accumulator_configured_smb_count(dev);
 
@@ -383,19 +576,13 @@ int accumulator_set_balance(accumulator_t *dev)
         uint16_t dcc_mask = 0;
         for(uint8_t cell = 0; cell < NCELLS; cell++)
         {
-            int16_t code = smb->ics[ic].cell.c_codes[cell];
-            if((code == 0) || (code == INT16_MIN))
+            if(!accumulator_cell_voltage_usable(dev, ic, cell))
             {
                 continue;
             }
 
-            float v = convert_adc_to_volt(code);
-            if((v < 0.5f) || (v > 5.0f))
-            {
-                continue;
-            }
-
-            if((v - min_v) > BALANCE_THRESH)
+            uint16_t cell_mv = dev->cell_voltage_mv[ic][cell];
+            if((cell_mv > min_mv) && (((float)(cell_mv - min_mv) / 1000.0f) > BALANCE_THRESH))
             {
                 dcc_mask |= (uint16_t)(1u << cell);
             }

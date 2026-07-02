@@ -284,6 +284,13 @@ int get_faults(int argc, char *argv[])
 	ret |= cli_printline(cli, outline);
 	snprintf(outline, CLI_LINESZ, "  charger: %d", data->charger_fault);
 	ret |= cli_printline(cli, outline);
+    snprintf(outline, CLI_LINESZ, "  voltage: fault:%d valid:%d warn:%d stop:%d reason:%s",
+             data->voltage_fault,
+             data->voltage_valid,
+             data->voltage_warning,
+             data->charge_voltage_stop,
+             voltage_fault_reason_str(data->voltage_fault_reason));
+    ret |= cli_printline(cli, outline);
 	return ret;
 }
 
@@ -292,17 +299,57 @@ int get_voltage(int argc, char *argv[])
     int ret = 0;
     adbms6830_driver_t *smb = &data->acc.smb;
 
+    snprintf(outline, CLI_LINESZ,
+             "Voltage valid:%d fault:%d warn:%d charge_stop:%d reason:%s",
+             data->voltage_valid,
+             data->voltage_fault,
+             data->voltage_warning,
+             data->charge_voltage_stop,
+             voltage_fault_reason_str(data->voltage_fault_reason));
+    ret |= cli_printline(cli, outline);
+
+    snprintf(outline, CLI_LINESZ,
+             "Cells usable:%u updated:%u stale:%u pec:%u",
+             (unsigned)data->acc.usable_voltage_count,
+             (unsigned)data->acc.updated_voltage_count,
+             (unsigned)data->acc.stale_voltage_count,
+             (unsigned)data->acc.pec_fail_cell_count);
+    ret |= cli_printline(cli, outline);
+
+    snprintf(outline, CLI_LINESZ,
+             "Max S%u C%u:%umV Min S%u C%u:%umV",
+             (unsigned)(data->acc.max_voltage_seg + 1u),
+             (unsigned)(data->acc.max_voltage_cell + 1u),
+             (unsigned)data->acc.max_voltage_mv,
+             (unsigned)(data->acc.min_voltage_seg + 1u),
+             (unsigned)(data->acc.min_voltage_cell + 1u),
+             (unsigned)data->acc.min_voltage_mv);
+    ret |= cli_printline(cli, outline);
+
     for (uint8_t ic = 0; ic < smb_ic_count(smb); ic++)
     {
-        snprintf(outline, CLI_LINESZ, "--- SMB %d ---", ic);
+        snprintf(outline, CLI_LINESZ, "--- SMB %d usable:0x%04x updated:0x%04x stale:0x%04x pec:0x%04x ---",
+                 ic,
+                 data->acc.usable_voltage_mask[ic],
+                 data->acc.updated_voltage_mask[ic],
+                 data->acc.stale_voltage_mask[ic],
+                 data->acc.pec_fail_voltage_mask[ic]);
         ret |= cli_printline(cli, outline);
 
         for (int cell = 0; cell < NCELLS; cell++)
         {
-            float volt = (smb->ics[ic].cell.c_codes[cell] + 10000) * 0.000150f;
-            int whole   = (int)volt;
-            int decimal = (int)((volt - whole) * 10000);
-            snprintf(outline, CLI_LINESZ, "  C%-2d: %d.%04d V", cell + 1, whole, decimal);
+            uint16_t mv = accumulator_cell_voltage_mv(&data->acc, ic, (uint8_t)cell);
+            if(mv != 0u)
+            {
+                snprintf(outline, CLI_LINESZ, "  C%-2d: %u.%03u V",
+                         cell + 1,
+                         (unsigned)(mv / 1000u),
+                         (unsigned)(mv % 1000u));
+            }
+            else
+            {
+                snprintf(outline, CLI_LINESZ, "  C%-2d: unavailable", cell + 1);
+            }
             ret |= cli_printline(cli, outline);
         }
     }

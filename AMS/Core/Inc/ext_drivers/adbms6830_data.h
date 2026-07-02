@@ -12,6 +12,8 @@
 #include <stdint.h>
 #include "stm32f7xx_hal.h"
 
+#define ADBMS6830_MAX_TRACKED_ICS 16u
+
 /* BMS ic main structure */
 typedef struct
 {
@@ -64,6 +66,14 @@ typedef struct
   loop_manager_6830_t loop_manager;
 
   TIM_HandleTypeDef *htim;
+
+  /* Last cell-voltage read status. One bit per cell index for each IC.
+   * last_cell_updated_mask is set only when the register group PEC passed and
+   * the cell code was valid for the most recent read_cell_voltages() call.
+   * last_cell_pec_mask marks cells inside any register group whose PEC failed.
+   */
+  uint16_t last_cell_updated_mask[ADBMS6830_MAX_TRACKED_ICS];
+  uint16_t last_cell_pec_mask[ADBMS6830_MAX_TRACKED_ICS];
 } adbms6830_driver_t;
 
 #endif /* INC_EXT_DRIVERS_ADBMS6830_DATA_H_ */

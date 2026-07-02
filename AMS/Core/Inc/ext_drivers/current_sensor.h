@@ -52,6 +52,8 @@ typedef struct
 
     uint16_t count_high;
     uint16_t count_low;
+    bool count_high_fresh;
+    bool count_low_fresh;
 
     bool last_read_ok;
     bool current_valid;

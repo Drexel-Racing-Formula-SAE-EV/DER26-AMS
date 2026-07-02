@@ -22,6 +22,10 @@
 #define MUX_ADDR7_02 0x4E
 #define VNTC 5.0
 #define BALANCE_THRESH  0.010f   // 10mV
+#define ACCUMULATOR_CELL_STALE_TIMEOUT_MS      2500u
+#define ACCUMULATOR_CELL_MAX_CONSEC_MISSES     2u
+#define ACCUMULATOR_CELL_VALID_MIN_MV          500u
+#define ACCUMULATOR_CELL_VALID_MAX_MV          5000u
 
 
 /* APM Macros */
@@ -40,6 +44,30 @@ typedef struct
 	float min_volt;
 	uint16_t valid_voltage_count;
 	uint16_t valid_temp_count;
+
+	uint16_t cell_voltage_mv[NSMBS][NCELLS];
+	bool cell_voltage_valid[NSMBS][NCELLS];
+	uint32_t cell_voltage_last_update_ms[NSMBS][NCELLS];
+	uint8_t cell_voltage_consecutive_misses[NSMBS][NCELLS];
+
+	uint16_t updated_voltage_mask[NSMBS];
+	uint16_t usable_voltage_mask[NSMBS];
+	uint16_t pec_fail_voltage_mask[NSMBS];
+	uint16_t stale_voltage_mask[NSMBS];
+
+	uint16_t updated_voltage_count;
+	uint16_t usable_voltage_count;
+	uint16_t stale_voltage_count;
+	uint16_t pec_fail_cell_count;
+	uint16_t max_voltage_mv;
+	uint16_t min_voltage_mv;
+	uint8_t max_voltage_seg;
+	uint8_t max_voltage_cell;
+	uint8_t min_voltage_seg;
+	uint8_t min_voltage_cell;
+	bool voltage_full_updated;
+	bool voltage_full_usable;
+	bool voltage_startup_scan_complete;
 
 	adbms2950_asic apm_ics[NAPMS];
 	adbms2950_driver_t apm;
@@ -63,6 +91,9 @@ int accumulator_stat_temp(accumulator_t *dev);
 int accumulator_set_mux_ch(accumulator_t *dev, uint8_t channel, uint8_t addr7);
 float NXFT15XV103FEAB050_convert(float ratio);
 void accumulator_update_voltage_stats(accumulator_t *dev);
+void accumulator_update_voltage_stats_at(accumulator_t *dev, uint32_t now_ms);
+bool accumulator_cell_voltage_usable(const accumulator_t *dev, uint8_t seg, uint8_t cell);
+uint16_t accumulator_cell_voltage_mv(const accumulator_t *dev, uint8_t seg, uint8_t cell);
 void accumulator_update_temp_stats(accumulator_t *dev);
 uint8_t accumulator_configured_smb_count(const accumulator_t *dev);
 int accumulator_set_balance(accumulator_t *dev);

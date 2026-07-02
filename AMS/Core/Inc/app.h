@@ -17,6 +17,7 @@
 #include "ext_drivers/accumulator.h"
 #include "estimator/ams_soc_ekf.h"
 #include "ext_drivers/current_fault.h"
+#include "ext_drivers/voltage_fault.h"
 
 #define VER_MAJOR 0
 #define VER_MINOR 1
@@ -51,8 +52,7 @@
 // TODO: check temp thresholds
 #define TEMP_THRESH_H 60.0
 #define TEMP_THRESH_L 40.0
-#define OVERVOLT 4.2
-#define UNDERVOLT 2.5
+/* Voltage thresholds are defined in ext_drivers/voltage_fault.h in mV. */
 
 typedef enum
 {
@@ -95,6 +95,23 @@ typedef struct
 	bool fuse_fault;
 	bool temp_fault;
 	bool voltage_fault;
+	bool voltage_valid;
+	bool voltage_read_fault;
+	bool voltage_warning;
+	bool charge_voltage_stop;
+	bool overvoltage_fault;
+	bool undervoltage_fault;
+	bool voltage_fault_latched;
+	voltage_fault_reason_t voltage_fault_reason;
+	voltage_fault_reason_t voltage_fault_latched_reason;
+	voltage_fault_state_t voltage_fault_state;
+	uint16_t voltage_usable_cell_count;
+	uint16_t voltage_updated_cell_count;
+	uint16_t voltage_stale_cell_count;
+	uint8_t max_voltage_seg;
+	uint8_t max_voltage_cell;
+	uint8_t min_voltage_seg;
+	uint8_t min_voltage_cell;
 	bool estimator_fault;
 
 	bool air_state;

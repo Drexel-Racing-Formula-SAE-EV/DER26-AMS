@@ -215,6 +215,12 @@ void adBms6830_init(adbms6830_driver_t* dev,
 	dev->cs_pin[1] = cs_pin_b;
 	dev->htim = htim;
 
+	for(uint8_t ic = 0u; ic < ADBMS6830_MAX_TRACKED_ICS; ic++)
+	{
+		dev->last_cell_updated_mask[ic] = 0u;
+		dev->last_cell_pec_mask[ic] = 0u;
+	}
+
 	// Set CS pins high
 	dev->string = STRING_B;
 	adbms6830_set_cs(dev, 1);
@@ -727,8 +733,27 @@ void adbms6830_start_adc_cell_voltage_measurement(adbms6830_driver_t *dev)
 //    }
 //}
 
+static uint16_t adbms6830_cell_group_mask(GRP grp)
+{
+    switch(grp)
+    {
+        case A: return 0x0007u;       /* cells 0..2 */
+        case B: return 0x0038u;       /* cells 3..5 */
+        case C: return 0x01C0u;       /* cells 6..8 */
+        case D: return 0x0E00u;       /* cells 9..11 */
+        case E: return 0x7000u;       /* cells 12..14 */
+        case F: return 0x8000u;       /* cell 15, unused on DER26 SMB */
+        default: return 0u;
+    }
+}
+
 void adbms6830_parse_cell(adbms6830_driver_t *dev, uint8_t *data, GRP grp)
 {
+    if((dev == NULL) || (data == NULL) || (dev->ics == NULL))
+    {
+        return;
+    }
+
     #define IS_VALID_CODE(lo, hi) \
         (!((d[lo] == 0xFFu) && (d[hi] == 0xFFu)) && \
          !((d[lo] == 0x00u) && (d[hi] == 0x80u)))
@@ -738,6 +763,9 @@ void adbms6830_parse_cell(adbms6830_driver_t *dev, uint8_t *data, GRP grp)
         if (IS_VALID_CODE(byte_lo, byte_hi)) {                                      \
             dev->ics[curr_ic].cell.c_codes[idx] =                                   \
                 (int16_t)((uint16_t)d[byte_lo] | ((uint16_t)d[byte_hi] << 8u));    \
+            if(curr_ic < ADBMS6830_MAX_TRACKED_ICS) {                              \
+                dev->last_cell_updated_mask[curr_ic] |= (uint16_t)(1u << (idx));   \
+            }                                                                       \
         }                                                                           \
     } while(0)
 
@@ -751,7 +779,14 @@ void adbms6830_parse_cell(adbms6830_driver_t *dev, uint8_t *data, GRP grp)
         dev->ics[curr_ic].cccrc.cmd_cntr = d[RX_DATA - 2u] >> 2u;
         dev->ics[curr_ic].cccrc.cell_pec = (received_pec != calc_pec) ? 1u : 0u;
 
-        if (dev->ics[curr_ic].cccrc.cell_pec) continue;
+        if (dev->ics[curr_ic].cccrc.cell_pec)
+        {
+            if(curr_ic < ADBMS6830_MAX_TRACKED_ICS)
+            {
+                dev->last_cell_pec_mask[curr_ic] |= adbms6830_cell_group_mask(grp);
+            }
+            continue;
+        }
 
         switch (grp)
         {
@@ -796,6 +831,17 @@ void adbms6830_read_cell_voltages(adbms6830_driver_t *dev)
 {
     uint8_t snap_cmd[2]   = { 0x00u, 0x2Du };
     uint8_t unsnap_cmd[2] = { 0x00u, 0x2Fu };
+
+    if(dev == NULL)
+    {
+        return;
+    }
+
+    for(uint8_t ic = 0u; ic < ADBMS6830_MAX_TRACKED_ICS; ic++)
+    {
+        dev->last_cell_updated_mask[ic] = 0u;
+        dev->last_cell_pec_mask[ic] = 0u;
+    }
 
     adbms6830_wakeup(dev);
     adbms6830_cmd(dev, snap_cmd);

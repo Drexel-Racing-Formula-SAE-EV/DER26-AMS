@@ -41,7 +41,24 @@ void app_create()
 	current_fault_init(&app.current_fault_state);
 	app.fuse_fault = false;
 	app.temp_fault = false;
-	app.voltage_fault = false;
+	app.voltage_fault = true;
+	app.voltage_valid = false;
+	app.voltage_read_fault = true;
+	app.voltage_warning = false;
+	app.charge_voltage_stop = false;
+	app.overvoltage_fault = false;
+	app.undervoltage_fault = false;
+	app.voltage_fault_latched = false;
+	app.voltage_fault_reason = VOLTAGE_FAULT_REASON_NOT_READY;
+	app.voltage_fault_latched_reason = VOLTAGE_FAULT_REASON_NONE;
+	app.voltage_usable_cell_count = 0u;
+	app.voltage_updated_cell_count = 0u;
+	app.voltage_stale_cell_count = 0u;
+	app.max_voltage_seg = 0u;
+	app.max_voltage_cell = 0u;
+	app.min_voltage_seg = 0u;
+	app.min_voltage_cell = 0u;
+	voltage_fault_init(&app.voltage_fault_state);
 	app.estimator_fault = false;
 
     app.charger_fault = false;

@@ -113,19 +113,7 @@ static uint16_t cell_mv_for_ecu(const app_data_t *data, uint8_t seg, uint8_t cel
         return 0u;
     }
 
-    int16_t code = data->acc.smb.ics[seg].cell.c_codes[cell];
-    if((code == 0) || (code == INT16_MIN))
-    {
-        return 0u;
-    }
-
-    float volts = ((float)code + 10000.0f) * 0.000150f;
-    if((volts < 0.5f) || (volts > 5.0f))
-    {
-        return 0u;
-    }
-
-    return (uint16_t)(volts * 1000.0f);
+    return accumulator_cell_voltage_mv(&data->acc, seg, cell);
 }
 
 static uint16_t temp_deci_c_for_ecu(const app_data_t *data, uint8_t seg, uint8_t sensor)
@@ -397,6 +385,8 @@ void canbus_task_fn(void *arg)
             bool disable_charge = (charger_hw_fault ||
                                    data->hard_fault ||
                                    data->voltage_fault ||
+                                   data->charge_voltage_stop ||
+                                   !data->voltage_valid ||
                                    data->temp_fault ||
                                    data->current_fault ||
                                    !data->current_valid ||

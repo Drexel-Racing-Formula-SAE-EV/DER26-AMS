@@ -79,9 +79,9 @@ HAL_StatusTypeDef HAL_UART_Receive_IT(UART_HandleTypeDef *huart, uint8_t *pData,
 void set_bms(bool state){ app.bms_state = state; HAL_GPIO_WritePin(BMS_OK_GPIO_Port, BMS_OK_Pin, state ? GPIO_PIN_SET : GPIO_PIN_RESET); }
 
 // External driver stubs used by accumulator/CLI paths
-void adBms6830_init(adbms6830_driver_t* dev, uint8_t num_ics, adbms6830_asic* ics, SPI_HandleTypeDef* hspi, GPIO_TypeDef* cs_port_a, GPIO_TypeDef* cs_port_b, uint16_t cs_pin_a, uint16_t cs_pin_b, TIM_HandleTypeDef *htim){ if(dev){ dev->num_ics=num_ics; dev->ics=ics; dev->hspi=hspi; dev->cs_port[0]=cs_port_a; dev->cs_port[1]=cs_port_b; dev->cs_pin[0]=cs_pin_a; dev->cs_pin[1]=cs_pin_b; dev->htim=htim; } }
+void adBms6830_init(adbms6830_driver_t* dev, uint8_t num_ics, adbms6830_asic* ics, SPI_HandleTypeDef* hspi, GPIO_TypeDef* cs_port_a, GPIO_TypeDef* cs_port_b, uint16_t cs_pin_a, uint16_t cs_pin_b, TIM_HandleTypeDef *htim){ if(dev){ dev->num_ics=num_ics; dev->ics=ics; dev->hspi=hspi; dev->cs_port[0]=cs_port_a; dev->cs_port[1]=cs_port_b; dev->cs_pin[0]=cs_pin_a; dev->cs_pin[1]=cs_pin_b; dev->htim=htim; for(uint8_t ic=0; ic<ADBMS6830_MAX_TRACKED_ICS; ic++){ dev->last_cell_updated_mask[ic]=0u; dev->last_cell_pec_mask[ic]=0u; } } }
 void adbms6830_reset_cfg(adbms6830_driver_t *dev){(void)dev;} void adbms6830_srst(adbms6830_driver_t *dev){(void)dev;} void adbms6830_wrcfga(adbms6830_driver_t *dev){(void)dev;} void adbms6830_wrcfgb(adbms6830_driver_t *dev){(void)dev;} void adbms6830_rdcfga(adbms6830_driver_t *dev){(void)dev;} void adbms6830_rdcfgb(adbms6830_driver_t *dev){(void)dev;}
-void adbms6830_adcv(adbms6830_driver_t *dev, RD rd, CONT cont, DCP dcp, RSTF rstf, OW_C_S owcs){(void)dev;(void)rd;(void)cont;(void)dcp;(void)rstf;(void)owcs;} void adbms6830_wakeup(adbms6830_driver_t* dev){(void)dev;} void adbms6830_us_delay(adbms6830_driver_t* dev, uint16_t microseconds){(void)dev;(void)microseconds;} void adbms6830_start_adc_cell_voltage_measurement(adbms6830_driver_t *dev){(void)dev;} void adbms6830_parse_cell(adbms6830_driver_t *dev, uint8_t *data, GRP grp){(void)dev;(void)data;(void)grp;} void adbms6830_read_cell_voltages(adbms6830_driver_t *dev){(void)dev;}
+void adbms6830_adcv(adbms6830_driver_t *dev, RD rd, CONT cont, DCP dcp, RSTF rstf, OW_C_S owcs){(void)dev;(void)rd;(void)cont;(void)dcp;(void)rstf;(void)owcs;} void adbms6830_wakeup(adbms6830_driver_t* dev){(void)dev;} void adbms6830_us_delay(adbms6830_driver_t* dev, uint16_t microseconds){(void)dev;(void)microseconds;} void adbms6830_start_adc_cell_voltage_measurement(adbms6830_driver_t *dev){(void)dev;} void adbms6830_parse_cell(adbms6830_driver_t *dev, uint8_t *data, GRP grp){(void)dev;(void)data;(void)grp;} void adbms6830_read_cell_voltages(adbms6830_driver_t *dev){ if(dev){ for(uint8_t ic=0; ic<ADBMS6830_MAX_TRACKED_ICS; ic++){ dev->last_cell_updated_mask[ic]=0u; dev->last_cell_pec_mask[ic]=0u; } for(uint8_t ic=0; (dev->ics != NULL) && (ic < (uint8_t)dev->num_ics) && (ic < ADBMS6830_MAX_TRACKED_ICS); ic++){ dev->last_cell_updated_mask[ic]=0x7FFFu; } } }
 int mux_read_gpio_voltage(adbms6830_driver_t *dev, uint8_t sensor_num){
     if(fake_mux_write_enable && dev && dev->ics && dev->num_ics > 0 && sensor_num < 24){
         dev->ics[0].temp.raw[sensor_num] = (int16_t)((2.5f/0.000150f)-10000.0f);
@@ -117,6 +117,7 @@ uint16_t stm32f767z_adc_read(ADC_HandleTypeDef *hadc){ return stm32f767z_adc_rea
 #include "Core/Src/ext_drivers/fans.c"
 #include "Core/Src/ext_drivers/current_sensor.c"
 #include "Core/Src/ext_drivers/current_fault.c"
+#include "Core/Src/ext_drivers/voltage_fault.c"
 #include "Core/Src/ext_drivers/imd.c"
 #include "Core/Src/ext_drivers/accumulator.c"
 #include "Core/Src/ext_drivers/canbus.c"
@@ -142,14 +143,24 @@ static float ntc_voltage_for_temp_c(float temp_c){
 static int16_t raw_for_temp_c(float temp_c){ return raw_for_ntc_voltage(ntc_voltage_for_temp_c(temp_c)); }
 #define CHECK(cond) do{ if(!(cond)){ fprintf(stderr,"FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); exit(1);} }while(0)
 
-static void init_fake_app(void){ memset(&app,0,sizeof(app)); app.acc.smb.num_ics = NSMBS; app.acc.smb.ics = app.acc.smb_ics; current_fault_init(&app.current_fault_state); app.current_meas_reason = CURRENT_SENSOR_REASON_ADC_READ; app.current_fault_reason = CURRENT_FAULT_REASON_SENSOR_NOT_READY; }
+static void init_fake_app(void){ memset(&app,0,sizeof(app)); app.acc.smb.num_ics = NSMBS; app.acc.smb.ics = app.acc.smb_ics; current_fault_init(&app.current_fault_state); voltage_fault_init(&app.voltage_fault_state); app.current_meas_reason = CURRENT_SENSOR_REASON_ADC_READ; app.current_fault_reason = CURRENT_FAULT_REASON_SENSOR_NOT_READY; app.voltage_fault_reason = VOLTAGE_FAULT_REASON_NOT_READY; }
+
+static void host_mark_updated_cells(app_data_t *d)
+{
+    if(d == NULL) return;
+    for(uint8_t ic = 0u; ic < NSMBS; ic++)
+    {
+        d->acc.smb.last_cell_updated_mask[ic] = (ic < (uint8_t)d->acc.smb.num_ics) ? 0x7FFFu : 0u;
+        d->acc.smb.last_cell_pec_mask[ic] = 0u;
+    }
+}
 
 static void test_accumulator_stats_and_balance(void){
     init_fake_app();
     for(int ic=0; ic<NSMBS; ic++) for(int c=0;c<NCELLS;c++) app.acc.smb_ics[ic].cell.c_codes[c] = code_for_volts(3.700f);
     app.acc.smb_ics[2].cell.c_codes[7] = code_for_volts(4.100f);
     app.acc.smb_ics[4].cell.c_codes[14] = code_for_volts(3.200f);
-    app.acc.smb_ics[0].cell.c_codes[0] = 0; // invalid should be skipped
+    host_mark_updated_cells(&app);
     accumulator_update_voltage_stats(&app.acc);
     CHECK(fabsf(app.acc.max_volt - 4.100f) < 0.002f);
     CHECK(fabsf(app.acc.min_volt - 3.200f) < 0.002f);
@@ -180,6 +191,8 @@ static void test_can_telemetry_packets(void){
     app.state = STATE_DISCARGE; app.air_state = true; app.current = -12.3f; app.imd_ok=true; app.imd_status=IMD_NORMAL; app.board.imd.duty=42.5f; app.max_temp=37.2f; app.min_voltage=3.201f; app.max_voltage=4.099f;
     for(int i=0;i<NFANS;i++) app.board.fans[i].duty_cycle = (float)(i*10);
     for(int ic=0; ic<NSMBS; ic++) for(int c=0;c<NCELLS;c++) app.acc.smb_ics[ic].cell.c_codes[c] = code_for_volts(3.0f + 0.001f*(float)(ic*NCELLS+c));
+    host_mark_updated_cells(&app);
+    accumulator_update_voltage_stats_at(&app.acc, fake_tick);
     for(int ic=0; ic<NSMBS; ic++) for(int s=0;s<NTEMPS;s++) app.acc.smb_ics[ic].temp.raw[s] = raw_for_ntc_voltage(2.5f);
     tx_count=0; tx_free_level=3;
     CHECK(send_ecu_ams_status(&app.board.canbus, &app) == HAL_OK);
@@ -242,8 +255,16 @@ static void run_one_estimator_task_iteration(app_data_t *d){
 
 static void fill_nominal_pack(app_data_t *d, float base_v){
     d->acc.smb.num_ics = NSMBS; d->acc.smb.ics = d->acc.smb_ics;
-    for(int ic=0; ic<NSMBS; ic++) for(int c=0;c<NCELLS;c++) d->acc.smb_ics[ic].cell.c_codes[c] = code_for_volts(base_v);
+    for(int ic=0; ic<NSMBS; ic++){
+        for(int c=0;c<NCELLS;c++) d->acc.smb_ics[ic].cell.c_codes[c] = code_for_volts(base_v);
+        d->acc.smb.last_cell_updated_mask[ic] = 0x7FFFu;
+        d->acc.smb.last_cell_pec_mask[ic] = 0u;
+    }
     for(int ic=0; ic<NSMBS; ic++) for(int s=0;s<NTEMPS;s++) d->acc.smb_ics[ic].temp.raw[s] = raw_for_ntc_voltage(2.5f);
+    accumulator_update_voltage_stats_at(&d->acc, fake_tick);
+    voltage_fault_update(&d->voltage_fault_state, &d->acc);
+    d->voltage_valid = d->voltage_fault_state.voltage_valid;
+    d->voltage_fault = d->voltage_fault_state.read_fault || d->voltage_fault_state.overvoltage_fault || d->voltage_fault_state.undervoltage_fault || d->voltage_fault_state.latched;
 }
 
 static void test_task_iterations_with_injected_signals(void){
@@ -561,6 +582,7 @@ static void test_voltage_stats_boundaries_and_fuzz(void){
             else app.acc.smb_ics[ic].cell.c_codes[c] = code_for_volts(3.50f + 0.001f * (float)c);
         }
     }
+    host_mark_updated_cells(&app);
     accumulator_update_voltage_stats(&app.acc);
     CHECK(app.acc.valid_voltage_count == 15u);
     CHECK(app.acc.min_volt > 3.49f && app.acc.max_volt < 3.52f);
@@ -596,11 +618,77 @@ static void test_voltage_stats_boundaries_and_fuzz(void){
             }
         }
     }
+    host_mark_updated_cells(&app);
     accumulator_update_voltage_stats(&app.acc);
     CHECK(app.acc.valid_voltage_count == expected_valid);
     CHECK(fabsf(app.acc.min_volt - expected_min) < 0.002f);
     CHECK(fabsf(app.acc.max_volt - expected_max) < 0.002f);
     CHECK(fabsf(app.acc.total_volt - expected_total) < 0.050f);
+}
+
+
+static void test_voltage_fault_policy_and_stale_tolerance(void){
+    init_fake_app();
+    fake_tick = 0u;
+    fill_nominal_pack(&app, 3.700f);
+    voltage_fault_update(&app.voltage_fault_state, &app.acc);
+    CHECK(app.voltage_fault_state.voltage_valid == true);
+    CHECK(app.voltage_fault_state.read_fault == false);
+    CHECK(app.voltage_fault_state.reason == VOLTAGE_FAULT_REASON_NONE);
+
+    /* One noisy/PEC-failed group should be observable but still usable while fresh. */
+    fake_tick = 1000u;
+    host_mark_updated_cells(&app);
+    app.acc.smb.last_cell_updated_mask[0] &= (uint16_t)~0x0001u;
+    app.acc.smb.last_cell_pec_mask[0] = 0x0001u;
+    accumulator_update_voltage_stats_at(&app.acc, fake_tick);
+    voltage_fault_update(&app.voltage_fault_state, &app.acc);
+    CHECK(app.acc.usable_voltage_count == AMS_EXPECTED_CELL_COUNT);
+    CHECK(app.acc.updated_voltage_count == (AMS_EXPECTED_CELL_COUNT - 1u));
+    CHECK(app.voltage_fault_state.voltage_valid == true);
+    CHECK(app.voltage_fault_state.read_fault == false);
+    CHECK(app.voltage_fault_state.warning == true);
+    CHECK(app.voltage_fault_state.reason == VOLTAGE_FAULT_REASON_PEC_FAILURE);
+
+    /* Persistent missing data must fail closed once the cell becomes stale. */
+    for(fake_tick = 2000u; fake_tick <= 3000u; fake_tick += 1000u)
+    {
+        host_mark_updated_cells(&app);
+        app.acc.smb.last_cell_updated_mask[0] &= (uint16_t)~0x0001u;
+        app.acc.smb.last_cell_pec_mask[0] = 0x0001u;
+        accumulator_update_voltage_stats_at(&app.acc, fake_tick);
+    }
+    voltage_fault_update(&app.voltage_fault_state, &app.acc);
+    CHECK(app.acc.usable_voltage_count == (AMS_EXPECTED_CELL_COUNT - 1u));
+    CHECK(app.voltage_fault_state.read_fault == true);
+    CHECK(app.voltage_fault_state.reason == VOLTAGE_FAULT_REASON_STALE_SCAN);
+
+    init_fake_app(); fill_nominal_pack(&app, 3.700f);
+    app.acc.smb_ics[0].cell.c_codes[0] = code_for_volts(4.180f);
+    host_mark_updated_cells(&app);
+    accumulator_update_voltage_stats_at(&app.acc, 0u);
+    voltage_fault_update(&app.voltage_fault_state, &app.acc);
+    CHECK(app.voltage_fault_state.charge_stop == true);
+    CHECK(app.voltage_fault_state.overvoltage_fault == false);
+    CHECK(app.voltage_fault_state.latched == false);
+
+    init_fake_app(); fill_nominal_pack(&app, 3.700f);
+    app.acc.smb_ics[1].cell.c_codes[4] = code_for_volts(4.200f);
+    host_mark_updated_cells(&app);
+    accumulator_update_voltage_stats_at(&app.acc, 0u);
+    voltage_fault_update(&app.voltage_fault_state, &app.acc);
+    CHECK(app.voltage_fault_state.overvoltage_fault == true);
+    CHECK(app.voltage_fault_state.latched == true);
+    CHECK(app.voltage_fault_state.latched_reason == VOLTAGE_FAULT_REASON_OV_HARD);
+
+    init_fake_app(); fill_nominal_pack(&app, 3.700f);
+    app.acc.smb_ics[2].cell.c_codes[5] = code_for_volts(2.500f);
+    host_mark_updated_cells(&app);
+    accumulator_update_voltage_stats_at(&app.acc, 0u);
+    voltage_fault_update(&app.voltage_fault_state, &app.acc);
+    CHECK(app.voltage_fault_state.undervoltage_fault == true);
+    CHECK(app.voltage_fault_state.latched == true);
+    CHECK(app.voltage_fault_state.latched_reason == VOLTAGE_FAULT_REASON_UV_HARD);
 }
 
 static void test_temp_invalid_and_cold_valid_fault_behavior(void){
@@ -1037,6 +1125,8 @@ static void test_telemetry_absent_segments_and_invalid_channels(void){
     }
     app.acc.smb_ics[0].cell.c_codes[1] = INT16_MIN;
     app.acc.smb_ics[1].temp.raw[3] = 0;
+    host_mark_updated_cells(&app);
+    accumulator_update_voltage_stats_at(&app.acc, fake_tick);
     tx_count = 0; tx_free_level = 3;
     run_one_canbus_task_iteration(&app);
     CHECK(tx_count == 62u);
@@ -1068,6 +1158,7 @@ static void test_periods_and_driver_edge_cases(void){
 int main(void){
     test_accumulator_stats_and_balance(); puts("PASS accumulator stats/balance");
     test_voltage_stats_boundaries_and_fuzz(); puts("PASS voltage boundary/fuzz stats");
+    test_voltage_fault_policy_and_stale_tolerance(); puts("PASS voltage fault/stale policy");
     test_temp_stats(); puts("PASS temp stats");
     test_temp_invalid_and_cold_valid_fault_behavior(); puts("PASS temp invalid/cold-valid fault behavior");
     test_can_telemetry_packets(); puts("PASS CAN telemetry packetization");

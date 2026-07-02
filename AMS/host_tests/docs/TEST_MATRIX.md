@@ -2,8 +2,9 @@
 
 | Test function | Purpose |
 |---|---|
-| `test_accumulator_stats_and_balance` | Verifies voltage min/max/total stats, invalid-cell skip, bounded SMB count, balance mask generation, balance clear. |
-| `test_voltage_stats_boundaries_and_fuzz` | Fuzzes valid/invalid cell-code combinations and verifies only valid readings affect pack stats. |
+| `test_accumulator_stats_and_balance` | Verifies voltage min/max/total stats, full-usable scan gating, bounded SMB count, balance mask generation, balance clear. |
+| `test_voltage_stats_boundaries_and_fuzz` | Fuzzes valid/invalid cell-code combinations and verifies only usable/fresh readings affect pack stats. |
+| `test_voltage_fault_policy_and_stale_tolerance` | Verifies voltage fault staging, charge-stop behavior, hard OV/UV latching, and single-scan PEC/miss tolerance versus persistent stale-cell fail-closed behavior. |
 | `test_temp_stats` | Verifies temperature max/average behavior while skipping invalid raw channels. |
 | `test_temp_invalid_and_cold_valid_fault_behavior` | Ensures all-invalid temps fault and valid cold temps do not fault. |
 | `test_can_telemetry_packets` | Verifies ECU AMS packet headers, CAN ID, 8-byte layout, status/current/voltage/temp/fan payloads. |
