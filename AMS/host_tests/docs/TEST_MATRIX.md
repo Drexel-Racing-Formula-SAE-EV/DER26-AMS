@@ -58,6 +58,8 @@ Unit-only additions:
 | `test_voltage_fault_read_failure_precedence_and_strings` | Verifies not-ready, partial/stale/PEC read-fault precedence, warning-only partial usable scans, and voltage fault reason strings. |
 | `test_adbms_spi_debug_write_and_full_duplex_paths` | Verifies SPI debug state for write and full-duplex read paths, CS wrapping, dummy-byte TX padding, RX extraction, HAL error propagation, and debug counters/previews. |
 | `test_adbms_spi_debug_rd48_pec_masks_and_clear` | Verifies `rd48` debug command capture, PEC pass/fail masks across multiple ICs, command-counter capture, debug clear/enable behavior, and SPI op strings. |
+| `test_adbms_spi_sid_status_and_counter_mismatch` | Verifies ADBMS6830 RDSID parsing, RDSTATC/RDSTATD/RDSTATE diagnostic parsing, and command-counter mismatch detection. |
+| `test_adbms_spi_coldwake_and_clear_flags` | Verifies conservative cold-wake pulse generation and CLRFLAG all-flag packing/command dispatch. |
 | `test_adbms2950_spi_debug_write_and_full_duplex_paths` | Verifies ADBMS2950/APM SPI write and full-duplex read debug state, CS wrapping, dummy-byte TX padding, RX extraction, HAL error propagation, and counters/previews. |
 | `test_adbms2950_spi_probe_pec_masks_and_clear` | Verifies ADBMS2950/APM RDCFGA probe debug capture, PEC pass/fail masks, command-counter capture, debug clear/enable behavior, and SPI op strings. |
 
@@ -67,8 +69,9 @@ Hardware bring-up notes:
 
 | Area | Purpose |
 |---|---|
-| ADBMS6830 SPI debug CLI | Firmware exposes `spi status`, `spi probe`, `spi clear`, `spi enable`, and `spi disable` for board-side ADBMS6830 chain bring-up. This is hardware-debug support; host tests still cover firmware transaction/debug logic, not physical SPI timing or cable integrity. |
+| ADBMS6830 SPI debug CLI | Firmware exposes `spi status`, `spi probe`, `spi sid`, `spi stat`, `spi staterr`, `spi wake`, `spi coldwake`, `spi clrflag`, `spi clear`, `spi enable`, and `spi disable` for board-side ADBMS6830 chain bring-up. This is hardware-debug support; host tests still cover firmware transaction/debug logic, not physical SPI timing or cable integrity. |
 | ADBMS2950/APM SPI debug CLI | Firmware exposes `apm status`, `apm probe`, `apm clear`, `apm enable`, and `apm disable`. APM initialization remains gated behind `AMS_ENABLE_APM_2950_DEBUG=1` until the NDA datasheet and board bring-up are complete. |
 | Hardware bring-up BMS_OK inhibit | Firmware supports `AMS_HW_BRINGUP=1`, which defaults BMS_OK output inhibited until `bmsok release` is run from CLI. `bmsok inhibit` forces it low again. |
 | Shared ADBMS SPI lock | ADBMS6830 and ADBMS2950 low-level SPI transfers call shared `adbms_spi_lock()` / `adbms_spi_unlock()` hooks so CLI probing cannot collide with periodic reads on SPI6. |
 | Fan fail-safe/ramp | Fan task drives max PWM when temperature data is invalid/stale/unavailable, and ramps PWM between low/high temperature thresholds when temperature data is valid. |
+| Hardware SPI bring-up guide | `docs/HARDWARE_SPI_BRINGUP.md` documents first-flash setup, logic-analyzer channels, expected SPI mode 3 behavior, CLI command order, fault isolation, APM probing, and BMS_OK release criteria. |

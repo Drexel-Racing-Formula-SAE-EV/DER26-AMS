@@ -40,12 +40,17 @@ Pass does not mean hardware is validated. You still need CubeIDE build, board fl
 
 ## Hardware bring-up CLI order
 
+See `docs/HARDWARE_SPI_BRINGUP.md` for the full hardware SPI/isoSPI test plan.
+
 For first board tests, build with `AMS_HW_BRINGUP=1` so BMS_OK stays inhibited until manually released:
 
 ```text
 status
 spi clear
+spi coldwake
 spi probe
+spi sid
+spi stat
 spi status
 volt
 current

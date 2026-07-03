@@ -24,7 +24,12 @@ typedef enum
   ADBMS6830_SPI_OP_WR48,
   ADBMS6830_SPI_OP_RD48,
   ADBMS6830_SPI_OP_STCOMM,
-  ADBMS6830_SPI_OP_PROBE
+  ADBMS6830_SPI_OP_PROBE,
+  ADBMS6830_SPI_OP_WAKE,
+  ADBMS6830_SPI_OP_COLD_WAKE,
+  ADBMS6830_SPI_OP_READ_SID,
+  ADBMS6830_SPI_OP_READ_STATUS,
+  ADBMS6830_SPI_OP_CLEAR_FLAGS
 } adbms6830_spi_op_t;
 
 typedef struct
@@ -45,10 +50,52 @@ typedef struct
   uint16_t last_total_len;
   uint16_t last_read_pec_pass_mask;
   uint16_t last_read_pec_fail_mask;
+  uint16_t cmd_counter_seen_mask;
+  uint16_t cmd_counter_expected_mask;
+  uint16_t cmd_counter_mismatch_mask;
+  uint32_t cmd_counter_error_count;
   uint8_t last_cmd_counter[ADBMS6830_MAX_TRACKED_ICS];
+  uint8_t expected_cmd_counter[ADBMS6830_MAX_TRACKED_ICS];
   uint8_t last_tx_preview[ADBMS6830_SPI_DEBUG_PREVIEW_BYTES];
   uint8_t last_rx_preview[ADBMS6830_SPI_DEBUG_PREVIEW_BYTES];
 } adbms6830_spi_debug_t;
+
+typedef struct
+{
+  bool sid_valid;
+  bool statc_valid;
+  bool statd_valid;
+  bool state_valid;
+
+  uint8_t sid[RSID];
+
+  uint16_t cs_flt_mask;
+  uint16_t cadc_counter;
+  uint8_t cadc_subcounter;
+  uint8_t va_ov;
+  uint8_t va_uv;
+  uint8_t vd_ov;
+  uint8_t vd_uv;
+  uint8_t ced;
+  uint8_t cmed;
+  uint8_t sed;
+  uint8_t smed;
+  uint8_t vde;
+  uint8_t vdel;
+  uint8_t comp;
+  uint8_t spiflt;
+  uint8_t sleep;
+  uint8_t thsd;
+  uint8_t tmodchk;
+  uint8_t oscchk;
+
+  uint16_t cell_ov_mask;
+  uint16_t cell_uv_mask;
+  uint8_t osc_counter;
+
+  uint16_t gpi_mask;
+  uint8_t revision;
+} adbms6830_ic_diag_t;
 
 
 /* BMS ic main structure */
@@ -120,6 +167,7 @@ typedef struct
   uint32_t last_temp_updated_mask[ADBMS6830_MAX_TRACKED_ICS];
 
   adbms6830_spi_debug_t spi_debug;
+  adbms6830_ic_diag_t diag[ADBMS6830_MAX_TRACKED_ICS];
 } adbms6830_driver_t;
 
 #endif /* INC_EXT_DRIVERS_ADBMS6830_DATA_H_ */

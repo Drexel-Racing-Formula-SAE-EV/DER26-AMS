@@ -66,10 +66,12 @@ uint16_t stm32f767z_adc_read(ADC_HandleTypeDef *hadc)
 static uint8_t unit_spi_last_tx[BUFSZ];
 static uint8_t unit_spi_last_txrx_tx[BUFSZ];
 static uint8_t unit_spi_txrx_response[BUFSZ];
+static uint8_t unit_spi_txrx_sequence[4][BUFSZ];
 static uint16_t unit_spi_last_tx_len = 0u;
 static uint16_t unit_spi_last_txrx_len = 0u;
 static uint32_t unit_spi_tx_calls = 0u;
 static uint32_t unit_spi_txrx_calls = 0u;
+static uint32_t unit_spi_txrx_sequence_count = 0u;
 static uint32_t unit_gpio_write_calls = 0u;
 static GPIO_PinState unit_gpio_states[64];
 static HAL_StatusTypeDef unit_spi_tx_status = HAL_OK;
@@ -80,11 +82,13 @@ static void unit_spi_reset(void)
     memset(unit_spi_last_tx, 0, sizeof(unit_spi_last_tx));
     memset(unit_spi_last_txrx_tx, 0, sizeof(unit_spi_last_txrx_tx));
     memset(unit_spi_txrx_response, 0, sizeof(unit_spi_txrx_response));
+    memset(unit_spi_txrx_sequence, 0, sizeof(unit_spi_txrx_sequence));
     memset(unit_gpio_states, 0, sizeof(unit_gpio_states));
     unit_spi_last_tx_len = 0u;
     unit_spi_last_txrx_len = 0u;
     unit_spi_tx_calls = 0u;
     unit_spi_txrx_calls = 0u;
+    unit_spi_txrx_sequence_count = 0u;
     unit_gpio_write_calls = 0u;
     unit_spi_tx_status = HAL_OK;
     unit_spi_txrx_status = HAL_OK;
@@ -118,8 +122,16 @@ HAL_StatusTypeDef HAL_SPI_TransmitReceive(SPI_HandleTypeDef *hspi,
 
     memcpy(unit_spi_last_txrx_tx, pTxData, Size);
     unit_spi_last_txrx_len = Size;
+    if((unit_spi_txrx_sequence_count > 0u) &&
+       (unit_spi_txrx_calls < unit_spi_txrx_sequence_count))
+    {
+        memcpy(pRxData, unit_spi_txrx_sequence[unit_spi_txrx_calls], Size);
+    }
+    else
+    {
+        memcpy(pRxData, unit_spi_txrx_response, Size);
+    }
     unit_spi_txrx_calls++;
-    memcpy(pRxData, unit_spi_txrx_response, Size);
     return unit_spi_txrx_status;
 }
 
@@ -1022,6 +1034,22 @@ static void unit_adbms_make_valid_read_packet(uint8_t *dst, uint8_t seed, uint8_
     }
 }
 
+static void unit_adbms_make_read_packet_from_data(uint8_t *dst, const uint8_t payload[TX_DATA], uint8_t cmd_counter, bool corrupt_pec)
+{
+    memcpy(dst, payload, TX_DATA);
+    dst[RX_DATA - 2u] = (uint8_t)(cmd_counter << 2u);
+    dst[RX_DATA - 1u] = 0u;
+
+    uint16_t pec = pec10_calc(1u, RX_DATA - 2u, dst);
+    dst[RX_DATA - 2u] = (uint8_t)((cmd_counter << 2u) | ((pec >> 8u) & 0x03u));
+    dst[RX_DATA - 1u] = (uint8_t)pec;
+
+    if(corrupt_pec)
+    {
+        dst[RX_DATA - 1u] ^= 0xA5u;
+    }
+}
+
 static void unit_adbms_init_driver(adbms6830_driver_t *dev,
                                    adbms6830_asic *ics,
                                    SPI_HandleTypeDef *spi,
@@ -1150,6 +1178,107 @@ static void test_adbms_spi_debug_rd48_pec_masks_and_clear(void)
     adbms6830_spi_debug_enable(&dev, true);
     EXPECT_TRUE(dev.spi_debug.enabled);
     EXPECT_TRUE(strcmp(adbms6830_spi_op_str(ADBMS6830_SPI_OP_PROBE), "probe") == 0);
+}
+
+static void test_adbms_spi_sid_status_and_counter_mismatch(void)
+{
+    adbms6830_driver_t dev;
+    adbms6830_asic ics[2];
+    SPI_HandleTypeDef spi;
+    GPIO_TypeDef gpio_a;
+    GPIO_TypeDef gpio_b;
+    uint8_t rx[RX_DATA * 2u];
+    const uint8_t sid0[TX_DATA] = {0x10u, 0x11u, 0x12u, 0x13u, 0x14u, 0x15u};
+    const uint8_t sid1[TX_DATA] = {0x20u, 0x21u, 0x22u, 0x23u, 0x24u, 0x25u};
+    const uint8_t statc[TX_DATA] = {0x05u, 0x80u, 0x12u, 0x34u, 0xC3u, 0x5Du};
+    const uint8_t statd[TX_DATA] = {0x03u, 0x0Cu, 0x30u, 0xC0u, 0xFFu, 0x3Cu};
+    const uint8_t state[TX_DATA] = {0xFFu, 0xFFu, 0xFFu, 0xFEu, 0xA5u, 0xB2u};
+
+    memset(&dev, 0, sizeof(dev));
+    memset(ics, 0, sizeof(ics));
+    memset(&spi, 0, sizeof(spi));
+    memset(&gpio_a, 0, sizeof(gpio_a));
+    memset(&gpio_b, 0, sizeof(gpio_b));
+    unit_adbms_init_driver(&dev, ics, &spi, &gpio_a, &gpio_b, 2u);
+
+    unit_adbms_make_read_packet_from_data(&unit_spi_txrx_response[CMDSZ + PEC15SZ], sid0, 7u, false);
+    unit_adbms_make_read_packet_from_data(&unit_spi_txrx_response[CMDSZ + PEC15SZ + RX_DATA], sid1, 7u, false);
+    EXPECT_TRUE(adbms6830_read_sid(&dev) == HAL_OK);
+    EXPECT_TRUE(dev.spi_debug.last_op == ADBMS6830_SPI_OP_READ_SID);
+    EXPECT_TRUE(dev.diag[0].sid_valid);
+    EXPECT_TRUE(dev.diag[1].sid_valid);
+    EXPECT_TRUE(memcmp(dev.diag[0].sid, sid0, TX_DATA) == 0);
+    EXPECT_TRUE(memcmp(dev.diag[1].sid, sid1, TX_DATA) == 0);
+    EXPECT_TRUE(dev.spi_debug.cmd_counter_seen_mask == 0x0003u);
+
+    unit_spi_reset();
+    adbms6830_spi_debug_clear(&dev);
+    unit_spi_txrx_sequence_count = 3u;
+    unit_adbms_make_read_packet_from_data(&unit_spi_txrx_sequence[0][CMDSZ + PEC15SZ], statc, 7u, false);
+    unit_adbms_make_read_packet_from_data(&unit_spi_txrx_sequence[0][CMDSZ + PEC15SZ + RX_DATA], statc, 7u, false);
+    unit_adbms_make_read_packet_from_data(&unit_spi_txrx_sequence[1][CMDSZ + PEC15SZ], statd, 7u, false);
+    unit_adbms_make_read_packet_from_data(&unit_spi_txrx_sequence[1][CMDSZ + PEC15SZ + RX_DATA], statd, 7u, false);
+    unit_adbms_make_read_packet_from_data(&unit_spi_txrx_sequence[2][CMDSZ + PEC15SZ], state, 7u, false);
+    unit_adbms_make_read_packet_from_data(&unit_spi_txrx_sequence[2][CMDSZ + PEC15SZ + RX_DATA], state, 7u, false);
+
+    EXPECT_TRUE(adbms6830_read_status(&dev, false) == HAL_OK);
+    EXPECT_TRUE(unit_spi_txrx_calls == 3u);
+    EXPECT_TRUE(dev.spi_debug.last_op == ADBMS6830_SPI_OP_READ_STATUS);
+    EXPECT_TRUE(dev.diag[0].statc_valid);
+    EXPECT_TRUE(dev.diag[0].cs_flt_mask == 0x8005u);
+    EXPECT_TRUE(dev.diag[0].va_ov == 1u);
+    EXPECT_TRUE(dev.diag[0].va_uv == 1u);
+    EXPECT_TRUE(dev.diag[0].spiflt == 1u);
+    EXPECT_TRUE(dev.diag[0].sleep == 1u);
+    EXPECT_TRUE(dev.diag[0].thsd == 1u);
+    EXPECT_TRUE(dev.diag[0].oscchk == 1u);
+    EXPECT_TRUE(dev.diag[0].statd_valid);
+    EXPECT_TRUE(dev.diag[0].cell_ov_mask == 0x8421u);
+    EXPECT_TRUE(dev.diag[0].cell_uv_mask == 0x8421u);
+    EXPECT_TRUE(dev.diag[0].osc_counter == 0x3Cu);
+    EXPECT_TRUE(dev.diag[0].state_valid);
+    EXPECT_TRUE(dev.diag[0].gpi_mask == 0x2A5u);
+    EXPECT_TRUE(dev.diag[0].revision == 0x0Bu);
+
+    unit_spi_reset();
+    unit_adbms_make_valid_read_packet(&unit_spi_txrx_response[CMDSZ + PEC15SZ], 0x70u, 9u, false);
+    unit_adbms_make_valid_read_packet(&unit_spi_txrx_response[CMDSZ + PEC15SZ + RX_DATA], 0x80u, 7u, false);
+    adbms6830_rd48(&dev, RDCFGA, rx);
+    EXPECT_TRUE(dev.spi_debug.cmd_counter_mismatch_mask == 0x0001u);
+    EXPECT_TRUE(dev.spi_debug.cmd_counter_error_count == 1u);
+    EXPECT_TRUE(dev.spi_debug.error_count == 1u);
+}
+
+static void test_adbms_spi_coldwake_and_clear_flags(void)
+{
+    adbms6830_driver_t dev;
+    adbms6830_asic ics[1];
+    SPI_HandleTypeDef spi;
+    GPIO_TypeDef gpio_a;
+    GPIO_TypeDef gpio_b;
+
+    memset(&dev, 0, sizeof(dev));
+    memset(ics, 0, sizeof(ics));
+    memset(&spi, 0, sizeof(spi));
+    memset(&gpio_a, 0, sizeof(gpio_a));
+    memset(&gpio_b, 0, sizeof(gpio_b));
+    unit_adbms_init_driver(&dev, ics, &spi, &gpio_a, &gpio_b, 1u);
+
+    unit_spi_reset();
+    adbms6830_wakeup_cold(&dev);
+    EXPECT_TRUE(dev.spi_debug.last_op == ADBMS6830_SPI_OP_COLD_WAKE);
+    EXPECT_TRUE(unit_gpio_write_calls == 4u);
+    EXPECT_TRUE(unit_gpio_states[4u] == GPIO_PIN_SET);
+
+    unit_spi_reset();
+    adbms6830_spi_debug_clear(&dev);
+    EXPECT_TRUE(adbms6830_clear_all_flags(&dev) == HAL_OK);
+    EXPECT_TRUE(unit_spi_tx_calls == 1u);
+    EXPECT_TRUE(dev.spi_debug.last_op == ADBMS6830_SPI_OP_CLEAR_FLAGS);
+    EXPECT_TRUE(ics[0].clrflag.tx_data[0] == 0xFFu);
+    EXPECT_TRUE(ics[0].clrflag.tx_data[1] == 0xFFu);
+    EXPECT_TRUE(ics[0].clrflag.tx_data[4] == 0xFFu);
+    EXPECT_TRUE(ics[0].clrflag.tx_data[5] == 0xDFu);
 }
 
 
@@ -1313,6 +1442,8 @@ int main(void)
     run_test("voltage fault read failure/strings", test_voltage_fault_read_failure_precedence_and_strings);
     run_test("ADBMS SPI debug write/full-duplex", test_adbms_spi_debug_write_and_full_duplex_paths);
     run_test("ADBMS SPI rd48 PEC masks", test_adbms_spi_debug_rd48_pec_masks_and_clear);
+    run_test("ADBMS SPI SID/status/counter diagnostics", test_adbms_spi_sid_status_and_counter_mismatch);
+    run_test("ADBMS SPI cold wake and clear flags", test_adbms_spi_coldwake_and_clear_flags);
     run_test("ADBMS2950 SPI write/full-duplex", test_adbms2950_spi_debug_write_and_full_duplex_paths);
     run_test("ADBMS2950 SPI probe PEC masks", test_adbms2950_spi_probe_pec_masks_and_clear);
     run_test("current sensor conversion/range", test_current_sensor_conversion_zero_and_range_selection);

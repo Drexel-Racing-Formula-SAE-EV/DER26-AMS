@@ -128,6 +128,7 @@ void set_bms(bool state){
 void adBms6830_init(adbms6830_driver_t* dev, uint8_t num_ics, adbms6830_asic* ics, SPI_HandleTypeDef* hspi, GPIO_TypeDef* cs_port_a, GPIO_TypeDef* cs_port_b, uint16_t cs_pin_a, uint16_t cs_pin_b, TIM_HandleTypeDef *htim){ if(dev){ dev->num_ics=num_ics; dev->ics=ics; dev->hspi=hspi; dev->cs_port[0]=cs_port_a; dev->cs_port[1]=cs_port_b; dev->cs_pin[0]=cs_pin_a; dev->cs_pin[1]=cs_pin_b; dev->htim=htim; for(uint8_t ic=0; ic<ADBMS6830_MAX_TRACKED_ICS; ic++){ dev->last_cell_updated_mask[ic]=0u; dev->last_cell_pec_mask[ic]=0u; dev->last_temp_updated_mask[ic]=0u; } } }
 void adbms6830_reset_cfg(adbms6830_driver_t *dev){(void)dev;} void adbms6830_srst(adbms6830_driver_t *dev){(void)dev;} void adbms6830_wrcfga(adbms6830_driver_t *dev){(void)dev;} void adbms6830_wrcfgb(adbms6830_driver_t *dev){(void)dev;} void adbms6830_rdcfga(adbms6830_driver_t *dev){(void)dev;} void adbms6830_rdcfgb(adbms6830_driver_t *dev){(void)dev;}
 void adbms6830_adcv(adbms6830_driver_t *dev, RD rd, CONT cont, DCP dcp, RSTF rstf, OW_C_S owcs){(void)dev;(void)rd;(void)cont;(void)dcp;(void)rstf;(void)owcs;} void adbms6830_wakeup(adbms6830_driver_t* dev){(void)dev;} void adbms6830_us_delay(adbms6830_driver_t* dev, uint16_t microseconds){(void)dev;(void)microseconds;} void adbms6830_start_adc_cell_voltage_measurement(adbms6830_driver_t *dev){(void)dev;} void adbms6830_parse_cell(adbms6830_driver_t *dev, uint8_t *data, GRP grp){(void)dev;(void)data;(void)grp;}
+void adbms6830_wakeup_cold(adbms6830_driver_t* dev){ if(dev){ dev->spi_debug.last_op = ADBMS6830_SPI_OP_COLD_WAKE; } }
 void adbms6830_read_cell_voltages(adbms6830_driver_t *dev){
     if(dev){
         for(uint8_t ic=0; ic<ADBMS6830_MAX_TRACKED_ICS; ic++){
@@ -157,6 +158,11 @@ const char *adbms6830_spi_op_str(adbms6830_spi_op_t op){
         case ADBMS6830_SPI_OP_RD48: return "rd48";
         case ADBMS6830_SPI_OP_STCOMM: return "stcomm";
         case ADBMS6830_SPI_OP_PROBE: return "probe";
+        case ADBMS6830_SPI_OP_WAKE: return "wake";
+        case ADBMS6830_SPI_OP_COLD_WAKE: return "cold_wake";
+        case ADBMS6830_SPI_OP_READ_SID: return "read_sid";
+        case ADBMS6830_SPI_OP_READ_STATUS: return "read_status";
+        case ADBMS6830_SPI_OP_CLEAR_FLAGS: return "clear_flags";
         default: return "unknown";
     }
 }
@@ -165,6 +171,44 @@ HAL_StatusTypeDef adbms6830_spi_probe_rdcfga(adbms6830_driver_t *dev){
     dev->spi_debug.last_op = ADBMS6830_SPI_OP_PROBE;
     dev->spi_debug.last_status = HAL_OK;
     dev->spi_debug.rx_count++;
+    return HAL_OK;
+}
+HAL_StatusTypeDef adbms6830_read_sid(adbms6830_driver_t *dev){
+    if(dev == NULL) return HAL_ERROR;
+    for(uint8_t ic = 0u; (dev->ics != NULL) && (ic < (uint8_t)dev->num_ics) && (ic < ADBMS6830_MAX_TRACKED_ICS); ic++){
+        for(uint8_t b = 0u; b < RSID; b++){
+            dev->diag[ic].sid[b] = (uint8_t)(0x10u + (ic * 0x10u) + b);
+            dev->ics[ic].sid.sid[b] = dev->diag[ic].sid[b];
+        }
+        dev->diag[ic].sid_valid = true;
+    }
+    dev->spi_debug.last_op = ADBMS6830_SPI_OP_READ_SID;
+    dev->spi_debug.last_status = HAL_OK;
+    dev->spi_debug.rx_count++;
+    return HAL_OK;
+}
+HAL_StatusTypeDef adbms6830_read_status(adbms6830_driver_t *dev, bool inject_spiflt){
+    if(dev == NULL) return HAL_ERROR;
+    for(uint8_t ic = 0u; (ic < (uint8_t)dev->num_ics) && (ic < ADBMS6830_MAX_TRACKED_ICS); ic++){
+        dev->diag[ic].statc_valid = true;
+        dev->diag[ic].statd_valid = true;
+        dev->diag[ic].state_valid = true;
+        dev->diag[ic].spiflt = inject_spiflt ? 1u : 0u;
+        dev->diag[ic].sleep = 0u;
+        dev->diag[ic].thsd = 0u;
+        dev->diag[ic].oscchk = 0u;
+        dev->diag[ic].revision = 1u;
+    }
+    dev->spi_debug.last_op = ADBMS6830_SPI_OP_READ_STATUS;
+    dev->spi_debug.last_status = HAL_OK;
+    dev->spi_debug.rx_count += 3u;
+    return HAL_OK;
+}
+HAL_StatusTypeDef adbms6830_clear_all_flags(adbms6830_driver_t *dev){
+    if(dev == NULL) return HAL_ERROR;
+    dev->spi_debug.last_op = ADBMS6830_SPI_OP_CLEAR_FLAGS;
+    dev->spi_debug.last_status = HAL_OK;
+    dev->spi_debug.tx_count++;
     return HAL_OK;
 }
 

@@ -55,7 +55,7 @@ command_t cmds[] =
 	{"temp", &get_temperature, "gets sensor temperatures for all SMBs"},
 	{"tempsns", &get_temperature_sensor, "gets one sensor: tempsns <ic> <sensor 0-23>"},
 	{"current", &get_current, "gets current sensor raw counts/voltages/status"},
-	{"spi", &get_spi_debug, "ADBMS6830 SPI debug: spi [status|probe|clear|enable|disable]"},
+	{"spi", &get_spi_debug, "ADBMS6830 SPI debug: spi [status|probe|sid|stat|staterr|wake|coldwake|clrflag|clear|enable|disable]"},
 	{"apm", &get_apm_debug, "ADBMS2950/APM debug: apm [status|probe|clear|enable|disable]"},
 	{"bmsok", &bmsok_control, "BMS_OK control: bmsok [status|release|inhibit]"},
 	{"state", &set_state, "gets or sets the AMS state [charge|discharge]"},
@@ -650,6 +650,7 @@ int get_spi_debug(int argc, char *argv[])
     const adbms6830_spi_debug_t *dbg;
     HAL_StatusTypeDef probe_status;
     SPI_HandleTypeDef *hspi = smb->hspi;
+    uint8_t ic_count = smb_ic_count(smb);
 
     if((argc >= 2) && (argv[1] != NULL))
     {
@@ -674,9 +675,47 @@ int get_spi_debug(int argc, char *argv[])
             snprintf(outline, CLI_LINESZ, "RDCFGA probe status: %s", cli_hal_status_str(probe_status));
             ret |= cli_printline(cli, outline);
         }
+        else if(!strcmp(argv[1], "sid"))
+        {
+            probe_status = adbms6830_read_sid(smb);
+            snprintf(outline, CLI_LINESZ, "RDSID status: %s", cli_hal_status_str(probe_status));
+            ret |= cli_printline(cli, outline);
+        }
+        else if(!strcmp(argv[1], "stat"))
+        {
+            probe_status = adbms6830_read_status(smb, false);
+            snprintf(outline, CLI_LINESZ, "RDSTATC/D/E status: %s", cli_hal_status_str(probe_status));
+            ret |= cli_printline(cli, outline);
+        }
+        else if(!strcmp(argv[1], "staterr"))
+        {
+            probe_status = adbms6830_read_status(smb, true);
+            snprintf(outline, CLI_LINESZ, "RDSTATCERR/D/E status: %s", cli_hal_status_str(probe_status));
+            ret |= cli_printline(cli, outline);
+        }
+        else if(!strcmp(argv[1], "wake"))
+        {
+            if(smb->spi_debug.enabled)
+            {
+                smb->spi_debug.last_op = ADBMS6830_SPI_OP_WAKE;
+            }
+            adbms6830_wakeup(smb);
+            ret |= cli_printline(cli, "ADBMS wake pulses sent");
+        }
+        else if(!strcmp(argv[1], "coldwake"))
+        {
+            adbms6830_wakeup_cold(smb);
+            ret |= cli_printline(cli, "ADBMS cold wake pulse train sent");
+        }
+        else if(!strcmp(argv[1], "clrflag"))
+        {
+            probe_status = adbms6830_clear_all_flags(smb);
+            snprintf(outline, CLI_LINESZ, "CLRFLAG all status: %s", cli_hal_status_str(probe_status));
+            ret |= cli_printline(cli, outline);
+        }
         else if(strcmp(argv[1], "status"))
         {
-            ret |= cli_printline(cli, "Usage: spi [status|probe|clear|enable|disable]");
+            ret |= cli_printline(cli, "Usage: spi [status|probe|sid|stat|staterr|wake|coldwake|clrflag|clear|enable|disable]");
             return ret;
         }
     }
@@ -740,6 +779,44 @@ int get_spi_debug(int argc, char *argv[])
              dbg->last_cmd_counter[3],
              dbg->last_cmd_counter[4]);
     ret |= cli_printline(cli, outline);
+
+    snprintf(outline, CLI_LINESZ,
+             "cmdcnt seen:0x%04X expect:0x%04X mismatch:0x%04X errors:%lu",
+             dbg->cmd_counter_seen_mask,
+             dbg->cmd_counter_expected_mask,
+             dbg->cmd_counter_mismatch_mask,
+             (unsigned long)dbg->cmd_counter_error_count);
+    ret |= cli_printline(cli, outline);
+
+    for(uint8_t ic = 0u; ic < ic_count; ic++)
+    {
+        const adbms6830_ic_diag_t *diag = &smb->diag[ic];
+        snprintf(outline, CLI_LINESZ,
+                 "IC%u SID:%s %02X%02X%02X%02X%02X%02X STATC:%d csflt:0x%04X sleep:%u spi:%u thsd:%u osc:%u",
+                 (unsigned)ic,
+                 diag->sid_valid ? "ok" : "--",
+                 diag->sid[5], diag->sid[4], diag->sid[3],
+                 diag->sid[2], diag->sid[1], diag->sid[0],
+                 diag->statc_valid,
+                 diag->cs_flt_mask,
+                 diag->sleep,
+                 diag->spiflt,
+                 diag->thsd,
+                 diag->oscchk);
+        ret |= cli_printline(cli, outline);
+
+        snprintf(outline, CLI_LINESZ,
+                 "IC%u STATD:%d ov:0x%04X uv:0x%04X osc_cnt:%u STATE:%d gpi:0x%03X rev:%u",
+                 (unsigned)ic,
+                 diag->statd_valid,
+                 diag->cell_ov_mask,
+                 diag->cell_uv_mask,
+                 diag->osc_counter,
+                 diag->state_valid,
+                 diag->gpi_mask,
+                 diag->revision);
+        ret |= cli_printline(cli, outline);
+    }
 
     ret |= cli_print_hex_preview("TX:", dbg->last_tx_preview, ADBMS6830_SPI_DEBUG_PREVIEW_BYTES);
     ret |= cli_print_hex_preview("RX:", dbg->last_rx_preview, ADBMS6830_SPI_DEBUG_PREVIEW_BYTES);

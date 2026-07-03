@@ -31,6 +31,7 @@ void adbms6830_rdcfgb(adbms6830_driver_t *dev);
 void adbms6830_adcv(adbms6830_driver_t *dev, RD rd, CONT cont, DCP dcp, RSTF rstf, OW_C_S owcs);
 
 void adbms6830_wakeup(adbms6830_driver_t* dev);
+void adbms6830_wakeup_cold(adbms6830_driver_t* dev);
 
 void adbms6830_us_delay(adbms6830_driver_t* dev, uint16_t microseconds);
 
@@ -45,6 +46,9 @@ void adbms6830_spi_debug_clear(adbms6830_driver_t *dev);
 const adbms6830_spi_debug_t *adbms6830_spi_debug_get(const adbms6830_driver_t *dev);
 const char *adbms6830_spi_op_str(adbms6830_spi_op_t op);
 HAL_StatusTypeDef adbms6830_spi_probe_rdcfga(adbms6830_driver_t *dev);
+HAL_StatusTypeDef adbms6830_read_sid(adbms6830_driver_t *dev);
+HAL_StatusTypeDef adbms6830_read_status(adbms6830_driver_t *dev, bool inject_spiflt);
+HAL_StatusTypeDef adbms6830_clear_all_flags(adbms6830_driver_t *dev);
 
 ///* I2C COMM primitives */
 //void adbms6830_i2c_write(adbms6830_driver_t *dev, uint8_t slave_addr, uint8_t data);
