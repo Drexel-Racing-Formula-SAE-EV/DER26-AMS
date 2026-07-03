@@ -786,13 +786,14 @@ int accumulator_set_balance(accumulator_t *dev)
 
     adbms6830_driver_t *smb = &dev->smb;
     adbms6830_asic *smb_ics = (smb->ics != NULL) ? smb->ics : dev->smb_ics;
-    uint16_t min_mv = dev->min_voltage_mv;
-
     uint8_t ic_count = accumulator_configured_smb_count(dev);
 
     for(uint8_t ic = 0; ic < ic_count; ic++)
     {
         uint16_t dcc_mask = 0;
+        uint16_t cohort_min_mv = UINT16_MAX;
+        uint8_t balance_count = 0u;
+
         for(uint8_t cell = 0; cell < NCELLS; cell++)
         {
             if(!accumulator_cell_voltage_usable(dev, ic, cell))
@@ -801,17 +802,39 @@ int accumulator_set_balance(accumulator_t *dev)
             }
 
             uint16_t cell_mv = dev->cell_voltage_mv[ic][cell];
-            if((cell_mv > min_mv) && (((float)(cell_mv - min_mv) / 1000.0f) > BALANCE_THRESH))
+            if((cell_mv >= BALANCE_START_MV) && (cell_mv < cohort_min_mv))
+            {
+                cohort_min_mv = cell_mv;
+            }
+        }
+
+        if(cohort_min_mv == UINT16_MAX)
+        {
+            smb_ics[ic].tx_cfgb.dcc = 0u;
+            continue;
+        }
+
+        for(uint8_t cell = 0; cell < NCELLS; cell++)
+        {
+            if(!accumulator_cell_voltage_usable(dev, ic, cell))
+            {
+                continue;
+            }
+
+            uint16_t cell_mv = dev->cell_voltage_mv[ic][cell];
+            if((cell_mv >= BALANCE_START_MV) &&
+               (cell_mv > (uint16_t)(cohort_min_mv + BALANCE_ON_DELTA_MV)) &&
+               (balance_count < BALANCE_MAX_CELLS_PER_SEG))
             {
                 dcc_mask |= (uint16_t)(1u << cell);
+                balance_count++;
             }
         }
         smb_ics[ic].tx_cfgb.dcc = dcc_mask;
     }
 
     adbms6830_wakeup(smb);
-    adbms6830_wrcfgb(smb);
-    return 0;
+    return (adbms6830_wrcfgb_checked(smb) == HAL_OK) ? 0 : -1;
 }
 
 int accumulator_clear_balance(accumulator_t *dev)
@@ -830,6 +853,5 @@ int accumulator_clear_balance(accumulator_t *dev)
         smb_ics[ic].tx_cfgb.dcc = 0;
     }
     adbms6830_wakeup(smb);
-    adbms6830_wrcfgb(smb);
-    return 0;
+    return (adbms6830_wrcfgb_checked(smb) == HAL_OK) ? 0 : -1;
 }

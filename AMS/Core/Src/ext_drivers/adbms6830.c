@@ -973,6 +973,9 @@ void adbms6830_reset_cfg(adbms6830_driver_t *dev)
 		vuv_value = (uint16_t )(under_voltage + 2 * (1 << (rbits - 1)));
 		vuv_value &= 0xFFF;
 		dev->ics[i].tx_cfgb.vuv = vuv_value;
+		dev->ics[i].tx_cfgb.dtrng = RANG_0_TO_63_MIN;
+		dev->ics[i].tx_cfgb.dcto = TIME_1MIN_OR_0_26HR;
+		dev->ics[i].tx_cfgb.dcc = 0u;
 	}
 }
 
@@ -992,16 +995,26 @@ void adbms6830_wrcfga(adbms6830_driver_t *dev)
 
 void adbms6830_wrcfgb(adbms6830_driver_t *dev)
 {
+	(void)adbms6830_wrcfgb_checked(dev);
+}
+
+HAL_StatusTypeDef adbms6830_wrcfgb_checked(adbms6830_driver_t *dev)
+{
+	if((dev == NULL) || (dev->ics == NULL) || (dev->num_ics <= 0))
+	{
+		return HAL_ERROR;
+	}
+
 	adbms6830_asic *ic = dev->ics;
 	adbms6830_pack_cfgb(dev);
-    for (uint8_t cic = 0; cic < dev->num_ics; cic++)
-    {
-      for (uint8_t data = 0; data < TX_DATA; data++)
-      {
-        shared_buf[(cic * TX_DATA) + data] = ic[cic].configb.tx_data[data];
-      }
-    }
-	adbms6830_wr48(dev, WRCFGB, shared_buf);
+	for (uint8_t cic = 0; cic < dev->num_ics; cic++)
+	{
+		for (uint8_t data = 0; data < TX_DATA; data++)
+		{
+			shared_buf[(cic * TX_DATA) + data] = ic[cic].configb.tx_data[data];
+		}
+	}
+	return adbms6830_wr48_checked(dev, WRCFGB, shared_buf);
 }
 
 void adbms6830_rdcfga(adbms6830_driver_t *dev)

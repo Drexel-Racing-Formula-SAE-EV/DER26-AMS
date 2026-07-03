@@ -21,7 +21,9 @@
 #define MUX_ADDR7_01 0x4D
 #define MUX_ADDR7_02 0x4E
 #define VNTC 5.0
-#define BALANCE_THRESH  0.010f   // 10mV
+#define BALANCE_START_MV             4100u
+#define BALANCE_ON_DELTA_MV            20u
+#define BALANCE_MAX_CELLS_PER_SEG       4u
 #define ACCUMULATOR_CELL_STALE_TIMEOUT_MS      2500u
 #define ACCUMULATOR_CELL_MAX_CONSEC_MISSES     2u
 #define ACCUMULATOR_CELL_VALID_MIN_MV          500u

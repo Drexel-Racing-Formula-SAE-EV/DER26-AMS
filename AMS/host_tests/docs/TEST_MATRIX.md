@@ -8,7 +8,7 @@
 | `test_system_sil_boot_ready_and_bms_conjunction` | System-level SIL: verifies BMS_OK cannot assert before both current and voltage are valid, and that either current-invalid or voltage-not-ready keeps BMS_OK low. |
 | `test_system_sil_single_pec_miss_tolerated_then_recovers` | System-level SIL: verifies one PEC/missed cell update is observable as a warning but tolerated while prior cell data is fresh, then clears on recovery. |
 | `test_system_sil_persistent_voltage_stale_drops_bms_ok` | System-level SIL: verifies repeated missed/PEC-failed voltage scans age into stale data, drop BMS_OK, and recover when a full fresh scan returns. |
-| `test_system_sil_charge_stop_blocks_balance_before_hard_ov` | System-level SIL: verifies 4.18 V charge-stop keeps BMS_OK but blocks balancing, while 4.20 V hard OV latches and drops BMS_OK. |
+| `test_system_sil_charge_stop_allows_balance_before_hard_ov` | System-level SIL: verifies 4.18 V charge-stop keeps BMS_OK and still allows controlled balancing, while 4.20 V hard OV latches, clears balancing, and drops BMS_OK. |
 | `test_system_sil_voltage_uv_ov_severe_diagnostics_and_latch` | System-level SIL: verifies soft UV warning, hard UV latch, severe OV diagnostic reason, and severe UV diagnostic reason through the ADBMS task/BMS_OK path. |
 | `test_system_sil_current_warning_fast_trip_and_latch_persistence` | System-level SIL: verifies current warning-only behavior, fast discharge trip, BMS_OK drop, and latch persistence after current returns normal. |
 | `test_system_sil_current_stale_adc_pair_fails_safe` | System-level SIL: verifies one stale ADC channel makes current invalid, ADBMS gating drops BMS_OK, and repeated ADC failures become a confirmed current sensor fault. |

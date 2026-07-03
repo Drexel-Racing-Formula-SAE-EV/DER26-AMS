@@ -142,10 +142,9 @@ void adbms_task_fn(void *argument)
                              !data->current_fault);
         set_bms(bms_ok_ready);
 
-        /* Balance only on full usable voltage data and below charge-stop tier. */
+        /* Voltage charge-stop can still balance; hard faults/temp stop cannot. */
         if((data->state == STATE_CHARGE) &&
            data->voltage_valid &&
-           !data->charge_voltage_stop &&
            !data->voltage_fault &&
            data->temp_valid &&
            !data->temp_charge_stop &&
