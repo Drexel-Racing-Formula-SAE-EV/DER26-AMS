@@ -400,6 +400,9 @@ static void MX_CAN1_Init(void)
   */
 static void MX_SPI6_Init(void)
 {
+  /* Drexel AMS ties ADBMS6822 PHAPOL/PHAPOL2 to 3V3, selecting SPI mode 3.
+ * Do not change to mode 0 unless the board PHAPOL strapping is changed.
+ */
 
   /* USER CODE BEGIN SPI6_Init 0 */
 
