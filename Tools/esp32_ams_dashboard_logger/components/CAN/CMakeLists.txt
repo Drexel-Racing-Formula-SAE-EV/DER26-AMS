@@ -3,6 +3,6 @@ idf_component_register(
         "mcp2515_driver.c"
     INCLUDE_DIRS
         "."
-    PRIV_REQUIRES
+    REQUIRES
         esp_driver_spi
 )
