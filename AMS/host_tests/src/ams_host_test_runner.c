@@ -32,6 +32,7 @@ static GPIO_PinState bms_pin_state = GPIO_PIN_RESET;
 static uint32_t tx_count = 0;
 static struct { uint32_t ide, stdid, extid, dlc; uint8_t data[8]; } tx_log[AMS_HOST_TX_LOG_CAPACITY];
 static uint32_t tx_free_level = 3;
+static HAL_StatusTypeDef fake_can_add_tx_status = HAL_OK;
 static char cli_capture[8192];
 static size_t cli_capture_len = 0u;
 static UART_HandleTypeDef cli_dummy_uart;
@@ -72,6 +73,7 @@ HAL_StatusTypeDef HAL_CAN_ActivateNotification(CAN_HandleTypeDef *hcan, uint32_t
 uint32_t HAL_CAN_GetTxMailboxesFreeLevel(const CAN_HandleTypeDef *hcan){ (void)hcan; return tx_free_level; }
 HAL_StatusTypeDef HAL_CAN_AddTxMessage(CAN_HandleTypeDef *hcan, const CAN_TxHeaderTypeDef *hdr, const uint8_t *data, uint32_t *mailbox){
     if(!hcan || !hdr || !data || tx_count >= AMS_HOST_TX_LOG_CAPACITY) return HAL_ERROR;
+    if(fake_can_add_tx_status != HAL_OK) return fake_can_add_tx_status;
     tx_log[tx_count].ide = hdr->IDE; tx_log[tx_count].stdid = hdr->StdId; tx_log[tx_count].extid = hdr->ExtId; tx_log[tx_count].dlc = hdr->DLC;
     memcpy(tx_log[tx_count].data, data, 8); if(mailbox) *mailbox=0; tx_count++; return HAL_OK;
 }
@@ -346,9 +348,9 @@ static int16_t raw_for_temp_c(float temp_c){ return raw_for_ntc_voltage(ntc_volt
 #define HOST_ECU_FRAME_COUNT 62u
 #define HOST_NONCHARGE_CAN_FRAME_COUNT (HOST_ECU_FRAME_COUNT + HOST_LOGGER_FRAME_COUNT)
 #define HOST_CHARGE_CAN_FRAME_COUNT (HOST_LOGGER_FRAME_COUNT + 1u)
-#define HOST_CHARGER_FRAME_INDEX (HOST_CHARGE_CAN_FRAME_COUNT - 1u)
+#define HOST_CHARGER_FRAME_INDEX 0u
 
-static void init_fake_app(void){ memset(&app,0,sizeof(app)); app.acc.smb.num_ics = NSMBS; app.acc.smb.ics = app.acc.smb_ics; current_fault_init(&app.current_fault_state); voltage_fault_init(&app.voltage_fault_state); temperature_fault_init(&app.temp_fault_state); app.current_meas_reason = CURRENT_SENSOR_REASON_ADC_READ; app.current_fault_reason = CURRENT_FAULT_REASON_SENSOR_NOT_READY; app.voltage_fault_reason = VOLTAGE_FAULT_REASON_NOT_READY; app.temp_fault = true; app.temp_read_fault = true; app.temp_fan_max = true; app.temp_fault_reason = TEMPERATURE_FAULT_REASON_NOT_READY; fake_adbms_voltage_masks_full_update(); fake_adc_read_index = 0u; fake_adbms_wrcfgb_status = HAL_OK; }
+static void init_fake_app(void){ memset(&app,0,sizeof(app)); app.acc.smb.num_ics = NSMBS; app.acc.smb.ics = app.acc.smb_ics; current_fault_init(&app.current_fault_state); voltage_fault_init(&app.voltage_fault_state); temperature_fault_init(&app.temp_fault_state); app.current_meas_reason = CURRENT_SENSOR_REASON_ADC_READ; app.current_fault_reason = CURRENT_FAULT_REASON_SENSOR_NOT_READY; app.voltage_fault_reason = VOLTAGE_FAULT_REASON_NOT_READY; app.temp_fault = true; app.temp_read_fault = true; app.temp_fan_max = true; app.temp_fault_reason = TEMPERATURE_FAULT_REASON_NOT_READY; fake_adbms_voltage_masks_full_update(); fake_adc_read_index = 0u; fake_adbms_wrcfgb_status = HAL_OK; fake_can_add_tx_status = HAL_OK; }
 
 static void host_mark_updated_cells(app_data_t *d)
 {
@@ -577,7 +579,7 @@ static void test_charger_rx_and_tx(void){
     CHECK(app.board.charger.rx_count == 1u);
 
     app.state=STATE_CHARGE; app.current_valid=true; app.hard_fault=false; app.voltage_fault=false; app.temp_fault=false; app.bms_state=true; app.board.charger.hardware_fail=false; app.board.charger.overtemp_fail=false; app.board.charger.input_volt_fail=false; app.board.charger.voltage_sense_fail=false; app.board.charger.communication_fail=false; app.board.charger.last_rx_tick=fake_tick;
-    tx_count=0; tx_free_level=3; CHECK(canbus_send(&app.board.canbus, CAN_ID_EXT, CCS_CANBUS_ID, (uint8_t[8]){0x0C,0x30,0,0x0A,0,0,0,0}) == HAL_OK);
+    tx_count=0; tx_free_level=3; CHECK(canbus_send(&app.board.canbus, CAN_ID_EXT, CCS_CANBUS_ID, (uint8_t[8]){0x0C,0x30,0,0x64,0,0,0,0}) == HAL_OK);
     CHECK(tx_count == 1u && tx_log[0].ide == CAN_ID_EXT && tx_log[0].extid == CCS_CANBUS_ID);
 }
 
@@ -3339,6 +3341,72 @@ static void test_charge_state_disable_matrix(void){
     }
 }
 
+static void test_charger_command_priority_tx_failure_and_cli(void)
+{
+    static CAN_HandleTypeDef hcan;
+
+    init_fake_app();
+    fill_nominal_pack(&app, 3.700f);
+    charger_init(&app.board.charger, &app.board.canbus);
+    app.board.canbus.hcan = &hcan;
+    app.state = STATE_CHARGE;
+    app.current_valid = true;
+    app.voltage_valid = true;
+    app.temp_valid = true;
+    app.bms_state = true;
+    bms_pin_state = GPIO_PIN_SET;
+    fake_tick = 1000u;
+    app.board.charger.last_rx_tick = fake_tick;
+    tx_count = 0u;
+    tx_free_level = 3u;
+
+    run_one_canbus_task_iteration(&app);
+    CHECK(tx_count == HOST_CHARGE_CAN_FRAME_COUNT);
+    CHECK(tx_log[0].ide == CAN_ID_EXT);
+    CHECK(tx_log[0].extid == CCS_CANBUS_ID);
+    CHECK(word_at(0u, 0u) == (uint16_t)(CHARGE_MAX_VOLTAGE * 10.0f));
+    CHECK(word_at(0u, 1u) == (uint16_t)(CHARGE_MAX_CURRENT * 10.0f));
+    CHECK(tx_log[0].data[4] == CHARGER_CMD_ENABLE);
+    CHECK(app.board.charger.tx_count == 1u);
+    CHECK(app.board.charger.tx_fail == false);
+
+    init_fake_app();
+    fill_nominal_pack(&app, 3.700f);
+    charger_init(&app.board.charger, &app.board.canbus);
+    app.board.canbus.hcan = &hcan;
+    app.state = STATE_CHARGE;
+    app.current_valid = true;
+    app.voltage_valid = true;
+    app.temp_valid = true;
+    app.bms_state = true;
+    bms_pin_state = GPIO_PIN_SET;
+    fake_tick = 2000u;
+    app.board.charger.last_rx_tick = fake_tick;
+    fake_can_add_tx_status = HAL_ERROR;
+    tx_count = 0u;
+    tx_free_level = 3u;
+
+    run_one_canbus_task_iteration(&app);
+    CHECK(tx_count == 0u);
+    CHECK(app.board.charger.tx_fail == true);
+    CHECK(app.board.charger.tx_fail_count == 1u);
+    CHECK(app.board.charger.last_tx_status == HAL_ERROR);
+    CHECK((app.board.charger.disable_reason_mask & CHARGER_DISABLE_REASON_TX_FAIL) != 0u);
+    CHECK(app.charger_fault == true);
+    CHECK(app.bms_state == false);
+    CHECK(bms_pin_state == GPIO_PIN_RESET);
+    CHECK(app.canbus_fault == true);
+
+    fake_can_add_tx_status = HAL_OK;
+    sil_prepare_cli_capture();
+    get_charger(0, NULL);
+    CHECK(strstr(cli_capture, "Charger target:") != NULL);
+    CHECK(strstr(cli_capture, "tx_fail:1") != NULL);
+    CHECK(strstr(cli_capture, "disable_mask:") != NULL);
+    CHECK(strstr(cli_capture, "tx:0x1806E5F4") != NULL);
+    CHECK(strstr(cli_capture, "byte4 enable:0 disable:1") != NULL);
+}
+
 static void test_telemetry_absent_segments_and_invalid_channels(void){
     static CAN_HandleTypeDef hcan;
     init_fake_app();
@@ -3445,6 +3513,7 @@ int main(void){
     test_estimator_status_packet_edges(); puts("PASS estimator status packet edges");
     test_can_rx_filter_matrix(); puts("PASS CAN RX filter matrix");
     test_charge_state_disable_matrix(); puts("PASS charge-state disable matrix");
+    test_charger_command_priority_tx_failure_and_cli(); puts("PASS charger command priority/TX failure/CLI diagnostics");
     test_current_sensor_measurement_model(); puts("PASS current sensor measurement model");
     test_current_task_measurement_state(); puts("PASS current task measurement state");
     test_current_task_threshold_faults(); puts("PASS current task threshold faults");

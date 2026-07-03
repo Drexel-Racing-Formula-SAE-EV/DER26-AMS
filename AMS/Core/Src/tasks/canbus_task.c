@@ -378,26 +378,36 @@ static bool logger_charger_hw_fault(const charger_t *ccs)
             ccs->overtemp_fail      ||
             ccs->input_volt_fail    ||
             ccs->voltage_sense_fail ||
-            ccs->communication_fail);
+            ccs->communication_fail ||
+            ccs->tx_fail);
+}
+
+static uint16_t charger_disable_reasons(const app_data_t *data, bool charger_hw_fault)
+{
+    if(data == NULL)
+    {
+        return CHARGER_DISABLE_REASON_HARD_FAULT;
+    }
+
+    uint16_t reasons = CHARGER_DISABLE_REASON_NONE;
+
+    if(charger_hw_fault)          reasons |= CHARGER_DISABLE_REASON_HW_FAULT;
+    if(data->hard_fault)          reasons |= CHARGER_DISABLE_REASON_HARD_FAULT;
+    if(data->voltage_fault)       reasons |= CHARGER_DISABLE_REASON_VOLTAGE_FAULT;
+    if(data->charge_voltage_stop) reasons |= CHARGER_DISABLE_REASON_VOLTAGE_CHARGE_STOP;
+    if(!data->voltage_valid)      reasons |= CHARGER_DISABLE_REASON_VOLTAGE_INVALID;
+    if(data->temp_charge_stop)    reasons |= CHARGER_DISABLE_REASON_TEMP_CHARGE_STOP;
+    if(data->temp_fault)          reasons |= CHARGER_DISABLE_REASON_TEMP_FAULT;
+    if(data->current_fault)       reasons |= CHARGER_DISABLE_REASON_CURRENT_FAULT;
+    if(!data->current_valid)      reasons |= CHARGER_DISABLE_REASON_CURRENT_INVALID;
+    if(!data->bms_state)          reasons |= CHARGER_DISABLE_REASON_BMS_NOT_OK;
+
+    return reasons;
 }
 
 static bool logger_disable_charge(const app_data_t *data, bool charger_hw_fault)
 {
-    if(data == NULL)
-    {
-        return true;
-    }
-
-    return (charger_hw_fault ||
-            data->hard_fault ||
-            data->voltage_fault ||
-            data->charge_voltage_stop ||
-            !data->voltage_valid ||
-            data->temp_charge_stop ||
-            data->temp_fault ||
-            data->current_fault ||
-            !data->current_valid ||
-            !data->bms_state);
+    return charger_disable_reasons(data, charger_hw_fault) != CHARGER_DISABLE_REASON_NONE;
 }
 
 static HAL_StatusTypeDef send_logger_summaries(canbus_device_t *canbus,
@@ -509,7 +519,7 @@ static HAL_StatusTypeDef send_logger_summaries(canbus_device_t *canbus,
                  logger_bool_bit(ccs->overtemp_fail, AMS_LOGGER_CHARGER_FLAG_OVERTEMP_FAIL) |
                  logger_bool_bit(ccs->input_volt_fail, AMS_LOGGER_CHARGER_FLAG_INPUT_VOLT_FAIL) |
                  logger_bool_bit(ccs->voltage_sense_fail, AMS_LOGGER_CHARGER_FLAG_VOLTAGE_SENSE_FAIL) |
-                 logger_bool_bit(ccs->communication_fail, AMS_LOGGER_CHARGER_FLAG_COMM_FAIL) |
+                 logger_bool_bit(ccs->communication_fail || ccs->tx_fail, AMS_LOGGER_CHARGER_FLAG_COMM_FAIL) |
                  logger_bool_bit(data->temp_charge_stop, AMS_LOGGER_CHARGER_FLAG_TEMP_CHARGE_STOP) |
                  logger_bool_bit(data->charge_voltage_stop, AMS_LOGGER_CHARGER_FLAG_VOLTAGE_CHARGE_STOP) |
                  logger_bool_bit(disable_charge, AMS_LOGGER_CHARGER_FLAG_DISABLE_CHARGE);
@@ -781,7 +791,7 @@ void canbus_task_fn(void *arg)
             ccs->target_voltage = CHARGE_MAX_VOLTAGE;
             ccs->target_current = CHARGE_MAX_CURRENT;
 
-            if((osKernelGetTickCount() - ccs->last_rx_tick) > 5000u)
+            if((osKernelGetTickCount() - ccs->last_rx_tick) > CHARGER_RX_TIMEOUT_MS)
             {
                 ccs->communication_fail = true;
             }
@@ -790,19 +800,13 @@ void canbus_task_fn(void *arg)
                                      ccs->overtemp_fail      ||
                                      ccs->input_volt_fail    ||
                                      ccs->voltage_sense_fail ||
-                                     ccs->communication_fail);
+                                     ccs->communication_fail ||
+                                     ccs->tx_fail);
 
-            bool disable_charge = (charger_hw_fault ||
-                                   data->hard_fault ||
-                                   data->voltage_fault ||
-                                   data->charge_voltage_stop ||
-                                   !data->voltage_valid ||
-                                   data->temp_charge_stop ||
-                                   data->temp_fault ||
-                                   data->current_fault ||
-                                   !data->current_valid ||
-                                   !data->bms_state);
+            uint16_t disable_reasons = charger_disable_reasons(data, charger_hw_fault);
+            bool disable_charge = (disable_reasons != CHARGER_DISABLE_REASON_NONE);
 
+            ccs->disable_reason_mask = disable_reasons;
             data->charger_fault = charger_hw_fault;
             if(disable_charge)
             {
@@ -814,21 +818,33 @@ void canbus_task_fn(void *arg)
             can_data[1] = TO_LSB16(voltage10x);
             can_data[2] = TO_MSB16(current10x);
             can_data[3] = TO_LSB16(current10x);
-            can_data[4] = disable_charge ? 1u : 0u;
+            can_data[4] = disable_charge ? CHARGER_CMD_DISABLE : CHARGER_CMD_ENABLE;
             can_data[5] = 0u;
             can_data[6] = 0u;
             can_data[7] = 0u;
 
-            ret |= send_logger_telemetry(canbus, data);
             HAL_StatusTypeDef charger_tx_status = canbus_send(canbus, CAN_ID_EXT, CCS_CANBUS_ID, can_data);
             ret |= charger_tx_status;
             if(charger_tx_status == HAL_OK)
             {
+                ccs->tx_fail = false;
+                ccs->last_tx_status = HAL_OK;
                 ccs->tx_count++;
             }
+            else
+            {
+                ccs->tx_fail = true;
+                ccs->last_tx_status = charger_tx_status;
+                ccs->disable_reason_mask |= CHARGER_DISABLE_REASON_TX_FAIL;
+                ccs->tx_fail_count++;
+                data->charger_fault = true;
+                set_bms(0);
+            }
+
+            ret |= send_logger_telemetry(canbus, data);
             data->canbus_fault = (ret != HAL_OK);
 
-            osDelayUntil(entry + 1000u);
+            osDelayUntil(entry + CHARGER_COMMAND_PERIOD_MS);
         }
         else
         {

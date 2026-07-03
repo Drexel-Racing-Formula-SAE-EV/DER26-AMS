@@ -36,6 +36,7 @@
 | `test_charger_rx_and_tx` | Verifies charger receive parse, charger fault bits, charger command transmit. |
 | `test_can_rx_filter_matrix` | Verifies bad RX status, wrong ID type, wrong ID, and short DLC are ignored. |
 | `test_charge_state_disable_matrix` | Verifies charge command disable byte for fault, BMS disabled, charger fault, and timeout cases. |
+| `test_charger_command_priority_tx_failure_and_cli` | Verifies the charger command is transmitted before telemetry in charge mode, TX failure drops BMS_OK and is exposed in charger CLI diagnostics. |
 | `test_current_sensor_measurement_model` | Verifies DHAB 0.6-divider reconstruction, zero-current offset, design-file C_SENSE_L=50A / C_SENSE_H=800A mapping, range selection, saturation, mismatch, and implausible ADC handling. |
 | `test_current_task_measurement_state` | Verifies current task propagation of `current_valid`, selected range, measurement reason, stale-current hold on ADC read failure, and confirmed sensor-fault timing. |
 | `test_current_task_threshold_faults` | Verifies discharge overcurrent debounce/latch behavior and low-current precharge fast-fault behavior using the corrected DHAB mapping. |

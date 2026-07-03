@@ -24,9 +24,13 @@ void charger_init(charger_t *dev, canbus_device_t *canbus)
     dev->input_volt_fail    = false;
     dev->voltage_sense_fail = false;
     dev->communication_fail = false;
+    dev->tx_fail            = false;
+    dev->last_tx_status     = HAL_OK;
+    dev->disable_reason_mask = CHARGER_DISABLE_REASON_NONE;
     dev->last_rx_tick       = 0;
     dev->canbus             = canbus;
     dev->tx_count           = 0;
     dev->rx_count           = 0;
+    dev->tx_fail_count      = 0;
     dev->flags              = 0;
 }

@@ -36,6 +36,7 @@ int get_temperature_sensor(int argc, char *argv[]);
 
 
 int get_current(int argc, char *argv[]);
+int get_charger(int argc, char *argv[]);
 int get_spi_debug(int argc, char *argv[]);
 int get_apm_debug(int argc, char *argv[]);
 int bmsok_control(int argc, char *argv[]);
@@ -55,6 +56,7 @@ command_t cmds[] =
 	{"temp", &get_temperature, "gets sensor temperatures for all SMBs"},
 	{"tempsns", &get_temperature_sensor, "gets one sensor: tempsns <ic> <sensor 0-23>"},
 	{"current", &get_current, "gets current sensor raw counts/voltages/status"},
+	{"charger", &get_charger, "gets charger CAN command/status/debug state"},
 	{"spi", &get_spi_debug, "ADBMS6830 SPI debug: spi [status|probe|sid|stat|staterr|wake|coldwake|clrflag|clear|enable|disable]"},
 	{"apm", &get_apm_debug, "ADBMS2950/APM debug: apm [status|probe|clear|enable|disable]"},
 	{"bmsok", &bmsok_control, "BMS_OK control: bmsok [status|release|inhibit]"},
@@ -1002,6 +1004,72 @@ int get_current(int argc, char *argv[])
 
     cli_fixed1(cs->current, &whole, &decimal);
     snprintf(outline, CLI_LINESZ, "I_selected: %d.%01d A", whole, decimal);
+    ret |= cli_printline(cli, outline);
+
+    return ret;
+}
+
+int get_charger(int argc, char *argv[])
+{
+    int ret = 0;
+    int whole = 0;
+    int decimal = 0;
+    charger_t *ccs = &data->board.charger;
+    uint32_t now = osKernelGetTickCount();
+    uint32_t age_ms = (ccs->last_rx_tick == 0u) ? 0xFFFFFFFFu : (now - ccs->last_rx_tick);
+
+    (void)argc;
+    (void)argv;
+
+    cli_fixed1(ccs->target_voltage, &whole, &decimal);
+    snprintf(outline, CLI_LINESZ, "Charger target: %d.%01d V", whole, decimal);
+    ret |= cli_printline(cli, outline);
+
+    cli_fixed1(ccs->target_current, &whole, &decimal);
+    snprintf(outline, CLI_LINESZ, "Charger current: %d.%01d A", whole, decimal);
+    ret |= cli_printline(cli, outline);
+
+    cli_fixed1(ccs->read_voltage, &whole, &decimal);
+    snprintf(outline, CLI_LINESZ, "Charger read V: %d.%01d V", whole, decimal);
+    ret |= cli_printline(cli, outline);
+
+    cli_fixed1(ccs->read_current, &whole, &decimal);
+    snprintf(outline, CLI_LINESZ, "Charger read I: %d.%01d A", whole, decimal);
+    ret |= cli_printline(cli, outline);
+
+    snprintf(outline, CLI_LINESZ,
+             "Charger flags raw:0x%02X hw:%d ot:%d input:%d sense:%d rx_comm:%d tx_fail:%d",
+             ccs->flags,
+             ccs->hardware_fail,
+             ccs->overtemp_fail,
+             ccs->input_volt_fail,
+             ccs->voltage_sense_fail,
+             ccs->communication_fail,
+             ccs->tx_fail);
+    ret |= cli_printline(cli, outline);
+
+    snprintf(outline, CLI_LINESZ,
+             "Charger counts tx:%lu rx:%lu txfail:%lu last_tx:%d rx_age_ms:%lu",
+             (unsigned long)ccs->tx_count,
+             (unsigned long)ccs->rx_count,
+             (unsigned long)ccs->tx_fail_count,
+             (int)ccs->last_tx_status,
+             (unsigned long)age_ms);
+    ret |= cli_printline(cli, outline);
+
+    snprintf(outline, CLI_LINESZ,
+             "Charger disable_mask:0x%04X cmd_period:%ums rx_timeout:%ums",
+             ccs->disable_reason_mask,
+             CHARGER_COMMAND_PERIOD_MS,
+             CHARGER_RX_TIMEOUT_MS);
+    ret |= cli_printline(cli, outline);
+
+    snprintf(outline, CLI_LINESZ,
+             "Charger CAN tx:0x%08lX rx:0x%08lX byte4 enable:%u disable:%u",
+             (unsigned long)CCS_CANBUS_ID,
+             (unsigned long)CHARGER_RX_ID,
+             CHARGER_CMD_ENABLE,
+             CHARGER_CMD_DISABLE);
     ret |= cli_printline(cli, outline);
 
     return ret;
