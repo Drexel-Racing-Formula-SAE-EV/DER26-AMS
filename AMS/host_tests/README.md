@@ -176,6 +176,7 @@ make AMS_ROOT=/absolute/path/to/DER26-AMS-feature-canbus_charger asan
 | Balancing | pack with one high cell and one low cell | high cells balanced, low/invalid cells not balanced |
 | Balancing on faults | invalid/no voltage data | balancing blocked and cleared |
 | AMS ECU telemetry | fake state/current/IMD/voltage/temp/fan fields | 62 packets, headers `0..61`, CAN ID, word layout |
+| AMS logger telemetry | fake pack/current/temp/fan/fault/ADBMS debug fields | dashboard IDs `0x690..0x6A5`, all cells, all temps, masks, invalid sentinels |
 | Missing segments | only first 2 SMBs configured | absent segments zero-filled, no out-of-bounds access |
 | Charger RX | fake extended CAN charger frame | voltage/current decode and fault bits |
 | Charger RX filter | wrong FIFO status, ID type, ID, or DLC | ignored safely |
@@ -334,6 +335,8 @@ When team firmware changes, update the harness in this order:
 ```text
 AMS transmits ECU telemetry on standard CAN ID ECU_CANBUS_ID.
 AMS telemetry uses 62 frames with packet headers 0..61.
+AMS transmits dashboard/logger telemetry on standard CAN IDs 0x690..0x6A5.
+The logger contract exports all 75 cell voltages and all 120 temperature sensors.
 Cell voltage packets cover 5 SMB segments and 15 cells per segment.
 Temperature packets cover 5 SMB segments and 17 temp channels per segment.
 Fan packets cover six real fan duty values with zero padding.

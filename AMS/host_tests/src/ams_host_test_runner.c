@@ -341,6 +341,11 @@ static float ntc_voltage_for_temp_c(float temp_c){
 }
 static int16_t raw_for_temp_c(float temp_c){ return raw_for_ntc_voltage(ntc_voltage_for_temp_c(temp_c)); }
 #define CHECK(cond) do{ if(!(cond)){ fprintf(stderr,"FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); exit(1);} }while(0)
+#define HOST_LOGGER_FRAME_COUNT 96u
+#define HOST_ECU_FRAME_COUNT 62u
+#define HOST_NONCHARGE_CAN_FRAME_COUNT (HOST_ECU_FRAME_COUNT + HOST_LOGGER_FRAME_COUNT)
+#define HOST_CHARGE_CAN_FRAME_COUNT (HOST_LOGGER_FRAME_COUNT + 1u)
+#define HOST_CHARGER_FRAME_INDEX (HOST_CHARGE_CAN_FRAME_COUNT - 1u)
 
 static void init_fake_app(void){ memset(&app,0,sizeof(app)); app.acc.smb.num_ics = NSMBS; app.acc.smb.ics = app.acc.smb_ics; current_fault_init(&app.current_fault_state); voltage_fault_init(&app.voltage_fault_state); temperature_fault_init(&app.temp_fault_state); app.current_meas_reason = CURRENT_SENSOR_REASON_ADC_READ; app.current_fault_reason = CURRENT_FAULT_REASON_SENSOR_NOT_READY; app.voltage_fault_reason = VOLTAGE_FAULT_REASON_NOT_READY; app.temp_fault = true; app.temp_read_fault = true; app.temp_fan_max = true; app.temp_fault_reason = TEMPERATURE_FAULT_REASON_NOT_READY; fake_adbms_voltage_masks_full_update(); fake_adc_read_index = 0u; }
 
@@ -429,6 +434,120 @@ static void test_can_telemetry_packets(void){
 
     tx_count=0; tx_free_level=0; fake_tick=0;
     CHECK(send_ecu_ams_status(&app.board.canbus, &app) == HAL_TIMEOUT);
+}
+
+static void test_logger_can_contract_packets(void){
+    init_fake_app(); static CAN_HandleTypeDef hcan; app.board.canbus.hcan = &hcan;
+    app.state = STATE_DISCARGE;
+    app.bms_state = true;
+    app.air_state = true;
+    app.imd_ok = true;
+    app.current = -12.3f;
+    app.current_valid = true;
+    app.current_selected_range = CURRENT_SENSOR_RANGE_50A;
+    app.current_meas_reason = CURRENT_SENSOR_REASON_OK;
+    app.current_fault_reason = CURRENT_FAULT_REASON_NONE;
+    app.current_fault_latched_reason = CURRENT_FAULT_REASON_NONE;
+    app.current_fault_mode = CURRENT_FAULT_MODE_DRIVE;
+    for(int i=0;i<NFANS;i++) app.board.fans[i].duty_cycle = (float)(i * 15);
+
+    for(int ic=0; ic<NSMBS; ic++){
+        for(int c=0;c<NCELLS;c++) app.acc.smb_ics[ic].cell.c_codes[c] = code_for_volts(3.500f + 0.001f * (float)(ic * NCELLS + c));
+        for(int s=0;s<NTEMPS;s++) app.acc.smb_ics[ic].temp.raw[s] = raw_for_temp_c(25.0f + (float)s * 0.1f);
+    }
+    app.acc.smb_ics[4].cell.c_codes[14] = code_for_volts(4.014f);
+    app.acc.smb_ics[4].temp.raw[23] = raw_for_temp_c(44.4f);
+    app.acc.smb_ics[2].temp.raw[5] = 0;
+    host_mark_updated_cells(&app);
+    host_mark_updated_temps(&app, (1UL << NTEMPS) - 1UL);
+    accumulator_update_voltage_stats_at(&app.acc, fake_tick);
+    accumulator_update_temp_stats_at(&app.acc, fake_tick);
+    voltage_fault_update(&app.voltage_fault_state, &app.acc);
+    app.voltage_valid = app.voltage_fault_state.voltage_valid;
+    app.voltage_usable_cell_count = app.voltage_fault_state.usable_cell_count;
+    app.voltage_updated_cell_count = app.voltage_fault_state.updated_cell_count;
+    app.voltage_stale_cell_count = app.voltage_fault_state.stale_cell_count;
+    app.max_voltage_seg = app.voltage_fault_state.max_cell_segment;
+    app.max_voltage_cell = app.voltage_fault_state.max_cell_index;
+    app.min_voltage_seg = app.voltage_fault_state.min_cell_segment;
+    app.min_voltage_cell = app.voltage_fault_state.min_cell_index;
+    sil_publish_temp_state(&app);
+
+    app.acc.smb.spi_debug.enabled = true;
+    app.acc.smb.spi_debug.last_status = HAL_TIMEOUT;
+    app.acc.smb.spi_debug.last_xfer_status = HAL_BUSY;
+    app.acc.smb.spi_debug.last_op = ADBMS6830_SPI_OP_READ_STATUS;
+    app.acc.smb.spi_debug.error_count = 7u;
+    app.acc.smb.spi_debug.cmd_counter_error_count = 3u;
+    app.acc.smb.spi_debug.last_read_pec_pass_mask = 0x001Fu;
+    app.acc.smb.spi_debug.last_read_pec_fail_mask = 0x0004u;
+    app.acc.smb.spi_debug.cmd_counter_mismatch_mask = 0x0008u;
+    app.acc.smb.spi_debug.last_cmd[0] = 0x00u;
+    app.acc.smb.spi_debug.last_cmd[1] = 0x32u;
+    app.acc.apm.spi_debug.enabled = true;
+    app.acc.apm.spi_debug.last_status = HAL_ERROR;
+    app.acc.apm.spi_debug.last_xfer_status = HAL_TIMEOUT;
+    app.acc.apm.spi_debug.last_op = ADBMS2950_SPI_OP_PROBE;
+    app.acc.apm.spi_debug.error_count = 2u;
+    app.acc.apm.spi_debug.last_read_pec_fail_mask = 0x0001u;
+    app.acc.pec_fail_voltage_mask[3] = 0x0101u;
+
+    tx_count=0; tx_free_level=3; fake_tick=12345u;
+    CHECK(send_logger_telemetry(&app.board.canbus, &app) == HAL_OK);
+    CHECK(tx_count == HOST_LOGGER_FRAME_COUNT);
+
+    CHECK(tx_log[0].ide == CAN_ID_STD && tx_log[0].stdid == AMS_LOGGER_CAN_ID_HEARTBEAT);
+    CHECK(tx_log[0].data[0] == AMS_LOGGER_PROTOCOL_VERSION);
+    CHECK(tx_log[0].data[2] == STATE_DISCARGE);
+    CHECK((tx_log[0].data[3] & (1u << AMS_LOGGER_HEARTBEAT_FLAG_BMS_OK)) != 0u);
+    CHECK((tx_log[0].data[4] & (1u << AMS_LOGGER_VALID_FLAG_CURRENT_VALID)) != 0u);
+    CHECK(word_at(0,3) == 12u);
+
+    CHECK(tx_log[1].stdid == AMS_LOGGER_CAN_ID_FAULT_REASONS);
+    CHECK(tx_log[2].stdid == AMS_LOGGER_CAN_ID_PACK_ELECTRICAL);
+    CHECK((int16_t)word_at(2,1) == -123);
+    CHECK(tx_log[3].stdid == AMS_LOGGER_CAN_ID_TEMP_FAN);
+    CHECK(tx_log[3].data[6] == 75u);
+    CHECK(tx_log[8].stdid == AMS_LOGGER_CAN_ID_6830_LINK);
+    CHECK(tx_log[8].data[0] == HAL_TIMEOUT);
+    CHECK(tx_log[8].data[1] == HAL_BUSY);
+    CHECK(word_at(8,2) == 0x0004u);
+    CHECK(word_at(8,3) == 0x0008u);
+    CHECK(tx_log[10].stdid == AMS_LOGGER_CAN_ID_2950_LINK);
+    CHECK(tx_log[10].data[0] == HAL_ERROR);
+    CHECK(tx_log[10].data[1] == HAL_TIMEOUT);
+    CHECK(word_at(10,2) == 0x0001u);
+
+    uint32_t last_cell_frame = 11u + (4u * 5u) + 4u;
+    CHECK(tx_log[last_cell_frame].stdid == AMS_LOGGER_CAN_ID_CELL_DETAIL);
+    CHECK(tx_log[last_cell_frame].data[0] == 4u);
+    CHECK(tx_log[last_cell_frame].data[1] == 12u);
+    CHECK(word_at(last_cell_frame,3) == 4014u);
+
+    uint32_t invalid_temp_frame = 11u + 25u + (2u * 8u) + 1u;
+    CHECK(tx_log[invalid_temp_frame].stdid == AMS_LOGGER_CAN_ID_TEMP_DETAIL);
+    CHECK(tx_log[invalid_temp_frame].data[0] == 2u);
+    CHECK(tx_log[invalid_temp_frame].data[1] == 3u);
+    CHECK(word_at(invalid_temp_frame,3) == AMS_LOGGER_TEMP_INVALID_DECI_C);
+
+    uint32_t last_temp_frame = 11u + 25u + (4u * 8u) + 7u;
+    CHECK(tx_log[last_temp_frame].stdid == AMS_LOGGER_CAN_ID_TEMP_DETAIL);
+    CHECK(tx_log[last_temp_frame].data[0] == 4u);
+    CHECK(tx_log[last_temp_frame].data[1] == 21u);
+    CHECK((int16_t)word_at(last_temp_frame,3) == 444);
+
+    uint32_t voltage_pec_seg3 = 11u + 25u + 40u + (3u * 4u) + 1u;
+    CHECK(tx_log[voltage_pec_seg3].stdid == AMS_LOGGER_CAN_ID_VOLTAGE_PEC);
+    CHECK(tx_log[voltage_pec_seg3].data[0] == 3u);
+    CHECK(((uint16_t)tx_log[voltage_pec_seg3].data[1] << 8 | tx_log[voltage_pec_seg3].data[2]) == 0x0101u);
+    CHECK(tx_log[voltage_pec_seg3].data[3] == 2u);
+
+    uint32_t temp_mask_b_seg2 = 11u + 25u + 40u + (2u * 4u) + 3u;
+    CHECK(tx_log[temp_mask_b_seg2].stdid == AMS_LOGGER_CAN_ID_TEMP_MASKS_B);
+    CHECK(tx_log[temp_mask_b_seg2].data[0] == 2u);
+    CHECK(tx_log[temp_mask_b_seg2].data[4] == 0u);
+    CHECK(tx_log[temp_mask_b_seg2].data[5] == 0u);
+    CHECK(tx_log[temp_mask_b_seg2].data[6] == (1u << 5));
 }
 
 static void test_charger_rx_and_tx(void){
@@ -666,15 +785,15 @@ static void test_task_iterations_with_injected_signals(void){
     init_fake_app(); fill_nominal_pack(&app, 3.700f); app.board.canbus.hcan = &hcan; app.state = STATE_DISCARGE;
     tx_count=0; tx_free_level=3; fake_tick=0;
     run_one_canbus_task_iteration(&app);
-    CHECK(tx_count == 62u); CHECK(app.canbus_fault == false); CHECK(app.board.charger.target_voltage == 0.0f);
+    CHECK(tx_count == HOST_NONCHARGE_CAN_FRAME_COUNT); CHECK(app.canbus_fault == false); CHECK(app.board.charger.target_voltage == 0.0f);
 
     init_fake_app(); fill_nominal_pack(&app, 3.700f); app.board.canbus.hcan = &hcan; app.state = STATE_CHARGE; app.current_valid=true; app.bms_state=true; app.board.charger.last_rx_tick=1000; fake_tick=1000; tx_count=0; tx_free_level=3;
     run_one_canbus_task_iteration(&app);
-    CHECK(tx_count == 1u); CHECK(tx_log[0].ide == CAN_ID_EXT); CHECK(tx_log[0].extid == CCS_CANBUS_ID); CHECK(tx_log[0].data[4] == 0u); CHECK(app.canbus_fault == false); CHECK(app.charger_fault == false);
+    CHECK(tx_count == HOST_CHARGE_CAN_FRAME_COUNT); CHECK(tx_log[HOST_CHARGER_FRAME_INDEX].ide == CAN_ID_EXT); CHECK(tx_log[HOST_CHARGER_FRAME_INDEX].extid == CCS_CANBUS_ID); CHECK(tx_log[HOST_CHARGER_FRAME_INDEX].data[4] == 0u); CHECK(app.canbus_fault == false); CHECK(app.charger_fault == false);
 
     init_fake_app(); fill_nominal_pack(&app, 3.700f); app.board.canbus.hcan = &hcan; app.state = STATE_CHARGE; app.bms_state=true; app.board.charger.last_rx_tick=1; fake_tick=6005; tx_count=0; tx_free_level=3; bms_pin_state = GPIO_PIN_SET;
     run_one_canbus_task_iteration(&app);
-    CHECK(tx_count == 1u); CHECK(tx_log[0].data[4] == 1u); CHECK(app.board.charger.communication_fail == true); CHECK(app.charger_fault == true); CHECK(app.bms_state == false); CHECK(bms_pin_state == GPIO_PIN_RESET);
+    CHECK(tx_count == HOST_CHARGE_CAN_FRAME_COUNT); CHECK(tx_log[HOST_CHARGER_FRAME_INDEX].data[4] == 1u); CHECK(app.board.charger.communication_fail == true); CHECK(app.charger_fault == true); CHECK(app.bms_state == false); CHECK(bms_pin_state == GPIO_PIN_RESET);
 
     init_fake_app(); fill_nominal_pack(&app, 3.700f); app.state = STATE_CHARGE; app.current_valid=true; app.bms_state=true; app.acc.smb_ics[0].cell.c_codes[0] = code_for_volts(4.000f); fake_tick=0;
     run_one_adbms_task_iteration(&app);
@@ -997,12 +1116,12 @@ static void test_fault_matrix_extra(void){
     init_fake_app(); fill_nominal_pack(&app, 3.700f); app.board.canbus.hcan=&hcan; app.state=STATE_CHARGE; app.current_valid=true; app.bms_state=true; app.board.charger.last_rx_tick=1000; fake_tick=1000;
     app.board.charger.hardware_fail=true; app.board.charger.overtemp_fail=false; app.board.charger.input_volt_fail=false; app.board.charger.voltage_sense_fail=false; tx_count=0; tx_free_level=3; bms_pin_state=GPIO_PIN_SET;
     run_one_canbus_task_iteration(&app);
-    CHECK(app.charger_fault == true); CHECK(app.bms_state == false); CHECK(tx_count == 1u); CHECK(tx_log[0].data[4] == 1u);
+    CHECK(app.charger_fault == true); CHECK(app.bms_state == false); CHECK(tx_count == HOST_CHARGE_CAN_FRAME_COUNT); CHECK(tx_log[HOST_CHARGER_FRAME_INDEX].data[4] == 1u);
 
     // 5) Pre-existing hard fault must command charger disable even without charger self-fault.
     init_fake_app(); fill_nominal_pack(&app, 3.700f); app.board.canbus.hcan=&hcan; app.state=STATE_CHARGE; app.current_valid=true; app.bms_state=true; app.hard_fault=true; app.board.charger.last_rx_tick=1000; fake_tick=1000; tx_count=0; tx_free_level=3;
     run_one_canbus_task_iteration(&app);
-    CHECK(tx_count == 1u); CHECK(tx_log[0].data[4] == 1u); CHECK(app.bms_state == false);
+    CHECK(tx_count == HOST_CHARGE_CAN_FRAME_COUNT); CHECK(tx_log[HOST_CHARGER_FRAME_INDEX].data[4] == 1u); CHECK(app.bms_state == false);
 
     // 6) CAN transmit failure must become a soft CAN fault, not silently pass.
     init_fake_app(); fill_nominal_pack(&app, 3.700f); app.board.canbus.hcan=&hcan; app.state=STATE_DISCARGE; tx_count=0; tx_free_level=0; fake_tick=0;
@@ -1722,8 +1841,8 @@ static void test_system_sil_charger_disable_from_dynamic_gates(void)
     tx_count = 0u;
     tx_free_level = 3u;
     run_one_canbus_task_iteration(&app);
-    CHECK(tx_count == 1u);
-    CHECK(tx_log[0].data[4] == 1u);
+    CHECK(tx_count == HOST_CHARGE_CAN_FRAME_COUNT);
+    CHECK(tx_log[HOST_CHARGER_FRAME_INDEX].data[4] == 1u);
     CHECK(app.bms_state == false);
 
     sil_prepare_ready_system(STATE_CHARGE, 0.0f, 3.700f);
@@ -1737,8 +1856,8 @@ static void test_system_sil_charger_disable_from_dynamic_gates(void)
     tx_count = 0u;
     tx_free_level = 3u;
     run_one_canbus_task_iteration(&app);
-    CHECK(tx_count == 1u);
-    CHECK(tx_log[0].data[4] == 0u);
+    CHECK(tx_count == HOST_CHARGE_CAN_FRAME_COUNT);
+    CHECK(tx_log[HOST_CHARGER_FRAME_INDEX].data[4] == 0u);
     CHECK(app.bms_state == true);
 
     sil_prepare_ready_system(STATE_CHARGE, 0.0f, 3.700f);
@@ -1751,8 +1870,8 @@ static void test_system_sil_charger_disable_from_dynamic_gates(void)
     tx_count = 0u;
     tx_free_level = 3u;
     run_one_canbus_task_iteration(&app);
-    CHECK(tx_count == 1u);
-    CHECK(tx_log[0].data[4] == 1u);
+    CHECK(tx_count == HOST_CHARGE_CAN_FRAME_COUNT);
+    CHECK(tx_log[HOST_CHARGER_FRAME_INDEX].data[4] == 1u);
 }
 
 static void test_system_sil_deterministic_fault_injection_invariants(void)
@@ -2019,7 +2138,7 @@ static void test_system_sil_task_order_permutations_fail_closed(void)
     CHECK(app.bms_state == false);
     sil_run_can_charge_iteration(&app, &hcan);
     CHECK(app.bms_state == false);
-    CHECK(tx_count == 1u && tx_log[0].data[4] == 1u);
+    CHECK(tx_count == HOST_CHARGE_CAN_FRAME_COUNT && tx_log[HOST_CHARGER_FRAME_INDEX].data[4] == 1u);
     sil_assert_safety_invariants(&app, "current_bad_then_voltage_then_charger");
 
     /* Same observed current fault, but swap later task order. */
@@ -2686,7 +2805,7 @@ static void test_system_sil_temperature_charge_stop_thresholds(void)
     tx_free_level = 3u;
     run_one_canbus_task_iteration(&app);
     CHECK(app.temp_charge_stop == false);
-    CHECK(tx_log[0].data[4] == 0u);
+    CHECK(tx_log[HOST_CHARGER_FRAME_INDEX].data[4] == 0u);
 
     sil_set_all_temps(&app, TEMP_CHARGE_MAX_C, (1UL << NTEMPS) - 1UL);
     app.bms_state = true;
@@ -2697,7 +2816,7 @@ static void test_system_sil_temperature_charge_stop_thresholds(void)
     CHECK(app.temp_fault == false);
     CHECK(app.temp_charge_stop == true);
     CHECK(app.temp_fault_reason == TEMPERATURE_FAULT_REASON_HOT_CHARGE_STOP);
-    CHECK(tx_log[0].data[4] == 1u);
+    CHECK(tx_log[HOST_CHARGER_FRAME_INDEX].data[4] == 1u);
     CHECK(app.bms_state == false);
 
     temperature_fault_reset_latch(&app.temp_fault_state);
@@ -2710,7 +2829,7 @@ static void test_system_sil_temperature_charge_stop_thresholds(void)
     CHECK(app.temp_fault == false);
     CHECK(app.temp_charge_stop == true);
     CHECK(app.temp_fault_reason == TEMPERATURE_FAULT_REASON_COLD_CHARGE_STOP);
-    CHECK(tx_log[0].data[4] == 1u);
+    CHECK(tx_log[HOST_CHARGER_FRAME_INDEX].data[4] == 1u);
     CHECK(app.bms_state == false);
 }
 
@@ -3194,11 +3313,11 @@ static void test_charge_state_disable_matrix(void){
         app.board.charger.last_rx_tick = 1000u;
         tx_count = 0; tx_free_level = 3; bms_pin_state = app.bms_state ? GPIO_PIN_SET : GPIO_PIN_RESET;
         run_one_canbus_task_iteration(&app);
-        CHECK(tx_count == 1u);
-        CHECK(tx_log[0].ide == CAN_ID_EXT && tx_log[0].extid == CCS_CANBUS_ID);
-        CHECK(word_at(0,0) == (uint16_t)(CHARGE_MAX_VOLTAGE * 10.0f));
-        CHECK(word_at(0,1) == (uint16_t)(CHARGE_MAX_CURRENT * 10.0f));
-        CHECK(tx_log[0].data[4] == cases[i].disable);
+        CHECK(tx_count == HOST_CHARGE_CAN_FRAME_COUNT);
+        CHECK(tx_log[HOST_CHARGER_FRAME_INDEX].ide == CAN_ID_EXT && tx_log[HOST_CHARGER_FRAME_INDEX].extid == CCS_CANBUS_ID);
+        CHECK(word_at(HOST_CHARGER_FRAME_INDEX,0) == (uint16_t)(CHARGE_MAX_VOLTAGE * 10.0f));
+        CHECK(word_at(HOST_CHARGER_FRAME_INDEX,1) == (uint16_t)(CHARGE_MAX_CURRENT * 10.0f));
+        CHECK(tx_log[HOST_CHARGER_FRAME_INDEX].data[4] == cases[i].disable);
         if(cases[i].disable){ CHECK(app.bms_state == false); }
         else { CHECK(app.bms_state == true && app.charger_fault == false); }
     }
@@ -3226,7 +3345,7 @@ static void test_telemetry_absent_segments_and_invalid_channels(void){
     accumulator_update_temp_stats_at(&app.acc, fake_tick);
     tx_count = 0; tx_free_level = 3;
     run_one_canbus_task_iteration(&app);
-    CHECK(tx_count == 62u);
+    CHECK(tx_count == HOST_NONCHARGE_CAN_FRAME_COUNT);
     CHECK(word_at(3,1) > 3500u && word_at(3,2) == 0u && word_at(3,3) > 3500u);
     CHECK(word_at(28 + 6 + 1,1) == ECU_TEMP_INVALID_DECI_C); // segment 1, temp sensor 3 invalid => packet 35 word0
     // Segments 2..4 are absent because num_ics=2; their voltage and temp packets must be zero-filled.
@@ -3298,6 +3417,7 @@ int main(void){
     test_system_sil_temperature_hard_latch_and_reset_path(); puts("PASS system SIL temperature hard/severe latch/reset");
     test_system_sil_temperature_cli_can_diagnostics(); puts("PASS system SIL temperature CLI/CAN diagnostics");
     test_can_telemetry_packets(); puts("PASS CAN telemetry packetization");
+    test_logger_can_contract_packets(); puts("PASS logger CAN contract packetization");
     test_telemetry_absent_segments_and_invalid_channels(); puts("PASS telemetry absent segments/invalid channels");
     test_charger_rx_and_tx(); puts("PASS charger RX/TX parse");
     test_estimator_ra8m1_architecture_parity(); puts("PASS estimator RA8M1 architecture parity");

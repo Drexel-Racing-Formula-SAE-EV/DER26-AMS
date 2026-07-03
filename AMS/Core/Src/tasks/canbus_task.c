@@ -10,6 +10,7 @@
  */
 
 #include "tasks/canbus_task.h"
+#include "ext_drivers/ams_can_logger.h"
 #include "ext_drivers/canbus.h"
 #include "ext_drivers/charger.h"
 #include "app.h"
@@ -227,6 +228,432 @@ static HAL_StatusTypeDef send_ecu_ams_fans(canbus_device_t *canbus, const app_da
     return ret;
 }
 
+static uint16_t sat_u16_scaled(float x, float scale)
+{
+    if(!isfinite(x) || x <= 0.0f)
+    {
+        return 0u;
+    }
+
+    x *= scale;
+    if(x >= 65535.0f)
+    {
+        return 65535u;
+    }
+
+    return (uint16_t)(x + 0.5f);
+}
+
+static int16_t sat_i16_scaled(float x, float scale)
+{
+    if(!isfinite(x))
+    {
+        return 0;
+    }
+
+    x *= scale;
+    if(x >= 32767.0f)
+    {
+        return INT16_MAX;
+    }
+    if(x <= -32768.0f)
+    {
+        return INT16_MIN;
+    }
+
+    return (int16_t)((x >= 0.0f) ? (x + 0.5f) : (x - 0.5f));
+}
+
+static uint8_t sat_u8_u32(uint32_t x)
+{
+    return (x > 255u) ? 255u : (uint8_t)x;
+}
+
+static uint16_t sat_u16_u32(uint32_t x)
+{
+    return (x > 65535u) ? 65535u : (uint16_t)x;
+}
+
+static uint8_t logger_count_bits16(uint16_t x)
+{
+    uint8_t count = 0u;
+
+    while(x != 0u)
+    {
+        count = (uint8_t)(count + (uint8_t)(x & 1u));
+        x >>= 1u;
+    }
+
+    return count;
+}
+
+static uint8_t logger_bool_bit(bool value, uint8_t bit)
+{
+    return value ? (uint8_t)(1u << bit) : 0u;
+}
+
+static void logger_put_u16(uint8_t payload[8], uint8_t offset, uint16_t value)
+{
+    payload[offset] = TO_MSB16(value);
+    payload[(uint8_t)(offset + 1u)] = TO_LSB16(value);
+}
+
+static void logger_put_i16(uint8_t payload[8], uint8_t offset, int16_t value)
+{
+    logger_put_u16(payload, offset, (uint16_t)value);
+}
+
+static void logger_put_u24(uint8_t payload[8], uint8_t offset, uint32_t value)
+{
+    value &= 0x00FFFFFFu;
+    payload[offset] = (uint8_t)((value >> 16u) & 0xFFu);
+    payload[(uint8_t)(offset + 1u)] = (uint8_t)((value >> 8u) & 0xFFu);
+    payload[(uint8_t)(offset + 2u)] = (uint8_t)(value & 0xFFu);
+}
+
+static HAL_StatusTypeDef send_logger_frame(canbus_device_t *canbus, uint32_t id, const uint8_t payload[8])
+{
+    return canbus_send(canbus, CAN_ID_STD, id, payload);
+}
+
+static uint16_t temp_deci_c_for_logger(const app_data_t *data, uint8_t seg, uint8_t sensor)
+{
+    if((data == NULL) ||
+       (seg >= accumulator_configured_smb_count(&data->acc)) ||
+       (sensor >= NTEMPS) ||
+       !accumulator_temp_sensor_usable(&data->acc, seg, sensor))
+    {
+        return AMS_LOGGER_TEMP_INVALID_DECI_C;
+    }
+
+    return (uint16_t)accumulator_temp_deci_c(&data->acc, seg, sensor);
+}
+
+static uint16_t cell_mv_for_logger(const app_data_t *data, uint8_t seg, uint8_t cell)
+{
+    if((data == NULL) ||
+       (seg >= accumulator_configured_smb_count(&data->acc)) ||
+       (cell >= NCELLS))
+    {
+        return 0u;
+    }
+
+    return accumulator_cell_voltage_mv(&data->acc, seg, cell);
+}
+
+static uint8_t logger_max_fan_decipct(const app_data_t *data)
+{
+    float max_duty = 0.0f;
+
+    if(data == NULL)
+    {
+        return 0u;
+    }
+
+    for(uint8_t fan = 0u; fan < NFANS; fan++)
+    {
+        if(isfinite(data->board.fans[fan].duty_cycle) &&
+           (data->board.fans[fan].duty_cycle > max_duty))
+        {
+            max_duty = data->board.fans[fan].duty_cycle;
+        }
+    }
+
+    if(max_duty >= 100.0f)
+    {
+        return 100u;
+    }
+
+    return (uint8_t)(max_duty + 0.5f);
+}
+
+static bool logger_charger_hw_fault(const charger_t *ccs)
+{
+    if(ccs == NULL)
+    {
+        return true;
+    }
+
+    return (ccs->hardware_fail      ||
+            ccs->overtemp_fail      ||
+            ccs->input_volt_fail    ||
+            ccs->voltage_sense_fail ||
+            ccs->communication_fail);
+}
+
+static bool logger_disable_charge(const app_data_t *data, bool charger_hw_fault)
+{
+    if(data == NULL)
+    {
+        return true;
+    }
+
+    return (charger_hw_fault ||
+            data->hard_fault ||
+            data->voltage_fault ||
+            data->charge_voltage_stop ||
+            !data->voltage_valid ||
+            data->temp_charge_stop ||
+            data->temp_fault ||
+            data->current_fault ||
+            !data->current_valid ||
+            !data->bms_state);
+}
+
+static HAL_StatusTypeDef send_logger_summaries(canbus_device_t *canbus,
+                                               const app_data_t *data,
+                                               uint8_t sequence)
+{
+    if((canbus == NULL) || (data == NULL))
+    {
+        return HAL_ERROR;
+    }
+
+    HAL_StatusTypeDef ret = HAL_OK;
+    const accumulator_t *acc = &data->acc;
+    const charger_t *ccs = &data->board.charger;
+    const bool charger_hw_fault = logger_charger_hw_fault(ccs);
+    const bool disable_charge = logger_disable_charge(data, charger_hw_fault);
+    const adbms6830_spi_debug_t *smb_dbg = adbms6830_spi_debug_get(&acc->smb);
+    const adbms2950_spi_debug_t *apm_dbg = adbms2950_spi_debug_get(&acc->apm);
+
+    uint8_t payload[8] = {0};
+    payload[0] = AMS_LOGGER_PROTOCOL_VERSION;
+    payload[1] = sequence;
+    payload[2] = (uint8_t)data->state;
+    payload[3] = logger_bool_bit(data->bms_state, AMS_LOGGER_HEARTBEAT_FLAG_BMS_OK) |
+                 logger_bool_bit(data->air_state, AMS_LOGGER_HEARTBEAT_FLAG_AIR_STATE) |
+                 logger_bool_bit(data->imd_ok, AMS_LOGGER_HEARTBEAT_FLAG_IMD_OK) |
+                 logger_bool_bit(data->hard_fault, AMS_LOGGER_HEARTBEAT_FLAG_HARD_FAULT) |
+                 logger_bool_bit(data->soft_fault, AMS_LOGGER_HEARTBEAT_FLAG_SOFT_FAULT) |
+                 logger_bool_bit(data->charger_fault, AMS_LOGGER_HEARTBEAT_FLAG_CHARGER_FAULT) |
+                 logger_bool_bit(data->canbus_fault, AMS_LOGGER_HEARTBEAT_FLAG_CANBUS_FAULT) |
+                 logger_bool_bit(data->bms_output_inhibit, AMS_LOGGER_HEARTBEAT_FLAG_BMS_OUTPUT_INHIBIT);
+    payload[4] = logger_bool_bit(data->voltage_valid, AMS_LOGGER_VALID_FLAG_VOLTAGE_VALID) |
+                 logger_bool_bit(data->current_valid, AMS_LOGGER_VALID_FLAG_CURRENT_VALID) |
+                 logger_bool_bit(data->temp_valid, AMS_LOGGER_VALID_FLAG_TEMP_VALID) |
+                 logger_bool_bit(data->voltage_read_fault, AMS_LOGGER_VALID_FLAG_VOLTAGE_READ_FAULT) |
+                 logger_bool_bit(data->temp_read_fault, AMS_LOGGER_VALID_FLAG_TEMP_READ_FAULT) |
+                 logger_bool_bit(data->current_sensor_fault, AMS_LOGGER_VALID_FLAG_CURRENT_SENSOR_FAULT) |
+                 logger_bool_bit(data->voltage_fault_latched, AMS_LOGGER_VALID_FLAG_VOLTAGE_LATCHED) |
+                 logger_bool_bit(data->temp_fault_latched, AMS_LOGGER_VALID_FLAG_TEMP_LATCHED);
+    payload[5] = logger_bool_bit(data->current_fault, AMS_LOGGER_CURRENT_FLAG_FAULT) |
+                 logger_bool_bit(data->current_sensor_fault, AMS_LOGGER_CURRENT_FLAG_SENSOR_FAULT) |
+                 logger_bool_bit(data->current_overcurrent_warning, AMS_LOGGER_CURRENT_FLAG_WARNING) |
+                 logger_bool_bit(data->current_overcurrent_pending, AMS_LOGGER_CURRENT_FLAG_PENDING) |
+                 logger_bool_bit(data->current_overcurrent_fault, AMS_LOGGER_CURRENT_FLAG_CONFIRMED) |
+                 logger_bool_bit(data->current_fault_latched, AMS_LOGGER_CURRENT_FLAG_LATCHED) |
+                 logger_bool_bit(data->fuse_fault, AMS_LOGGER_CURRENT_FLAG_FUSE_FAULT) |
+                 logger_bool_bit(data->estimator_fault, AMS_LOGGER_CURRENT_FLAG_ESTIMATOR_FAULT);
+    logger_put_u16(payload, 6u, sat_u16_u32(osKernelGetTickCount() / 1000u));
+    ret |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_HEARTBEAT, payload);
+
+    memset(payload, 0, sizeof(payload));
+    payload[0] = (uint8_t)data->voltage_fault_reason;
+    payload[1] = (uint8_t)data->voltage_fault_latched_reason;
+    payload[2] = (uint8_t)data->temp_fault_reason;
+    payload[3] = (uint8_t)data->temp_fault_pending_reason;
+    payload[4] = (uint8_t)data->temp_fault_latched_reason;
+    payload[5] = (uint8_t)data->current_fault_reason;
+    payload[6] = (uint8_t)data->current_fault_latched_reason;
+    payload[7] = (uint8_t)data->current_fault_mode;
+    ret |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_FAULT_REASONS, payload);
+
+    memset(payload, 0, sizeof(payload));
+    logger_put_u16(payload, 0u, sat_u16_scaled((data->total_voltage > 0.0f) ? data->total_voltage : acc->total_volt, 10.0f));
+    logger_put_i16(payload, 2u, sat_i16_scaled(data->current, 10.0f));
+    logger_put_u16(payload, 4u, acc->min_voltage_mv);
+    logger_put_u16(payload, 6u, acc->max_voltage_mv);
+    ret |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_PACK_ELECTRICAL, payload);
+
+    memset(payload, 0, sizeof(payload));
+    logger_put_i16(payload, 0u, acc->max_temp_deci_c);
+    logger_put_i16(payload, 2u, acc->min_temp_deci_c);
+    logger_put_i16(payload, 4u, sat_i16_scaled((data->avg_temp != 0.0f) ? data->avg_temp : acc->avg_temp, 10.0f));
+    payload[6] = logger_max_fan_decipct(data);
+    payload[7] = logger_bool_bit(data->temp_warning, 0u) |
+                 logger_bool_bit(data->temp_fan_max, 1u) |
+                 logger_bool_bit(data->temp_charge_stop, 2u) |
+                 logger_bool_bit(data->temp_overtemp_pending, 3u) |
+                 logger_bool_bit(data->overtemp_fault, 4u) |
+                 logger_bool_bit(data->severe_overtemp_fault, 5u);
+    ret |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_TEMP_FAN, payload);
+
+    memset(payload, 0, sizeof(payload));
+    payload[0] = data->max_voltage_seg;
+    payload[1] = data->max_voltage_cell;
+    payload[2] = data->min_voltage_seg;
+    payload[3] = data->min_voltage_cell;
+    payload[4] = sat_u8_u32(data->voltage_usable_cell_count);
+    payload[5] = sat_u8_u32(data->voltage_updated_cell_count);
+    payload[6] = sat_u8_u32(data->voltage_stale_cell_count);
+    payload[7] = sat_u8_u32(data->voltage_fault_state.pec_fail_cell_count);
+    ret |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_VOLTAGE_HEALTH, payload);
+
+    memset(payload, 0, sizeof(payload));
+    payload[0] = data->max_temp_seg;
+    payload[1] = data->max_temp_sensor;
+    payload[2] = data->min_temp_seg;
+    payload[3] = data->min_temp_sensor;
+    payload[4] = sat_u8_u32(data->temp_usable_sensor_count);
+    payload[5] = sat_u8_u32(data->temp_updated_sensor_count);
+    payload[6] = sat_u8_u32(data->temp_stale_sensor_count);
+    payload[7] = sat_u8_u32(data->temp_invalid_sensor_count);
+    ret |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_TEMP_HEALTH, payload);
+
+    memset(payload, 0, sizeof(payload));
+    logger_put_u16(payload, 0u, sat_u16_scaled(ccs->target_voltage, 10.0f));
+    logger_put_u16(payload, 2u, sat_u16_scaled(ccs->target_current, 10.0f));
+    logger_put_u16(payload, 4u, sat_u16_scaled(ccs->read_voltage, 10.0f));
+    payload[6] = logger_bool_bit(ccs->hardware_fail, AMS_LOGGER_CHARGER_FLAG_HW_FAIL) |
+                 logger_bool_bit(ccs->overtemp_fail, AMS_LOGGER_CHARGER_FLAG_OVERTEMP_FAIL) |
+                 logger_bool_bit(ccs->input_volt_fail, AMS_LOGGER_CHARGER_FLAG_INPUT_VOLT_FAIL) |
+                 logger_bool_bit(ccs->voltage_sense_fail, AMS_LOGGER_CHARGER_FLAG_VOLTAGE_SENSE_FAIL) |
+                 logger_bool_bit(ccs->communication_fail, AMS_LOGGER_CHARGER_FLAG_COMM_FAIL) |
+                 logger_bool_bit(data->temp_charge_stop, AMS_LOGGER_CHARGER_FLAG_TEMP_CHARGE_STOP) |
+                 logger_bool_bit(data->charge_voltage_stop, AMS_LOGGER_CHARGER_FLAG_VOLTAGE_CHARGE_STOP) |
+                 logger_bool_bit(disable_charge, AMS_LOGGER_CHARGER_FLAG_DISABLE_CHARGE);
+    payload[7] = ccs->flags;
+    ret |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_CHARGER, payload);
+
+    memset(payload, 0, sizeof(payload));
+    logger_put_i16(payload, 0u, sat_i16_scaled(data->current, 10.0f));
+    payload[2] = (uint8_t)data->current_selected_range;
+    payload[3] = (uint8_t)data->current_meas_reason;
+    payload[4] = (uint8_t)data->current_fault_reason;
+    payload[5] = (uint8_t)data->current_fault_latched_reason;
+    logger_put_u16(payload, 6u, sat_u16_u32(data->current_fault_state.pending_ms));
+    ret |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_CURRENT_DETAIL, payload);
+
+    memset(payload, 0, sizeof(payload));
+    if(smb_dbg != NULL)
+    {
+        payload[0] = (uint8_t)smb_dbg->last_status;
+        payload[1] = (uint8_t)smb_dbg->last_xfer_status;
+        payload[2] = (uint8_t)smb_dbg->last_op;
+        payload[3] = sat_u8_u32(smb_dbg->error_count);
+        logger_put_u16(payload, 4u, smb_dbg->last_read_pec_fail_mask);
+        logger_put_u16(payload, 6u, smb_dbg->cmd_counter_mismatch_mask);
+    }
+    ret |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_6830_LINK, payload);
+
+    memset(payload, 0, sizeof(payload));
+    if(smb_dbg != NULL)
+    {
+        logger_put_u16(payload, 0u, sat_u16_u32(smb_dbg->error_count));
+        logger_put_u16(payload, 2u, sat_u16_u32(smb_dbg->cmd_counter_error_count));
+        logger_put_u16(payload, 4u, smb_dbg->last_read_pec_pass_mask);
+        payload[6] = smb_dbg->last_cmd[0];
+        payload[7] = smb_dbg->last_cmd[1];
+    }
+    ret |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_6830_COUNTERS, payload);
+
+    memset(payload, 0, sizeof(payload));
+    if(apm_dbg != NULL)
+    {
+        payload[0] = (uint8_t)apm_dbg->last_status;
+        payload[1] = (uint8_t)apm_dbg->last_xfer_status;
+        payload[2] = (uint8_t)apm_dbg->last_op;
+        payload[3] = sat_u8_u32(apm_dbg->error_count);
+        logger_put_u16(payload, 4u, apm_dbg->last_read_pec_fail_mask);
+        payload[6] = apm_dbg->enabled ? 1u : 0u;
+        payload[7] = (uint8_t)acc->apm.num_ics;
+    }
+    ret |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_2950_LINK, payload);
+
+    return ret;
+}
+
+static HAL_StatusTypeDef send_logger_details(canbus_device_t *canbus, const app_data_t *data)
+{
+    if((canbus == NULL) || (data == NULL))
+    {
+        return HAL_ERROR;
+    }
+
+    HAL_StatusTypeDef ret = HAL_OK;
+    const accumulator_t *acc = &data->acc;
+    uint8_t payload[8] = {0};
+
+    for(uint8_t seg = 0u; seg < NSMBS; seg++)
+    {
+        for(uint8_t cell = 0u; cell < NCELLS; cell = (uint8_t)(cell + 3u))
+        {
+            payload[0] = seg;
+            payload[1] = cell;
+            logger_put_u16(payload, 2u, cell_mv_for_logger(data, seg, cell));
+            logger_put_u16(payload, 4u, cell_mv_for_logger(data, seg, (uint8_t)(cell + 1u)));
+            logger_put_u16(payload, 6u, cell_mv_for_logger(data, seg, (uint8_t)(cell + 2u)));
+            ret |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_CELL_DETAIL, payload);
+        }
+    }
+
+    for(uint8_t seg = 0u; seg < NSMBS; seg++)
+    {
+        for(uint8_t sensor = 0u; sensor < NTEMPS; sensor = (uint8_t)(sensor + 3u))
+        {
+            payload[0] = seg;
+            payload[1] = sensor;
+            logger_put_u16(payload, 2u, temp_deci_c_for_logger(data, seg, sensor));
+            logger_put_u16(payload, 4u, temp_deci_c_for_logger(data, seg, (uint8_t)(sensor + 1u)));
+            logger_put_u16(payload, 6u, temp_deci_c_for_logger(data, seg, (uint8_t)(sensor + 2u)));
+            ret |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_TEMP_DETAIL, payload);
+        }
+    }
+
+    for(uint8_t seg = 0u; seg < NSMBS; seg++)
+    {
+        uint16_t updated = (seg < accumulator_configured_smb_count(acc)) ? acc->updated_voltage_mask[seg] : 0u;
+        uint16_t usable = (seg < accumulator_configured_smb_count(acc)) ? acc->usable_voltage_mask[seg] : 0u;
+        uint16_t stale = (seg < accumulator_configured_smb_count(acc)) ? acc->stale_voltage_mask[seg] : 0u;
+        uint16_t pec = (seg < accumulator_configured_smb_count(acc)) ? acc->pec_fail_voltage_mask[seg] : 0u;
+
+        payload[0] = seg;
+        logger_put_u16(payload, 1u, updated);
+        logger_put_u16(payload, 3u, usable);
+        logger_put_u16(payload, 5u, stale);
+        payload[7] = 0u;
+        ret |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_VOLTAGE_MASKS, payload);
+
+        memset(payload, 0, sizeof(payload));
+        payload[0] = seg;
+        logger_put_u16(payload, 1u, pec);
+        payload[3] = logger_count_bits16(pec);
+        ret |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_VOLTAGE_PEC, payload);
+
+        uint32_t temp_updated = (seg < accumulator_configured_smb_count(acc)) ? acc->updated_temp_mask[seg] : 0u;
+        uint32_t temp_usable = (seg < accumulator_configured_smb_count(acc)) ? acc->usable_temp_mask[seg] : 0u;
+        uint32_t temp_stale = (seg < accumulator_configured_smb_count(acc)) ? acc->stale_temp_mask[seg] : 0u;
+        uint32_t temp_invalid = (seg < accumulator_configured_smb_count(acc)) ? acc->invalid_temp_mask[seg] : 0u;
+
+        payload[0] = seg;
+        logger_put_u24(payload, 1u, temp_updated);
+        logger_put_u24(payload, 4u, temp_usable);
+        payload[7] = 0u;
+        ret |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_TEMP_MASKS_A, payload);
+
+        payload[0] = seg;
+        logger_put_u24(payload, 1u, temp_stale);
+        logger_put_u24(payload, 4u, temp_invalid);
+        payload[7] = 0u;
+        ret |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_TEMP_MASKS_B, payload);
+    }
+
+    return ret;
+}
+
+static HAL_StatusTypeDef send_logger_telemetry(canbus_device_t *canbus, const app_data_t *data)
+{
+    static uint8_t sequence = 0u;
+    HAL_StatusTypeDef ret;
+
+    ret = send_logger_summaries(canbus, data, sequence);
+    ret |= send_logger_details(canbus, data);
+    sequence++;
+
+    return ret;
+}
+
 
 
 static uint16_t sat_u16_from_float(float x)
@@ -343,6 +770,7 @@ void canbus_task_fn(void *arg)
             ret |= send_ecu_ams_voltages(canbus, data);
             ret |= send_ecu_ams_temps(canbus, data);
             ret |= send_ecu_ams_fans(canbus, data);
+            ret |= send_logger_telemetry(canbus, data);
             ret |= send_estimator_status(canbus, data);
 
             data->canbus_fault = (ret != HAL_OK);
@@ -391,8 +819,10 @@ void canbus_task_fn(void *arg)
             can_data[6] = 0u;
             can_data[7] = 0u;
 
-            ret = canbus_send(canbus, CAN_ID_EXT, CCS_CANBUS_ID, can_data);
-            if(ret == HAL_OK)
+            ret |= send_logger_telemetry(canbus, data);
+            HAL_StatusTypeDef charger_tx_status = canbus_send(canbus, CAN_ID_EXT, CCS_CANBUS_ID, can_data);
+            ret |= charger_tx_status;
+            if(charger_tx_status == HAL_OK)
             {
                 ccs->tx_count++;
             }
