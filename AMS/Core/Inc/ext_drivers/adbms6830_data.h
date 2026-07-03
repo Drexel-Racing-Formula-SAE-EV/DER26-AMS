@@ -112,6 +112,13 @@ typedef struct
   uint16_t last_cell_updated_mask[ADBMS6830_MAX_TRACKED_ICS];
   uint16_t last_cell_pec_mask[ADBMS6830_MAX_TRACKED_ICS];
 
+  /* Last temperature-mux read status. One bit per temp sensor index for each
+   * IC. The mux scan only reads three of twenty-four sensors per AMS cycle, so
+   * safety policy needs an explicit freshness mask instead of treating old raw
+   * thermistor codes as newly updated.
+   */
+  uint32_t last_temp_updated_mask[ADBMS6830_MAX_TRACKED_ICS];
+
   adbms6830_spi_debug_t spi_debug;
 } adbms6830_driver_t;
 

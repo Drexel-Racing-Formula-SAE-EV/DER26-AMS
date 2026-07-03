@@ -46,6 +46,27 @@ void accumulator_init(accumulator_t *dev,
 	dev->min_volt = 0.0f;
 	dev->valid_voltage_count = 0u;
 	dev->valid_temp_count = 0u;
+	dev->updated_temp_count = 0u;
+	dev->usable_temp_count = 0u;
+	dev->stale_temp_count = 0u;
+	dev->invalid_temp_count = 0u;
+	dev->max_temp_deci_c = 0;
+	dev->min_temp_deci_c = 0;
+	dev->max_temp_seg = 0u;
+	dev->max_temp_sensor = 0u;
+	dev->min_temp_seg = 0u;
+	dev->min_temp_sensor = 0u;
+	dev->temp_full_updated = false;
+	dev->temp_full_usable = false;
+	dev->temp_startup_scan_complete = false;
+	memset(dev->temp_deci_c, 0, sizeof(dev->temp_deci_c));
+	memset(dev->temp_sensor_valid, 0, sizeof(dev->temp_sensor_valid));
+	memset(dev->temp_last_update_ms, 0, sizeof(dev->temp_last_update_ms));
+	memset(dev->temp_consecutive_misses, 0, sizeof(dev->temp_consecutive_misses));
+	memset(dev->updated_temp_mask, 0, sizeof(dev->updated_temp_mask));
+	memset(dev->usable_temp_mask, 0, sizeof(dev->usable_temp_mask));
+	memset(dev->stale_temp_mask, 0, sizeof(dev->stale_temp_mask));
+	memset(dev->invalid_temp_mask, 0, sizeof(dev->invalid_temp_mask));
 	dev->updated_voltage_count = 0u;
 	dev->usable_voltage_count = 0u;
 	dev->stale_voltage_count = 0u;
@@ -135,6 +156,11 @@ void smb_read_temp(adbms6830_driver_t* dev)
     if(dev == NULL)
     {
         return;
+    }
+
+    for(uint8_t ic = 0u; ic < ADBMS6830_MAX_TRACKED_ICS; ic++)
+    {
+        dev->last_temp_updated_mask[ic] = 0u;
     }
 
 //	adbms6830_wakeup(dev);
@@ -349,6 +375,19 @@ static uint16_t accumulator_count_bits(uint16_t mask)
     return count;
 }
 
+static uint16_t accumulator_count_bits32(uint32_t mask)
+{
+    uint16_t count = 0u;
+
+    while(mask != 0u)
+    {
+        count += (uint16_t)(mask & 1u);
+        mask >>= 1u;
+    }
+
+    return count;
+}
+
 bool accumulator_cell_voltage_usable(const accumulator_t *dev, uint8_t seg, uint8_t cell)
 {
     if((dev == NULL) || (seg >= NSMBS) || (cell >= NCELLS))
@@ -538,39 +577,204 @@ void accumulator_update_voltage_stats_at(accumulator_t *dev, uint32_t now_ms)
 
 void accumulator_update_temp_stats(accumulator_t *dev)
 {
+    accumulator_update_temp_stats_at(dev, 0u);
+}
+
+static bool accumulator_temp_code_to_deci_c(int16_t raw, int16_t *deci_c)
+{
+    if((raw == -1) || (raw == INT16_MIN) || (raw == 0))
+    {
+        return false;
+    }
+
+    float temp = voltage_to_temp(raw);
+    if(!isfinite(temp) ||
+       (temp < ((float)ACCUMULATOR_TEMP_VALID_MIN_DECI_C / 10.0f)) ||
+       (temp > ((float)ACCUMULATOR_TEMP_VALID_MAX_DECI_C / 10.0f)))
+    {
+        return false;
+    }
+
+    if(deci_c != NULL)
+    {
+        *deci_c = (int16_t)lroundf(temp * 10.0f);
+    }
+    return true;
+}
+
+bool accumulator_temp_sensor_usable(const accumulator_t *dev, uint8_t seg, uint8_t sensor)
+{
+    if((dev == NULL) || (seg >= NSMBS) || (sensor >= NTEMPS))
+    {
+        return false;
+    }
+
+    return ((dev->usable_temp_mask[seg] & (uint32_t)(1UL << sensor)) != 0u);
+}
+
+int16_t accumulator_temp_deci_c(const accumulator_t *dev, uint8_t seg, uint8_t sensor)
+{
+    if((dev == NULL) || (seg >= NSMBS) || (sensor >= NTEMPS))
+    {
+        return 0;
+    }
+
+    return accumulator_temp_sensor_usable(dev, seg, sensor) ? dev->temp_deci_c[seg][sensor] : 0;
+}
+
+void accumulator_update_temp_stats_at(accumulator_t *dev, uint32_t now_ms)
+{
     if(dev == NULL)
     {
         return;
     }
 
-	float   max_temp = -273.15f;
-	float   sum_temp = 0.0f;
-	uint8_t count    = 0u;
+	uint32_t now = now_ms;
+	uint16_t expected_count = (uint16_t)(NSMBS * NTEMPS);
+	uint16_t updated_count = 0u;
+	uint16_t usable_count = 0u;
+	uint16_t stale_count = 0u;
+	uint16_t invalid_count = 0u;
+	int16_t max_deci_c = INT16_MIN;
+	int16_t min_deci_c = INT16_MAX;
+	int32_t sum_deci_c = 0;
 
 	uint8_t ic_count = accumulator_configured_smb_count(dev);
 	adbms6830_asic *smb_ics = (dev->smb.ics != NULL) ? dev->smb.ics : dev->smb_ics;
 
-	for (uint8_t ic = 0; ic < ic_count; ic++)
+	uint8_t max_seg = 0u;
+	uint8_t max_sensor = 0u;
+	uint8_t min_seg = 0u;
+	uint8_t min_sensor = 0u;
+
+	for(uint8_t ic = 0u; ic < NSMBS; ic++)
 	{
+        dev->updated_temp_mask[ic] = 0u;
+        dev->usable_temp_mask[ic] = 0u;
+        dev->stale_temp_mask[ic] = 0u;
+        dev->invalid_temp_mask[ic] = 0u;
+	}
+
+	for (uint8_t ic = 0; ic < NSMBS; ic++)
+	{
+        uint32_t read_updated_mask = 0u;
+        if((ic < ic_count) && (ic < ADBMS6830_MAX_TRACKED_ICS))
+        {
+            read_updated_mask = dev->smb.last_temp_updated_mask[ic] & ((1UL << NTEMPS) - 1UL);
+        }
+
 		for (uint8_t sensor = 0u; sensor < NTEMPS; sensor++)
 		{
-			int16_t raw = smb_ics[ic].temp.raw[sensor];
+            uint32_t bit = (uint32_t)(1UL << sensor);
+            bool updated_this_scan = ((read_updated_mask & bit) != 0u);
+            bool usable = false;
 
-			if (raw == -1 || raw == INT16_MIN || raw == 0) continue;
+            if(updated_this_scan && (ic < ic_count))
+            {
+                int16_t deci_c = 0;
+                int16_t raw = smb_ics[ic].temp.raw[sensor];
 
-			float temp    = voltage_to_temp(raw);
+                if(accumulator_temp_code_to_deci_c(raw, &deci_c))
+                {
+                    dev->temp_deci_c[ic][sensor] = deci_c;
+                    dev->temp_sensor_valid[ic][sensor] = true;
+                    dev->temp_last_update_ms[ic][sensor] = now;
+                    dev->temp_consecutive_misses[ic][sensor] = 0u;
+                    dev->updated_temp_mask[ic] |= bit;
+                    updated_count++;
+                }
+                else
+                {
+                    dev->temp_sensor_valid[ic][sensor] = false;
+                    dev->invalid_temp_mask[ic] |= bit;
+                    invalid_count++;
+                    if(dev->temp_consecutive_misses[ic][sensor] < UINT8_MAX)
+                    {
+                        dev->temp_consecutive_misses[ic][sensor]++;
+                    }
+                }
+            }
+            else
+            {
+                if(dev->temp_consecutive_misses[ic][sensor] < UINT8_MAX)
+                {
+                    dev->temp_consecutive_misses[ic][sensor]++;
+                }
+            }
 
-			if (temp < -40.0f || temp > 150.0f) continue;
+            if(dev->temp_sensor_valid[ic][sensor])
+            {
+                uint32_t age_ms = (now >= dev->temp_last_update_ms[ic][sensor]) ?
+                                  (now - dev->temp_last_update_ms[ic][sensor]) : 0u;
 
-			if (temp > max_temp) max_temp = temp;
-			sum_temp += temp;
-			count++;
+                usable = (age_ms <= ACCUMULATOR_TEMP_STALE_TIMEOUT_MS) &&
+                         (dev->temp_consecutive_misses[ic][sensor] <= ACCUMULATOR_TEMP_MAX_CONSEC_MISSES);
+
+                if(usable)
+                {
+                    int16_t deci_c = dev->temp_deci_c[ic][sensor];
+                    dev->usable_temp_mask[ic] |= bit;
+                    usable_count++;
+                    sum_deci_c += deci_c;
+
+                    if(deci_c > max_deci_c)
+                    {
+                        max_deci_c = deci_c;
+                        max_seg = ic;
+                        max_sensor = sensor;
+                    }
+                    if(deci_c < min_deci_c)
+                    {
+                        min_deci_c = deci_c;
+                        min_seg = ic;
+                        min_sensor = sensor;
+                    }
+                }
+            }
+
+            if(!usable)
+            {
+                dev->stale_temp_mask[ic] |= bit;
+                stale_count++;
+            }
 		}
 	}
 
-	dev->valid_temp_count = count;
-	dev->max_temp = (count > 0u) ? max_temp  : 0.0f;
-	dev->avg_temp = (count > 0u) ? (sum_temp / (float)count) : 0.0f;
+	dev->updated_temp_count = updated_count;
+	dev->usable_temp_count = usable_count;
+	dev->stale_temp_count = stale_count;
+	dev->invalid_temp_count = invalid_count;
+	dev->valid_temp_count = usable_count;
+	dev->temp_full_updated = (expected_count > 0u) && (updated_count == expected_count);
+	dev->temp_full_usable = (expected_count > 0u) && (usable_count == expected_count);
+
+	if(dev->temp_full_usable)
+	{
+        dev->temp_startup_scan_complete = true;
+	}
+
+	if(usable_count > 0u)
+	{
+        dev->max_temp_deci_c = max_deci_c;
+        dev->min_temp_deci_c = min_deci_c;
+        dev->max_temp_seg = max_seg;
+        dev->max_temp_sensor = max_sensor;
+        dev->min_temp_seg = min_seg;
+        dev->min_temp_sensor = min_sensor;
+        dev->max_temp = (float)max_deci_c / 10.0f;
+        dev->avg_temp = ((float)sum_deci_c / 10.0f) / (float)usable_count;
+	}
+	else
+	{
+        dev->max_temp_deci_c = 0;
+        dev->min_temp_deci_c = 0;
+        dev->max_temp_seg = 0u;
+        dev->max_temp_sensor = 0u;
+        dev->min_temp_seg = 0u;
+        dev->min_temp_sensor = 0u;
+        dev->max_temp = 0.0f;
+        dev->avg_temp = 0.0f;
+	}
 }
 
 int accumulator_set_balance(accumulator_t *dev)

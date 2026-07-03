@@ -345,11 +345,12 @@ int get_status(int argc, char *argv[])
     ret |= cli_printline(cli, outline);
 
     snprintf(outline, CLI_LINESZ,
-             "Safety current valid:%d fault:%d voltage valid:%d fault:%d temp fault:%d hard:%d",
+             "Safety current valid:%d fault:%d voltage valid:%d fault:%d temp valid:%d fault:%d hard:%d",
              data->current_valid,
              data->current_fault,
              data->voltage_valid,
              data->voltage_fault,
+             data->temp_valid,
              data->temp_fault,
              data->hard_fault);
     ret |= cli_printline(cli, outline);
@@ -362,6 +363,20 @@ int get_status(int argc, char *argv[])
              data->fan_state,
              (int)data->max_temp,
              abs((int)roundf((data->max_temp - (float)((int)data->max_temp)) * 10.0f)));
+    ret |= cli_printline(cli, outline);
+
+    snprintf(outline, CLI_LINESZ,
+             "Temps usable:%u updated:%u stale:%u invalid:%u warn:%d fanmax:%d chargestop:%d pending:%s %lums reason:%s",
+             (unsigned)data->temp_usable_sensor_count,
+             (unsigned)data->temp_updated_sensor_count,
+             (unsigned)data->temp_stale_sensor_count,
+             (unsigned)data->temp_invalid_sensor_count,
+             data->temp_warning,
+             data->temp_fan_max,
+             data->temp_charge_stop,
+             temperature_fault_reason_str(data->temp_fault_pending_reason),
+             (unsigned long)data->temp_fault_pending_ms,
+             temperature_fault_reason_str(data->temp_fault_reason));
     ret |= cli_printline(cli, outline);
 
     if(hspi != NULL)
@@ -407,6 +422,17 @@ int get_faults(int argc, char *argv[])
              data->voltage_warning,
              data->charge_voltage_stop,
              voltage_fault_reason_str(data->voltage_fault_reason));
+    ret |= cli_printline(cli, outline);
+    snprintf(outline, CLI_LINESZ, "  temp: fault:%d valid:%d warn:%d fanmax:%d stop:%d pending:%s %lums reason:%s latched:%s",
+             data->temp_fault,
+             data->temp_valid,
+             data->temp_warning,
+             data->temp_fan_max,
+             data->temp_charge_stop,
+             temperature_fault_reason_str(data->temp_fault_pending_reason),
+             (unsigned long)data->temp_fault_pending_ms,
+             temperature_fault_reason_str(data->temp_fault_reason),
+             temperature_fault_reason_str(data->temp_fault_latched_reason));
     ret |= cli_printline(cli, outline);
 	return ret;
 }
@@ -479,10 +505,33 @@ int get_temperature(int argc, char *argv[])
     int ret = 0;
     adbms6830_driver_t *smb = &data->acc.smb;
 
+    snprintf(outline, CLI_LINESZ,
+             "Temp valid:%d fault:%d warn:%d fanmax:%d stop:%d pending:%s %lums reason:%s",
+             data->temp_valid,
+             data->temp_fault,
+             data->temp_warning,
+             data->temp_fan_max,
+             data->temp_charge_stop,
+             temperature_fault_reason_str(data->temp_fault_pending_reason),
+             (unsigned long)data->temp_fault_pending_ms,
+             temperature_fault_reason_str(data->temp_fault_reason));
+    ret |= cli_printline(cli, outline);
 
+    snprintf(outline, CLI_LINESZ,
+             "Temp counts usable:%u updated:%u stale:%u invalid:%u",
+             (unsigned)data->temp_usable_sensor_count,
+             (unsigned)data->temp_updated_sensor_count,
+             (unsigned)data->temp_stale_sensor_count,
+             (unsigned)data->temp_invalid_sensor_count);
+    ret |= cli_printline(cli, outline);
 
-
-
+    snprintf(outline, CLI_LINESZ,
+             "Temperature max SMB%u/S%u min SMB%u/S%u",
+             (unsigned)data->max_temp_seg,
+             (unsigned)data->max_temp_sensor,
+             (unsigned)data->min_temp_seg,
+             (unsigned)data->min_temp_sensor);
+    ret |= cli_printline(cli, outline);
 
     for (uint8_t ic = 0; ic < smb_ic_count(smb); ic++)
     {
@@ -503,7 +552,8 @@ int get_temperature(int argc, char *argv[])
                 int T_whole   = (int)T;
                 int T_decimal = (int)roundf((T - (float)T_whole) * 10.0f);
 
-                snprintf(outline, CLI_LINESZ, "SMB %d | Sensor %d: %-2d.%04d V, %d.%d C", ic, sensor, whole, decimal, T_whole, T_decimal);
+                snprintf(outline, CLI_LINESZ, "SMB %d | Sensor %d: %-2d.%04d V, %d.%d C %s", ic, sensor, whole, decimal, T_whole, T_decimal,
+                         accumulator_temp_sensor_usable(&data->acc, ic, (uint8_t)sensor) ? "usable" : "not_usable");
             }
             else
             {
@@ -924,7 +974,8 @@ int bmsok_control(int argc, char *argv[])
              data->voltage_valid && !data->voltage_fault,
              data->current_valid && !data->current_fault,
              data->hard_fault,
-             data->temp_fault,
+             data->temp_valid && !data->temp_fault &&
+                 ((data->state != STATE_CHARGE) || !data->temp_charge_stop),
              data->charger_fault);
     ret |= cli_printline(cli, outline);
 

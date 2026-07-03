@@ -379,6 +379,7 @@ void adBms6830_init(adbms6830_driver_t* dev,
 	{
 		dev->last_cell_updated_mask[ic] = 0u;
 		dev->last_cell_pec_mask[ic] = 0u;
+		dev->last_temp_updated_mask[ic] = 0u;
 	}
 
 	// Set CS pins high
@@ -1152,6 +1153,7 @@ void adbms6830_read_cell_voltages(adbms6830_driver_t *dev)
     {
         dev->last_cell_updated_mask[ic] = 0u;
         dev->last_cell_pec_mask[ic] = 0u;
+        dev->last_temp_updated_mask[ic] = 0u;
     }
 
     adbms6830_wakeup(dev);
@@ -1505,6 +1507,10 @@ int mux_read_gpio_voltage(adbms6830_driver_t *dev, uint8_t sensor_num)
     for (uint8_t ic = 0; ic < ic_count; ic++)
     {
         dev->ics[ic].temp.raw[sensor_num] = dev->ics[ic].aux.a_codes[gpio_ch];
+        if(ic < ADBMS6830_MAX_TRACKED_ICS)
+        {
+            dev->last_temp_updated_mask[ic] |= (uint32_t)(1UL << sensor_num);
+        }
     }
 
     return 0;

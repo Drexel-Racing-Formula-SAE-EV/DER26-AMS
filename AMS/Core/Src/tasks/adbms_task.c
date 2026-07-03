@@ -36,6 +36,37 @@ static void adbms_task_publish_voltage_state(app_data_t *data)
                            fault->latched);
 }
 
+static void adbms_task_publish_temperature_state(app_data_t *data)
+{
+    temperature_fault_state_t *fault = &data->temp_fault_state;
+
+    data->temp_valid = fault->temp_valid;
+    data->temp_read_fault = fault->read_fault;
+    data->temp_warning = fault->warning;
+    data->temp_fan_max = fault->fan_max;
+    data->temp_charge_stop = fault->charge_stop;
+    data->temp_overtemp_pending = fault->pending;
+    data->overtemp_fault = fault->overtemp_fault;
+    data->severe_overtemp_fault = fault->severe_overtemp_fault;
+    data->temp_fault_latched = fault->latched;
+    data->temp_fault_reason = fault->reason;
+    data->temp_fault_pending_reason = fault->pending_reason;
+    data->temp_fault_latched_reason = fault->latched_reason;
+    data->temp_fault_pending_ms = fault->pending_ms;
+    data->temp_usable_sensor_count = fault->usable_sensor_count;
+    data->temp_updated_sensor_count = fault->updated_sensor_count;
+    data->temp_stale_sensor_count = fault->stale_sensor_count;
+    data->temp_invalid_sensor_count = fault->invalid_sensor_count;
+    data->max_temp_seg = fault->max_temp_segment;
+    data->max_temp_sensor = fault->max_temp_sensor;
+    data->min_temp_seg = fault->min_temp_segment;
+    data->min_temp_sensor = fault->min_temp_sensor;
+
+    data->temp_fault = (fault->read_fault ||
+                        fault->overtemp_fault ||
+                        fault->latched);
+}
+
 TaskHandle_t adbms_task_start(app_data_t *data)
 {
     TaskHandle_t handle = NULL;
@@ -85,12 +116,14 @@ void adbms_task_fn(void *argument)
         }
 
         (void)accumulator_read_temp(acc);
-        accumulator_update_temp_stats(acc);
+        accumulator_update_temp_stats_at(acc, osKernelGetTickCount());
         data->max_temp = acc->max_temp;
         data->avg_temp = acc->avg_temp;
 
-        bool temp_read_invalid = (acc->valid_temp_count == 0u);
-        data->temp_fault = (temp_read_invalid || (data->max_temp > TEMP_THRESH_H));
+        temperature_fault_update_with_period(&data->temp_fault_state,
+                                             acc,
+                                             (1000u / ADBMS_FREQ));
+        adbms_task_publish_temperature_state(data);
 
         if(data->temp_fault)
         {
@@ -99,7 +132,9 @@ void adbms_task_fn(void *argument)
 
         bool bms_ok_ready = (data->voltage_valid &&
                              !data->voltage_fault &&
+                             data->temp_valid &&
                              !data->temp_fault &&
+                             ((data->state != STATE_CHARGE) || !data->temp_charge_stop) &&
                              !data->fuse_fault &&
                              !data->charger_fault &&
                              !data->hard_fault &&
@@ -112,6 +147,8 @@ void adbms_task_fn(void *argument)
            data->voltage_valid &&
            !data->charge_voltage_stop &&
            !data->voltage_fault &&
+           data->temp_valid &&
+           !data->temp_charge_stop &&
            !data->temp_fault &&
            !data->hard_fault &&
            !data->current_fault &&

@@ -26,6 +26,10 @@
 #define ACCUMULATOR_CELL_MAX_CONSEC_MISSES     2u
 #define ACCUMULATOR_CELL_VALID_MIN_MV          500u
 #define ACCUMULATOR_CELL_VALID_MAX_MV          5000u
+#define ACCUMULATOR_TEMP_STALE_TIMEOUT_MS      12000u
+#define ACCUMULATOR_TEMP_MAX_CONSEC_MISSES     10u
+#define ACCUMULATOR_TEMP_VALID_MIN_DECI_C      (-400)
+#define ACCUMULATOR_TEMP_VALID_MAX_DECI_C      1500
 
 
 /* APM Macros */
@@ -51,6 +55,30 @@ typedef struct
 	float min_volt;
 	uint16_t valid_voltage_count;
 	uint16_t valid_temp_count;
+
+	int16_t temp_deci_c[NSMBS][NTEMPS];
+	bool temp_sensor_valid[NSMBS][NTEMPS];
+	uint32_t temp_last_update_ms[NSMBS][NTEMPS];
+	uint8_t temp_consecutive_misses[NSMBS][NTEMPS];
+
+	uint32_t updated_temp_mask[NSMBS];
+	uint32_t usable_temp_mask[NSMBS];
+	uint32_t stale_temp_mask[NSMBS];
+	uint32_t invalid_temp_mask[NSMBS];
+
+	uint16_t updated_temp_count;
+	uint16_t usable_temp_count;
+	uint16_t stale_temp_count;
+	uint16_t invalid_temp_count;
+	int16_t max_temp_deci_c;
+	int16_t min_temp_deci_c;
+	uint8_t max_temp_seg;
+	uint8_t max_temp_sensor;
+	uint8_t min_temp_seg;
+	uint8_t min_temp_sensor;
+	bool temp_full_updated;
+	bool temp_full_usable;
+	bool temp_startup_scan_complete;
 
 	uint16_t cell_voltage_mv[NSMBS][NCELLS];
 	bool cell_voltage_valid[NSMBS][NCELLS];
@@ -102,6 +130,9 @@ void accumulator_update_voltage_stats_at(accumulator_t *dev, uint32_t now_ms);
 bool accumulator_cell_voltage_usable(const accumulator_t *dev, uint8_t seg, uint8_t cell);
 uint16_t accumulator_cell_voltage_mv(const accumulator_t *dev, uint8_t seg, uint8_t cell);
 void accumulator_update_temp_stats(accumulator_t *dev);
+void accumulator_update_temp_stats_at(accumulator_t *dev, uint32_t now_ms);
+bool accumulator_temp_sensor_usable(const accumulator_t *dev, uint8_t seg, uint8_t sensor);
+int16_t accumulator_temp_deci_c(const accumulator_t *dev, uint8_t seg, uint8_t sensor);
 uint8_t accumulator_configured_smb_count(const accumulator_t *dev);
 int accumulator_set_balance(accumulator_t *dev);
 int accumulator_clear_balance(accumulator_t *dev);

@@ -56,6 +56,7 @@ static void fake_adbms_voltage_masks_full_update(void);
 static void fake_adbms_voltage_masks_all_missing(bool pec_fail);
 static void fake_adbms_voltage_masks_one_missing(uint8_t seg, uint8_t cell, bool pec_fail);
 static void fake_adc_set_current_a(float current_a);
+static void sil_publish_temp_state(app_data_t *d);
 
 uint32_t osKernelGetTickCount(void){ return fake_tick; }
 osStatus_t osDelay(uint32_t ticks){ fake_tick += ticks; return osOK; }
@@ -124,7 +125,7 @@ void set_bms(bool state){
 }
 
 // External driver stubs used by accumulator/CLI paths
-void adBms6830_init(adbms6830_driver_t* dev, uint8_t num_ics, adbms6830_asic* ics, SPI_HandleTypeDef* hspi, GPIO_TypeDef* cs_port_a, GPIO_TypeDef* cs_port_b, uint16_t cs_pin_a, uint16_t cs_pin_b, TIM_HandleTypeDef *htim){ if(dev){ dev->num_ics=num_ics; dev->ics=ics; dev->hspi=hspi; dev->cs_port[0]=cs_port_a; dev->cs_port[1]=cs_port_b; dev->cs_pin[0]=cs_pin_a; dev->cs_pin[1]=cs_pin_b; dev->htim=htim; for(uint8_t ic=0; ic<ADBMS6830_MAX_TRACKED_ICS; ic++){ dev->last_cell_updated_mask[ic]=0u; dev->last_cell_pec_mask[ic]=0u; } } }
+void adBms6830_init(adbms6830_driver_t* dev, uint8_t num_ics, adbms6830_asic* ics, SPI_HandleTypeDef* hspi, GPIO_TypeDef* cs_port_a, GPIO_TypeDef* cs_port_b, uint16_t cs_pin_a, uint16_t cs_pin_b, TIM_HandleTypeDef *htim){ if(dev){ dev->num_ics=num_ics; dev->ics=ics; dev->hspi=hspi; dev->cs_port[0]=cs_port_a; dev->cs_port[1]=cs_port_b; dev->cs_pin[0]=cs_pin_a; dev->cs_pin[1]=cs_pin_b; dev->htim=htim; for(uint8_t ic=0; ic<ADBMS6830_MAX_TRACKED_ICS; ic++){ dev->last_cell_updated_mask[ic]=0u; dev->last_cell_pec_mask[ic]=0u; dev->last_temp_updated_mask[ic]=0u; } } }
 void adbms6830_reset_cfg(adbms6830_driver_t *dev){(void)dev;} void adbms6830_srst(adbms6830_driver_t *dev){(void)dev;} void adbms6830_wrcfga(adbms6830_driver_t *dev){(void)dev;} void adbms6830_wrcfgb(adbms6830_driver_t *dev){(void)dev;} void adbms6830_rdcfga(adbms6830_driver_t *dev){(void)dev;} void adbms6830_rdcfgb(adbms6830_driver_t *dev){(void)dev;}
 void adbms6830_adcv(adbms6830_driver_t *dev, RD rd, CONT cont, DCP dcp, RSTF rstf, OW_C_S owcs){(void)dev;(void)rd;(void)cont;(void)dcp;(void)rstf;(void)owcs;} void adbms6830_wakeup(adbms6830_driver_t* dev){(void)dev;} void adbms6830_us_delay(adbms6830_driver_t* dev, uint16_t microseconds){(void)dev;(void)microseconds;} void adbms6830_start_adc_cell_voltage_measurement(adbms6830_driver_t *dev){(void)dev;} void adbms6830_parse_cell(adbms6830_driver_t *dev, uint8_t *data, GRP grp){(void)dev;(void)data;(void)grp;}
 void adbms6830_read_cell_voltages(adbms6830_driver_t *dev){
@@ -169,7 +170,15 @@ HAL_StatusTypeDef adbms6830_spi_probe_rdcfga(adbms6830_driver_t *dev){
 
 int mux_read_gpio_voltage(adbms6830_driver_t *dev, uint8_t sensor_num){
     if(fake_mux_write_enable && dev && dev->ics && dev->num_ics > 0 && sensor_num < 24){
-        dev->ics[0].temp.raw[sensor_num] = (int16_t)((2.5f/0.000150f)-10000.0f);
+        for(uint8_t ic = 0u; ic < (uint8_t)dev->num_ics && ic < ADBMS6830_MAX_TRACKED_ICS; ic++){
+            dev->ics[ic].temp.raw[sensor_num] = (int16_t)((2.5f/0.000150f)-10000.0f);
+            dev->last_temp_updated_mask[ic] |= (uint32_t)(1UL << sensor_num);
+        }
+    }
+    else if(dev && sensor_num < 24){
+        for(uint8_t ic = 0u; ic < (uint8_t)dev->num_ics && ic < ADBMS6830_MAX_TRACKED_ICS; ic++){
+            dev->last_temp_updated_mask[ic] |= (uint32_t)(1UL << sensor_num);
+        }
     }
     return (sensor_num < 24) ? 0 : -1;
 }
@@ -223,6 +232,7 @@ uint16_t stm32f767z_adc_read(ADC_HandleTypeDef *hadc){ return stm32f767z_adc_rea
 #include "Core/Src/ext_drivers/current_sensor.c"
 #include "Core/Src/ext_drivers/current_fault.c"
 #include "Core/Src/ext_drivers/voltage_fault.c"
+#include "Core/Src/ext_drivers/temperature_fault.c"
 #include "Core/Src/ext_drivers/imd.c"
 #include "Core/Src/ext_drivers/accumulator.c"
 #include "Core/Src/ext_drivers/canbus.c"
@@ -288,7 +298,7 @@ static float ntc_voltage_for_temp_c(float temp_c){
 static int16_t raw_for_temp_c(float temp_c){ return raw_for_ntc_voltage(ntc_voltage_for_temp_c(temp_c)); }
 #define CHECK(cond) do{ if(!(cond)){ fprintf(stderr,"FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); exit(1);} }while(0)
 
-static void init_fake_app(void){ memset(&app,0,sizeof(app)); app.acc.smb.num_ics = NSMBS; app.acc.smb.ics = app.acc.smb_ics; current_fault_init(&app.current_fault_state); voltage_fault_init(&app.voltage_fault_state); app.current_meas_reason = CURRENT_SENSOR_REASON_ADC_READ; app.current_fault_reason = CURRENT_FAULT_REASON_SENSOR_NOT_READY; app.voltage_fault_reason = VOLTAGE_FAULT_REASON_NOT_READY; fake_adbms_voltage_masks_full_update(); fake_adc_read_index = 0u; }
+static void init_fake_app(void){ memset(&app,0,sizeof(app)); app.acc.smb.num_ics = NSMBS; app.acc.smb.ics = app.acc.smb_ics; current_fault_init(&app.current_fault_state); voltage_fault_init(&app.voltage_fault_state); temperature_fault_init(&app.temp_fault_state); app.current_meas_reason = CURRENT_SENSOR_REASON_ADC_READ; app.current_fault_reason = CURRENT_FAULT_REASON_SENSOR_NOT_READY; app.voltage_fault_reason = VOLTAGE_FAULT_REASON_NOT_READY; app.temp_fault = true; app.temp_read_fault = true; app.temp_fan_max = true; app.temp_fault_reason = TEMPERATURE_FAULT_REASON_NOT_READY; fake_adbms_voltage_masks_full_update(); fake_adc_read_index = 0u; }
 
 static void host_mark_updated_cells(app_data_t *d)
 {
@@ -297,6 +307,15 @@ static void host_mark_updated_cells(app_data_t *d)
     {
         d->acc.smb.last_cell_updated_mask[ic] = (ic < (uint8_t)d->acc.smb.num_ics) ? 0x7FFFu : 0u;
         d->acc.smb.last_cell_pec_mask[ic] = 0u;
+    }
+}
+
+static void host_mark_updated_temps(app_data_t *d, uint32_t mask)
+{
+    if(d == NULL) return;
+    for(uint8_t ic = 0u; ic < NSMBS; ic++)
+    {
+        d->acc.smb.last_temp_updated_mask[ic] = (ic < (uint8_t)d->acc.smb.num_ics) ? (mask & ((1UL << NTEMPS) - 1UL)) : 0u;
     }
 }
 
@@ -326,9 +345,13 @@ static void test_temp_stats(void){
     for(int ic=0; ic<NSMBS; ic++) for(int s=0;s<NTEMPS;s++) app.acc.smb_ics[ic].temp.raw[s] = raw_for_ntc_voltage(2.5f);
     app.acc.smb_ics[1].temp.raw[2] = 0; // invalid skip
     app.acc.smb_ics[3].temp.raw[5] = INT16_MIN; // invalid skip
+    host_mark_updated_temps(&app, (1UL << NTEMPS) - 1UL);
     accumulator_update_temp_stats(&app.acc);
     CHECK(app.acc.max_temp > 20.0f && app.acc.max_temp < 30.0f);
     CHECK(app.acc.avg_temp > 20.0f && app.acc.avg_temp < 30.0f);
+    CHECK(app.acc.usable_temp_count == (uint16_t)(NSMBS * NTEMPS - 2));
+    CHECK(app.acc.invalid_temp_count == 2u);
+    CHECK(app.acc.temp_startup_scan_complete == false);
 }
 
 static void test_can_telemetry_packets(void){
@@ -338,7 +361,10 @@ static void test_can_telemetry_packets(void){
     for(int ic=0; ic<NSMBS; ic++) for(int c=0;c<NCELLS;c++) app.acc.smb_ics[ic].cell.c_codes[c] = code_for_volts(3.0f + 0.001f*(float)(ic*NCELLS+c));
     host_mark_updated_cells(&app);
     accumulator_update_voltage_stats_at(&app.acc, fake_tick);
-    for(int ic=0; ic<NSMBS; ic++) for(int s=0;s<NTEMPS;s++) app.acc.smb_ics[ic].temp.raw[s] = raw_for_ntc_voltage(2.5f);
+    for(int ic=0; ic<NSMBS; ic++) for(int s=0;s<NTEMPS;s++) app.acc.smb_ics[ic].temp.raw[s] = raw_for_temp_c(37.2f);
+    host_mark_updated_temps(&app, (1UL << NTEMPS) - 1UL);
+    accumulator_update_temp_stats_at(&app.acc, fake_tick);
+    sil_publish_temp_state(&app);
     tx_count=0; tx_free_level=3;
     CHECK(send_ecu_ams_status(&app.board.canbus, &app) == HAL_OK);
     CHECK(send_ecu_ams_voltages(&app.board.canbus, &app) == HAL_OK);
@@ -410,16 +436,34 @@ static void fill_nominal_pack(app_data_t *d, float base_v){
     voltage_fault_update(&d->voltage_fault_state, &d->acc);
     d->voltage_valid = d->voltage_fault_state.voltage_valid;
     d->voltage_fault = d->voltage_fault_state.read_fault || d->voltage_fault_state.overvoltage_fault || d->voltage_fault_state.undervoltage_fault || d->voltage_fault_state.latched;
+    host_mark_updated_temps(d, (1UL << NTEMPS) - 1UL);
+    accumulator_update_temp_stats_at(&d->acc, fake_tick);
+    d->max_temp = d->acc.max_temp;
+    d->avg_temp = d->acc.avg_temp;
+    sil_publish_temp_state(d);
 }
 
 static ADC_HandleTypeDef sil_adc_high;
 static ADC_HandleTypeDef sil_adc_low;
+static TIM_HandleTypeDef sil_fan_htim;
+static uint32_t sil_fan_ccr[NFANS];
 
 static void sil_attach_current_adcs(app_data_t *d)
 {
     CHECK(d != NULL);
     d->board.current_sensor.hadc_high = &sil_adc_high;
     d->board.current_sensor.hadc_low = &sil_adc_low;
+}
+
+static void sil_attach_fans(app_data_t *d)
+{
+    CHECK(d != NULL);
+    for(uint8_t i = 0u; i < NFANS; i++)
+    {
+        d->board.fans[i].CCR = &sil_fan_ccr[i];
+        d->board.fans[i].max_timer_val = 1000u;
+        d->board.fans[i].htim = &sil_fan_htim;
+    }
 }
 
 static void sil_set_cell_voltage(app_data_t *d, uint8_t seg, uint8_t cell, float volts)
@@ -480,6 +524,78 @@ static void sil_run_voltage_sample(app_data_t *d)
     run_one_adbms_task_iteration(d);
 }
 
+static void sil_publish_temp_state(app_data_t *d)
+{
+    CHECK(d != NULL);
+    temperature_fault_update(&d->temp_fault_state, &d->acc);
+    d->max_temp = d->acc.max_temp;
+    d->avg_temp = d->acc.avg_temp;
+    d->temp_valid = d->temp_fault_state.temp_valid;
+    d->temp_read_fault = d->temp_fault_state.read_fault;
+    d->temp_warning = d->temp_fault_state.warning;
+    d->temp_fan_max = d->temp_fault_state.fan_max;
+    d->temp_charge_stop = d->temp_fault_state.charge_stop;
+    d->temp_overtemp_pending = d->temp_fault_state.pending;
+    d->overtemp_fault = d->temp_fault_state.overtemp_fault;
+    d->severe_overtemp_fault = d->temp_fault_state.severe_overtemp_fault;
+    d->temp_fault_latched = d->temp_fault_state.latched;
+    d->temp_fault_reason = d->temp_fault_state.reason;
+    d->temp_fault_pending_reason = d->temp_fault_state.pending_reason;
+    d->temp_fault_latched_reason = d->temp_fault_state.latched_reason;
+    d->temp_fault_pending_ms = d->temp_fault_state.pending_ms;
+    d->temp_usable_sensor_count = d->temp_fault_state.usable_sensor_count;
+    d->temp_updated_sensor_count = d->temp_fault_state.updated_sensor_count;
+    d->temp_stale_sensor_count = d->temp_fault_state.stale_sensor_count;
+    d->temp_invalid_sensor_count = d->temp_fault_state.invalid_sensor_count;
+    d->max_temp_seg = d->temp_fault_state.max_temp_segment;
+    d->max_temp_sensor = d->temp_fault_state.max_temp_sensor;
+    d->min_temp_seg = d->temp_fault_state.min_temp_segment;
+    d->min_temp_sensor = d->temp_fault_state.min_temp_sensor;
+    d->temp_fault = d->temp_read_fault || d->overtemp_fault || d->temp_fault_latched;
+}
+
+static void sil_set_all_temps(app_data_t *d, float temp_c, uint32_t updated_mask)
+{
+    CHECK(d != NULL);
+    int16_t raw = raw_for_temp_c(temp_c);
+    for(uint8_t ic = 0u; ic < NSMBS; ic++)
+    {
+        for(uint8_t s = 0u; s < NTEMPS; s++)
+        {
+            d->acc.smb_ics[ic].temp.raw[s] = raw;
+        }
+    }
+    host_mark_updated_temps(d, updated_mask);
+    accumulator_update_temp_stats_at(&d->acc, fake_tick);
+    d->max_temp = d->acc.max_temp;
+    d->avg_temp = d->acc.avg_temp;
+    sil_publish_temp_state(d);
+}
+
+static void sil_clear_temp_history(app_data_t *d)
+{
+    CHECK(d != NULL);
+    d->acc.valid_temp_count = 0u;
+    d->acc.updated_temp_count = 0u;
+    d->acc.usable_temp_count = 0u;
+    d->acc.stale_temp_count = 0u;
+    d->acc.invalid_temp_count = 0u;
+    d->acc.temp_full_updated = false;
+    d->acc.temp_full_usable = false;
+    d->acc.temp_startup_scan_complete = false;
+    memset(d->acc.temp_deci_c, 0, sizeof(d->acc.temp_deci_c));
+    memset(d->acc.temp_sensor_valid, 0, sizeof(d->acc.temp_sensor_valid));
+    memset(d->acc.temp_last_update_ms, 0, sizeof(d->acc.temp_last_update_ms));
+    memset(d->acc.temp_consecutive_misses, 0, sizeof(d->acc.temp_consecutive_misses));
+    memset(d->acc.updated_temp_mask, 0, sizeof(d->acc.updated_temp_mask));
+    memset(d->acc.usable_temp_mask, 0, sizeof(d->acc.usable_temp_mask));
+    memset(d->acc.stale_temp_mask, 0, sizeof(d->acc.stale_temp_mask));
+    memset(d->acc.invalid_temp_mask, 0, sizeof(d->acc.invalid_temp_mask));
+    memset(d->acc.smb.last_temp_updated_mask, 0, sizeof(d->acc.smb.last_temp_updated_mask));
+    temperature_fault_init(&d->temp_fault_state);
+    sil_publish_temp_state(d);
+}
+
 static void sil_prepare_ready_system(state_t state, float current_a, float cell_v)
 {
     init_fake_app();
@@ -488,6 +604,7 @@ static void sil_prepare_ready_system(state_t state, float current_a, float cell_
     app.state = state;
     sil_attach_current_adcs(&app);
     fill_nominal_pack(&app, cell_v);
+    sil_set_all_temps(&app, 25.0f, (1UL << NTEMPS) - 1UL);
     fake_adbms_voltage_masks_full_update();
     sil_run_current_sample(&app, current_a);
     CHECK(app.current_valid == true);
@@ -536,10 +653,10 @@ static void test_task_iterations_with_injected_signals(void){
     CHECK(app.hard_fault == true); CHECK(app.bms_state == false);
 
     init_fake_app(); for(int i=0;i<NFANS;i++){ static TIM_HandleTypeDef ht; static uint32_t ccrs[NFANS]; app.board.fans[i].CCR=&ccrs[i]; app.board.fans[i].max_timer_val=1000; app.board.fans[i].htim=&ht; }
-    app.max_temp = 0.0f; app.acc.valid_temp_count = 0u; run_one_fan_task_iteration(&app); CHECK(app.fan_state == true); for(int i=0;i<NFANS;i++) CHECK(app.board.fans[i].duty_cycle == 100.0f);
-    app.acc.valid_temp_count = 1u;
-    app.max_temp = TEMP_THRESH_H + 1.0f; run_one_fan_task_iteration(&app); CHECK(app.fan_state == true); for(int i=0;i<NFANS;i++) CHECK(app.board.fans[i].duty_cycle == 100.0f);
-    app.max_temp = TEMP_THRESH_L - 1.0f; run_one_fan_task_iteration(&app); CHECK(app.fan_state == false); for(int i=0;i<NFANS;i++) CHECK(app.board.fans[i].duty_cycle == 0.0f);
+    app.max_temp = 0.0f; app.temp_valid = false; app.temp_usable_sensor_count = 0u; run_one_fan_task_iteration(&app); CHECK(app.fan_state == true); for(int i=0;i<NFANS;i++) CHECK(app.board.fans[i].duty_cycle == 100.0f);
+    app.temp_valid = true; app.temp_read_fault = false; app.temp_fault = false; app.temp_fan_max = true; app.temp_usable_sensor_count = AMS_EXPECTED_TEMP_SENSOR_COUNT;
+    app.max_temp = TEMP_FAN_MAX_C + 1.0f; run_one_fan_task_iteration(&app); CHECK(app.fan_state == true); for(int i=0;i<NFANS;i++) CHECK(app.board.fans[i].duty_cycle == 100.0f);
+    app.temp_fan_max = false; app.max_temp = TEMP_FAN_RAMP_START_C - 1.0f; run_one_fan_task_iteration(&app); CHECK(app.fan_state == false); for(int i=0;i<NFANS;i++) CHECK(app.board.fans[i].duty_cycle == 0.0f);
 
     static ADC_HandleTypeDef adc1, adc2; init_fake_app(); app.board.current_sensor.hadc_high=&adc1; app.board.current_sensor.hadc_low=&adc2; fake_adc_set_two_read_sequence(adc_count_for_sensor_voltage(2.5f), adc_count_for_sensor_voltage(2.5f)); run_one_current_task_iteration(&app); CHECK(app.current_fault == false); CHECK(app.current_valid == true);
     init_fake_app(); app.board.current_sensor.hadc_high=NULL; app.board.current_sensor.hadc_low=&adc2; app.current = 12.3f; app.board.current_sensor.current = 45.6f; run_one_current_task_iteration(&app); CHECK(app.current_fault == false); CHECK(app.current_sensor_fault == false); CHECK(fabsf(app.current - 12.3f) < 0.001f);
@@ -827,8 +944,7 @@ static void test_fault_matrix_extra(void){
     CHECK(app.voltage_fault == true); CHECK(app.bms_state == false); CHECK(bms_pin_state == GPIO_PIN_RESET);
 
     // 3) High temperature must hard-disable BMS and prevent balancing.
-    init_fake_app(); fill_nominal_pack(&app, 3.700f); app.state=STATE_CHARGE; app.current_valid=true; app.bms_state=true; bms_pin_state=GPIO_PIN_SET;
-    for(int ic=0; ic<NSMBS; ic++) for(int s=0;s<NTEMPS;s++) app.acc.smb_ics[ic].temp.raw[s] = raw_for_ntc_voltage(4.5f); // very hot NTC divider result
+    init_fake_app(); fill_nominal_pack(&app, 3.700f); sil_set_all_temps(&app, 66.0f, (1UL << NTEMPS) - 1UL); app.state=STATE_CHARGE; app.current_valid=true; app.bms_state=true; bms_pin_state=GPIO_PIN_SET;
     run_one_adbms_task_iteration(&app);
     CHECK(app.temp_fault == true); CHECK(app.bms_state == false); CHECK(bms_pin_state == GPIO_PIN_RESET);
     for(int ic=0; ic<NSMBS; ic++) CHECK(app.acc.smb_ics[ic].tx_cfgb.dcc == 0u);
@@ -850,7 +966,7 @@ static void test_fault_matrix_extra(void){
     CHECK(app.canbus_fault == true);
 
     // 7) Fan driver failure must set fan soft fault, then error task should mark soft fault only.
-    init_fake_app(); app.max_temp = TEMP_THRESH_H + 5.0f; app.bms_state=true; bms_pin_state=GPIO_PIN_SET;
+    init_fake_app(); app.temp_valid = true; app.temp_read_fault = false; app.temp_fault = false; app.temp_usable_sensor_count = AMS_EXPECTED_TEMP_SENSOR_COUNT; app.max_temp = TEMP_FAN_MAX_C + 5.0f; app.bms_state=true; bms_pin_state=GPIO_PIN_SET;
     // Leave fan CCR pointers NULL, so set_fan_percent() fails.
     run_one_fan_task_iteration(&app);
     CHECK(app.fan_fault == true);
@@ -858,7 +974,7 @@ static void test_fault_matrix_extra(void){
     CHECK(app.soft_fault == true); CHECK(app.hard_fault == false); CHECK(app.bms_state == true);
 
     // 8) Current ADC missing is allowed one transient sample, then becomes a soft sensor fault after confirmation.
-    init_fake_app(); app.board.current_sensor.hadc_high=&adc1; app.board.current_sensor.hadc_low=NULL; app.bms_state=true; bms_pin_state=GPIO_PIN_SET;
+    init_fake_app(); app.temp_valid=true; app.temp_fault=false; app.temp_read_fault=false; app.board.current_sensor.hadc_high=&adc1; app.board.current_sensor.hadc_low=NULL; app.bms_state=true; bms_pin_state=GPIO_PIN_SET;
     run_one_current_task_iteration(&app);
     CHECK(app.current_fault == false);
     for(int i = 0; i < 25; i++)
@@ -1746,6 +1862,13 @@ static void sil_assert_diagnostics_not_generic(const app_data_t *d, const char *
                        d->current_meas_reason != CURRENT_SENSOR_REASON_OK);
         SIL_CHECK(ctx, strcmp(current_fault_reason_str(d->current_fault_reason), "unknown") != 0);
     }
+
+    if(d->temp_fault || !d->temp_valid || d->temp_fault_latched)
+    {
+        SIL_CHECK(ctx, d->temp_fault_reason != TEMPERATURE_FAULT_REASON_NONE ||
+                       d->temp_fault_latched_reason != TEMPERATURE_FAULT_REASON_NONE);
+        SIL_CHECK(ctx, strcmp(temperature_fault_reason_str(d->temp_fault_reason), "unknown") != 0);
+    }
 }
 
 static void sil_assert_safety_invariants(const app_data_t *d, const char *ctx)
@@ -1766,7 +1889,16 @@ static void sil_assert_safety_invariants(const app_data_t *d, const char *ctx)
         SIL_CHECK(ctx, d->overvoltage_fault == false);
         SIL_CHECK(ctx, d->undervoltage_fault == false);
         SIL_CHECK(ctx, d->voltage_fault_latched == false);
+        SIL_CHECK(ctx, d->temp_valid == true);
         SIL_CHECK(ctx, d->temp_fault == false);
+        SIL_CHECK(ctx, d->temp_read_fault == false);
+        SIL_CHECK(ctx, d->overtemp_fault == false);
+        SIL_CHECK(ctx, d->severe_overtemp_fault == false);
+        SIL_CHECK(ctx, d->temp_fault_latched == false);
+        if(d->state == STATE_CHARGE)
+        {
+            SIL_CHECK(ctx, d->temp_charge_stop == false);
+        }
         SIL_CHECK(ctx, d->fuse_fault == false);
         SIL_CHECK(ctx, d->charger_fault == false);
         SIL_CHECK(ctx, d->hard_fault == false);
@@ -1776,10 +1908,11 @@ static void sil_assert_safety_invariants(const app_data_t *d, const char *ctx)
         SIL_CHECK(ctx, bms_pin_state == GPIO_PIN_RESET);
     }
 
-    if(!d->current_valid || !d->voltage_valid || d->hard_fault || d->fuse_fault ||
+    if(!d->current_valid || !d->voltage_valid || !d->temp_valid || d->hard_fault || d->fuse_fault ||
        d->temp_fault || d->charger_fault || d->current_fault || d->current_fault_latched ||
        d->voltage_fault || d->voltage_fault_latched || d->overvoltage_fault ||
-       d->undervoltage_fault)
+       d->undervoltage_fault || d->temp_read_fault || d->temp_fault_latched || d->overtemp_fault ||
+       ((d->state == STATE_CHARGE) && d->temp_charge_stop))
     {
         SIL_CHECK(ctx, d->bms_state == false);
     }
@@ -1795,6 +1928,14 @@ static void sil_assert_safety_invariants(const app_data_t *d, const char *ctx)
     if(d->current_fault_latched)
     {
         SIL_CHECK(ctx, d->current_fault_latched_reason != CURRENT_FAULT_REASON_NONE);
+    }
+    if(d->temp_valid)
+    {
+        SIL_CHECK(ctx, d->temp_usable_sensor_count == AMS_EXPECTED_TEMP_SENSOR_COUNT);
+    }
+    if(d->temp_fault_latched)
+    {
+        SIL_CHECK(ctx, d->temp_fault_latched_reason != TEMPERATURE_FAULT_REASON_NONE);
     }
 
     sil_assert_diagnostics_not_generic(d, ctx);
@@ -2319,6 +2460,7 @@ static void test_temp_invalid_and_cold_valid_fault_behavior(void){
 
     init_fake_app();
     fill_nominal_pack(&app, 3.700f);
+    sil_clear_temp_history(&app);
     for(int ic=0; ic<NSMBS; ic++) for(int s=0; s<NTEMPS; s++) app.acc.smb_ics[ic].temp.raw[s] = 0;
     app.state = STATE_DISCARGE; app.bms_state = true; bms_pin_state = GPIO_PIN_SET; fake_tick = 0;
     run_one_adbms_task_iteration(&app);
@@ -2330,17 +2472,302 @@ static void test_temp_invalid_and_cold_valid_fault_behavior(void){
 
     init_fake_app();
     fill_nominal_pack(&app, 3.700f);
-    int16_t raw0c = raw_for_temp_c(0.0f);
-    for(int ic=0; ic<NSMBS; ic++) for(int s=0; s<NTEMPS; s++) app.acc.smb_ics[ic].temp.raw[s] = raw0c;
+    sil_set_all_temps(&app, 0.0f, (1UL << NTEMPS) - 1UL);
     app.state = STATE_DISCARGE; app.current_valid = true; app.bms_state = true; bms_pin_state = GPIO_PIN_SET; fake_tick = 0;
     run_one_adbms_task_iteration(&app);
     CHECK(app.voltage_fault == false);
     CHECK(app.temp_fault == false);
     CHECK(app.acc.valid_temp_count == (uint16_t)(NSMBS * NTEMPS));
     CHECK(app.max_temp > -2.0f && app.max_temp < 2.0f);
+    CHECK(app.temp_charge_stop == true);
+    CHECK(app.temp_warning == true);
+    CHECK(app.temp_fault_reason == TEMPERATURE_FAULT_REASON_COLD_CHARGE_STOP);
     CHECK(app.bms_state == true);
 
     fake_mux_write_enable = 1;
+}
+
+static void test_system_sil_temperature_mux_cadence_no_false_stale(void)
+{
+    init_fake_app();
+    fake_tick = 0u;
+    fill_nominal_pack(&app, 3.700f);
+    sil_attach_current_adcs(&app);
+    sil_clear_temp_history(&app);
+
+    for(uint8_t ic = 0u; ic < NSMBS; ic++)
+    {
+        for(uint8_t sensor = 0u; sensor < NTEMPS; sensor++)
+        {
+            app.acc.smb_ics[ic].temp.raw[sensor] = raw_for_temp_c(25.0f);
+        }
+    }
+
+    for(uint8_t sweep = 0u; sweep < 2u; sweep++)
+    {
+        for(uint8_t mux = 0u; mux < (NTEMPS / 3u); mux++)
+        {
+            uint32_t mask = (1UL << mux) | (1UL << (mux + 8u)) | (1UL << (mux + 16u));
+            host_mark_updated_temps(&app, mask);
+            accumulator_update_temp_stats_at(&app.acc, fake_tick);
+            sil_publish_temp_state(&app);
+
+            CHECK(app.temp_invalid_sensor_count == 0u);
+            CHECK(app.acc.temp_startup_scan_complete == (sweep > 0u || mux == ((NTEMPS / 3u) - 1u)));
+            CHECK(app.temp_fault_reason != TEMPERATURE_FAULT_REASON_INVALID_SENSOR);
+            if(sweep > 0u || mux == ((NTEMPS / 3u) - 1u))
+            {
+                CHECK(app.temp_valid == true);
+                CHECK(app.temp_fault == false);
+                CHECK(app.temp_usable_sensor_count == AMS_EXPECTED_TEMP_SENSOR_COUNT);
+            }
+            else
+            {
+                CHECK(app.temp_valid == false);
+                CHECK(app.temp_fault == true);
+                CHECK(app.temp_fault_reason == TEMPERATURE_FAULT_REASON_NOT_READY);
+            }
+
+            fake_tick += 1000u;
+        }
+    }
+}
+
+static void test_system_sil_temperature_invalid_update_overrides_history(void)
+{
+    sil_prepare_ready_system(STATE_DISCARGE, 0.0f, 3.700f);
+
+    CHECK(accumulator_temp_sensor_usable(&app.acc, 2u, 5u));
+    app.acc.smb_ics[2].temp.raw[5] = 0;
+    app.acc.smb.last_temp_updated_mask[2] = (uint32_t)(1UL << 5);
+    accumulator_update_temp_stats_at(&app.acc, fake_tick);
+    sil_publish_temp_state(&app);
+
+    CHECK(!accumulator_temp_sensor_usable(&app.acc, 2u, 5u));
+    CHECK(app.temp_valid == false);
+    CHECK(app.temp_fault == true);
+    CHECK(app.temp_read_fault == true);
+    CHECK(app.temp_invalid_sensor_count > 0u);
+    CHECK(app.temp_fault_reason == TEMPERATURE_FAULT_REASON_INVALID_SENSOR);
+    CHECK(temp_deci_c_for_ecu(&app, 2u, 5u) == ECU_TEMP_INVALID_DECI_C);
+}
+
+static void test_system_sil_temperature_startup_partial_and_stale_fail_closed(void)
+{
+    init_fake_app();
+    fake_tick = 0u;
+    bms_pin_state = GPIO_PIN_RESET;
+    app.state = STATE_DISCARGE;
+    sil_attach_current_adcs(&app);
+    fill_nominal_pack(&app, 3.700f);
+    sil_clear_temp_history(&app);
+    sil_run_current_sample(&app, 0.0f);
+    app.bms_state = true;
+    bms_pin_state = GPIO_PIN_SET;
+
+    run_one_adbms_task_iteration(&app);
+    CHECK(app.voltage_valid == true);
+    CHECK(app.current_valid == true);
+    CHECK(app.temp_valid == false);
+    CHECK(app.temp_fault == true);
+    CHECK(app.temp_fault_reason == TEMPERATURE_FAULT_REASON_NOT_READY);
+    CHECK(app.bms_state == false);
+    CHECK(bms_pin_state == GPIO_PIN_RESET);
+
+    sil_set_all_temps(&app, 25.0f, (1UL << NTEMPS) - 1UL);
+    app.bms_state = true;
+    bms_pin_state = GPIO_PIN_SET;
+    fake_tick += ACCUMULATOR_TEMP_STALE_TIMEOUT_MS + 100u;
+    run_one_adbms_task_iteration(&app);
+    CHECK(app.temp_valid == false);
+    CHECK(app.temp_fault == true);
+    CHECK(app.temp_read_fault == true);
+    CHECK(app.temp_fault_reason == TEMPERATURE_FAULT_REASON_STALE_SCAN);
+    CHECK(app.bms_state == false);
+}
+
+static void test_system_sil_temperature_fan_ramp_warning_and_recovery(void)
+{
+    sil_prepare_ready_system(STATE_DISCARGE, 0.0f, 3.700f);
+    sil_attach_fans(&app);
+
+    sil_set_all_temps(&app, 34.0f, (1UL << NTEMPS) - 1UL);
+    run_one_fan_task_iteration(&app);
+    CHECK(app.temp_valid == true);
+    CHECK(app.temp_fault == false);
+    CHECK(app.fan_state == false);
+    for(int i = 0; i < NFANS; i++) CHECK(app.board.fans[i].duty_cycle == 0.0f);
+
+    sil_set_all_temps(&app, 42.5f, (1UL << NTEMPS) - 1UL);
+    run_one_fan_task_iteration(&app);
+    CHECK(app.temp_fault == false);
+    CHECK(app.temp_warning == false);
+    CHECK(app.fan_state == true);
+    for(int i = 0; i < NFANS; i++) CHECK(app.board.fans[i].duty_cycle > 49.0f && app.board.fans[i].duty_cycle < 51.0f);
+
+    sil_set_all_temps(&app, TEMP_FAN_MAX_C, (1UL << NTEMPS) - 1UL);
+    app.bms_state = true;
+    bms_pin_state = GPIO_PIN_SET;
+    run_one_fan_task_iteration(&app);
+    CHECK(app.temp_fault == false);
+    CHECK(app.temp_warning == true);
+    CHECK(app.temp_fan_max == true);
+    CHECK(app.temp_charge_stop == true);
+    CHECK(app.temp_fault_reason == TEMPERATURE_FAULT_REASON_HOT_FAN_MAX);
+    CHECK(app.bms_state == true);
+    for(int i = 0; i < NFANS; i++) CHECK(app.board.fans[i].duty_cycle == 100.0f);
+
+    sil_set_all_temps(&app, 25.0f, (1UL << NTEMPS) - 1UL);
+    run_one_fan_task_iteration(&app);
+    CHECK(app.temp_fault == false);
+    CHECK(app.temp_warning == false);
+    CHECK(app.temp_fan_max == false);
+    CHECK(app.temp_charge_stop == false);
+    CHECK(app.fan_state == false);
+}
+
+static void test_system_sil_temperature_charge_stop_thresholds(void)
+{
+    static CAN_HandleTypeDef hcan;
+
+    sil_prepare_ready_system(STATE_CHARGE, 0.0f, 3.700f);
+    app.board.canbus.hcan = &hcan;
+    charger_init(&app.board.charger, &app.board.canbus);
+    app.board.charger.last_rx_tick = fake_tick;
+
+    sil_set_all_temps(&app, TEMP_CHARGE_MAX_C - 0.1f, (1UL << NTEMPS) - 1UL);
+    app.bms_state = true;
+    bms_pin_state = GPIO_PIN_SET;
+    tx_count = 0u;
+    tx_free_level = 3u;
+    run_one_canbus_task_iteration(&app);
+    CHECK(app.temp_charge_stop == false);
+    CHECK(tx_log[0].data[4] == 0u);
+
+    sil_set_all_temps(&app, TEMP_CHARGE_MAX_C, (1UL << NTEMPS) - 1UL);
+    app.bms_state = true;
+    bms_pin_state = GPIO_PIN_SET;
+    app.board.charger.last_rx_tick = fake_tick;
+    tx_count = 0u;
+    run_one_canbus_task_iteration(&app);
+    CHECK(app.temp_fault == false);
+    CHECK(app.temp_charge_stop == true);
+    CHECK(app.temp_fault_reason == TEMPERATURE_FAULT_REASON_HOT_CHARGE_STOP);
+    CHECK(tx_log[0].data[4] == 1u);
+    CHECK(app.bms_state == false);
+
+    temperature_fault_reset_latch(&app.temp_fault_state);
+    sil_set_all_temps(&app, TEMP_CHARGE_MIN_C, (1UL << NTEMPS) - 1UL);
+    app.bms_state = true;
+    bms_pin_state = GPIO_PIN_SET;
+    app.board.charger.last_rx_tick = fake_tick;
+    tx_count = 0u;
+    run_one_canbus_task_iteration(&app);
+    CHECK(app.temp_fault == false);
+    CHECK(app.temp_charge_stop == true);
+    CHECK(app.temp_fault_reason == TEMPERATURE_FAULT_REASON_COLD_CHARGE_STOP);
+    CHECK(tx_log[0].data[4] == 1u);
+    CHECK(app.bms_state == false);
+}
+
+static void test_system_sil_temperature_hard_latch_and_reset_path(void)
+{
+    sil_prepare_ready_system(STATE_DISCARGE, 0.0f, 3.700f);
+
+    sil_set_all_temps(&app, TEMP_HOT_HARD_C - 0.1f, (1UL << NTEMPS) - 1UL);
+    app.bms_state = true;
+    bms_pin_state = GPIO_PIN_SET;
+    run_one_adbms_task_iteration(&app);
+    CHECK(app.temp_valid == true);
+    CHECK(app.temp_fault == false);
+    CHECK(app.bms_state == true);
+
+    sil_set_all_temps(&app, TEMP_HOT_HARD_C, (1UL << NTEMPS) - 1UL);
+    app.bms_state = true;
+    bms_pin_state = GPIO_PIN_SET;
+    CHECK(app.temp_fault == false);
+    CHECK(app.temp_overtemp_pending == true);
+    CHECK(app.temp_fault_pending_reason == TEMPERATURE_FAULT_REASON_HOT_HARD);
+    CHECK(app.temp_fault_pending_ms == TEMP_FAULT_DEFAULT_SAMPLE_MS);
+    CHECK(app.bms_state == true);
+    run_one_adbms_task_iteration(&app);
+    CHECK(app.temp_fault == true);
+    CHECK(app.overtemp_fault == true);
+    CHECK(app.temp_fault_latched == true);
+    CHECK(app.temp_fault_latched_reason == TEMPERATURE_FAULT_REASON_HOT_HARD);
+    CHECK(app.bms_state == false);
+
+    sil_set_all_temps(&app, 25.0f, (1UL << NTEMPS) - 1UL);
+    app.bms_state = true;
+    bms_pin_state = GPIO_PIN_SET;
+    run_one_adbms_task_iteration(&app);
+    CHECK(app.temp_valid == true);
+    CHECK(app.temp_fault == true);
+    CHECK(app.temp_fault_latched == true);
+    CHECK(app.bms_state == false);
+
+    temperature_fault_reset_latch(&app.temp_fault_state);
+    sil_set_all_temps(&app, 25.0f, (1UL << NTEMPS) - 1UL);
+    app.current_valid = true;
+    app.current_fault = false;
+    app.hard_fault = false;
+    app.bms_state = false;
+    bms_pin_state = GPIO_PIN_RESET;
+    run_one_adbms_task_iteration(&app);
+    CHECK(app.temp_valid == true);
+    CHECK(app.temp_fault == false);
+    CHECK(app.temp_fault_latched == false);
+    CHECK(app.bms_state == true);
+
+    sil_set_all_temps(&app, TEMP_HOT_SEVERE_C, (1UL << NTEMPS) - 1UL);
+    app.bms_state = true;
+    bms_pin_state = GPIO_PIN_SET;
+    CHECK(app.temp_fault == false);
+    CHECK(app.temp_overtemp_pending == true);
+    CHECK(app.temp_fault_pending_reason == TEMPERATURE_FAULT_REASON_HOT_SEVERE);
+    run_one_adbms_task_iteration(&app);
+    CHECK(app.temp_fault == true);
+    CHECK(app.severe_overtemp_fault == true);
+    CHECK(app.temp_fault_latched_reason == TEMPERATURE_FAULT_REASON_HOT_SEVERE);
+    CHECK(app.bms_state == false);
+}
+
+static void test_system_sil_temperature_cli_can_diagnostics(void)
+{
+    static CAN_HandleTypeDef hcan;
+
+    sil_prepare_ready_system(STATE_DISCARGE, 0.0f, 3.700f);
+    app.board.canbus.hcan = &hcan;
+    sil_set_all_temps(&app, 25.0f, (1UL << NTEMPS) - 1UL);
+    app.acc.smb_ics[2].temp.raw[5] = 0;
+    app.acc.smb.last_temp_updated_mask[2] |= (uint32_t)(1UL << 5);
+    accumulator_update_temp_stats_at(&app.acc, fake_tick);
+    sil_publish_temp_state(&app);
+
+    CHECK(app.temp_valid == false);
+    CHECK(app.temp_fault == true);
+    CHECK(app.temp_fault_reason == TEMPERATURE_FAULT_REASON_INVALID_SENSOR);
+
+    sil_prepare_cli_capture();
+    get_status(1, (char *[]){"status", NULL});
+    CHECK(strstr(cli_capture, "Temps usable:") != NULL);
+    CHECK(strstr(cli_capture, "chargestop:") != NULL);
+    CHECK(strstr(cli_capture, "reason:") != NULL);
+    cli_capture_clear();
+    get_faults(1, (char *[]){"faults", NULL});
+    CHECK(strstr(cli_capture, "temp: fault:1") != NULL);
+    CHECK(strstr(cli_capture, "pending:") != NULL);
+
+    tx_count = 0u;
+    tx_free_level = 3u;
+    CHECK(send_ecu_ams_temps(&app.board.canbus, &app) == HAL_OK);
+    CHECK(tx_count == 30u);
+    CHECK(word_at(13u, 3u) == ECU_TEMP_INVALID_DECI_C);
+
+    tx_count = 0u;
+    CHECK(send_ecu_ams_status(&app.board.canbus, &app) == HAL_OK);
+    CHECK(tx_count == 3u);
+    CHECK(word_at(2u, 1u) == ECU_TEMP_INVALID_DECI_C);
 }
 
 static void test_can_rx_filter_matrix(void){
@@ -2701,22 +3128,23 @@ static void test_hil_parser_and_estimator_core(void){
 
 static void test_charge_state_disable_matrix(void){
     static CAN_HandleTypeDef hcan;
-    struct Case { bool hard_fault, voltage_fault, temp_fault, bms_state, hw, ot, input, sense, timeout; uint8_t disable; } cases[] = {
-        {0,0,0,1,0,0,0,0,0,0},
-        {1,0,0,1,0,0,0,0,0,1},
-        {0,1,0,1,0,0,0,0,0,1},
-        {0,0,1,1,0,0,0,0,0,1},
-        {0,0,0,0,0,0,0,0,0,1},
-        {0,0,0,1,1,0,0,0,0,1},
-        {0,0,0,1,0,1,0,0,0,1},
-        {0,0,0,1,0,0,1,0,0,1},
-        {0,0,0,1,0,0,0,1,0,1},
-        {0,0,0,1,0,0,0,0,1,1},
+    struct Case { bool hard_fault, voltage_fault, temp_fault, temp_charge_stop, bms_state, hw, ot, input, sense, timeout; uint8_t disable; } cases[] = {
+        {0,0,0,0,1,0,0,0,0,0,0},
+        {1,0,0,0,1,0,0,0,0,0,1},
+        {0,1,0,0,1,0,0,0,0,0,1},
+        {0,0,1,0,1,0,0,0,0,0,1},
+        {0,0,0,1,1,0,0,0,0,0,1},
+        {0,0,0,0,0,0,0,0,0,0,1},
+        {0,0,0,0,1,1,0,0,0,0,1},
+        {0,0,0,0,1,0,1,0,0,0,1},
+        {0,0,0,0,1,0,0,1,0,0,1},
+        {0,0,0,0,1,0,0,0,1,0,1},
+        {0,0,0,0,1,0,0,0,0,1,1},
     };
     for(size_t i=0; i<sizeof(cases)/sizeof(cases[0]); i++){
         init_fake_app(); fill_nominal_pack(&app, 3.700f); charger_init(&app.board.charger, &app.board.canbus);
         app.board.canbus.hcan = &hcan; app.state = STATE_CHARGE; app.current_valid = true;
-        app.hard_fault = cases[i].hard_fault; app.voltage_fault = cases[i].voltage_fault; app.temp_fault = cases[i].temp_fault; app.bms_state = cases[i].bms_state;
+        app.hard_fault = cases[i].hard_fault; app.voltage_fault = cases[i].voltage_fault; app.temp_fault = cases[i].temp_fault; app.temp_charge_stop = cases[i].temp_charge_stop; app.bms_state = cases[i].bms_state;
         app.board.charger.hardware_fail = cases[i].hw; app.board.charger.overtemp_fail = cases[i].ot; app.board.charger.input_volt_fail = cases[i].input; app.board.charger.voltage_sense_fail = cases[i].sense;
         fake_tick = cases[i].timeout ? 6001u : 1000u;
         app.board.charger.last_rx_tick = 1000u;
@@ -2750,14 +3178,24 @@ static void test_telemetry_absent_segments_and_invalid_channels(void){
     app.acc.smb_ics[1].temp.raw[3] = 0;
     host_mark_updated_cells(&app);
     accumulator_update_voltage_stats_at(&app.acc, fake_tick);
+    host_mark_updated_temps(&app, (1UL << NTEMPS) - 1UL);
+    accumulator_update_temp_stats_at(&app.acc, fake_tick);
     tx_count = 0; tx_free_level = 3;
     run_one_canbus_task_iteration(&app);
     CHECK(tx_count == 62u);
     CHECK(word_at(3,1) > 3500u && word_at(3,2) == 0u && word_at(3,3) > 3500u);
-    CHECK(word_at(28 + 6 + 1,1) == 0u); // segment 1, temp sensor 3 invalid => packet 35 word0
+    CHECK(word_at(28 + 6 + 1,1) == ECU_TEMP_INVALID_DECI_C); // segment 1, temp sensor 3 invalid => packet 35 word0
     // Segments 2..4 are absent because num_ics=2; their voltage and temp packets must be zero-filled.
     for(uint32_t frame=13u; frame<=27u; frame++) CHECK(word_at(frame,1)==0u && word_at(frame,2)==0u && word_at(frame,3)==0u);
-    for(uint32_t frame=40u; frame<=57u; frame++) CHECK(word_at(frame,1)==0u && word_at(frame,2)==0u && word_at(frame,3)==0u);
+    for(uint8_t seg=2u; seg<NSMBS; seg++){
+        for(uint8_t packet=0u; packet<6u; packet++){
+            uint32_t frame = 28u + ((uint32_t)seg * 6u) + packet;
+            uint8_t sensor = (uint8_t)(packet * 3u);
+            CHECK(word_at(frame,1) == ECU_TEMP_INVALID_DECI_C);
+            CHECK(word_at(frame,2) == ECU_TEMP_INVALID_DECI_C);
+            CHECK(word_at(frame,3) == ((sensor + 2u < ECU_SEG_TEMPS) ? ECU_TEMP_INVALID_DECI_C : 0u));
+        }
+    }
 }
 
 static void test_periods_and_driver_edge_cases(void){
@@ -2808,6 +3246,13 @@ int main(void){
     test_system_sil_long_run_seeded_fuzz_invariants(); puts("PASS system SIL 10000-cycle seeded fuzz invariants");
     test_temp_stats(); puts("PASS temp stats");
     test_temp_invalid_and_cold_valid_fault_behavior(); puts("PASS temp invalid/cold-valid fault behavior");
+    test_system_sil_temperature_mux_cadence_no_false_stale(); puts("PASS system SIL temperature mux cadence no false stale");
+    test_system_sil_temperature_invalid_update_overrides_history(); puts("PASS system SIL temperature invalid update overrides history");
+    test_system_sil_temperature_startup_partial_and_stale_fail_closed(); puts("PASS system SIL temperature startup/stale fail-closed");
+    test_system_sil_temperature_fan_ramp_warning_and_recovery(); puts("PASS system SIL temperature fan ramp/warning/recovery");
+    test_system_sil_temperature_charge_stop_thresholds(); puts("PASS system SIL temperature charge-stop thresholds");
+    test_system_sil_temperature_hard_latch_and_reset_path(); puts("PASS system SIL temperature hard/severe latch/reset");
+    test_system_sil_temperature_cli_can_diagnostics(); puts("PASS system SIL temperature CLI/CAN diagnostics");
     test_can_telemetry_packets(); puts("PASS CAN telemetry packetization");
     test_telemetry_absent_segments_and_invalid_channels(); puts("PASS telemetry absent segments/invalid channels");
     test_charger_rx_and_tx(); puts("PASS charger RX/TX parse");

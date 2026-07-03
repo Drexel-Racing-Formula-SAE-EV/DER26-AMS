@@ -63,6 +63,8 @@ void error_task_fn(void *arg)
                             data->current_sensor_fault ||
                             data->current_overcurrent_warning ||
                             data->current_overcurrent_pending ||
+                            data->temp_warning ||
+                            data->temp_overtemp_pending ||
                             data->fan_fault);
 
         if(data->hard_fault)

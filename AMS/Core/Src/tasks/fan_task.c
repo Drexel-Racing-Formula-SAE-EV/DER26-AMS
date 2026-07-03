@@ -13,32 +13,38 @@ void fan_task_fn(void *argument);
 static float fan_percent_from_temp(const app_data_t *data)
 {
     float span;
+    float max_temp;
 
     if((data == NULL) ||
+       !data->temp_valid ||
+       data->temp_read_fault ||
        data->temp_fault ||
-       (data->acc.valid_temp_count == 0u) ||
+       data->temp_fan_max ||
+       (data->temp_usable_sensor_count == 0u) ||
        !isfinite(data->max_temp))
     {
         return 100.0f;
     }
 
-    if(data->max_temp <= TEMP_THRESH_L)
+    max_temp = data->max_temp;
+
+    if(max_temp <= TEMP_FAN_RAMP_START_C)
     {
         return 0.0f;
     }
 
-    if(data->max_temp >= TEMP_THRESH_H)
+    if(max_temp >= TEMP_FAN_MAX_C)
     {
         return 100.0f;
     }
 
-    span = (float)(TEMP_THRESH_H - TEMP_THRESH_L);
+    span = (float)(TEMP_FAN_MAX_C - TEMP_FAN_RAMP_START_C);
     if(span <= 0.0f)
     {
         return 100.0f;
     }
 
-    return ((data->max_temp - (float)TEMP_THRESH_L) * 100.0f) / span;
+    return ((max_temp - (float)TEMP_FAN_RAMP_START_C) * 100.0f) / span;
 }
 
 TaskHandle_t fan_task_start(app_data_t *data)

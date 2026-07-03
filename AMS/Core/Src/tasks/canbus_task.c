@@ -28,6 +28,7 @@ void canbus_task_fn(void *arg);
  */
 #define ECU_SEG_TEMPS 17u
 #define ECU_FANS      10u
+#define ECU_TEMP_INVALID_DECI_C ((uint16_t)0x8000u)
 #define CAN_TX_TIMEOUT_TICKS 10u
 
 static HAL_StatusTypeDef canbus_wait_tx_mailbox(canbus_device_t *canbus)
@@ -122,35 +123,15 @@ static uint16_t temp_deci_c_for_ecu(const app_data_t *data, uint8_t seg, uint8_t
        (seg >= accumulator_configured_smb_count(&data->acc)) ||
        (sensor >= NTEMPS))
     {
-        return 0u;
+        return ECU_TEMP_INVALID_DECI_C;
     }
 
-    int16_t raw = data->acc.smb.ics[seg].temp.raw[sensor];
-    if((raw == 0) || (raw == -1) || (raw == INT16_MIN))
+    if(!accumulator_temp_sensor_usable(&data->acc, seg, sensor))
     {
-        return 0u;
+        return ECU_TEMP_INVALID_DECI_C;
     }
 
-    float voltage = ((float)raw + 10000.0f) * 0.000150f;
-    if((voltage <= 0.0f) || (voltage >= 5.0f))
-    {
-        return 0u;
-    }
-
-    float resistance = 10000.0f * (5.0f - voltage) / voltage;
-    if(resistance <= 0.0f)
-    {
-        return 0u;
-    }
-
-    float x = logf(resistance / 10000.0f);
-    float temp_c = (1.0f / (3.354016435e-3f + 2.565235509e-4f * x)) - 273.15f;
-    if((temp_c < -40.0f) || (temp_c > 150.0f))
-    {
-        return 0u;
-    }
-
-    return (uint16_t)((int16_t)(temp_c * 10.0f));
+    return (uint16_t)accumulator_temp_deci_c(&data->acc, seg, sensor);
 }
 
 static uint16_t fan_percent_for_ecu(const app_data_t *data, uint8_t fan)
@@ -181,7 +162,8 @@ static HAL_StatusTypeDef send_ecu_ams_status(canbus_device_t *canbus, const app_
 
     ret |= send_ams_packet(canbus,
                            2u,
-                           (uint16_t)((int16_t)(data->max_temp * 10.0f)),
+                           data->temp_valid ? (uint16_t)((int16_t)(data->max_temp * 10.0f)) :
+                                              ECU_TEMP_INVALID_DECI_C,
                            (uint16_t)(data->min_voltage * 1000.0f),
                            (uint16_t)(data->max_voltage * 1000.0f));
 
@@ -387,6 +369,7 @@ void canbus_task_fn(void *arg)
                                    data->voltage_fault ||
                                    data->charge_voltage_stop ||
                                    !data->voltage_valid ||
+                                   data->temp_charge_stop ||
                                    data->temp_fault ||
                                    data->current_fault ||
                                    !data->current_valid ||
