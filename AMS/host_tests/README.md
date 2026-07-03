@@ -17,6 +17,7 @@ Then run:
 ```bash
 cd DER26-AMS-feature-canbus_charger/host_tests
 make test
+make system-sil
 make asan
 make analyze
 ```
@@ -182,6 +183,12 @@ make AMS_ROOT=/absolute/path/to/DER26-AMS-feature-canbus_charger asan
 | Charger timeout | stale `last_rx_tick` | communication fault and charger disable |
 | CAN TX timeout | no free mailbox | HAL timeout returned, no infinite loop |
 | Fan driver | valid, out-of-range, NaN, Inf | duty clamping and no unsafe cast behavior |
+| System SIL boot/readiness | fake current ADC + fake ADBMS scan masks | BMS_OK requires current-valid and voltage-valid together, no false enable before startup scan |
+| System SIL voltage degradation | single and repeated fake PEC/missed-cell scans | one miss tolerated while fresh, persistent stale scan drops BMS_OK, full scan recovers |
+| System SIL voltage thresholds | fake per-cell OV/UV values through ADBMS task | charge-stop vs hard OV, soft/hard/severe UV/OV, latched diagnostic reasons |
+| System SIL current faults | fake DHAB current ADC sequences through current task | warning-only behavior, fast-trip debounce, latch persistence, stale ADC fail-safe |
+| System SIL combined faults | current latch + voltage latch + reset calls | BMS_OK stays low until all relevant latches are cleared and data is healthy |
+| System SIL ADBMS2950/APM | fake APM debug error state | APM debug is observable but non-safety-critical until intentionally integrated |
 | Current sensor | fake timer capture | current conversion path and fault flag behavior |
 | Task loops | one-iteration task runs via fake RTOS delay | state transitions and periodic behavior |
 | Error task | hard/soft fault combinations | `BMS_OK` gating and aggregate fault flags |

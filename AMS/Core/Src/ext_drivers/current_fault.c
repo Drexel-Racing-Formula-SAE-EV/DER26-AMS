@@ -176,7 +176,8 @@ static current_fault_eval_t eval_regen(float abs_current_a)
     current_fault_eval_t eval = {0};
 
 #if CURRENT_REGEN_ENABLED_PLACEHOLDER == 0u
-    if(abs_current_a >= CURRENT_REGEN_UNEXPECTED_A)
+    if((abs_current_a >= CURRENT_REGEN_UNEXPECTED_A) &&
+       (abs_current_a < CURRENT_REGEN_WARN_A))
     {
         eval.active = true;
         eval.warning_only = true;

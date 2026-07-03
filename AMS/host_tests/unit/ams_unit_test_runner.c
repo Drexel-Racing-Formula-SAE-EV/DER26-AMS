@@ -846,6 +846,18 @@ static void test_current_fault_threshold_edges_and_recovery(void)
     EXPECT_TRUE(fault.latched_reason == CURRENT_FAULT_REASON_CHARGE_OVERCURRENT);
 
     current_fault_init(&fault);
+    current_fault_update(&fault,
+                         CURRENT_FAULT_MODE_DRIVE,
+                         -6.0f,
+                         true,
+                         CURRENT_SENSOR_REASON_OK,
+                         20u);
+    EXPECT_TRUE(fault.warning);
+    EXPECT_FALSE(fault.confirmed);
+    EXPECT_FALSE(fault.latched);
+    EXPECT_TRUE(fault.reason == CURRENT_FAULT_REASON_REGEN_UNEXPECTED);
+
+    current_fault_init(&fault);
     for(uint8_t i = 0u; i < 25u; i++)
     {
         current_fault_update(&fault,
@@ -855,10 +867,10 @@ static void test_current_fault_threshold_edges_and_recovery(void)
                              CURRENT_SENSOR_REASON_OK,
                              20u);
     }
-    EXPECT_TRUE(fault.warning);
-    EXPECT_FALSE(fault.confirmed);
-    EXPECT_FALSE(fault.latched);
-    EXPECT_TRUE(fault.reason == CURRENT_FAULT_REASON_REGEN_UNEXPECTED);
+    EXPECT_FALSE(fault.warning);
+    EXPECT_TRUE(fault.confirmed);
+    EXPECT_TRUE(fault.latched);
+    EXPECT_TRUE(fault.latched_reason == CURRENT_FAULT_REASON_REGEN_OVERCURRENT);
 }
 
 static void unit_fill_voltage_acc(accumulator_t *acc,

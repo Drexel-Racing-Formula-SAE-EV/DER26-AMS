@@ -326,8 +326,14 @@ static uint16_t accumulator_code_to_mv(int16_t code)
 
 static uint16_t accumulator_expected_cell_count(const accumulator_t *dev)
 {
-    uint8_t ic_count = accumulator_configured_smb_count(dev);
-    return (uint16_t)(ic_count * NCELLS);
+    (void)dev;
+
+    /* Safety policy is tied to the real accumulator topology: 5 SMBs x 15 cells.
+     * Do not reduce the required cell count if smb.num_ics is corrupted or
+     * accidentally configured low; that could otherwise allow BMS_OK with only
+     * a partial pack represented in firmware.
+     */
+    return (uint16_t)(NSMBS * NCELLS);
 }
 
 static uint16_t accumulator_count_bits(uint16_t mask)
@@ -391,6 +397,7 @@ void accumulator_update_voltage_stats_at(accumulator_t *dev, uint32_t now_ms)
     uint8_t min_cell = 0u;
 
     uint8_t ic_count = accumulator_configured_smb_count(dev);
+    adbms6830_asic *smb_ics = (dev->smb.ics != NULL) ? dev->smb.ics : dev->smb_ics;
 
     for(uint8_t ic = 0u; ic < NSMBS; ic++)
     {
@@ -422,7 +429,7 @@ void accumulator_update_voltage_stats_at(accumulator_t *dev, uint32_t now_ms)
 
             if(updated_this_scan)
             {
-                int16_t code = dev->smb.ics[ic].cell.c_codes[cell];
+                int16_t code = smb_ics[ic].cell.c_codes[cell];
                 uint16_t mv = accumulator_code_to_mv(code);
 
                 if((mv >= ACCUMULATOR_CELL_VALID_MIN_MV) &&
@@ -541,12 +548,13 @@ void accumulator_update_temp_stats(accumulator_t *dev)
 	uint8_t count    = 0u;
 
 	uint8_t ic_count = accumulator_configured_smb_count(dev);
+	adbms6830_asic *smb_ics = (dev->smb.ics != NULL) ? dev->smb.ics : dev->smb_ics;
 
 	for (uint8_t ic = 0; ic < ic_count; ic++)
 	{
 		for (uint8_t sensor = 0u; sensor < NTEMPS; sensor++)
 		{
-			int16_t raw = dev->smb.ics[ic].temp.raw[sensor];
+			int16_t raw = smb_ics[ic].temp.raw[sensor];
 
 			if (raw == -1 || raw == INT16_MIN || raw == 0) continue;
 
@@ -573,6 +581,7 @@ int accumulator_set_balance(accumulator_t *dev)
     }
 
     adbms6830_driver_t *smb = &dev->smb;
+    adbms6830_asic *smb_ics = (smb->ics != NULL) ? smb->ics : dev->smb_ics;
     uint16_t min_mv = dev->min_voltage_mv;
 
     uint8_t ic_count = accumulator_configured_smb_count(dev);
@@ -593,7 +602,7 @@ int accumulator_set_balance(accumulator_t *dev)
                 dcc_mask |= (uint16_t)(1u << cell);
             }
         }
-        smb->ics[ic].tx_cfgb.dcc = dcc_mask;
+        smb_ics[ic].tx_cfgb.dcc = dcc_mask;
     }
 
     adbms6830_wakeup(smb);
@@ -609,11 +618,12 @@ int accumulator_clear_balance(accumulator_t *dev)
     }
 
     adbms6830_driver_t *smb = &dev->smb;
+    adbms6830_asic *smb_ics = (smb->ics != NULL) ? smb->ics : dev->smb_ics;
     uint8_t ic_count = accumulator_configured_smb_count(dev);
 
     for(uint8_t ic = 0; ic < ic_count; ic++)
     {
-        smb->ics[ic].tx_cfgb.dcc = 0;
+        smb_ics[ic].tx_cfgb.dcc = 0;
     }
     adbms6830_wakeup(smb);
     adbms6830_wrcfgb(smb);

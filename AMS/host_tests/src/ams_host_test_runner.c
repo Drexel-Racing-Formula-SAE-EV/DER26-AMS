@@ -32,6 +32,9 @@ static GPIO_PinState bms_pin_state = GPIO_PIN_RESET;
 static uint32_t tx_count = 0;
 static struct { uint32_t ide, stdid, extid, dlc; uint8_t data[8]; } tx_log[AMS_HOST_TX_LOG_CAPACITY];
 static uint32_t tx_free_level = 3;
+static char cli_capture[8192];
+static size_t cli_capture_len = 0u;
+static UART_HandleTypeDef cli_dummy_uart;
 static CAN_RxHeaderTypeDef fake_rx_hdr;
 static uint8_t fake_rx_data[8];
 static HAL_StatusTypeDef fake_rx_status = HAL_OK;
@@ -41,17 +44,27 @@ static int fake_mux_write_enable = 1;
 static uint16_t fake_adc_read_counts[2] = {2048u, 2048u};
 static HAL_StatusTypeDef fake_adc_read_statuses[2] = {HAL_OK, HAL_OK};
 static uint32_t fake_adc_read_index = 0u;
+static bool fake_adbms_use_custom_voltage_masks = false;
+static uint16_t fake_adbms_updated_masks[ADBMS6830_MAX_TRACKED_ICS];
+static uint16_t fake_adbms_pec_masks[ADBMS6830_MAX_TRACKED_ICS];
 
 static uint16_t adc_count_for_mcu_voltage(float v);
 static uint16_t adc_count_for_sensor_voltage(float v);
 static void fake_adc_set_two_read_sequence(uint16_t high_count, uint16_t low_count);
 static void fake_adc_set_status_sequence(HAL_StatusTypeDef high_status, HAL_StatusTypeDef low_status);
+static void fake_adbms_voltage_masks_full_update(void);
+static void fake_adbms_voltage_masks_all_missing(bool pec_fail);
+static void fake_adbms_voltage_masks_one_missing(uint8_t seg, uint8_t cell, bool pec_fail);
+static void fake_adc_set_current_a(float current_a);
 
 uint32_t osKernelGetTickCount(void){ return fake_tick; }
 osStatus_t osDelay(uint32_t ticks){ fake_tick += ticks; return osOK; }
 osStatus_t osDelayUntil(uint32_t ticks){ fake_tick = ticks; if(task_exit_after_delay_until){ task_exit_after_delay_until = 0; longjmp(task_exit_jmp, 1); } return osOK; }
 BaseType_t xTaskCreate(TaskFunction_t fn, const char * const name, const configSTACK_DEPTH_TYPE stack, void * const arg, UBaseType_t prio, TaskHandle_t * const handle){ (void)fn;(void)name;(void)stack;(void)arg;(void)prio; if(handle) *handle=(TaskHandle_t)0x1; return pdPASS; }
 void vTaskDelete(TaskHandle_t handle){ (void)handle; }
+
+void vPortEnterCritical(void){}
+void vPortExitCritical(void){}
 
 HAL_StatusTypeDef HAL_CAN_Start(CAN_HandleTypeDef *hcan){ return hcan ? HAL_OK : HAL_ERROR; }
 HAL_StatusTypeDef HAL_CAN_ActivateNotification(CAN_HandleTypeDef *hcan, uint32_t notif){ (void)notif; return hcan ? HAL_OK : HAL_ERROR; }
@@ -72,8 +85,31 @@ uint32_t HAL_TIM_ReadCapturedValue(const TIM_HandleTypeDef *htim, uint32_t chann
 GPIO_PinState HAL_GPIO_ReadPin(GPIO_TypeDef *port, uint16_t pin){ (void)port; (void)pin; return GPIO_PIN_SET; }
 void HAL_GPIO_WritePin(GPIO_TypeDef *port, uint16_t pin, GPIO_PinState state){ (void)port; (void)pin; bms_pin_state = state; }
 void HAL_GPIO_TogglePin(GPIO_TypeDef *port, uint16_t pin){ (void)port; (void)pin; bms_pin_state = !bms_pin_state; }
-HAL_StatusTypeDef HAL_UART_Transmit(UART_HandleTypeDef *huart, const uint8_t *pData, uint16_t Size, uint32_t Timeout){ (void)huart;(void)pData;(void)Size;(void)Timeout; return HAL_OK; }
-HAL_StatusTypeDef HAL_UART_Transmit_IT(UART_HandleTypeDef *huart, const uint8_t *pData, uint16_t Size){ (void)huart;(void)pData;(void)Size; return HAL_OK; }
+static void cli_capture_append(const uint8_t *pData, uint16_t Size)
+{
+    if((pData == NULL) || (Size == 0u))
+    {
+        return;
+    }
+
+    size_t remaining = (sizeof(cli_capture) - 1u) - cli_capture_len;
+    size_t n = (Size < remaining) ? (size_t)Size : remaining;
+    if(n > 0u)
+    {
+        memcpy(&cli_capture[cli_capture_len], pData, n);
+        cli_capture_len += n;
+        cli_capture[cli_capture_len] = '\0';
+    }
+}
+
+static void cli_capture_clear(void)
+{
+    cli_capture_len = 0u;
+    cli_capture[0] = '\0';
+}
+
+HAL_StatusTypeDef HAL_UART_Transmit(UART_HandleTypeDef *huart, const uint8_t *pData, uint16_t Size, uint32_t Timeout){ (void)huart;(void)Timeout; cli_capture_append(pData, Size); return HAL_OK; }
+HAL_StatusTypeDef HAL_UART_Transmit_IT(UART_HandleTypeDef *huart, const uint8_t *pData, uint16_t Size){ (void)huart; cli_capture_append(pData, Size); return HAL_OK; }
 HAL_StatusTypeDef HAL_UART_Receive_IT(UART_HandleTypeDef *huart, uint8_t *pData, uint16_t Size){ (void)huart;(void)pData;(void)Size; return HAL_OK; }
 
 void set_bms(bool state){ app.bms_state = state; HAL_GPIO_WritePin(BMS_OK_GPIO_Port, BMS_OK_Pin, state ? GPIO_PIN_SET : GPIO_PIN_RESET); }
@@ -81,7 +117,47 @@ void set_bms(bool state){ app.bms_state = state; HAL_GPIO_WritePin(BMS_OK_GPIO_P
 // External driver stubs used by accumulator/CLI paths
 void adBms6830_init(adbms6830_driver_t* dev, uint8_t num_ics, adbms6830_asic* ics, SPI_HandleTypeDef* hspi, GPIO_TypeDef* cs_port_a, GPIO_TypeDef* cs_port_b, uint16_t cs_pin_a, uint16_t cs_pin_b, TIM_HandleTypeDef *htim){ if(dev){ dev->num_ics=num_ics; dev->ics=ics; dev->hspi=hspi; dev->cs_port[0]=cs_port_a; dev->cs_port[1]=cs_port_b; dev->cs_pin[0]=cs_pin_a; dev->cs_pin[1]=cs_pin_b; dev->htim=htim; for(uint8_t ic=0; ic<ADBMS6830_MAX_TRACKED_ICS; ic++){ dev->last_cell_updated_mask[ic]=0u; dev->last_cell_pec_mask[ic]=0u; } } }
 void adbms6830_reset_cfg(adbms6830_driver_t *dev){(void)dev;} void adbms6830_srst(adbms6830_driver_t *dev){(void)dev;} void adbms6830_wrcfga(adbms6830_driver_t *dev){(void)dev;} void adbms6830_wrcfgb(adbms6830_driver_t *dev){(void)dev;} void adbms6830_rdcfga(adbms6830_driver_t *dev){(void)dev;} void adbms6830_rdcfgb(adbms6830_driver_t *dev){(void)dev;}
-void adbms6830_adcv(adbms6830_driver_t *dev, RD rd, CONT cont, DCP dcp, RSTF rstf, OW_C_S owcs){(void)dev;(void)rd;(void)cont;(void)dcp;(void)rstf;(void)owcs;} void adbms6830_wakeup(adbms6830_driver_t* dev){(void)dev;} void adbms6830_us_delay(adbms6830_driver_t* dev, uint16_t microseconds){(void)dev;(void)microseconds;} void adbms6830_start_adc_cell_voltage_measurement(adbms6830_driver_t *dev){(void)dev;} void adbms6830_parse_cell(adbms6830_driver_t *dev, uint8_t *data, GRP grp){(void)dev;(void)data;(void)grp;} void adbms6830_read_cell_voltages(adbms6830_driver_t *dev){ if(dev){ for(uint8_t ic=0; ic<ADBMS6830_MAX_TRACKED_ICS; ic++){ dev->last_cell_updated_mask[ic]=0u; dev->last_cell_pec_mask[ic]=0u; } for(uint8_t ic=0; (dev->ics != NULL) && (ic < (uint8_t)dev->num_ics) && (ic < ADBMS6830_MAX_TRACKED_ICS); ic++){ dev->last_cell_updated_mask[ic]=0x7FFFu; } } }
+void adbms6830_adcv(adbms6830_driver_t *dev, RD rd, CONT cont, DCP dcp, RSTF rstf, OW_C_S owcs){(void)dev;(void)rd;(void)cont;(void)dcp;(void)rstf;(void)owcs;} void adbms6830_wakeup(adbms6830_driver_t* dev){(void)dev;} void adbms6830_us_delay(adbms6830_driver_t* dev, uint16_t microseconds){(void)dev;(void)microseconds;} void adbms6830_start_adc_cell_voltage_measurement(adbms6830_driver_t *dev){(void)dev;} void adbms6830_parse_cell(adbms6830_driver_t *dev, uint8_t *data, GRP grp){(void)dev;(void)data;(void)grp;}
+void adbms6830_read_cell_voltages(adbms6830_driver_t *dev){
+    if(dev){
+        for(uint8_t ic=0; ic<ADBMS6830_MAX_TRACKED_ICS; ic++){
+            dev->last_cell_updated_mask[ic]=0u;
+            dev->last_cell_pec_mask[ic]=0u;
+        }
+        for(uint8_t ic=0; (dev->ics != NULL) && (ic < (uint8_t)dev->num_ics) && (ic < ADBMS6830_MAX_TRACKED_ICS); ic++){
+            if(fake_adbms_use_custom_voltage_masks){
+                dev->last_cell_updated_mask[ic]=(uint16_t)(fake_adbms_updated_masks[ic] & 0x7FFFu);
+                dev->last_cell_pec_mask[ic]=(uint16_t)(fake_adbms_pec_masks[ic] & 0x7FFFu);
+            }
+            else{
+                dev->last_cell_updated_mask[ic]=0x7FFFu;
+                dev->last_cell_pec_mask[ic]=0u;
+            }
+        }
+    }
+}
+void adbms6830_spi_debug_enable(adbms6830_driver_t *dev, bool enable){ if(dev) dev->spi_debug.enabled = enable; }
+void adbms6830_spi_debug_clear(adbms6830_driver_t *dev){ if(dev){ bool en = dev->spi_debug.enabled; memset(&dev->spi_debug, 0, sizeof(dev->spi_debug)); dev->spi_debug.enabled = en; } }
+const adbms6830_spi_debug_t *adbms6830_spi_debug_get(const adbms6830_driver_t *dev){ return dev ? &dev->spi_debug : NULL; }
+const char *adbms6830_spi_op_str(adbms6830_spi_op_t op){
+    switch(op){
+        case ADBMS6830_SPI_OP_NONE: return "none";
+        case ADBMS6830_SPI_OP_CMD: return "cmd";
+        case ADBMS6830_SPI_OP_WR48: return "wr48";
+        case ADBMS6830_SPI_OP_RD48: return "rd48";
+        case ADBMS6830_SPI_OP_STCOMM: return "stcomm";
+        case ADBMS6830_SPI_OP_PROBE: return "probe";
+        default: return "unknown";
+    }
+}
+HAL_StatusTypeDef adbms6830_spi_probe_rdcfga(adbms6830_driver_t *dev){
+    if(dev == NULL) return HAL_ERROR;
+    dev->spi_debug.last_op = ADBMS6830_SPI_OP_PROBE;
+    dev->spi_debug.last_status = HAL_OK;
+    dev->spi_debug.rx_count++;
+    return HAL_OK;
+}
+
 int mux_read_gpio_voltage(adbms6830_driver_t *dev, uint8_t sensor_num){
     if(fake_mux_write_enable && dev && dev->ics && dev->num_ics > 0 && sensor_num < 24){
         dev->ics[0].temp.raw[sensor_num] = (int16_t)((2.5f/0.000150f)-10000.0f);
@@ -94,6 +170,26 @@ float voltage_to_temp(float raw){ float voltage = ((float)raw + 10000.0f) * 0.00
 int mux_set_channel(adbms6830_driver_t *dev, uint8_t sensor_num){ (void)dev; return sensor_num < 24 ? 0 : -1; }
 
 void adbms2950_gpo_set(adbms2950_driver_t *dev, GPO gp, CFGA_GPO state){(void)dev;(void)gp;(void)state;} void adbms2950_wakeup(adbms2950_driver_t *dev){(void)dev;} void adbms2950_wrcfga(adbms2950_driver_t *dev){(void)dev;} void adbms2950_rdcfga(adbms2950_driver_t *dev){(void)dev;} void adbms2950_rdvb(adbms2950_driver_t *dev){(void)dev;} void adbms2950_rdi(adbms2950_driver_t *dev){(void)dev;} void adbms2950_adv(adbms2950_driver_t *dev, adv_ *adv){(void)dev;(void)adv;} void adbms2950_plv(adbms2950_driver_t *dev){(void)dev;} void adbms2950_rdv1d(adbms2950_driver_t *dev){(void)dev;}
+void adbms2950_spi_debug_enable(adbms2950_driver_t *dev, bool enable){ if(dev) dev->spi_debug.enabled = enable; }
+void adbms2950_spi_debug_clear(adbms2950_driver_t *dev){ if(dev){ bool en = dev->spi_debug.enabled; memset(&dev->spi_debug, 0, sizeof(dev->spi_debug)); dev->spi_debug.enabled = en; } }
+const adbms2950_spi_debug_t *adbms2950_spi_debug_get(const adbms2950_driver_t *dev){ return dev ? &dev->spi_debug : NULL; }
+const char *adbms2950_spi_op_str(adbms2950_spi_op_t op){
+    switch(op){
+        case ADBMS2950_SPI_OP_NONE: return "none";
+        case ADBMS2950_SPI_OP_CMD: return "cmd";
+        case ADBMS2950_SPI_OP_WR48: return "wr48";
+        case ADBMS2950_SPI_OP_RD48: return "rd48";
+        case ADBMS2950_SPI_OP_PROBE: return "probe";
+        default: return "unknown";
+    }
+}
+HAL_StatusTypeDef adbms2950_spi_probe_rdcfga(adbms2950_driver_t *dev){
+    if(dev == NULL) return HAL_ERROR;
+    dev->spi_debug.last_op = ADBMS2950_SPI_OP_PROBE;
+    dev->spi_debug.last_status = HAL_OK;
+    dev->spi_debug.rx_count++;
+    return HAL_OK;
+}
 HAL_StatusTypeDef stm32f767z_adc_switch_channel(ADC_HandleTypeDef *hadc, uint32_t channel){ (void)channel; return hadc ? HAL_OK : HAL_ERROR; }
 stm32f767z_adc_read_result_t stm32f767z_adc_read_checked(ADC_HandleTypeDef *hadc, uint32_t timeout_ms){
     (void)timeout_ms;
@@ -123,7 +219,47 @@ uint16_t stm32f767z_adc_read(ADC_HandleTypeDef *hadc){ return stm32f767z_adc_rea
 #include "Core/Src/ext_drivers/canbus.c"
 #include "Core/Src/estimator/ams_estimator_lut.c"
 #include "Core/Src/estimator/ams_soc_ekf.c"
+int cli_printline(cli_device_t *dev, char *line)
+{
+    (void)dev;
+    if(line == NULL)
+    {
+        return HAL_ERROR;
+    }
+    cli_capture_append((const uint8_t *)line, (uint16_t)cli_bounded_strlen(line, CLI_LINESZ - 1u));
+    cli_capture_append((const uint8_t *)"\n", 1u);
+    return HAL_OK;
+}
+
+void cli_device_init(cli_device_t *dev, UART_HandleTypeDef *huart)
+{
+    if(dev == NULL)
+    {
+        return;
+    }
+    memset(dev, 0, sizeof(*dev));
+    dev->huart = huart;
+}
+
+int tokenize(char *s, char *toks[], int maxtoks, char *delim)
+{
+    int count = 0;
+    if((s == NULL) || (toks == NULL) || (delim == NULL) || (maxtoks <= 0))
+    {
+        return 0;
+    }
+    char *tok = strtok(s, delim);
+    while((tok != NULL) && (count < (maxtoks - 1)))
+    {
+        toks[count++] = tok;
+        tok = strtok(NULL, delim);
+    }
+    toks[count] = NULL;
+    return count;
+}
+
 #include "Core/Src/tasks/canbus_task.c"
+#include "Core/Src/tasks/cli_task.c"
 #include "Core/Src/tasks/adbms_task.c"
 #include "Core/Src/tasks/error_task.c"
 #include "Core/Src/tasks/fan_task.c"
@@ -143,7 +279,7 @@ static float ntc_voltage_for_temp_c(float temp_c){
 static int16_t raw_for_temp_c(float temp_c){ return raw_for_ntc_voltage(ntc_voltage_for_temp_c(temp_c)); }
 #define CHECK(cond) do{ if(!(cond)){ fprintf(stderr,"FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); exit(1);} }while(0)
 
-static void init_fake_app(void){ memset(&app,0,sizeof(app)); app.acc.smb.num_ics = NSMBS; app.acc.smb.ics = app.acc.smb_ics; current_fault_init(&app.current_fault_state); voltage_fault_init(&app.voltage_fault_state); app.current_meas_reason = CURRENT_SENSOR_REASON_ADC_READ; app.current_fault_reason = CURRENT_FAULT_REASON_SENSOR_NOT_READY; app.voltage_fault_reason = VOLTAGE_FAULT_REASON_NOT_READY; }
+static void init_fake_app(void){ memset(&app,0,sizeof(app)); app.acc.smb.num_ics = NSMBS; app.acc.smb.ics = app.acc.smb_ics; current_fault_init(&app.current_fault_state); voltage_fault_init(&app.voltage_fault_state); app.current_meas_reason = CURRENT_SENSOR_REASON_ADC_READ; app.current_fault_reason = CURRENT_FAULT_REASON_SENSOR_NOT_READY; app.voltage_fault_reason = VOLTAGE_FAULT_REASON_NOT_READY; fake_adbms_voltage_masks_full_update(); fake_adc_read_index = 0u; }
 
 static void host_mark_updated_cells(app_data_t *d)
 {
@@ -267,6 +403,94 @@ static void fill_nominal_pack(app_data_t *d, float base_v){
     d->voltage_fault = d->voltage_fault_state.read_fault || d->voltage_fault_state.overvoltage_fault || d->voltage_fault_state.undervoltage_fault || d->voltage_fault_state.latched;
 }
 
+static ADC_HandleTypeDef sil_adc_high;
+static ADC_HandleTypeDef sil_adc_low;
+
+static void sil_attach_current_adcs(app_data_t *d)
+{
+    CHECK(d != NULL);
+    d->board.current_sensor.hadc_high = &sil_adc_high;
+    d->board.current_sensor.hadc_low = &sil_adc_low;
+}
+
+static void sil_set_cell_voltage(app_data_t *d, uint8_t seg, uint8_t cell, float volts)
+{
+    CHECK(d != NULL);
+    CHECK(seg < NSMBS);
+    CHECK(cell < NCELLS);
+    d->acc.smb_ics[seg].cell.c_codes[cell] = code_for_volts(volts);
+}
+
+static void sil_clear_voltage_history(app_data_t *d)
+{
+    CHECK(d != NULL);
+    d->acc.valid_voltage_count = 0u;
+    d->acc.updated_voltage_count = 0u;
+    d->acc.usable_voltage_count = 0u;
+    d->acc.stale_voltage_count = 0u;
+    d->acc.pec_fail_cell_count = 0u;
+    d->acc.voltage_full_updated = false;
+    d->acc.voltage_full_usable = false;
+    d->acc.voltage_startup_scan_complete = false;
+    memset(d->acc.cell_voltage_mv, 0, sizeof(d->acc.cell_voltage_mv));
+    memset(d->acc.cell_voltage_valid, 0, sizeof(d->acc.cell_voltage_valid));
+    memset(d->acc.cell_voltage_last_update_ms, 0, sizeof(d->acc.cell_voltage_last_update_ms));
+    memset(d->acc.cell_voltage_consecutive_misses, 0, sizeof(d->acc.cell_voltage_consecutive_misses));
+    memset(d->acc.updated_voltage_mask, 0, sizeof(d->acc.updated_voltage_mask));
+    memset(d->acc.usable_voltage_mask, 0, sizeof(d->acc.usable_voltage_mask));
+    memset(d->acc.pec_fail_voltage_mask, 0, sizeof(d->acc.pec_fail_voltage_mask));
+    memset(d->acc.stale_voltage_mask, 0, sizeof(d->acc.stale_voltage_mask));
+}
+
+static void sil_expect_balancing_clear(const app_data_t *d)
+{
+    CHECK(d != NULL);
+    for(uint8_t ic = 0u; ic < NSMBS; ic++)
+    {
+        CHECK(d->acc.smb_ics[ic].tx_cfgb.dcc == 0u);
+    }
+}
+
+static void sil_run_current_sample(app_data_t *d, float current_a)
+{
+    CHECK(d != NULL);
+    fake_adc_set_current_a(current_a);
+    run_one_current_task_iteration(d);
+}
+
+static void sil_run_current_adc_status(app_data_t *d, HAL_StatusTypeDef high_status, HAL_StatusTypeDef low_status)
+{
+    CHECK(d != NULL);
+    fake_adc_set_status_sequence(high_status, low_status);
+    run_one_current_task_iteration(d);
+}
+
+static void sil_run_voltage_sample(app_data_t *d)
+{
+    CHECK(d != NULL);
+    run_one_adbms_task_iteration(d);
+}
+
+static void sil_prepare_ready_system(state_t state, float current_a, float cell_v)
+{
+    init_fake_app();
+    fake_tick = 0u;
+    bms_pin_state = GPIO_PIN_RESET;
+    app.state = state;
+    sil_attach_current_adcs(&app);
+    fill_nominal_pack(&app, cell_v);
+    fake_adbms_voltage_masks_full_update();
+    sil_run_current_sample(&app, current_a);
+    CHECK(app.current_valid == true);
+    CHECK(app.current_fault == false);
+    sil_run_voltage_sample(&app);
+    CHECK(app.voltage_valid == true);
+    CHECK(app.voltage_fault == false);
+    CHECK(app.temp_fault == false);
+    CHECK(app.bms_state == true);
+    CHECK(bms_pin_state == GPIO_PIN_SET);
+}
+
 static void test_task_iterations_with_injected_signals(void){
     static CAN_HandleTypeDef hcan;
     init_fake_app(); fill_nominal_pack(&app, 3.700f); app.board.canbus.hcan = &hcan; app.state = STATE_DISCARGE;
@@ -336,6 +560,64 @@ static void fake_adc_set_status_sequence(HAL_StatusTypeDef high_status, HAL_Stat
     fake_adc_read_counts[0] = 0u;
     fake_adc_read_counts[1] = 0u;
     fake_adc_read_index = 0u;
+}
+
+static void fake_adbms_voltage_masks_full_update(void)
+{
+    fake_adbms_use_custom_voltage_masks = false;
+    for(uint8_t ic = 0u; ic < ADBMS6830_MAX_TRACKED_ICS; ic++)
+    {
+        fake_adbms_updated_masks[ic] = 0x7FFFu;
+        fake_adbms_pec_masks[ic] = 0u;
+    }
+}
+
+static void fake_adbms_voltage_masks_all_missing(bool pec_fail)
+{
+    fake_adbms_use_custom_voltage_masks = true;
+    for(uint8_t ic = 0u; ic < ADBMS6830_MAX_TRACKED_ICS; ic++)
+    {
+        fake_adbms_updated_masks[ic] = 0u;
+        fake_adbms_pec_masks[ic] = pec_fail ? 0x7FFFu : 0u;
+    }
+}
+
+static void fake_adbms_voltage_masks_one_missing(uint8_t seg, uint8_t cell, bool pec_fail)
+{
+    fake_adbms_use_custom_voltage_masks = true;
+    for(uint8_t ic = 0u; ic < ADBMS6830_MAX_TRACKED_ICS; ic++)
+    {
+        fake_adbms_updated_masks[ic] = 0x7FFFu;
+        fake_adbms_pec_masks[ic] = 0u;
+    }
+
+    if((seg < ADBMS6830_MAX_TRACKED_ICS) && (cell < NCELLS))
+    {
+        uint16_t bit = (uint16_t)(1u << cell);
+        fake_adbms_updated_masks[seg] = (uint16_t)(fake_adbms_updated_masks[seg] & (uint16_t)~bit);
+        if(pec_fail)
+        {
+            fake_adbms_pec_masks[seg] = (uint16_t)(fake_adbms_pec_masks[seg] | bit);
+        }
+    }
+}
+
+static void fake_adc_set_current_a(float current_a)
+{
+    float sensor_high = 2.5f + (current_a * 0.0025f);
+    float sensor_low = 2.5f + (current_a * 0.040f);
+
+    if(sensor_low > 4.75f)
+    {
+        sensor_low = 4.75f;
+    }
+    else if(sensor_low < 0.25f)
+    {
+        sensor_low = 0.25f;
+    }
+
+    fake_adc_set_two_read_sequence(adc_count_for_sensor_voltage(sensor_high),
+                                   adc_count_for_sensor_voltage(sensor_low));
 }
 
 static void host_current_sensor_mark_fresh(current_sensor_t *sensor)
@@ -712,6 +994,1264 @@ static void test_voltage_fault_policy_and_stale_tolerance(void){
     CHECK(app.voltage_fault_state.undervoltage_fault == true);
     CHECK(app.voltage_fault_state.latched == true);
     CHECK(app.voltage_fault_state.latched_reason == VOLTAGE_FAULT_REASON_UV_HARD);
+}
+
+static void test_system_sil_boot_ready_and_bms_conjunction(void)
+{
+    init_fake_app();
+    fake_tick = 0u;
+    bms_pin_state = GPIO_PIN_RESET;
+    app.state = STATE_DISCARGE;
+    sil_attach_current_adcs(&app);
+    fill_nominal_pack(&app, 3.700f);
+    sil_clear_voltage_history(&app);
+
+    sil_run_current_sample(&app, 0.0f);
+    CHECK(app.current_valid == true);
+    CHECK(app.current_fault == false);
+    CHECK(app.bms_state == false);
+
+    fake_adbms_voltage_masks_all_missing(false);
+    sil_run_voltage_sample(&app);
+    CHECK(app.voltage_valid == false);
+    CHECK(app.voltage_read_fault == true);
+    CHECK(app.voltage_fault == true);
+    CHECK(app.voltage_fault_reason == VOLTAGE_FAULT_REASON_NOT_READY);
+    CHECK(app.bms_state == false);
+    CHECK(bms_pin_state == GPIO_PIN_RESET);
+
+    fake_adbms_voltage_masks_full_update();
+    sil_run_current_sample(&app, 0.0f);
+    sil_run_voltage_sample(&app);
+    CHECK(app.current_valid == true);
+    CHECK(app.voltage_valid == true);
+    CHECK(app.current_fault == false);
+    CHECK(app.voltage_fault == false);
+    CHECK(app.bms_state == true);
+    CHECK(bms_pin_state == GPIO_PIN_SET);
+
+    init_fake_app();
+    fake_tick = 0u;
+    app.state = STATE_DISCARGE;
+    sil_attach_current_adcs(&app);
+    fill_nominal_pack(&app, 3.700f);
+    fake_adbms_voltage_masks_full_update();
+    sil_run_current_adc_status(&app, HAL_TIMEOUT, HAL_OK);
+    CHECK(app.current_valid == false);
+    CHECK(app.current_fault == false);
+    sil_run_voltage_sample(&app);
+    CHECK(app.voltage_valid == true);
+    CHECK(app.bms_state == false);
+    CHECK(bms_pin_state == GPIO_PIN_RESET);
+
+    init_fake_app();
+    fake_tick = 0u;
+    app.state = STATE_DISCARGE;
+    sil_attach_current_adcs(&app);
+    fill_nominal_pack(&app, 3.700f);
+    sil_clear_voltage_history(&app);
+    fake_adbms_voltage_masks_all_missing(true);
+    sil_run_current_sample(&app, 0.0f);
+    sil_run_voltage_sample(&app);
+    CHECK(app.current_valid == true);
+    CHECK(app.voltage_valid == false);
+    CHECK(app.bms_state == false);
+    CHECK(bms_pin_state == GPIO_PIN_RESET);
+}
+
+static void test_system_sil_single_pec_miss_tolerated_then_recovers(void)
+{
+    sil_prepare_ready_system(STATE_DISCARGE, 0.0f, 3.700f);
+
+    fake_adbms_voltage_masks_one_missing(0u, 0u, true);
+    sil_run_voltage_sample(&app);
+    CHECK(app.voltage_valid == true);
+    CHECK(app.voltage_warning == true);
+    CHECK(app.voltage_fault == false);
+    CHECK(app.voltage_fault_reason == VOLTAGE_FAULT_REASON_PEC_FAILURE);
+    CHECK(app.voltage_usable_cell_count == AMS_EXPECTED_CELL_COUNT);
+    CHECK(app.voltage_updated_cell_count == (AMS_EXPECTED_CELL_COUNT - 1u));
+    CHECK(app.voltage_stale_cell_count == 0u);
+    CHECK(app.bms_state == true);
+    CHECK(bms_pin_state == GPIO_PIN_SET);
+
+    fake_adbms_voltage_masks_full_update();
+    sil_run_voltage_sample(&app);
+    CHECK(app.voltage_valid == true);
+    CHECK(app.voltage_warning == false);
+    CHECK(app.voltage_fault == false);
+    CHECK(app.voltage_fault_reason == VOLTAGE_FAULT_REASON_NONE);
+    CHECK(app.voltage_updated_cell_count == AMS_EXPECTED_CELL_COUNT);
+    CHECK(app.bms_state == true);
+}
+
+static void test_system_sil_persistent_voltage_stale_drops_bms_ok(void)
+{
+    sil_prepare_ready_system(STATE_DISCARGE, 0.0f, 3.700f);
+
+    fake_adbms_voltage_masks_one_missing(1u, 2u, true);
+    sil_run_voltage_sample(&app);
+    CHECK(app.voltage_valid == true);
+    CHECK(app.voltage_fault == false);
+    CHECK(app.bms_state == true);
+
+    sil_run_voltage_sample(&app);
+    CHECK(app.voltage_valid == true);
+    CHECK(app.voltage_fault == false);
+    CHECK(app.bms_state == true);
+
+    sil_run_voltage_sample(&app);
+    CHECK(app.voltage_valid == false);
+    CHECK(app.voltage_read_fault == true);
+    CHECK(app.voltage_fault == true);
+    CHECK(app.voltage_fault_reason == VOLTAGE_FAULT_REASON_STALE_SCAN);
+    CHECK(app.voltage_usable_cell_count == (AMS_EXPECTED_CELL_COUNT - 1u));
+    CHECK(app.voltage_stale_cell_count == 1u);
+    CHECK(app.bms_state == false);
+    CHECK(bms_pin_state == GPIO_PIN_RESET);
+
+    fake_adbms_voltage_masks_full_update();
+    sil_run_voltage_sample(&app);
+    CHECK(app.voltage_valid == true);
+    CHECK(app.voltage_fault == false);
+    CHECK(app.bms_state == true);
+    CHECK(bms_pin_state == GPIO_PIN_SET);
+}
+
+static void test_system_sil_charge_stop_blocks_balance_before_hard_ov(void)
+{
+    sil_prepare_ready_system(STATE_CHARGE, 0.0f, 3.700f);
+
+    sil_set_cell_voltage(&app, 0u, 0u, 4.180f);
+    fake_adbms_voltage_masks_full_update();
+    sil_run_voltage_sample(&app);
+    CHECK(app.voltage_valid == true);
+    CHECK(app.charge_voltage_stop == true);
+    CHECK(app.overvoltage_fault == false);
+    CHECK(app.voltage_fault == false);
+    CHECK(app.voltage_fault_latched == false);
+    CHECK(app.voltage_fault_reason == VOLTAGE_FAULT_REASON_CHARGE_STOP);
+    CHECK(app.bms_state == true);
+    sil_expect_balancing_clear(&app);
+
+    sil_set_cell_voltage(&app, 0u, 0u, 4.200f);
+    sil_run_voltage_sample(&app);
+    CHECK(app.overvoltage_fault == true);
+    CHECK(app.voltage_fault_latched == true);
+    CHECK(app.voltage_fault_latched_reason == VOLTAGE_FAULT_REASON_OV_HARD);
+    CHECK(app.bms_state == false);
+    CHECK(bms_pin_state == GPIO_PIN_RESET);
+    sil_expect_balancing_clear(&app);
+
+    sil_set_cell_voltage(&app, 0u, 0u, 3.700f);
+    sil_run_voltage_sample(&app);
+    CHECK(app.voltage_fault_latched == true);
+    CHECK(app.bms_state == false);
+}
+
+static void test_system_sil_voltage_uv_ov_severe_diagnostics_and_latch(void)
+{
+    sil_prepare_ready_system(STATE_DISCARGE, 0.0f, 3.700f);
+
+    sil_set_cell_voltage(&app, 2u, 3u, 2.800f);
+    fake_adbms_voltage_masks_full_update();
+    sil_run_voltage_sample(&app);
+    CHECK(app.voltage_warning == true);
+    CHECK(app.undervoltage_fault == false);
+    CHECK(app.voltage_fault == false);
+    CHECK(app.voltage_fault_reason == VOLTAGE_FAULT_REASON_UV_SOFT);
+    CHECK(app.bms_state == true);
+
+    sil_set_cell_voltage(&app, 2u, 3u, 2.500f);
+    sil_run_voltage_sample(&app);
+    CHECK(app.undervoltage_fault == true);
+    CHECK(app.voltage_fault_latched == true);
+    CHECK(app.voltage_fault_latched_reason == VOLTAGE_FAULT_REASON_UV_HARD);
+    CHECK(app.bms_state == false);
+
+    sil_prepare_ready_system(STATE_DISCARGE, 0.0f, 3.700f);
+    sil_set_cell_voltage(&app, 4u, 14u, 4.250f);
+    sil_run_voltage_sample(&app);
+    CHECK(app.overvoltage_fault == true);
+    CHECK(app.voltage_fault_latched == true);
+    CHECK(app.voltage_fault_latched_reason == VOLTAGE_FAULT_REASON_OV_SEVERE);
+    CHECK(app.bms_state == false);
+
+    sil_prepare_ready_system(STATE_DISCARGE, 0.0f, 3.700f);
+    sil_set_cell_voltage(&app, 3u, 9u, 2.300f);
+    sil_run_voltage_sample(&app);
+    CHECK(app.undervoltage_fault == true);
+    CHECK(app.voltage_fault_latched == true);
+    CHECK(app.voltage_fault_latched_reason == VOLTAGE_FAULT_REASON_UV_SEVERE);
+    CHECK(app.bms_state == false);
+}
+
+static void test_system_sil_current_warning_fast_trip_and_latch_persistence(void)
+{
+    sil_prepare_ready_system(STATE_DISCARGE, 0.0f, 3.700f);
+
+    sil_run_current_sample(&app, 75.0f);
+    CHECK(app.current_valid == true);
+    CHECK(app.current_overcurrent_warning == true);
+    CHECK(app.current_overcurrent_fault == false);
+    CHECK(app.current_fault == false);
+    sil_run_voltage_sample(&app);
+    CHECK(app.bms_state == true);
+    run_one_error_task_iteration(&app);
+    CHECK(app.soft_fault == true);
+    CHECK(app.hard_fault == false);
+    CHECK(app.bms_state == true);
+
+    for(int i = 0; i < 5; i++)
+    {
+        sil_run_current_sample(&app, 130.0f);
+    }
+    CHECK(app.current_valid == true);
+    CHECK(app.current_overcurrent_fault == true);
+    CHECK(app.current_fault_latched == true);
+    CHECK(app.current_fault_latched_reason == CURRENT_FAULT_REASON_DISCHARGE_FAST_OVERCURRENT);
+    CHECK(app.current_fault == true);
+    CHECK(app.bms_state == false);
+
+    fake_adbms_voltage_masks_full_update();
+    sil_run_voltage_sample(&app);
+    CHECK(app.voltage_valid == true);
+    CHECK(app.voltage_fault == false);
+    CHECK(app.bms_state == false);
+
+    for(int i = 0; i < 5; i++)
+    {
+        sil_run_current_sample(&app, 0.0f);
+    }
+    CHECK(app.current_valid == true);
+    CHECK(app.current_fault_latched == true);
+    CHECK(app.current_fault == true);
+    sil_run_voltage_sample(&app);
+    CHECK(app.bms_state == false);
+}
+
+static void test_system_sil_current_stale_adc_pair_fails_safe(void)
+{
+    sil_prepare_ready_system(STATE_DISCARGE, 0.0f, 3.700f);
+
+    sil_run_current_adc_status(&app, HAL_OK, HAL_TIMEOUT);
+    CHECK(app.current_valid == false);
+    CHECK(app.current_fault == false);
+    CHECK(app.bms_state == false);
+    CHECK(bms_pin_state == GPIO_PIN_RESET);
+    sil_run_voltage_sample(&app);
+    CHECK(app.bms_state == false);
+
+    for(int i = 0; i < 25; i++)
+    {
+        sil_run_current_adc_status(&app, HAL_OK, HAL_TIMEOUT);
+    }
+    CHECK(app.current_valid == false);
+    CHECK(app.current_sensor_fault == true);
+    CHECK(app.current_fault == true);
+    CHECK(app.current_fault_reason == CURRENT_FAULT_REASON_SENSOR_ADC_READ);
+    CHECK(app.bms_state == false);
+}
+
+static void test_system_sil_regen_and_charge_current_placeholders(void)
+{
+    sil_prepare_ready_system(STATE_DISCARGE, 0.0f, 3.700f);
+
+    sil_run_current_sample(&app, -6.0f);
+    CHECK(app.current_valid == true);
+    CHECK(app.current_overcurrent_warning == true);
+    CHECK(app.current_fault_reason == CURRENT_FAULT_REASON_REGEN_UNEXPECTED);
+    CHECK(app.current_fault == false);
+    sil_run_voltage_sample(&app);
+    CHECK(app.bms_state == true);
+
+    for(int i = 0; i < 5; i++)
+    {
+        sil_run_current_sample(&app, -35.0f);
+    }
+    CHECK(app.current_fault == true);
+    CHECK(app.current_fault_latched == true);
+    CHECK(app.current_fault_latched_reason == CURRENT_FAULT_REASON_REGEN_FAST_OVERCURRENT);
+    CHECK(app.bms_state == false);
+
+    sil_prepare_ready_system(STATE_CHARGE, 0.0f, 3.700f);
+    for(int i = 0; i < 5; i++)
+    {
+        sil_run_current_sample(&app, -16.0f);
+    }
+    CHECK(app.current_fault == true);
+    CHECK(app.current_fault_latched == true);
+    CHECK(app.current_fault_latched_reason == CURRENT_FAULT_REASON_CHARGE_FAST_OVERCURRENT);
+    CHECK(app.bms_state == false);
+}
+
+static void test_system_sil_2950_debug_non_safety_until_integrated(void)
+{
+    sil_prepare_ready_system(STATE_DISCARGE, 0.0f, 3.700f);
+
+    app.acc.apm.spi_debug.enabled = true;
+    app.acc.apm.spi_debug.error_count = 1234u;
+    app.acc.apm.spi_debug.last_status = HAL_TIMEOUT;
+    app.acc.apm.spi_debug.last_xfer_status = HAL_TIMEOUT;
+
+    fake_adbms_voltage_masks_full_update();
+    sil_run_voltage_sample(&app);
+    CHECK(app.voltage_valid == true);
+    CHECK(app.voltage_fault == false);
+    CHECK(app.current_valid == true);
+    CHECK(app.current_fault == false);
+    CHECK(app.bms_state == true);
+    CHECK(app.acc.apm.spi_debug.error_count == 1234u);
+}
+
+static void test_system_sil_combined_fault_precedence_and_reset_path(void)
+{
+    sil_prepare_ready_system(STATE_DISCARGE, 0.0f, 3.700f);
+
+    for(int i = 0; i < 5; i++)
+    {
+        sil_run_current_sample(&app, 130.0f);
+    }
+    CHECK(app.current_fault_latched == true);
+    CHECK(app.current_fault_latched_reason == CURRENT_FAULT_REASON_DISCHARGE_FAST_OVERCURRENT);
+    CHECK(app.bms_state == false);
+
+    sil_set_cell_voltage(&app, 1u, 1u, 4.250f);
+    fake_adbms_voltage_masks_full_update();
+    sil_run_voltage_sample(&app);
+    CHECK(app.current_fault_latched == true);
+    CHECK(app.voltage_fault_latched == true);
+    CHECK(app.voltage_fault_latched_reason == VOLTAGE_FAULT_REASON_OV_SEVERE);
+    CHECK(app.bms_state == false);
+
+    sil_set_cell_voltage(&app, 1u, 1u, 3.700f);
+    voltage_fault_reset_latch(&app.voltage_fault_state);
+    sil_run_voltage_sample(&app);
+    CHECK(app.voltage_fault == false);
+    CHECK(app.current_fault == true);
+    CHECK(app.bms_state == false);
+
+    current_fault_reset_latch(&app.current_fault_state);
+    for(int i = 0; i < 3; i++)
+    {
+        sil_run_current_sample(&app, 0.0f);
+    }
+    sil_run_voltage_sample(&app);
+    CHECK(app.current_fault == false);
+    CHECK(app.voltage_fault == false);
+    CHECK(app.current_valid == true);
+    CHECK(app.voltage_valid == true);
+    CHECK(app.bms_state == true);
+    CHECK(bms_pin_state == GPIO_PIN_SET);
+}
+
+static void test_system_sil_harsh_timeline_no_false_enable(void)
+{
+    init_fake_app();
+    fake_tick = 0u;
+    bms_pin_state = GPIO_PIN_RESET;
+    app.state = STATE_START;
+    sil_attach_current_adcs(&app);
+    fill_nominal_pack(&app, 3.700f);
+    sil_clear_voltage_history(&app);
+
+    fake_adbms_voltage_masks_all_missing(true);
+    sil_run_current_sample(&app, 0.3f);
+    sil_run_voltage_sample(&app);
+    CHECK(app.bms_state == false);
+    CHECK(app.voltage_fault == true);
+
+    fake_adbms_voltage_masks_full_update();
+    sil_run_current_sample(&app, 0.3f);
+    sil_run_voltage_sample(&app);
+    CHECK(app.bms_state == true);
+
+    fake_adbms_voltage_masks_one_missing(0u, 4u, true);
+    sil_run_voltage_sample(&app);
+    CHECK(app.voltage_warning == true);
+    CHECK(app.voltage_fault == false);
+    CHECK(app.bms_state == true);
+
+    sil_run_current_sample(&app, 2.5f);
+    sil_run_current_sample(&app, 2.5f);
+    CHECK(app.current_fault == true);
+    CHECK(app.current_fault_latched == true);
+    CHECK(app.current_fault_latched_reason == CURRENT_FAULT_REASON_PRECHARGE_FAST_OVERCURRENT);
+    CHECK(app.bms_state == false);
+
+    app.state = STATE_DISCARGE;
+    current_fault_reset_latch(&app.current_fault_state);
+    for(int i = 0; i < 3; i++)
+    {
+        sil_run_current_sample(&app, 0.0f);
+    }
+    fake_adbms_voltage_masks_full_update();
+    sil_run_voltage_sample(&app);
+    CHECK(app.current_fault == false);
+    CHECK(app.voltage_fault == false);
+    CHECK(app.bms_state == true);
+
+    fake_adbms_voltage_masks_all_missing(true);
+    sil_run_voltage_sample(&app);
+    CHECK(app.voltage_valid == true);
+    CHECK(app.bms_state == true);
+    sil_run_voltage_sample(&app);
+    CHECK(app.voltage_valid == true);
+    CHECK(app.bms_state == true);
+    sil_run_voltage_sample(&app);
+    CHECK(app.voltage_fault == true);
+    CHECK(app.bms_state == false);
+}
+
+
+static void test_system_sil_current_invalid_immediate_bms_drop_and_recovery(void)
+{
+    sil_prepare_ready_system(STATE_DISCARGE, 0.0f, 3.700f);
+    CHECK(app.bms_state == true);
+    CHECK(bms_pin_state == GPIO_PIN_SET);
+
+    sil_run_current_adc_status(&app, HAL_TIMEOUT, HAL_OK);
+    CHECK(app.current_valid == false);
+    CHECK(app.current_fault == false);
+    CHECK(app.current_meas_reason == CURRENT_SENSOR_REASON_ADC_READ);
+    CHECK(app.bms_state == false);
+    CHECK(bms_pin_state == GPIO_PIN_RESET);
+
+    sil_run_current_sample(&app, 0.0f);
+    CHECK(app.current_valid == true);
+    CHECK(app.current_fault == false);
+    CHECK(app.bms_state == false);
+
+    fake_adbms_voltage_masks_full_update();
+    sil_run_voltage_sample(&app);
+    CHECK(app.voltage_valid == true);
+    CHECK(app.current_valid == true);
+    CHECK(app.bms_state == true);
+    CHECK(bms_pin_state == GPIO_PIN_SET);
+}
+
+static void test_system_sil_hard_fault_and_corrupt_smb_config_fail_closed(void)
+{
+    sil_prepare_ready_system(STATE_CHARGE, 0.0f, 3.700f);
+    CHECK(app.bms_state == true);
+
+    app.hard_fault = true;
+    sil_set_cell_voltage(&app, 0u, 1u, 4.000f);
+    fake_adbms_voltage_masks_full_update();
+    sil_run_voltage_sample(&app);
+    CHECK(app.voltage_valid == true);
+    CHECK(app.voltage_fault == false);
+    CHECK(app.bms_state == false);
+    CHECK(bms_pin_state == GPIO_PIN_RESET);
+    sil_expect_balancing_clear(&app);
+
+    app.hard_fault = false;
+    fake_adbms_voltage_masks_full_update();
+    sil_run_voltage_sample(&app);
+    CHECK(app.bms_state == true);
+
+    init_fake_app();
+    fake_tick = 0u;
+    app.state = STATE_DISCARGE;
+    sil_attach_current_adcs(&app);
+    fill_nominal_pack(&app, 3.700f);
+    app.acc.smb.num_ics = 2;
+    app.acc.smb.ics = app.acc.smb_ics;
+    fake_adbms_voltage_masks_full_update();
+    sil_run_current_sample(&app, 0.0f);
+    sil_run_voltage_sample(&app);
+    CHECK(app.current_valid == true);
+    CHECK(app.voltage_valid == false);
+    CHECK(app.voltage_fault == true);
+    CHECK(app.voltage_fault_reason == VOLTAGE_FAULT_REASON_PARTIAL_SCAN);
+    CHECK(app.voltage_updated_cell_count == (uint16_t)(2u * NCELLS));
+    CHECK(app.bms_state == false);
+
+    init_fake_app();
+    fake_tick = 0u;
+    app.state = STATE_DISCARGE;
+    sil_attach_current_adcs(&app);
+    fill_nominal_pack(&app, 3.700f);
+    app.acc.smb.ics = NULL;
+    fake_adbms_voltage_masks_full_update();
+    sil_run_current_sample(&app, 0.0f);
+    sil_run_voltage_sample(&app);
+    CHECK(app.voltage_valid == true);
+    CHECK(app.voltage_fault == false);
+    CHECK(app.bms_state == true);
+}
+
+static void test_system_sil_voltage_threshold_exact_edges(void)
+{
+    sil_prepare_ready_system(STATE_CHARGE, 0.0f, 3.700f);
+    sil_set_cell_voltage(&app, 0u, 0u, 4.179f);
+    fake_adbms_voltage_masks_full_update();
+    sil_run_voltage_sample(&app);
+    CHECK(app.charge_voltage_stop == false);
+    CHECK(app.overvoltage_fault == false);
+    CHECK(app.voltage_fault == false);
+    CHECK(app.bms_state == true);
+
+    sil_prepare_ready_system(STATE_CHARGE, 0.0f, 3.700f);
+    sil_set_cell_voltage(&app, 0u, 0u, 4.180f);
+    sil_run_voltage_sample(&app);
+    CHECK(app.charge_voltage_stop == true);
+    CHECK(app.overvoltage_fault == false);
+    CHECK(app.voltage_fault == false);
+    CHECK(app.voltage_fault_reason == VOLTAGE_FAULT_REASON_CHARGE_STOP);
+    CHECK(app.bms_state == true);
+
+    sil_prepare_ready_system(STATE_CHARGE, 0.0f, 3.700f);
+    sil_set_cell_voltage(&app, 0u, 0u, 4.199f);
+    sil_run_voltage_sample(&app);
+    CHECK(app.charge_voltage_stop == true);
+    CHECK(app.overvoltage_fault == false);
+    CHECK(app.voltage_fault == false);
+    CHECK(app.bms_state == true);
+
+    sil_prepare_ready_system(STATE_CHARGE, 0.0f, 3.700f);
+    sil_set_cell_voltage(&app, 0u, 0u, 4.200f);
+    sil_run_voltage_sample(&app);
+    CHECK(app.overvoltage_fault == true);
+    CHECK(app.voltage_fault_latched == true);
+    CHECK(app.voltage_fault_latched_reason == VOLTAGE_FAULT_REASON_OV_HARD);
+    CHECK(app.bms_state == false);
+
+    sil_prepare_ready_system(STATE_DISCARGE, 0.0f, 3.700f);
+    sil_set_cell_voltage(&app, 1u, 1u, 2.501f);
+    sil_run_voltage_sample(&app);
+    CHECK(app.voltage_warning == true);
+    CHECK(app.undervoltage_fault == false);
+    CHECK(app.voltage_fault == false);
+    CHECK(app.voltage_fault_reason == VOLTAGE_FAULT_REASON_UV_SOFT);
+    CHECK(app.bms_state == true);
+
+    sil_prepare_ready_system(STATE_DISCARGE, 0.0f, 3.700f);
+    sil_set_cell_voltage(&app, 1u, 1u, 2.500f);
+    sil_run_voltage_sample(&app);
+    CHECK(app.undervoltage_fault == true);
+    CHECK(app.voltage_fault_latched == true);
+    CHECK(app.voltage_fault_latched_reason == VOLTAGE_FAULT_REASON_UV_HARD);
+    CHECK(app.bms_state == false);
+}
+
+static void test_system_sil_charger_disable_from_dynamic_gates(void)
+{
+    static CAN_HandleTypeDef hcan;
+
+    sil_prepare_ready_system(STATE_CHARGE, 0.0f, 3.700f);
+    app.board.canbus.hcan = &hcan;
+    charger_init(&app.board.charger, &app.board.canbus);
+    app.board.charger.last_rx_tick = fake_tick;
+    sil_set_cell_voltage(&app, 0u, 0u, 4.180f);
+    fake_adbms_voltage_masks_full_update();
+    sil_run_voltage_sample(&app);
+    CHECK(app.charge_voltage_stop == true);
+    CHECK(app.bms_state == true);
+    tx_count = 0u;
+    tx_free_level = 3u;
+    run_one_canbus_task_iteration(&app);
+    CHECK(tx_count == 1u);
+    CHECK(tx_log[0].data[4] == 1u);
+    CHECK(app.bms_state == false);
+
+    sil_prepare_ready_system(STATE_CHARGE, 0.0f, 3.700f);
+    app.board.canbus.hcan = &hcan;
+    charger_init(&app.board.charger, &app.board.canbus);
+    app.board.charger.last_rx_tick = fake_tick;
+    sil_run_current_sample(&app, -11.0f);
+    CHECK(app.current_overcurrent_warning == true);
+    CHECK(app.current_fault == false);
+    CHECK(app.bms_state == true);
+    tx_count = 0u;
+    tx_free_level = 3u;
+    run_one_canbus_task_iteration(&app);
+    CHECK(tx_count == 1u);
+    CHECK(tx_log[0].data[4] == 0u);
+    CHECK(app.bms_state == true);
+
+    sil_prepare_ready_system(STATE_CHARGE, 0.0f, 3.700f);
+    app.board.canbus.hcan = &hcan;
+    charger_init(&app.board.charger, &app.board.canbus);
+    app.board.charger.last_rx_tick = fake_tick;
+    sil_run_current_adc_status(&app, HAL_OK, HAL_TIMEOUT);
+    CHECK(app.current_valid == false);
+    CHECK(app.bms_state == false);
+    tx_count = 0u;
+    tx_free_level = 3u;
+    run_one_canbus_task_iteration(&app);
+    CHECK(tx_count == 1u);
+    CHECK(tx_log[0].data[4] == 1u);
+}
+
+static void test_system_sil_deterministic_fault_injection_invariants(void)
+{
+    for(uint32_t i = 0u; i < 192u; i++)
+    {
+        init_fake_app();
+        fake_tick = 0u;
+        bms_pin_state = GPIO_PIN_RESET;
+        app.state = (i % 5u == 0u) ? STATE_CHARGE :
+                    (i % 5u == 1u) ? STATE_START :
+                    (i % 5u == 2u) ? STATE_BALANCE : STATE_DISCARGE;
+        sil_attach_current_adcs(&app);
+        fill_nominal_pack(&app, 3.700f);
+        sil_clear_voltage_history(&app);
+
+        switch(i % 12u)
+        {
+            case 0u: sil_set_cell_voltage(&app, (uint8_t)(i % NSMBS), (uint8_t)(i % NCELLS), 4.250f); break;
+            case 1u: sil_set_cell_voltage(&app, (uint8_t)(i % NSMBS), (uint8_t)(i % NCELLS), 4.200f); break;
+            case 2u: sil_set_cell_voltage(&app, (uint8_t)(i % NSMBS), (uint8_t)(i % NCELLS), 4.180f); break;
+            case 3u: sil_set_cell_voltage(&app, (uint8_t)(i % NSMBS), (uint8_t)(i % NCELLS), 2.300f); break;
+            case 4u: sil_set_cell_voltage(&app, (uint8_t)(i % NSMBS), (uint8_t)(i % NCELLS), 2.500f); break;
+            case 5u: sil_set_cell_voltage(&app, (uint8_t)(i % NSMBS), (uint8_t)(i % NCELLS), 2.800f); break;
+            default: break;
+        }
+
+        if((i % 17u) == 0u)
+        {
+            fake_adbms_voltage_masks_all_missing(true);
+        }
+        else if((i % 13u) == 0u)
+        {
+            fake_adbms_voltage_masks_one_missing((uint8_t)(i % NSMBS), (uint8_t)(i % NCELLS), true);
+        }
+        else
+        {
+            fake_adbms_voltage_masks_full_update();
+        }
+
+        if((i % 19u) == 0u)
+        {
+            app.hard_fault = true;
+        }
+        if((i % 23u) == 0u)
+        {
+            app.fuse_fault = true;
+        }
+        if((i % 29u) == 0u)
+        {
+            app.charger_fault = true;
+        }
+
+        if((i % 31u) == 0u)
+        {
+            sil_run_current_adc_status(&app, HAL_TIMEOUT, HAL_OK);
+        }
+        else
+        {
+            float current_a;
+            switch(i % 10u)
+            {
+                case 0u: current_a = 0.0f; break;
+                case 1u: current_a = 75.0f; break;
+                case 2u: current_a = 130.0f; break;
+                case 3u: current_a = 260.0f; break;
+                case 4u: current_a = -6.0f; break;
+                case 5u: current_a = -11.0f; break;
+                case 6u: current_a = -16.0f; break;
+                case 7u: current_a = -35.0f; break;
+                case 8u: current_a = 0.9f; break;
+                default: current_a = 2.5f; break;
+            }
+            sil_run_current_sample(&app, current_a);
+        }
+
+        sil_run_voltage_sample(&app);
+
+        if(app.bms_state)
+        {
+            CHECK(bms_pin_state == GPIO_PIN_SET);
+            CHECK(app.current_valid == true);
+            CHECK(app.current_fault == false);
+            CHECK(app.voltage_valid == true);
+            CHECK(app.voltage_fault == false);
+            CHECK(app.temp_fault == false);
+            CHECK(app.fuse_fault == false);
+            CHECK(app.charger_fault == false);
+            CHECK(app.hard_fault == false);
+        }
+        else
+        {
+            CHECK(bms_pin_state == GPIO_PIN_RESET);
+        }
+
+        if(app.voltage_fault_latched || app.current_fault_latched || app.hard_fault || app.fuse_fault)
+        {
+            CHECK(app.bms_state == false);
+        }
+        if(!app.current_valid || !app.voltage_valid)
+        {
+            CHECK(app.bms_state == false);
+        }
+    }
+}
+
+
+#define SIL_CHECK(ctx, cond) do{ if(!(cond)){ fprintf(stderr,"FAIL %s:%d [%s]: %s\n", __FILE__, __LINE__, (ctx), #cond); exit(1);} }while(0)
+
+static uint32_t sil_rng_next(uint32_t *state)
+{
+    *state = (*state * 1664525u) + 1013904223u;
+    return *state;
+}
+
+static void sil_write_all_cells(app_data_t *d, float volts)
+{
+    CHECK(d != NULL);
+    for(uint8_t ic = 0u; ic < NSMBS; ic++)
+    {
+        for(uint8_t cell = 0u; cell < NCELLS; cell++)
+        {
+            d->acc.smb_ics[ic].cell.c_codes[cell] = code_for_volts(volts);
+        }
+    }
+}
+
+static void sil_prepare_cli_capture(void)
+{
+    cli_capture_clear();
+    cli_device_init(&app.board.cli, &cli_dummy_uart);
+    cli = &app.board.cli;
+    data = &app;
+}
+
+static void sil_assert_diagnostics_not_generic(const app_data_t *d, const char *ctx)
+{
+    SIL_CHECK(ctx, d != NULL);
+
+    if(d->voltage_fault || !d->voltage_valid || d->voltage_fault_latched)
+    {
+        SIL_CHECK(ctx, d->voltage_fault_reason != VOLTAGE_FAULT_REASON_NONE ||
+                       d->voltage_fault_latched_reason != VOLTAGE_FAULT_REASON_NONE);
+        SIL_CHECK(ctx, strcmp(voltage_fault_reason_str(d->voltage_fault_reason), "unknown") != 0);
+    }
+
+    if(d->current_fault || !d->current_valid || d->current_fault_latched)
+    {
+        SIL_CHECK(ctx, d->current_fault_reason != CURRENT_FAULT_REASON_NONE ||
+                       d->current_fault_latched_reason != CURRENT_FAULT_REASON_NONE ||
+                       d->current_meas_reason != CURRENT_SENSOR_REASON_OK);
+        SIL_CHECK(ctx, strcmp(current_fault_reason_str(d->current_fault_reason), "unknown") != 0);
+    }
+}
+
+static void sil_assert_safety_invariants(const app_data_t *d, const char *ctx)
+{
+    SIL_CHECK(ctx, d != NULL);
+
+    if(d->bms_state)
+    {
+        SIL_CHECK(ctx, bms_pin_state == GPIO_PIN_SET);
+        SIL_CHECK(ctx, d->current_valid == true);
+        SIL_CHECK(ctx, d->voltage_valid == true);
+        SIL_CHECK(ctx, d->current_fault == false);
+        SIL_CHECK(ctx, d->current_sensor_fault == false);
+        SIL_CHECK(ctx, d->current_overcurrent_fault == false);
+        SIL_CHECK(ctx, d->current_fault_latched == false);
+        SIL_CHECK(ctx, d->voltage_fault == false);
+        SIL_CHECK(ctx, d->voltage_read_fault == false);
+        SIL_CHECK(ctx, d->overvoltage_fault == false);
+        SIL_CHECK(ctx, d->undervoltage_fault == false);
+        SIL_CHECK(ctx, d->voltage_fault_latched == false);
+        SIL_CHECK(ctx, d->temp_fault == false);
+        SIL_CHECK(ctx, d->fuse_fault == false);
+        SIL_CHECK(ctx, d->charger_fault == false);
+        SIL_CHECK(ctx, d->hard_fault == false);
+    }
+    else
+    {
+        SIL_CHECK(ctx, bms_pin_state == GPIO_PIN_RESET);
+    }
+
+    if(!d->current_valid || !d->voltage_valid || d->hard_fault || d->fuse_fault ||
+       d->temp_fault || d->charger_fault || d->current_fault || d->current_fault_latched ||
+       d->voltage_fault || d->voltage_fault_latched || d->overvoltage_fault ||
+       d->undervoltage_fault)
+    {
+        SIL_CHECK(ctx, d->bms_state == false);
+    }
+
+    if(d->voltage_valid)
+    {
+        SIL_CHECK(ctx, d->voltage_usable_cell_count == AMS_EXPECTED_CELL_COUNT);
+    }
+    if(d->voltage_fault_latched)
+    {
+        SIL_CHECK(ctx, d->voltage_fault_latched_reason != VOLTAGE_FAULT_REASON_NONE);
+    }
+    if(d->current_fault_latched)
+    {
+        SIL_CHECK(ctx, d->current_fault_latched_reason != CURRENT_FAULT_REASON_NONE);
+    }
+
+    sil_assert_diagnostics_not_generic(d, ctx);
+}
+
+static void sil_run_can_charge_iteration(app_data_t *d, CAN_HandleTypeDef *hcan)
+{
+    CHECK(d != NULL);
+    d->board.canbus.hcan = hcan;
+    if(d->state == STATE_CHARGE)
+    {
+        if(d->board.charger.last_rx_tick == 0u)
+        {
+            d->board.charger.last_rx_tick = fake_tick;
+        }
+    }
+    tx_count = 0u;
+    tx_free_level = 3u;
+    run_one_canbus_task_iteration(d);
+}
+
+static void test_system_sil_task_order_permutations_fail_closed(void)
+{
+    static CAN_HandleTypeDef hcan;
+
+    sil_prepare_ready_system(STATE_CHARGE, 0.0f, 3.700f);
+    app.board.canbus.hcan = &hcan;
+    charger_init(&app.board.charger, &app.board.canbus);
+    app.board.charger.last_rx_tick = fake_tick;
+
+    /* Explicit order from the bring-up concern: current kills BMS, ADBMS and charger must not re-enable it. */
+    sil_run_current_adc_status(&app, HAL_TIMEOUT, HAL_OK);
+    CHECK(app.current_valid == false);
+    CHECK(app.bms_state == false);
+    sil_run_voltage_sample(&app);
+    CHECK(app.voltage_valid == true);
+    CHECK(app.bms_state == false);
+    sil_run_can_charge_iteration(&app, &hcan);
+    CHECK(app.bms_state == false);
+    CHECK(tx_count == 1u && tx_log[0].data[4] == 1u);
+    sil_assert_safety_invariants(&app, "current_bad_then_voltage_then_charger");
+
+    /* Same observed current fault, but swap later task order. */
+    sil_prepare_ready_system(STATE_CHARGE, 0.0f, 3.700f);
+    app.board.canbus.hcan = &hcan;
+    charger_init(&app.board.charger, &app.board.canbus);
+    app.board.charger.last_rx_tick = fake_tick;
+    sil_run_current_adc_status(&app, HAL_TIMEOUT, HAL_OK);
+    sil_run_can_charge_iteration(&app, &hcan);
+    CHECK(app.bms_state == false);
+    sil_run_voltage_sample(&app);
+    CHECK(app.bms_state == false);
+    sil_assert_safety_invariants(&app, "current_bad_then_charger_then_voltage");
+
+    /* A hard-fault source aggregated by error_task cannot be revived by later tasks. */
+    sil_prepare_ready_system(STATE_CHARGE, 0.0f, 3.700f);
+    app.board.canbus.hcan = &hcan;
+    charger_init(&app.board.charger, &app.board.canbus);
+    app.board.charger.last_rx_tick = fake_tick;
+    app.fuse_fault = true;
+    run_one_error_task_iteration(&app);
+    CHECK(app.hard_fault == true);
+    CHECK(app.bms_state == false);
+    sil_run_voltage_sample(&app);
+    CHECK(app.bms_state == false);
+    sil_run_current_sample(&app, 0.0f);
+    CHECK(app.bms_state == false);
+    sil_run_can_charge_iteration(&app, &hcan);
+    CHECK(app.bms_state == false);
+    sil_assert_safety_invariants(&app, "hard_fault_order_permutation");
+
+    /* Latched OV cannot be cleared by a healthy current sample or charger tick. */
+    sil_prepare_ready_system(STATE_CHARGE, 0.0f, 3.700f);
+    app.board.canbus.hcan = &hcan;
+    charger_init(&app.board.charger, &app.board.canbus);
+    app.board.charger.last_rx_tick = fake_tick;
+    sil_set_cell_voltage(&app, 0u, 0u, 4.200f);
+    sil_run_voltage_sample(&app);
+    CHECK(app.voltage_fault_latched == true);
+    CHECK(app.bms_state == false);
+    sil_run_current_sample(&app, 0.0f);
+    CHECK(app.bms_state == false);
+    sil_run_can_charge_iteration(&app, &hcan);
+    CHECK(app.bms_state == false);
+    sil_assert_safety_invariants(&app, "latched_voltage_order_permutation");
+}
+
+static void test_system_sil_recovery_and_latch_reset_paths(void)
+{
+    sil_prepare_ready_system(STATE_DISCARGE, 0.0f, 3.700f);
+    sil_run_current_sample(&app, 75.0f);
+    CHECK(app.current_overcurrent_warning == true);
+    CHECK(app.current_fault == false);
+    CHECK(app.bms_state == true);
+    sil_run_current_sample(&app, 0.0f);
+    CHECK(app.current_overcurrent_warning == false);
+    CHECK(app.current_fault_reason == CURRENT_FAULT_REASON_NONE);
+    CHECK(app.bms_state == true);
+
+    sil_prepare_ready_system(STATE_CHARGE, 0.0f, 3.700f);
+    sil_set_cell_voltage(&app, 0u, 0u, 4.180f);
+    sil_run_voltage_sample(&app);
+    CHECK(app.charge_voltage_stop == true);
+    CHECK(app.voltage_fault == false);
+    CHECK(app.bms_state == true);
+    sil_set_cell_voltage(&app, 0u, 0u, 3.700f);
+    fake_adbms_voltage_masks_full_update();
+    sil_run_voltage_sample(&app);
+    CHECK(app.charge_voltage_stop == false);
+    CHECK(app.voltage_fault_reason == VOLTAGE_FAULT_REASON_NONE);
+    CHECK(app.bms_state == true);
+
+    sil_prepare_ready_system(STATE_DISCARGE, 0.0f, 3.700f);
+    sil_set_cell_voltage(&app, 1u, 1u, 4.200f);
+    sil_run_voltage_sample(&app);
+    CHECK(app.voltage_fault_latched == true);
+    CHECK(app.bms_state == false);
+    sil_set_cell_voltage(&app, 1u, 1u, 3.700f);
+    sil_run_voltage_sample(&app);
+    CHECK(app.voltage_fault_latched == true);
+    CHECK(app.bms_state == false);
+    voltage_fault_reset_latch(&app.voltage_fault_state);
+    sil_run_current_sample(&app, 0.0f);
+    sil_run_voltage_sample(&app);
+    CHECK(app.voltage_fault_latched == false);
+    CHECK(app.voltage_fault == false);
+    CHECK(app.bms_state == true);
+
+    sil_prepare_ready_system(STATE_DISCARGE, 0.0f, 3.700f);
+    for(uint8_t i = 0u; i < 5u; i++)
+    {
+        sil_run_current_sample(&app, 130.0f);
+    }
+    CHECK(app.current_fault_latched == true);
+    CHECK(app.bms_state == false);
+    for(uint8_t i = 0u; i < 3u; i++)
+    {
+        sil_run_current_sample(&app, 0.0f);
+    }
+    CHECK(app.current_fault_latched == true);
+    CHECK(app.bms_state == false);
+    current_fault_reset_latch(&app.current_fault_state);
+    sil_run_current_sample(&app, 0.0f);
+    sil_run_voltage_sample(&app);
+    CHECK(app.current_fault_latched == false);
+    CHECK(app.current_fault == false);
+    CHECK(app.bms_state == true);
+}
+
+static void test_system_sil_current_boundary_timing_edges(void)
+{
+    current_fault_state_t st;
+    current_fault_init(&st);
+
+    current_fault_update(&st, CURRENT_FAULT_MODE_DRIVE, 86.0f, true,
+                         CURRENT_SENSOR_REASON_OK, 499u);
+    CHECK(st.pending == true);
+    CHECK(st.confirmed == false);
+    CHECK(st.latched == false);
+    current_fault_update(&st, CURRENT_FAULT_MODE_DRIVE, 86.0f, true,
+                         CURRENT_SENSOR_REASON_OK, 1u);
+    CHECK(st.confirmed == true);
+    CHECK(st.latched == true);
+    CHECK(st.latched_reason == CURRENT_FAULT_REASON_DISCHARGE_OVERCURRENT);
+
+    current_fault_init(&st);
+    current_fault_update(&st, CURRENT_FAULT_MODE_DRIVE, 121.0f, true,
+                         CURRENT_SENSOR_REASON_OK, 99u);
+    CHECK(st.pending == true);
+    CHECK(st.confirmed == false);
+    current_fault_update(&st, CURRENT_FAULT_MODE_DRIVE, 121.0f, true,
+                         CURRENT_SENSOR_REASON_OK, 1u);
+    CHECK(st.confirmed == true);
+    CHECK(st.latched_reason == CURRENT_FAULT_REASON_DISCHARGE_FAST_OVERCURRENT);
+
+    current_fault_init(&st);
+    current_fault_update(&st, CURRENT_FAULT_MODE_CHARGE, -12.5f, true,
+                         CURRENT_SENSOR_REASON_OK, 499u);
+    CHECK(st.confirmed == false);
+    current_fault_update(&st, CURRENT_FAULT_MODE_CHARGE, -12.5f, true,
+                         CURRENT_SENSOR_REASON_OK, 1u);
+    CHECK(st.confirmed == true);
+    CHECK(st.latched_reason == CURRENT_FAULT_REASON_CHARGE_OVERCURRENT);
+
+    sil_prepare_ready_system(STATE_DISCARGE, 0.0f, 3.700f);
+    for(uint8_t i = 0u; i < 4u; i++)
+    {
+        sil_run_current_sample(&app, 130.0f);
+    }
+    CHECK(app.current_overcurrent_pending == true);
+    CHECK(app.current_overcurrent_fault == false);
+    CHECK(app.current_fault_latched == false);
+    sil_run_current_sample(&app, 130.0f);
+    CHECK(app.current_overcurrent_fault == true);
+    CHECK(app.current_fault_latched == true);
+
+    sil_prepare_ready_system(STATE_CHARGE, 0.0f, 3.700f);
+    for(uint8_t i = 0u; i < 24u; i++)
+    {
+        sil_run_current_sample(&app, -12.5f);
+    }
+    CHECK(app.current_overcurrent_pending == true);
+    CHECK(app.current_fault_latched == false);
+    sil_run_current_sample(&app, -12.5f);
+    CHECK(app.current_fault_latched == true);
+    CHECK(app.current_fault_latched_reason == CURRENT_FAULT_REASON_CHARGE_OVERCURRENT);
+}
+
+static void test_system_sil_cli_can_diagnostic_consistency(void)
+{
+    static CAN_HandleTypeDef hcan;
+
+    sil_prepare_ready_system(STATE_DISCARGE, 0.0f, 3.700f);
+    fake_adbms_voltage_masks_one_missing(2u, 3u, true);
+    sil_run_voltage_sample(&app);
+    sil_run_voltage_sample(&app);
+    sil_run_voltage_sample(&app);
+    CHECK(app.voltage_fault == true);
+    CHECK(app.voltage_fault_reason == VOLTAGE_FAULT_REASON_STALE_SCAN);
+    CHECK(app.bms_state == false);
+
+    sil_prepare_cli_capture();
+    CHECK(get_faults(0, NULL) == 0);
+    CHECK(strstr(cli_capture, "voltage: fault:1") != NULL);
+    CHECK(strstr(cli_capture, "valid:0") != NULL);
+    CHECK(strstr(cli_capture, "stale_scan") != NULL);
+
+    sil_prepare_cli_capture();
+    CHECK(get_voltage(0, NULL) == 0);
+    CHECK(strstr(cli_capture, "Voltage valid:0 fault:1") != NULL);
+    CHECK(strstr(cli_capture, "reason:stale_scan") != NULL);
+    CHECK(strstr(cli_capture, "stale:") != NULL);
+
+    app.board.canbus.hcan = &hcan;
+    tx_count = 0u;
+    tx_free_level = 3u;
+    CHECK(send_ecu_ams_voltages(&app.board.canbus, &app) == HAL_OK);
+    CHECK(tx_count == 25u);
+    uint32_t frame = (uint32_t)(2u * 5u) + (uint32_t)(3u / 3u);
+    uint8_t word = (uint8_t)(3u % 3u);
+    CHECK(word_at(frame, word + 1u) == 0u);
+
+    sil_prepare_ready_system(STATE_DISCARGE, 0.0f, 3.700f);
+    sil_run_current_adc_status(&app, HAL_TIMEOUT, HAL_OK);
+    for(uint8_t i = 0u; i < 25u; i++)
+    {
+        sil_run_current_adc_status(&app, HAL_TIMEOUT, HAL_OK);
+    }
+    CHECK(app.current_fault == true);
+    CHECK(app.current_fault_reason == CURRENT_FAULT_REASON_SENSOR_ADC_READ);
+    sil_prepare_cli_capture();
+    CHECK(get_current(0, NULL) == 0);
+    CHECK(strstr(cli_capture, "valid:0") != NULL);
+    CHECK(strstr(cli_capture, "reason:adc_read") != NULL || strstr(cli_capture, "sensor_adc_read") != NULL);
+}
+
+static void test_system_sil_contradictory_dhab_vs_2950_observable_non_gating(void)
+{
+    sil_prepare_ready_system(STATE_DISCARGE, 0.0f, 3.700f);
+    app.acc.apm.current[0] = 425.0f;
+    app.acc.apm.current[1] = -425.0f;
+    app.acc.apm.spi_debug.enabled = true;
+    app.acc.apm.spi_debug.last_status = HAL_OK;
+    app.acc.apm.spi_debug.rx_count = 12u;
+
+    sil_run_current_sample(&app, 0.0f);
+    sil_run_voltage_sample(&app);
+    CHECK(app.current_valid == true);
+    CHECK(fabsf(app.current) < 0.05f);
+    CHECK(fabsf(app.acc.apm.current[0] - app.current) > 400.0f);
+    CHECK(app.acc.apm.spi_debug.rx_count == 12u);
+    CHECK(app.current_fault == false);
+    CHECK(app.voltage_fault == false);
+    CHECK(app.bms_state == true);
+    sil_assert_safety_invariants(&app, "2950_contradiction_debug_only");
+}
+
+static void test_system_sil_startup_garbage_never_enables_bms(void)
+{
+    uint32_t rng = 0xBADC0DEu;
+
+    for(uint16_t iter = 0u; iter < 256u; iter++)
+    {
+        init_fake_app();
+        fake_tick = 0u;
+        bms_pin_state = GPIO_PIN_RESET;
+        app.state = (iter & 1u) ? STATE_CHARGE : STATE_DISCARGE;
+        sil_attach_current_adcs(&app);
+        sil_clear_voltage_history(&app);
+
+        for(uint8_t ic = 0u; ic < NSMBS; ic++)
+        {
+            for(uint8_t cell = 0u; cell < NCELLS; cell++)
+            {
+                uint32_t r = sil_rng_next(&rng);
+                switch(r & 7u)
+                {
+                    case 0u: app.acc.smb_ics[ic].cell.c_codes[cell] = 0; break;
+                    case 1u: app.acc.smb_ics[ic].cell.c_codes[cell] = INT16_MIN; break;
+                    case 2u: app.acc.smb_ics[ic].cell.c_codes[cell] = code_for_volts(4.300f); break;
+                    case 3u: app.acc.smb_ics[ic].cell.c_codes[cell] = code_for_volts(2.200f); break;
+                    default: app.acc.smb_ics[ic].cell.c_codes[cell] = code_for_volts(3.200f + ((float)(r & 0x3FFu) / 1023.0f)); break;
+                }
+            }
+        }
+
+        if((iter % 3u) == 0u)
+        {
+            fake_adbms_voltage_masks_all_missing((iter & 4u) != 0u);
+        }
+        else
+        {
+            fake_adbms_voltage_masks_one_missing((uint8_t)(iter % NSMBS),
+                                                 (uint8_t)(iter % NCELLS),
+                                                 true);
+        }
+
+        if((iter % 5u) == 0u)
+        {
+            sil_run_current_adc_status(&app, HAL_TIMEOUT, HAL_ERROR);
+        }
+        else
+        {
+            fake_adc_set_two_read_sequence((uint16_t)(sil_rng_next(&rng) & 0x0FFFu),
+                                           (uint16_t)(sil_rng_next(&rng) & 0x0FFFu));
+            run_one_current_task_iteration(&app);
+        }
+        sil_run_voltage_sample(&app);
+        CHECK(app.acc.voltage_startup_scan_complete == false);
+        CHECK(app.voltage_valid == false);
+        CHECK(app.bms_state == false);
+        CHECK(bms_pin_state == GPIO_PIN_RESET);
+        sil_assert_diagnostics_not_generic(&app, "startup_garbage");
+    }
+}
+
+static void test_system_sil_long_run_seeded_fuzz_invariants(void)
+{
+    static CAN_HandleTypeDef hcan;
+    uint32_t rng = 0x5EED1234u;
+    uint32_t bms_true_seen = 0u;
+    uint32_t bms_false_seen = 0u;
+    uint32_t current_fault_seen = 0u;
+    uint32_t voltage_fault_seen = 0u;
+    uint32_t invalid_current_seen = 0u;
+    uint32_t stale_voltage_seen = 0u;
+
+    sil_prepare_ready_system(STATE_DISCARGE, 0.0f, 3.700f);
+    app.board.canbus.hcan = &hcan;
+    charger_init(&app.board.charger, &app.board.canbus);
+    app.board.charger.last_rx_tick = fake_tick;
+
+    for(uint32_t cycle = 0u; cycle < 10000u; cycle++)
+    {
+        if((cycle % 125u) == 0u)
+        {
+            sil_prepare_ready_system(STATE_DISCARGE, 0.0f, 3.700f);
+            app.board.canbus.hcan = &hcan;
+            charger_init(&app.board.charger, &app.board.canbus);
+            app.board.charger.last_rx_tick = fake_tick;
+        }
+
+        uint32_t r = sil_rng_next(&rng);
+        app.state = (r & 0x3u) == 0u ? STATE_CHARGE :
+                    (r & 0x3u) == 1u ? STATE_DISCARGE :
+                    (r & 0x3u) == 2u ? STATE_START : STATE_BALANCE;
+        app.board.charger.last_rx_tick = fake_tick;
+        app.fuse_fault = (((r >> 8) & 0x3Fu) == 0x11u) || (((r >> 16) & 0x7Fu) == 0x22u);
+        app.charger_fault = false;
+        app.hard_fault = false;
+
+        sil_write_all_cells(&app, 3.700f);
+        switch((r >> 20) % 12u)
+        {
+            case 0u: sil_set_cell_voltage(&app, (uint8_t)(r % NSMBS), (uint8_t)((r >> 4) % NCELLS), 4.250f); break;
+            case 1u: sil_set_cell_voltage(&app, (uint8_t)(r % NSMBS), (uint8_t)((r >> 4) % NCELLS), 4.200f); break;
+            case 2u: sil_set_cell_voltage(&app, (uint8_t)(r % NSMBS), (uint8_t)((r >> 4) % NCELLS), 4.180f); break;
+            case 3u: sil_set_cell_voltage(&app, (uint8_t)(r % NSMBS), (uint8_t)((r >> 4) % NCELLS), 2.300f); break;
+            case 4u: sil_set_cell_voltage(&app, (uint8_t)(r % NSMBS), (uint8_t)((r >> 4) % NCELLS), 2.500f); break;
+            case 5u: sil_set_cell_voltage(&app, (uint8_t)(r % NSMBS), (uint8_t)((r >> 4) % NCELLS), 2.800f); break;
+            default: break;
+        }
+
+        if((r & 0x1Fu) == 0u)
+        {
+            fake_adbms_voltage_masks_all_missing(true);
+        }
+        else if((r & 0x0Fu) == 0u)
+        {
+            fake_adbms_voltage_masks_one_missing((uint8_t)(r % NSMBS),
+                                                 (uint8_t)((r >> 4) % NCELLS),
+                                                 true);
+        }
+        else
+        {
+            fake_adbms_voltage_masks_full_update();
+        }
+
+        uint32_t csel = (r >> 5) % 16u;
+        float current_a = 0.0f;
+        bool inject_adc_fail = false;
+        switch(csel)
+        {
+            case 0u: current_a = 0.0f; break;
+            case 1u: current_a = 75.0f; break;
+            case 2u: current_a = 86.0f; break;
+            case 3u: current_a = 130.0f; break;
+            case 4u: current_a = 260.0f; break;
+            case 5u: current_a = -6.0f; break;
+            case 6u: current_a = -12.5f; break;
+            case 7u: current_a = -16.0f; break;
+            case 8u: current_a = -31.0f; break;
+            case 9u: current_a = -55.0f; break;
+            case 10u: current_a = 0.9f; break;
+            case 11u: current_a = 2.1f; break;
+            case 12u: inject_adc_fail = true; break;
+            default: current_a = 0.0f; break;
+        }
+
+        uint8_t order = (uint8_t)((r >> 12) % 6u);
+        for(uint8_t step = 0u; step < 4u; step++)
+        {
+            uint8_t op;
+            static const uint8_t perms[6][4] = {
+                {0u, 1u, 2u, 3u}, {0u, 2u, 1u, 3u}, {1u, 0u, 2u, 3u},
+                {1u, 2u, 0u, 3u}, {2u, 0u, 1u, 3u}, {2u, 1u, 0u, 3u}
+            };
+            op = perms[order][step];
+            if(op == 0u)
+            {
+                if(inject_adc_fail)
+                {
+                    sil_run_current_adc_status(&app, HAL_TIMEOUT, HAL_OK);
+                }
+                else
+                {
+                    sil_run_current_sample(&app, current_a);
+                }
+            }
+            else if(op == 1u)
+            {
+                sil_run_voltage_sample(&app);
+            }
+            else if(op == 2u)
+            {
+                sil_run_can_charge_iteration(&app, &hcan);
+            }
+            else
+            {
+                run_one_error_task_iteration(&app);
+            }
+        }
+
+        sil_assert_safety_invariants(&app, "long_run_seeded_fuzz");
+        bms_true_seen += app.bms_state ? 1u : 0u;
+        bms_false_seen += app.bms_state ? 0u : 1u;
+        current_fault_seen += app.current_fault ? 1u : 0u;
+        voltage_fault_seen += app.voltage_fault ? 1u : 0u;
+        invalid_current_seen += app.current_valid ? 0u : 1u;
+        stale_voltage_seen += (app.voltage_fault_reason == VOLTAGE_FAULT_REASON_STALE_SCAN) ? 1u : 0u;
+    }
+
+    CHECK(bms_true_seen > 0u);
+    CHECK(bms_false_seen > 0u);
+    CHECK(current_fault_seen > 0u);
+    CHECK(voltage_fault_seen > 0u);
+    CHECK(invalid_current_seen > 0u);
+    CHECK(stale_voltage_seen > 0u);
 }
 
 static void test_temp_invalid_and_cold_valid_fault_behavior(void){
@@ -1182,6 +2722,29 @@ int main(void){
     test_accumulator_stats_and_balance(); puts("PASS accumulator stats/balance");
     test_voltage_stats_boundaries_and_fuzz(); puts("PASS voltage boundary/fuzz stats");
     test_voltage_fault_policy_and_stale_tolerance(); puts("PASS voltage fault/stale policy");
+    test_system_sil_boot_ready_and_bms_conjunction(); puts("PASS system SIL boot/readiness/BMS conjunction");
+    test_system_sil_single_pec_miss_tolerated_then_recovers(); puts("PASS system SIL single PEC miss tolerance/recovery");
+    test_system_sil_persistent_voltage_stale_drops_bms_ok(); puts("PASS system SIL persistent voltage stale fail-closed");
+    test_system_sil_charge_stop_blocks_balance_before_hard_ov(); puts("PASS system SIL charge-stop vs hard OV");
+    test_system_sil_voltage_uv_ov_severe_diagnostics_and_latch(); puts("PASS system SIL voltage severe diagnostics/latch");
+    test_system_sil_current_warning_fast_trip_and_latch_persistence(); puts("PASS system SIL current warning/fast-trip/latch");
+    test_system_sil_current_stale_adc_pair_fails_safe(); puts("PASS system SIL current stale ADC pair fail-safe");
+    test_system_sil_regen_and_charge_current_placeholders(); puts("PASS system SIL regen/charge current placeholder behavior");
+    test_system_sil_2950_debug_non_safety_until_integrated(); puts("PASS system SIL 2950 debug non-safety behavior");
+    test_system_sil_combined_fault_precedence_and_reset_path(); puts("PASS system SIL combined fault precedence/reset path");
+    test_system_sil_harsh_timeline_no_false_enable(); puts("PASS system SIL harsh timeline/no false enable");
+    test_system_sil_current_invalid_immediate_bms_drop_and_recovery(); puts("PASS system SIL current-invalid immediate BMS drop/recovery");
+    test_system_sil_hard_fault_and_corrupt_smb_config_fail_closed(); puts("PASS system SIL hard-fault/corrupt SMB config fail-closed");
+    test_system_sil_voltage_threshold_exact_edges(); puts("PASS system SIL exact voltage threshold edges");
+    test_system_sil_charger_disable_from_dynamic_gates(); puts("PASS system SIL charger disable dynamic gates");
+    test_system_sil_deterministic_fault_injection_invariants(); puts("PASS system SIL deterministic fault-injection invariants");
+    test_system_sil_task_order_permutations_fail_closed(); puts("PASS system SIL task-order permutations fail closed");
+    test_system_sil_recovery_and_latch_reset_paths(); puts("PASS system SIL warning recovery/latch reset paths");
+    test_system_sil_current_boundary_timing_edges(); puts("PASS system SIL current debounce boundary timing");
+    test_system_sil_cli_can_diagnostic_consistency(); puts("PASS system SIL CLI/CAN diagnostic consistency");
+    test_system_sil_contradictory_dhab_vs_2950_observable_non_gating(); puts("PASS system SIL DHAB vs 2950 contradiction observable/non-gating");
+    test_system_sil_startup_garbage_never_enables_bms(); puts("PASS system SIL startup garbage never enables BMS_OK");
+    test_system_sil_long_run_seeded_fuzz_invariants(); puts("PASS system SIL 10000-cycle seeded fuzz invariants");
     test_temp_stats(); puts("PASS temp stats");
     test_temp_invalid_and_cold_valid_fault_behavior(); puts("PASS temp invalid/cold-valid fault behavior");
     test_can_telemetry_packets(); puts("PASS CAN telemetry packetization");

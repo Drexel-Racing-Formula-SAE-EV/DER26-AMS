@@ -102,6 +102,7 @@ void adbms_task_fn(void *argument)
                              !data->temp_fault &&
                              !data->fuse_fault &&
                              !data->charger_fault &&
+                             !data->hard_fault &&
                              data->current_valid &&
                              !data->current_fault);
         set_bms(bms_ok_ready);
@@ -112,6 +113,7 @@ void adbms_task_fn(void *argument)
            !data->charge_voltage_stop &&
            !data->voltage_fault &&
            !data->temp_fault &&
+           !data->hard_fault &&
            !data->current_fault &&
            data->current_valid &&
            data->bms_state)

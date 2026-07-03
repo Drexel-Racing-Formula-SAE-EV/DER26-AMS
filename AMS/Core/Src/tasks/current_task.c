@@ -98,7 +98,7 @@ void current_task_fn(void *argument)
                              CURRENT_TASK_PERIOD_MS);
         current_task_publish_fault_state(app_data);
 
-        if(app_data->current_fault)
+        if((!app_data->current_valid) || app_data->current_fault)
         {
             set_bms(0);
         }
