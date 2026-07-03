@@ -21,6 +21,23 @@
 #include "tasks/estimator_task.h"
 
 app_data_t app = {0};
+static osMutexId_t adbms_spi_mutex;
+
+void adbms_spi_lock(void)
+{
+	if(adbms_spi_mutex != NULL)
+	{
+		(void)osMutexAcquire(adbms_spi_mutex, osWaitForever);
+	}
+}
+
+void adbms_spi_unlock(void)
+{
+	if(adbms_spi_mutex != NULL)
+	{
+		(void)osMutexRelease(adbms_spi_mutex);
+	}
+}
 
 void app_create()
 {
@@ -63,6 +80,12 @@ void app_create()
 
     app.charger_fault = false;
     app.bms_state     = false;
+#if AMS_HW_BRINGUP && !AMS_HW_BRINGUP_BMS_OK_RELEASED_DEFAULT
+	app.bms_output_inhibit = true;
+#else
+	app.bms_output_inhibit = false;
+#endif
+	app.bms_output_block_count = 0u;
 
 	app.air_state = false;
 	app.imd_ok = true;
@@ -83,6 +106,7 @@ void app_create()
 
 	board_init(&app.board);
 	set_bms(0);
+	adbms_spi_mutex = osMutexNew(NULL);
 
 	accumulator_init(&app.acc,
 					 app.board.stm32f767z.hspi6,
@@ -128,6 +152,14 @@ void app_create()
 
 void set_bms(bool state)
 {
+	if(state && app.bms_output_inhibit)
+	{
+		app.bms_output_block_count++;
+		app.bms_state = false;
+		HAL_GPIO_WritePin(BMS_OK_GPIO_Port, BMS_OK_Pin, GPIO_PIN_RESET);
+		return;
+	}
+
 	app.bms_state = state;
-	HAL_GPIO_WritePin(BMS_OK_GPIO_Port, BMS_OK_Pin, state);
+	HAL_GPIO_WritePin(BMS_OK_GPIO_Port, BMS_OK_Pin, state ? GPIO_PIN_SET : GPIO_PIN_RESET);
 }

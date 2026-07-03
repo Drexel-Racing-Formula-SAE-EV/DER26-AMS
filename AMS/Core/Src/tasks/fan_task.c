@@ -6,7 +6,40 @@
  */
 #include "tasks/fan_task.h"
 
+#include <math.h>
+
 void fan_task_fn(void *argument);
+
+static float fan_percent_from_temp(const app_data_t *data)
+{
+    float span;
+
+    if((data == NULL) ||
+       data->temp_fault ||
+       (data->acc.valid_temp_count == 0u) ||
+       !isfinite(data->max_temp))
+    {
+        return 100.0f;
+    }
+
+    if(data->max_temp <= TEMP_THRESH_L)
+    {
+        return 0.0f;
+    }
+
+    if(data->max_temp >= TEMP_THRESH_H)
+    {
+        return 100.0f;
+    }
+
+    span = (float)(TEMP_THRESH_H - TEMP_THRESH_L);
+    if(span <= 0.0f)
+    {
+        return 100.0f;
+    }
+
+    return ((data->max_temp - (float)TEMP_THRESH_L) * 100.0f) / span;
+}
 
 TaskHandle_t fan_task_start(app_data_t *data)
 {
@@ -37,17 +70,8 @@ void fan_task_fn(void *argument)
     {
         entry = osKernelGetTickCount();
 
-        if(data->max_temp >= TEMP_THRESH_H)
-        {
-            percent = 100.0f;
-            data->fan_state = true;
-        }
-        else if(data->max_temp <= TEMP_THRESH_L)
-        {
-            percent = 0.0f;
-            data->fan_state = false;
-        }
-        /* Between thresholds, keep the previous fan state for hysteresis. */
+        percent = fan_percent_from_temp(data);
+        data->fan_state = (percent > 0.0f);
 
         data->fan_fault = false;
         for(int i = 0; i < NFANS; i++)

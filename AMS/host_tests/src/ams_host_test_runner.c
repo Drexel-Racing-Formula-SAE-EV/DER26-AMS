@@ -112,7 +112,16 @@ HAL_StatusTypeDef HAL_UART_Transmit(UART_HandleTypeDef *huart, const uint8_t *pD
 HAL_StatusTypeDef HAL_UART_Transmit_IT(UART_HandleTypeDef *huart, const uint8_t *pData, uint16_t Size){ (void)huart; cli_capture_append(pData, Size); return HAL_OK; }
 HAL_StatusTypeDef HAL_UART_Receive_IT(UART_HandleTypeDef *huart, uint8_t *pData, uint16_t Size){ (void)huart;(void)pData;(void)Size; return HAL_OK; }
 
-void set_bms(bool state){ app.bms_state = state; HAL_GPIO_WritePin(BMS_OK_GPIO_Port, BMS_OK_Pin, state ? GPIO_PIN_SET : GPIO_PIN_RESET); }
+void set_bms(bool state){
+    if(state && app.bms_output_inhibit){
+        app.bms_output_block_count++;
+        app.bms_state = false;
+        HAL_GPIO_WritePin(BMS_OK_GPIO_Port, BMS_OK_Pin, GPIO_PIN_RESET);
+        return;
+    }
+    app.bms_state = state;
+    HAL_GPIO_WritePin(BMS_OK_GPIO_Port, BMS_OK_Pin, state ? GPIO_PIN_SET : GPIO_PIN_RESET);
+}
 
 // External driver stubs used by accumulator/CLI paths
 void adBms6830_init(adbms6830_driver_t* dev, uint8_t num_ics, adbms6830_asic* ics, SPI_HandleTypeDef* hspi, GPIO_TypeDef* cs_port_a, GPIO_TypeDef* cs_port_b, uint16_t cs_pin_a, uint16_t cs_pin_b, TIM_HandleTypeDef *htim){ if(dev){ dev->num_ics=num_ics; dev->ics=ics; dev->hspi=hspi; dev->cs_port[0]=cs_port_a; dev->cs_port[1]=cs_port_b; dev->cs_pin[0]=cs_pin_a; dev->cs_pin[1]=cs_pin_b; dev->htim=htim; for(uint8_t ic=0; ic<ADBMS6830_MAX_TRACKED_ICS; ic++){ dev->last_cell_updated_mask[ic]=0u; dev->last_cell_pec_mask[ic]=0u; } } }
@@ -527,6 +536,8 @@ static void test_task_iterations_with_injected_signals(void){
     CHECK(app.hard_fault == true); CHECK(app.bms_state == false);
 
     init_fake_app(); for(int i=0;i<NFANS;i++){ static TIM_HandleTypeDef ht; static uint32_t ccrs[NFANS]; app.board.fans[i].CCR=&ccrs[i]; app.board.fans[i].max_timer_val=1000; app.board.fans[i].htim=&ht; }
+    app.max_temp = 0.0f; app.acc.valid_temp_count = 0u; run_one_fan_task_iteration(&app); CHECK(app.fan_state == true); for(int i=0;i<NFANS;i++) CHECK(app.board.fans[i].duty_cycle == 100.0f);
+    app.acc.valid_temp_count = 1u;
     app.max_temp = TEMP_THRESH_H + 1.0f; run_one_fan_task_iteration(&app); CHECK(app.fan_state == true); for(int i=0;i<NFANS;i++) CHECK(app.board.fans[i].duty_cycle == 100.0f);
     app.max_temp = TEMP_THRESH_L - 1.0f; run_one_fan_task_iteration(&app); CHECK(app.fan_state == false); for(int i=0;i<NFANS;i++) CHECK(app.board.fans[i].duty_cycle == 0.0f);
 
@@ -2040,6 +2051,55 @@ static void test_system_sil_cli_can_diagnostic_consistency(void)
     CHECK(strstr(cli_capture, "reason:adc_read") != NULL || strstr(cli_capture, "sensor_adc_read") != NULL);
 }
 
+static void test_system_sil_bringup_status_and_bmsok_inhibit(void)
+{
+    static SPI_HandleTypeDef hspi;
+    char *status_argv[] = {"bmsok", "status", NULL};
+    char *release_argv[] = {"bmsok", "release", NULL};
+    char *inhibit_argv[] = {"bmsok", "inhibit", NULL};
+
+    init_fake_app();
+    hspi.Init.CLKPolarity = SPI_POLARITY_HIGH;
+    hspi.Init.CLKPhase = SPI_PHASE_2EDGE;
+    hspi.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_256;
+    app.acc.smb.hspi = &hspi;
+    app.current_valid = true;
+    app.current_fault = false;
+    app.voltage_valid = true;
+    app.voltage_fault = false;
+    app.bms_output_inhibit = true;
+    bms_pin_state = GPIO_PIN_RESET;
+
+    set_bms(true);
+    CHECK(app.bms_state == false);
+    CHECK(bms_pin_state == GPIO_PIN_RESET);
+    CHECK(app.bms_output_block_count == 1u);
+
+    sil_prepare_cli_capture();
+    CHECK(bmsok_control(2, status_argv) == 0);
+    CHECK(strstr(cli_capture, "inhibit:1") != NULL);
+    CHECK(strstr(cli_capture, "blocked_assertions:1") != NULL);
+
+    sil_prepare_cli_capture();
+    CHECK(bmsok_control(2, release_argv) == 0);
+    CHECK(app.bms_output_inhibit == false);
+    CHECK(strstr(cli_capture, "release enabled") != NULL);
+    set_bms(true);
+    CHECK(app.bms_state == true);
+    CHECK(bms_pin_state == GPIO_PIN_SET);
+
+    sil_prepare_cli_capture();
+    CHECK(bmsok_control(2, inhibit_argv) == 0);
+    CHECK(app.bms_output_inhibit == true);
+    CHECK(app.bms_state == false);
+    CHECK(bms_pin_state == GPIO_PIN_RESET);
+
+    sil_prepare_cli_capture();
+    CHECK(get_status(0, NULL) == 0);
+    CHECK(strstr(cli_capture, "BMS_OK:0 inhibit:1") != NULL);
+    CHECK(strstr(cli_capture, "CPOL:HIGH CPHA:2EDGE") != NULL);
+}
+
 static void test_system_sil_contradictory_dhab_vs_2950_observable_non_gating(void)
 {
     sil_prepare_ready_system(STATE_DISCARGE, 0.0f, 3.700f);
@@ -2742,6 +2802,7 @@ int main(void){
     test_system_sil_recovery_and_latch_reset_paths(); puts("PASS system SIL warning recovery/latch reset paths");
     test_system_sil_current_boundary_timing_edges(); puts("PASS system SIL current debounce boundary timing");
     test_system_sil_cli_can_diagnostic_consistency(); puts("PASS system SIL CLI/CAN diagnostic consistency");
+    test_system_sil_bringup_status_and_bmsok_inhibit(); puts("PASS system SIL bring-up status/BMS_OK inhibit");
     test_system_sil_contradictory_dhab_vs_2950_observable_non_gating(); puts("PASS system SIL DHAB vs 2950 contradiction observable/non-gating");
     test_system_sil_startup_garbage_never_enables_bms(); puts("PASS system SIL startup garbage never enables BMS_OK");
     test_system_sil_long_run_seeded_fuzz_invariants(); puts("PASS system SIL 10000-cycle seeded fuzz invariants");

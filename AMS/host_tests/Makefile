@@ -57,7 +57,7 @@ WARN := \
 CFLAGS_COMMON := -std=c11 -g -O0 $(WARN) $(COMMON_DEFS) $(INC)
 LDLIBS := -lm
 
-.PHONY: help check-root compile unit test system-sil ci asan ubsan analyze clang-analyze clean list make-build-dir
+.PHONY: help check-root compile unit test system-sil bringup-test ci asan ubsan analyze clang-analyze clean list make-build-dir
 
 help:
 	@echo "DER26 AMS host test harness"
@@ -66,6 +66,7 @@ help:
 	@echo "  make unit          Build and run isolated unit tests"
 	@echo "  make test          Build and run comprehensive host tests"
 	@echo "  make system-sil    Alias for comprehensive system-level SIL/injection tests"
+	@echo "  make bringup-test  Run comprehensive tests with AMS_HW_BRINGUP=1"
 	@echo "  make ci            Run unit, comprehensive, and analyzer targets"
 	@echo "  make asan          Build and run with AddressSanitizer + UBSan"
 	@echo "  make ubsan         Build and run with UBSan only"
@@ -104,6 +105,9 @@ test: compile
 	$(BIN)
 
 system-sil: test
+
+bringup-test: CFLAGS_COMMON += -DAMS_HW_BRINGUP=1
+bringup-test: test
 
 # Strongest local run: catches many memory and undefined-behavior bugs in host-exercised paths.
 asan: check-root $(BUILD_DIR)

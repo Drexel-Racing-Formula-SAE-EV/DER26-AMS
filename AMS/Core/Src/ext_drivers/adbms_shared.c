@@ -156,4 +156,11 @@ uint16_t pec10_calc_modular(uint8_t * data, uint8_t PEC_Format)
     return ((uint16_t)(remainder & 0x3FF));
 }
 
+__attribute__((weak)) void adbms_spi_lock(void)
+{
+}
+
+__attribute__((weak)) void adbms_spi_unlock(void)
+{
+}
 

@@ -23,6 +23,14 @@
 #define VER_MINOR 1
 #define VER_BUG   0
 
+#ifndef AMS_HW_BRINGUP
+#define AMS_HW_BRINGUP 0
+#endif
+
+#ifndef AMS_HW_BRINGUP_BMS_OK_RELEASED_DEFAULT
+#define AMS_HW_BRINGUP_BMS_OK_RELEASED_DEFAULT 0
+#endif
+
 #define ERR_FREQ 20
 #define CLI_FREQ 20
 #define AIR_FREQ 2 // used to be 10
@@ -121,6 +129,8 @@ typedef struct
 
     bool charger_fault;
     bool bms_state;
+    bool bms_output_inhibit;
+    uint32_t bms_output_block_count;
 
 	state_t state;
 
@@ -142,5 +152,7 @@ typedef struct
 
 void app_create();
 void set_bms(bool state);
+void adbms_spi_lock(void);
+void adbms_spi_unlock(void);
 
 #endif /* INC_APP_H_ */

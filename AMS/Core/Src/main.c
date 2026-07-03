@@ -400,9 +400,6 @@ static void MX_CAN1_Init(void)
   */
 static void MX_SPI6_Init(void)
 {
-  /* Drexel AMS ties ADBMS6822 PHAPOL/PHAPOL2 to 3V3, selecting SPI mode 3.
- * Do not change to mode 0 unless the board PHAPOL strapping is changed.
- */
 
   /* USER CODE BEGIN SPI6_Init 0 */
 
@@ -416,8 +413,8 @@ static void MX_SPI6_Init(void)
   hspi6.Init.Mode = SPI_MODE_MASTER;
   hspi6.Init.Direction = SPI_DIRECTION_2LINES;
   hspi6.Init.DataSize = SPI_DATASIZE_8BIT;
-  /* ADBMS6830 isoSPI interface supports SPI mode 0 or mode 3.
-     Use mode 3 for bring-up to avoid the previous invalid mode-1 setup. */
+  /* Drexel AMS ties ADBMS6822 PHAPOL/PHAPOL2 high, selecting SPI mode 3.
+     Do not change to mode 0 unless the board strapping changes. */
   hspi6.Init.CLKPolarity = SPI_POLARITY_HIGH;
   hspi6.Init.CLKPhase = SPI_PHASE_2EDGE;
   hspi6.Init.NSS = SPI_NSS_SOFT;

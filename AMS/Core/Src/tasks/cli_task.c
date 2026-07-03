@@ -27,6 +27,7 @@ int cli_handle_cmd(int argc, char *argv[]);
 int cmd_not_found(int argc, char *argv[]);
 
 int help(int argc, char *argv[]);
+int get_status(int argc, char *argv[]);
 int get_faults(int argc, char *argv[]);
 int get_version(int argc, char *argv[]);
 int get_voltage(int argc, char *argv[]);
@@ -37,6 +38,7 @@ int get_temperature_sensor(int argc, char *argv[]);
 int get_current(int argc, char *argv[]);
 int get_spi_debug(int argc, char *argv[]);
 int get_apm_debug(int argc, char *argv[]);
+int bmsok_control(int argc, char *argv[]);
 int set_state(int argc, char *argv[]);
 int cause_fault(int argc, char *argv[]);
 
@@ -46,6 +48,7 @@ cli_device_t *cli;
 command_t cmds[] =
 {
 	{"help", &help, "print help menu"},
+	{"status", &get_status, "compact bring-up status banner"},
 	{"fault", &get_faults, "gets the faults of the system"},
 	{"ver", &get_version, "gets the firmware version"},
 	{"volt", &get_voltage, "gets cell voltages for all SMBs"},
@@ -54,6 +57,7 @@ command_t cmds[] =
 	{"current", &get_current, "gets current sensor raw counts/voltages/status"},
 	{"spi", &get_spi_debug, "ADBMS6830 SPI debug: spi [status|probe|clear|enable|disable]"},
 	{"apm", &get_apm_debug, "ADBMS2950/APM debug: apm [status|probe|clear|enable|disable]"},
+	{"bmsok", &bmsok_control, "BMS_OK control: bmsok [status|release|inhibit]"},
 	{"state", &set_state, "gets or sets the AMS state [charge|discharge]"},
 	{"cause_fault", &cause_fault, "cause BMS fault for tech"},
 };
@@ -236,8 +240,15 @@ void cli_task_fn(void *arg)
     int n;
     int ret = 0;
 
-    snprintf(outline, CLI_LINESZ, "~~~~~~~~~~ DER AMS FW V%d.%d ~~~~~~~~~~", VER_MAJOR, VER_MINOR);
+    snprintf(outline, CLI_LINESZ, "~~~~~~~~~~ DER AMS FW V%d.%d.%d ~~~~~~~~~~", VER_MAJOR, VER_MINOR, VER_BUG);
 	cli_printline(local_cli, outline);
+    snprintf(outline, CLI_LINESZ,
+             "Build:%s APM2950:%d BMS_OK_inhibit:%d",
+             AMS_HW_BRINGUP ? "hw-bringup" : "normal",
+             AMS_ENABLE_APM_2950_DEBUG,
+             data->bms_output_inhibit);
+    cli_printline(local_cli, outline);
+    cli_printline(local_cli, "ADBMS6822 SPI6 expected: mode3 CPOL HIGH CPHA 2EDGE");
 	cli_printline(local_cli, "Type 'help' for list of commands");
 
 	for(;;)
@@ -314,6 +325,62 @@ int help(int argc, char *argv[])
 		ret |= cli_printline(cli, outline);
 	}
 	return ret;
+}
+
+int get_status(int argc, char *argv[])
+{
+    int ret = 0;
+    SPI_HandleTypeDef *hspi = data->acc.smb.hspi;
+
+    snprintf(outline, CLI_LINESZ,
+             "FW v%d.%d.%d build:%s state:%s BMS_OK:%d inhibit:%d blocked:%lu",
+             VER_MAJOR,
+             VER_MINOR,
+             VER_BUG,
+             AMS_HW_BRINGUP ? "hw-bringup" : "normal",
+             ams_state_to_str(data->state),
+             data->bms_state,
+             data->bms_output_inhibit,
+             (unsigned long)data->bms_output_block_count);
+    ret |= cli_printline(cli, outline);
+
+    snprintf(outline, CLI_LINESZ,
+             "Safety current valid:%d fault:%d voltage valid:%d fault:%d temp fault:%d hard:%d",
+             data->current_valid,
+             data->current_fault,
+             data->voltage_valid,
+             data->voltage_fault,
+             data->temp_fault,
+             data->hard_fault);
+    ret |= cli_printline(cli, outline);
+
+    snprintf(outline, CLI_LINESZ,
+             "Cells usable:%u updated:%u stale:%u fan:%d max_temp:%d.%01dC",
+             (unsigned)data->voltage_usable_cell_count,
+             (unsigned)data->voltage_updated_cell_count,
+             (unsigned)data->voltage_stale_cell_count,
+             data->fan_state,
+             (int)data->max_temp,
+             abs((int)roundf((data->max_temp - (float)((int)data->max_temp)) * 10.0f)));
+    ret |= cli_printline(cli, outline);
+
+    if(hspi != NULL)
+    {
+        snprintf(outline, CLI_LINESZ,
+                 "SPI6 CPOL:%s CPHA:%s prescaler:%lu APM2950_debug:%d",
+                 cli_spi_polarity_str(hspi->Init.CLKPolarity),
+                 cli_spi_phase_str(hspi->Init.CLKPhase),
+                 (unsigned long)hspi->Init.BaudRatePrescaler,
+                 AMS_ENABLE_APM_2950_DEBUG);
+        ret |= cli_printline(cli, outline);
+    }
+    else
+    {
+        ret |= cli_printline(cli, "SPI6 handle unavailable");
+    }
+
+    ret |= cli_printline(cli, "Bring-up order: spi clear -> spi probe -> spi status -> volt -> current -> bmsok release");
+    return ret;
 }
 
 int get_faults(int argc, char *argv[])
@@ -816,9 +883,52 @@ int get_current(int argc, char *argv[])
 int get_version(int argc, char *argv[])
 {
 	int ret = 0;
-	snprintf(outline, CLI_LINESZ, "v%d.%d", VER_MAJOR, VER_MINOR);
+	snprintf(outline, CLI_LINESZ, "v%d.%d.%d %s", VER_MAJOR, VER_MINOR, VER_BUG, AMS_HW_BRINGUP ? "hw-bringup" : "normal");
 	ret |= cli_printline(cli, outline);
 	return ret;
+}
+
+int bmsok_control(int argc, char *argv[])
+{
+    int ret = 0;
+
+    if((argc >= 2) && (argv[1] != NULL))
+    {
+        if(!strcmp(argv[1], "release") || !strcmp(argv[1], "enable"))
+        {
+            data->bms_output_inhibit = false;
+            ret |= cli_printline(cli, "BMS_OK output release enabled; safety gates still apply");
+        }
+        else if(!strcmp(argv[1], "inhibit") || !strcmp(argv[1], "disable"))
+        {
+            data->bms_output_inhibit = true;
+            set_bms(0);
+            ret |= cli_printline(cli, "BMS_OK output inhibited and forced low");
+        }
+        else if(strcmp(argv[1], "status"))
+        {
+            ret |= cli_printline(cli, "Usage: bmsok [status|release|inhibit]");
+            return ret;
+        }
+    }
+
+    snprintf(outline, CLI_LINESZ,
+             "BMS_OK state:%d inhibit:%d blocked_assertions:%lu",
+             data->bms_state,
+             data->bms_output_inhibit,
+             (unsigned long)data->bms_output_block_count);
+    ret |= cli_printline(cli, outline);
+
+    snprintf(outline, CLI_LINESZ,
+             "ready gates voltage:%d current:%d hard:%d temp:%d charger:%d",
+             data->voltage_valid && !data->voltage_fault,
+             data->current_valid && !data->current_fault,
+             data->hard_fault,
+             data->temp_fault,
+             data->charger_fault);
+    ret |= cli_printline(cli, outline);
+
+    return ret;
 }
 
 int set_state(int argc, char *argv[])
