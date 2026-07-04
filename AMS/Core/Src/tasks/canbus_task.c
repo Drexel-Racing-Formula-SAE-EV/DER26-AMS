@@ -17,6 +17,7 @@
 #include "estimator/ams_soc_ekf.h"
 
 #include <math.h>
+#include <string.h>
 
 void canbus_task_fn(void *arg);
 
@@ -571,6 +572,15 @@ static HAL_StatusTypeDef send_logger_summaries(canbus_device_t *canbus,
     }
     ret |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_2950_LINK, payload);
 
+    memset(payload, 0, sizeof(payload));
+    logger_put_u16(payload, 0u, data->heartbeat.stale_mask);
+    logger_put_u16(payload, 2u, data->heartbeat.seen_mask);
+    logger_put_u16(payload, 4u, data->heartbeat.safety_stale_mask);
+    payload[6] = (uint8_t)(logger_bool_bit(data->task_heartbeat_fault, 0u) |
+                           logger_bool_bit(data->logger_heartbeat_fault, 1u));
+    payload[7] = sat_u8_u32(data->heartbeat.count[AMS_HEARTBEAT_LOGGER]);
+    ret |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_TASK_HEALTH, payload);
+
     return ret;
 }
 
@@ -781,9 +791,11 @@ void canbus_task_fn(void *arg)
             ret |= send_ecu_ams_temps(canbus, data);
             ret |= send_ecu_ams_fans(canbus, data);
             ret |= send_logger_telemetry(canbus, data);
+            ams_heartbeat_kick(data, AMS_HEARTBEAT_LOGGER, osKernelGetTickCount());
             ret |= send_estimator_status(canbus, data);
 
             data->canbus_fault = (ret != HAL_OK);
+            ams_heartbeat_kick(data, AMS_HEARTBEAT_CAN, osKernelGetTickCount());
             osDelayUntil(entry + (1000 / CAN_FREQ));
         }
         else if(data->state == STATE_CHARGE)
@@ -842,12 +854,15 @@ void canbus_task_fn(void *arg)
             }
 
             ret |= send_logger_telemetry(canbus, data);
+            ams_heartbeat_kick(data, AMS_HEARTBEAT_LOGGER, osKernelGetTickCount());
             data->canbus_fault = (ret != HAL_OK);
 
+            ams_heartbeat_kick(data, AMS_HEARTBEAT_CAN, osKernelGetTickCount());
             osDelayUntil(entry + CHARGER_COMMAND_PERIOD_MS);
         }
         else
         {
+            ams_heartbeat_kick(data, AMS_HEARTBEAT_CAN, osKernelGetTickCount());
             osDelayUntil(entry + (1000 / CAN_FREQ));
         }
     }

@@ -25,6 +25,7 @@
 | `test_system_sil_recovery_and_latch_reset_paths` | System-level SIL: verifies warning-only current/voltage states recover automatically, while latched current and voltage hard faults require explicit latch reset before BMS_OK can return. |
 | `test_system_sil_current_boundary_timing_edges` | System-level SIL/policy boundary test: verifies 499 ms does not trip a 500 ms debounce, 500 ms does; 99 ms does not trip a 100 ms fast fault, 100 ms does, including current-task integrated timing. |
 | `test_system_sil_cli_can_diagnostic_consistency` | System-level SIL: verifies stale voltage and current ADC faults appear in CLI fault/voltage/current diagnostics and that unusable stale cells zero-fill in CAN voltage telemetry instead of reporting misleading data. |
+| `test_software_heartbeat_monitor_faults_and_recovery` | System-level SIL: verifies startup heartbeat grace, critical task heartbeat stale fail-closed behavior, heartbeat recovery, and non-safety logger/dashboard stale reporting. |
 | `test_system_sil_bringup_status_and_bmsok_inhibit` | System-level SIL: verifies BMS_OK output inhibit blocks attempted assertions, counts blocked assertions, CLI release/inhibit commands work, and status reports Mode 3 SPI settings. |
 | `test_system_sil_contradictory_dhab_vs_2950_observable_non_gating` | System-level SIL: injects contradictory DHAB and ADBMS2950/APM current values to verify the 2950 debug path remains observable but non-safety-gating until intentionally integrated. |
 | `test_system_sil_startup_garbage_never_enables_bms` | System-level SIL: fuzzes uninitialized-looking current ADC counts and cell codes before the first full voltage scan and verifies BMS_OK never asserts. |
@@ -76,4 +77,5 @@ Hardware bring-up notes:
 | Hardware bring-up BMS_OK inhibit | Firmware supports `AMS_HW_BRINGUP=1`, which defaults BMS_OK output inhibited until `bmsok release` is run from CLI. `bmsok inhibit` forces it low again. |
 | Shared ADBMS SPI lock | ADBMS6830 and ADBMS2950 low-level SPI transfers call shared `adbms_spi_lock()` / `adbms_spi_unlock()` hooks so CLI probing cannot collide with periodic reads on SPI6. |
 | Fan fail-safe/ramp | Fan task drives max PWM when temperature data is invalid/stale/unavailable, and ramps PWM between low/high temperature thresholds when temperature data is valid. |
+| Software heartbeat monitor | Error task checks ADBMS, current, temperature, CAN, and logger/dashboard heartbeats. ADBMS/current/temp/CAN stale is safety-critical and drops BMS_OK; logger/dashboard stale is diagnostic-only. |
 | Hardware SPI bring-up guide | `docs/HARDWARE_SPI_BRINGUP.md` documents first-flash setup, logic-analyzer channels, expected SPI mode 3 behavior, CLI command order, fault isolation, APM probing, and BMS_OK release criteria. |

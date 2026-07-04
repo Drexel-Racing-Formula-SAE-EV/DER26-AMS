@@ -52,7 +52,7 @@ That stream is kept for compatibility.
 
 ## Logger Summary Frames
 
-The new dashboard/logger stream uses standard IDs `0x690..0x69A`.
+The new dashboard/logger stream uses standard IDs `0x690..0x69B`.
 Multi-byte values are big-endian.
 
 | ID | Frame | Bytes |
@@ -68,6 +68,7 @@ Multi-byte values are big-endian.
 | `0x698` | ADBMS6830 link | last HAL status, last xfer status, last op, error count, PEC fail mask, command-counter mismatch mask |
 | `0x699` | ADBMS6830 counters | error count, command-counter error count, PEC pass mask, last command bytes |
 | `0x69A` | ADBMS2950/APM link | last HAL status, last xfer status, last op, error count, PEC fail mask, debug enabled, IC count |
+| `0x69B` | Task health | stale heartbeat mask, seen heartbeat mask, safety-stale mask, heartbeat fault flags, logger heartbeat count |
 
 ### `0x690` Status Flags
 
@@ -111,6 +112,29 @@ Multi-byte values are big-endian.
 | 6 | 6 | AMS voltage charge stop |
 | 6 | 7 | AMS command disables charger |
 
+### `0x69B` Task Health
+
+Heartbeat bit order:
+
+| Bit | Task/path |
+|---:|---|
+| 0 | ADBMS voltage path |
+| 1 | current sensor task |
+| 2 | temperature sensing path |
+| 3 | CAN task |
+| 4 | logger/dashboard telemetry path |
+
+Payload:
+
+| Bytes | Meaning |
+|---:|---|
+| 0-1 | stale heartbeat mask |
+| 2-3 | seen heartbeat mask |
+| 4-5 | safety-critical stale mask |
+| 6 bit 0 | safety heartbeat fault |
+| 6 bit 1 | logger/dashboard heartbeat fault |
+| 7 | saturated logger heartbeat counter |
+
 ## Logger Detail Frames
 
 The detail stream exports all 75 cell voltages and all 120 thermistors. It is
@@ -138,11 +162,11 @@ At each non-charge CAN task tick, AMS sends:
 | Stream | Frames |
 |---|---:|
 | Existing ECU `0x069` stream | 62 |
-| Logger summaries | 11 |
+| Logger summaries | 12 |
 | Logger cell details | 25 |
 | Logger temp details | 40 |
 | Logger masks/diagnostics | 20 |
-| Total without estimator frame | 158 |
+| Total without estimator frame | 159 |
 
 In charge mode, AMS still sends the logger stream, then sends the charger command
 frame on extended ID `0x1806E5F4`.

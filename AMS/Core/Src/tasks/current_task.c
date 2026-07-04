@@ -103,6 +103,7 @@ void current_task_fn(void *argument)
             set_bms(0);
         }
 
+        ams_heartbeat_kick(app_data, AMS_HEARTBEAT_CURRENT, osKernelGetTickCount());
         osDelayUntil(entry + CURRENT_TASK_PERIOD_MS);
     }
 }

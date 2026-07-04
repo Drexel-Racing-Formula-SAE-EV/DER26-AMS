@@ -42,6 +42,13 @@
 #define CAN_FREQ 2
 #define ESTIMATOR_FREQ 10
 
+#define AMS_HEARTBEAT_STARTUP_GRACE_MS 3000u
+#define AMS_HEARTBEAT_ADBMS_TIMEOUT_MS 3000u
+#define AMS_HEARTBEAT_CURRENT_TIMEOUT_MS 200u
+#define AMS_HEARTBEAT_TEMP_TIMEOUT_MS 3000u
+#define AMS_HEARTBEAT_CAN_TIMEOUT_MS 2000u
+#define AMS_HEARTBEAT_LOGGER_TIMEOUT_MS 2000u
+
 // prios taken from DER24 defaults
 #define ERR_PRIO 17
 #define AIR_PRIO  7
@@ -72,6 +79,34 @@ typedef enum
 	STATE_BALANCE,
 	STATE_ERROR
 } state_t;
+
+typedef enum
+{
+	AMS_HEARTBEAT_ADBMS = 0,
+	AMS_HEARTBEAT_CURRENT,
+	AMS_HEARTBEAT_TEMP,
+	AMS_HEARTBEAT_CAN,
+	AMS_HEARTBEAT_LOGGER,
+	AMS_HEARTBEAT_COUNT
+} ams_heartbeat_id_t;
+
+#define AMS_HEARTBEAT_BIT(id) ((uint16_t)(1u << (uint16_t)(id)))
+#define AMS_HEARTBEAT_SAFETY_MASK (AMS_HEARTBEAT_BIT(AMS_HEARTBEAT_ADBMS) | \
+                                   AMS_HEARTBEAT_BIT(AMS_HEARTBEAT_CURRENT) | \
+                                   AMS_HEARTBEAT_BIT(AMS_HEARTBEAT_TEMP) | \
+                                   AMS_HEARTBEAT_BIT(AMS_HEARTBEAT_CAN))
+#define AMS_HEARTBEAT_LOGGER_MASK AMS_HEARTBEAT_BIT(AMS_HEARTBEAT_LOGGER)
+
+typedef struct
+{
+	uint32_t boot_tick;
+	uint32_t last_tick[AMS_HEARTBEAT_COUNT];
+	uint32_t count[AMS_HEARTBEAT_COUNT];
+	uint16_t seen_mask;
+	uint16_t stale_mask;
+	uint16_t safety_stale_mask;
+	uint16_t logger_stale_mask;
+} ams_heartbeat_monitor_t;
 
 typedef struct
 {
@@ -150,7 +185,11 @@ typedef struct
 	imd_status_t imd_status;
     bool fan_state;
 
-    bool charger_fault;
+	bool charger_fault;
+	bool task_heartbeat_fault;
+	bool logger_heartbeat_fault;
+	uint16_t heartbeat_stale_mask;
+	uint16_t heartbeat_seen_mask;
     bool bms_state;
     bool bms_output_inhibit;
     uint32_t bms_output_block_count;
@@ -161,6 +200,7 @@ typedef struct
 	accumulator_t acc;
 	ams_estimator_t estimator;
 	ams_hil_input_t hil;
+	ams_heartbeat_monitor_t heartbeat;
 
 	TaskHandle_t fan_task;
 	TaskHandle_t cli_task;
@@ -177,5 +217,10 @@ void app_create();
 void set_bms(bool state);
 void adbms_spi_lock(void);
 void adbms_spi_unlock(void);
+void ams_heartbeat_init(app_data_t *data, uint32_t now);
+void ams_heartbeat_kick(app_data_t *data, ams_heartbeat_id_t id, uint32_t now);
+uint16_t ams_heartbeat_update(app_data_t *data, uint32_t now);
+uint32_t ams_heartbeat_timeout_ms(ams_heartbeat_id_t id);
+const char *ams_heartbeat_name(ams_heartbeat_id_t id);
 
 #endif /* INC_APP_H_ */

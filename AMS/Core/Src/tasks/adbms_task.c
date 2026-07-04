@@ -114,6 +114,7 @@ void adbms_task_fn(void *argument)
         {
             set_bms(0);
         }
+        ams_heartbeat_kick(data, AMS_HEARTBEAT_ADBMS, osKernelGetTickCount());
 
         (void)accumulator_read_temp(acc);
         accumulator_update_temp_stats_at(acc, osKernelGetTickCount());
@@ -129,11 +130,13 @@ void adbms_task_fn(void *argument)
         {
             set_bms(0);
         }
+        ams_heartbeat_kick(data, AMS_HEARTBEAT_TEMP, osKernelGetTickCount());
 
         bool bms_ok_ready = (data->voltage_valid &&
                              !data->voltage_fault &&
                              data->temp_valid &&
                              !data->temp_fault &&
+                             !data->task_heartbeat_fault &&
                              ((data->state != STATE_CHARGE) || !data->temp_charge_stop) &&
                              !data->fuse_fault &&
                              !data->charger_fault &&

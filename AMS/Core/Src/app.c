@@ -23,6 +23,118 @@
 app_data_t app = {0};
 static osMutexId_t adbms_spi_mutex;
 
+uint32_t ams_heartbeat_timeout_ms(ams_heartbeat_id_t id)
+{
+	switch(id)
+	{
+	case AMS_HEARTBEAT_ADBMS:   return AMS_HEARTBEAT_ADBMS_TIMEOUT_MS;
+	case AMS_HEARTBEAT_CURRENT: return AMS_HEARTBEAT_CURRENT_TIMEOUT_MS;
+	case AMS_HEARTBEAT_TEMP:    return AMS_HEARTBEAT_TEMP_TIMEOUT_MS;
+	case AMS_HEARTBEAT_CAN:     return AMS_HEARTBEAT_CAN_TIMEOUT_MS;
+	case AMS_HEARTBEAT_LOGGER:  return AMS_HEARTBEAT_LOGGER_TIMEOUT_MS;
+	default:                    return 0u;
+	}
+}
+
+const char *ams_heartbeat_name(ams_heartbeat_id_t id)
+{
+	switch(id)
+	{
+	case AMS_HEARTBEAT_ADBMS:   return "adbms";
+	case AMS_HEARTBEAT_CURRENT: return "current";
+	case AMS_HEARTBEAT_TEMP:    return "temp";
+	case AMS_HEARTBEAT_CAN:     return "can";
+	case AMS_HEARTBEAT_LOGGER:  return "logger";
+	default:                    return "unknown";
+	}
+}
+
+void ams_heartbeat_init(app_data_t *data, uint32_t now)
+{
+	if(data == NULL)
+	{
+		return;
+	}
+
+	data->heartbeat.boot_tick = now;
+	data->heartbeat.seen_mask = 0u;
+	data->heartbeat.stale_mask = 0u;
+	data->heartbeat.safety_stale_mask = 0u;
+	data->heartbeat.logger_stale_mask = 0u;
+	for(uint8_t i = 0u; i < (uint8_t)AMS_HEARTBEAT_COUNT; i++)
+	{
+		data->heartbeat.last_tick[i] = now;
+		data->heartbeat.count[i] = 0u;
+	}
+
+	data->task_heartbeat_fault = false;
+	data->logger_heartbeat_fault = false;
+	data->heartbeat_stale_mask = 0u;
+	data->heartbeat_seen_mask = 0u;
+}
+
+void ams_heartbeat_kick(app_data_t *data, ams_heartbeat_id_t id, uint32_t now)
+{
+	if((data == NULL) || (id >= AMS_HEARTBEAT_COUNT))
+	{
+		return;
+	}
+
+	data->heartbeat.last_tick[id] = now;
+	data->heartbeat.count[id]++;
+	data->heartbeat.seen_mask |= AMS_HEARTBEAT_BIT(id);
+	data->heartbeat.seen_mask &= (uint16_t)((1u << (uint16_t)AMS_HEARTBEAT_COUNT) - 1u);
+	data->heartbeat_seen_mask = data->heartbeat.seen_mask;
+}
+
+uint16_t ams_heartbeat_update(app_data_t *data, uint32_t now)
+{
+	uint16_t stale = 0u;
+	uint16_t all_mask = (uint16_t)((1u << (uint16_t)AMS_HEARTBEAT_COUNT) - 1u);
+	bool startup_grace;
+
+	if(data == NULL)
+	{
+		return 0u;
+	}
+
+	startup_grace = (now - data->heartbeat.boot_tick) < AMS_HEARTBEAT_STARTUP_GRACE_MS;
+
+	for(uint8_t i = 0u; i < (uint8_t)AMS_HEARTBEAT_COUNT; i++)
+	{
+		ams_heartbeat_id_t id = (ams_heartbeat_id_t)i;
+		uint16_t bit = AMS_HEARTBEAT_BIT(id);
+		uint32_t timeout_ms = ams_heartbeat_timeout_ms(id);
+
+		if(timeout_ms == 0u)
+		{
+			continue;
+		}
+
+		if((data->heartbeat.seen_mask & bit) == 0u)
+		{
+			if(!startup_grace)
+			{
+				stale |= bit;
+			}
+		}
+		else if((now - data->heartbeat.last_tick[i]) > timeout_ms)
+		{
+			stale |= bit;
+		}
+	}
+
+	data->heartbeat.stale_mask = (uint16_t)(stale & all_mask);
+	data->heartbeat.safety_stale_mask = (uint16_t)(stale & AMS_HEARTBEAT_SAFETY_MASK);
+	data->heartbeat.logger_stale_mask = (uint16_t)(stale & AMS_HEARTBEAT_LOGGER_MASK);
+	data->heartbeat_stale_mask = data->heartbeat.stale_mask;
+	data->heartbeat_seen_mask = data->heartbeat.seen_mask;
+	data->task_heartbeat_fault = (data->heartbeat.safety_stale_mask != 0u);
+	data->logger_heartbeat_fault = (data->heartbeat.logger_stale_mask != 0u);
+
+	return data->heartbeat.stale_mask;
+}
+
 void adbms_spi_lock(void)
 {
 	if(adbms_spi_mutex != NULL)
@@ -100,7 +212,11 @@ void app_create()
 	voltage_fault_init(&app.voltage_fault_state);
 	app.estimator_fault = false;
 
-    app.charger_fault = false;
+	app.charger_fault = false;
+	app.task_heartbeat_fault = false;
+	app.logger_heartbeat_fault = false;
+	app.heartbeat_stale_mask = 0u;
+	app.heartbeat_seen_mask = 0u;
     app.bms_state     = false;
 #if AMS_HW_BRINGUP && !AMS_HW_BRINGUP_BMS_OK_RELEASED_DEFAULT
 	app.bms_output_inhibit = true;
@@ -127,6 +243,7 @@ void app_create()
 	app.current_meas_reason = CURRENT_SENSOR_REASON_ADC_READ;
 
 	board_init(&app.board);
+	ams_heartbeat_init(&app, osKernelGetTickCount());
 	set_bms(0);
 	adbms_spi_mutex = osMutexNew(NULL);
 

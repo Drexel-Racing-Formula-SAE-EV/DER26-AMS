@@ -49,17 +49,20 @@ void error_task_fn(void *arg)
         entry = osKernelGetTickCount();
 
         data->air_state = HAL_GPIO_ReadPin(AIR_CTRL_GPIO_Port, AIR_CTRL_Pin);
+        (void)ams_heartbeat_update(data, entry);
 
 
         data->hard_fault = (data->fuse_fault ||
                             data->temp_fault ||
                             data->voltage_fault ||
                             data->charger_fault ||
+                            data->task_heartbeat_fault ||
                             data->current_overcurrent_fault ||
                             data->current_fault_latched);
 
         data->soft_fault = (data->cli_fault ||
                             data->canbus_fault ||
+                            data->logger_heartbeat_fault ||
                             data->current_sensor_fault ||
                             data->current_overcurrent_warning ||
                             data->current_overcurrent_pending ||

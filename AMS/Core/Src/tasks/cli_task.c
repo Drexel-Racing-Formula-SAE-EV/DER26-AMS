@@ -381,6 +381,16 @@ int get_status(int argc, char *argv[])
              temperature_fault_reason_str(data->temp_fault_reason));
     ret |= cli_printline(cli, outline);
 
+    snprintf(outline, CLI_LINESZ,
+             "Heartbeat seen:0x%04X stale:0x%04X safety:0x%04X logger:0x%04X fault:%d logger_fault:%d",
+             data->heartbeat.seen_mask,
+             data->heartbeat.stale_mask,
+             data->heartbeat.safety_stale_mask,
+             data->heartbeat.logger_stale_mask,
+             data->task_heartbeat_fault,
+             data->logger_heartbeat_fault);
+    ret |= cli_printline(cli, outline);
+
     if(hspi != NULL)
     {
         snprintf(outline, CLI_LINESZ,
@@ -417,6 +427,12 @@ int get_faults(int argc, char *argv[])
 	snprintf(outline, CLI_LINESZ, "  canbus: %d", data->canbus_fault);
 	ret |= cli_printline(cli, outline);
 	snprintf(outline, CLI_LINESZ, "  charger: %d", data->charger_fault);
+	ret |= cli_printline(cli, outline);
+	snprintf(outline, CLI_LINESZ, "  heartbeat: critical:%d logger:%d seen:0x%04X stale:0x%04X",
+             data->task_heartbeat_fault,
+             data->logger_heartbeat_fault,
+             data->heartbeat_seen_mask,
+             data->heartbeat_stale_mask);
 	ret |= cli_printline(cli, outline);
     snprintf(outline, CLI_LINESZ, "  voltage: fault:%d valid:%d warn:%d stop:%d reason:%s",
              data->voltage_fault,
