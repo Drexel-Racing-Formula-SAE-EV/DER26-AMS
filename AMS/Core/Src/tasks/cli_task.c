@@ -57,7 +57,7 @@ command_t cmds[] =
 	{"tempsns", &get_temperature_sensor, "gets one sensor: tempsns <ic> <sensor 0-23>"},
 	{"current", &get_current, "gets current sensor raw counts/voltages/status"},
 	{"charger", &get_charger, "gets charger CAN command/status/debug state"},
-	{"spi", &get_spi_debug, "ADBMS6830 SPI debug: spi [status|probe|sid|stat|staterr|wake|coldwake|clrflag|clear|enable|disable]"},
+	{"spi", &get_spi_debug, "ADBMS6830 SPI debug: spi [status|probe|sid|stat|staterr|cfgchk|cellst|oweven|owodd|auxdiag|wake|coldwake|clrflag|clear|diagclear|enable|disable]"},
 	{"apm", &get_apm_debug, "ADBMS2950/APM debug: apm [status|probe|clear|enable|disable]"},
 	{"bmsok", &bmsok_control, "BMS_OK control: bmsok [status|release|inhibit]"},
 	{"state", &set_state, "gets or sets the AMS state [charge|discharge]"},
@@ -650,6 +650,7 @@ int get_spi_debug(int argc, char *argv[])
     int ret = 0;
     adbms6830_driver_t *smb = &data->acc.smb;
     const adbms6830_spi_debug_t *dbg;
+    const adbms6830_diag_health_t *health;
     HAL_StatusTypeDef probe_status;
     SPI_HandleTypeDef *hspi = smb->hspi;
     uint8_t ic_count = smb_ic_count(smb);
@@ -715,9 +716,44 @@ int get_spi_debug(int argc, char *argv[])
             snprintf(outline, CLI_LINESZ, "CLRFLAG all status: %s", cli_hal_status_str(probe_status));
             ret |= cli_printline(cli, outline);
         }
+        else if(!strcmp(argv[1], "diagclear"))
+        {
+            adbms6830_diag_health_clear(smb);
+            ret |= cli_printline(cli, "ADBMS diagnostic health counters cleared");
+        }
+        else if(!strcmp(argv[1], "cfgchk"))
+        {
+            probe_status = adbms6830_verify_config_readback(smb);
+            snprintf(outline, CLI_LINESZ, "CFGA/CFGB readback check status: %s", cli_hal_status_str(probe_status));
+            ret |= cli_printline(cli, outline);
+        }
+        else if(!strcmp(argv[1], "cellst"))
+        {
+            probe_status = adbms6830_run_cell_adc_self_test(smb);
+            snprintf(outline, CLI_LINESZ, "Cell ADC diagnostic hook status: %s", cli_hal_status_str(probe_status));
+            ret |= cli_printline(cli, outline);
+        }
+        else if(!strcmp(argv[1], "oweven"))
+        {
+            probe_status = adbms6830_run_open_wire_check(smb, false);
+            snprintf(outline, CLI_LINESZ, "Open-wire even-channel command status: %s", cli_hal_status_str(probe_status));
+            ret |= cli_printline(cli, outline);
+        }
+        else if(!strcmp(argv[1], "owodd"))
+        {
+            probe_status = adbms6830_run_open_wire_check(smb, true);
+            snprintf(outline, CLI_LINESZ, "Open-wire odd-channel command status: %s", cli_hal_status_str(probe_status));
+            ret |= cli_printline(cli, outline);
+        }
+        else if(!strcmp(argv[1], "auxdiag"))
+        {
+            probe_status = adbms6830_run_aux_gpio_diagnostic(smb);
+            snprintf(outline, CLI_LINESZ, "AUX/GPIO diagnostic hook status: %s", cli_hal_status_str(probe_status));
+            ret |= cli_printline(cli, outline);
+        }
         else if(strcmp(argv[1], "status"))
         {
-            ret |= cli_printline(cli, "Usage: spi [status|probe|sid|stat|staterr|wake|coldwake|clrflag|clear|enable|disable]");
+            ret |= cli_printline(cli, "Usage: spi [status|probe|sid|stat|staterr|cfgchk|cellst|oweven|owodd|auxdiag|wake|coldwake|clrflag|clear|diagclear|enable|disable]");
             return ret;
         }
     }
@@ -790,9 +826,51 @@ int get_spi_debug(int argc, char *argv[])
              (unsigned long)dbg->cmd_counter_error_count);
     ret |= cli_printline(cli, outline);
 
+    health = adbms6830_diag_health_get(smb);
+    if(health != NULL)
+    {
+        snprintf(outline, CLI_LINESZ,
+                 "diag op:%s status:%s cfgA:0x%04X cfgB:0x%04X cfg:0x%04X",
+                 adbms6830_spi_op_str(health->last_op),
+                 cli_hal_status_str(health->last_status),
+                 health->configa_mismatch_mask,
+                 health->configb_mismatch_mask,
+                 health->config_mismatch_mask);
+        ret |= cli_printline(cli, outline);
+
+        snprintf(outline, CLI_LINESZ,
+                 "diag PEC last pass:0x%04X fail:0x%04X sticky:0x%04X cmd sticky:0x%04X",
+                 health->last_pec_pass_mask,
+                 health->last_pec_fail_mask,
+                 health->sticky_pec_fail_mask,
+                 health->sticky_cmd_counter_mismatch_mask);
+        ret |= cli_printline(cli, outline);
+
+        snprintf(outline, CLI_LINESZ,
+                 "diag counts cfg:%lu cell:%lu owe:%lu owo:%lu aux:%lu",
+                 (unsigned long)health->config_readback_count,
+                 (unsigned long)health->cell_adc_self_test_count,
+                 (unsigned long)health->open_wire_even_count,
+                 (unsigned long)health->open_wire_odd_count,
+                 (unsigned long)health->aux_gpio_diag_count);
+        ret |= cli_printline(cli, outline);
+    }
+
     for(uint8_t ic = 0u; ic < ic_count; ic++)
     {
         const adbms6830_ic_diag_t *diag = &smb->diag[ic];
+        if(health != NULL)
+        {
+            snprintf(outline, CLI_LINESZ,
+                     "IC%u health PEC pass:%lu fail:%lu cmd_mis:%lu cfg_mis:%lu",
+                     (unsigned)ic,
+                     (unsigned long)health->pec_pass_count[ic],
+                     (unsigned long)health->pec_fail_count[ic],
+                     (unsigned long)health->cmd_counter_mismatch_count[ic],
+                     (unsigned long)health->config_mismatch_count[ic]);
+            ret |= cli_printline(cli, outline);
+        }
+
         snprintf(outline, CLI_LINESZ,
                  "IC%u SID:%s %02X%02X%02X%02X%02X%02X STATC:%d csflt:0x%04X sleep:%u spi:%u thsd:%u osc:%u",
                  (unsigned)ic,

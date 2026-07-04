@@ -103,6 +103,7 @@ spi status
 spi probe
 spi sid
 spi stat
+spi cfgchk
 spi status
 volt
 fault
@@ -121,6 +122,8 @@ RX preview changes from all-zero/all-FF when the chain responds
 PEC pass/fail masks are visible
 command counters are visible when response frames are valid
 command-counter mismatch mask remains 0 during a stable command sequence
+diag sticky PEC/counter masks stay 0 during repeated stable reads
+spi cfgchk reports OK and config mismatch masks remain 0
 volt shows usable/updated/stale/PEC cell counts
 ```
 
@@ -187,6 +190,36 @@ can assert; it is not a normal health-read command.
 Use `spi clrflag` after recording the first status output if the chain reports
 expected startup flags such as SLEEP. Then rerun `spi stat` and verify which
 flags clear and which remain.
+
+## ADBMS6830 Diagnostic Hooks
+
+After basic SID/status reads are stable, use the extra diagnostic hooks:
+
+```text
+spi cfgchk
+spi cellst
+spi oweven
+spi owodd
+spi auxdiag
+spi status
+```
+
+Interpretation:
+
+| Command | Purpose | Good sign |
+|---|---|---|
+| `spi cfgchk` | Read CFGA/CFGB and compare against packed TX config | status OK, cfgA/cfgB/cfg masks are 0 |
+| `spi cellst` | Exercise cell ADC diagnostic conversion/poll/status path | status OK and no new PEC/counter errors |
+| `spi oweven` | Start even-channel cell open-wire conversion | command status OK, then inspect voltage deltas per datasheet procedure |
+| `spi owodd` | Start odd-channel cell open-wire conversion | command status OK, then inspect voltage deltas per datasheet procedure |
+| `spi auxdiag` | Exercise AUX/GPIO ADC read/status path | status OK and temp/AUX path still reports plausible data |
+| `spi diagclear` | Clear accumulated diagnostic health counters | sticky masks and counts reset to 0 |
+
+These hooks prove firmware command flow and observability. They do not by
+themselves prove that every cell wire, thermistor mux channel, or ADBMS silicon
+self-test is electrically passing. For open-wire, capture the even/odd
+conversion results and compare the voltage deltas against the ADBMS6830
+datasheet procedure and the actual SMB wiring.
 
 ## Fault Isolation Matrix
 

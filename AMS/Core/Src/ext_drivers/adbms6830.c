@@ -198,12 +198,14 @@ static void adbms6830_spi_debug_note_rx(adbms6830_driver_t *dev, const uint8_t *
 static void adbms6830_note_counter_reset(adbms6830_driver_t *dev);
 static void adbms6830_note_counter_increment(adbms6830_driver_t *dev);
 static void adbms6830_note_observed_counter(adbms6830_driver_t *dev, uint8_t current_ic, uint8_t observed_counter, bool pec_ok);
+static void adbms6830_note_pec_result(adbms6830_driver_t *dev, uint8_t current_ic, bool pec_ok);
 static bool adbms6830_cmd_increments_counter(const uint8_t cmd[CMDSZ]);
 static bool adbms6830_cmd_resets_counter(const uint8_t cmd[CMDSZ]);
 static void adbms6830_parse_sid(adbms6830_driver_t *dev, const uint8_t *data);
 static void adbms6830_parse_statc(adbms6830_driver_t *dev, const uint8_t *data);
 static void adbms6830_parse_statd(adbms6830_driver_t *dev, const uint8_t *data);
 static void adbms6830_parse_state(adbms6830_driver_t *dev, const uint8_t *data);
+static void adbms6830_parse_aux_gpio(adbms6830_driver_t *dev, uint8_t *data);
 // Parsing Rx Data
 void adbms6830_parse_cfga(adbms6830_driver_t* dev, uint8_t *data);
 void adbms6830_parse_cfgb(adbms6830_driver_t* dev, uint8_t *data);
@@ -218,6 +220,42 @@ void adbms6830_pack_clr_flag_data(adbms6830_driver_t* dev);
 static uint16_t adbms6830_min_u16(uint16_t a, uint16_t b)
 {
     return (a < b) ? a : b;
+}
+
+static void adbms6830_diag_note_status(adbms6830_driver_t *dev,
+                                       adbms6830_spi_op_t op,
+                                       HAL_StatusTypeDef status)
+{
+    if(dev == NULL)
+    {
+        return;
+    }
+
+    dev->health.last_op = op;
+    dev->health.last_status = status;
+}
+
+static void adbms6830_note_pec_result(adbms6830_driver_t *dev, uint8_t current_ic, bool pec_ok)
+{
+    uint16_t bit;
+
+    if((dev == NULL) || (current_ic >= ADBMS6830_MAX_TRACKED_ICS))
+    {
+        return;
+    }
+
+    bit = (uint16_t)(1u << current_ic);
+    if(pec_ok)
+    {
+        dev->health.last_pec_pass_mask |= bit;
+        dev->health.pec_pass_count[current_ic]++;
+    }
+    else
+    {
+        dev->health.last_pec_fail_mask |= bit;
+        dev->health.sticky_pec_fail_mask |= bit;
+        dev->health.pec_fail_count[current_ic]++;
+    }
 }
 
 static uint8_t adbms6830_counter_next(uint8_t current)
@@ -298,6 +336,9 @@ static void adbms6830_note_observed_counter(adbms6830_driver_t *dev,
         dev->spi_debug.cmd_counter_mismatch_mask |= bit;
         dev->spi_debug.cmd_counter_error_count++;
         dev->spi_debug.error_count++;
+        dev->health.last_cmd_counter_mismatch_mask |= bit;
+        dev->health.sticky_cmd_counter_mismatch_mask |= bit;
+        dev->health.cmd_counter_mismatch_count[current_ic]++;
         dev->spi_debug.expected_cmd_counter[current_ic] = observed_counter;
     }
     else
@@ -597,6 +638,11 @@ const char *adbms6830_spi_op_str(adbms6830_spi_op_t op)
     case ADBMS6830_SPI_OP_READ_SID: return "read_sid";
     case ADBMS6830_SPI_OP_READ_STATUS: return "read_status";
     case ADBMS6830_SPI_OP_CLEAR_FLAGS: return "clear_flags";
+    case ADBMS6830_SPI_OP_CONFIG_CHECK: return "config_check";
+    case ADBMS6830_SPI_OP_CELL_ADC_SELF_TEST: return "cell_adc_diag";
+    case ADBMS6830_SPI_OP_OPEN_WIRE_EVEN: return "open_wire_even";
+    case ADBMS6830_SPI_OP_OPEN_WIRE_ODD: return "open_wire_odd";
+    case ADBMS6830_SPI_OP_AUX_GPIO_DIAG: return "aux_gpio_diag";
     default:                      return "unknown";
     }
 }
@@ -825,6 +871,246 @@ HAL_StatusTypeDef adbms6830_clear_all_flags(adbms6830_driver_t *dev)
     return status;
 }
 
+const adbms6830_diag_health_t *adbms6830_diag_health_get(const adbms6830_driver_t *dev)
+{
+    return (dev == NULL) ? NULL : &dev->health;
+}
+
+void adbms6830_diag_health_clear(adbms6830_driver_t *dev)
+{
+    if(dev == NULL)
+    {
+        return;
+    }
+
+    memset(&dev->health, 0, sizeof(dev->health));
+    dev->health.last_status = HAL_OK;
+}
+
+HAL_StatusTypeDef adbms6830_verify_config_readback(adbms6830_driver_t *dev)
+{
+    HAL_StatusTypeDef first_error = HAL_OK;
+    HAL_StatusTypeDef status;
+
+    if((dev == NULL) || (dev->ics == NULL) || (dev->num_ics <= 0))
+    {
+        return HAL_ERROR;
+    }
+
+    dev->health.config_readback_count++;
+    dev->health.configa_mismatch_mask = 0u;
+    dev->health.configb_mismatch_mask = 0u;
+    dev->health.config_mismatch_mask = 0u;
+
+    adbms6830_pack_cfga(dev);
+    adbms6830_pack_cfgb(dev);
+
+    if(dev->spi_debug.enabled)
+    {
+        dev->spi_debug.last_op = ADBMS6830_SPI_OP_CONFIG_CHECK;
+    }
+
+    status = adbms6830_rd48_checked(dev, RDCFGA, shared_buf);
+    if(status == HAL_OK)
+    {
+        adbms6830_parse_cfga(dev, shared_buf);
+    }
+    else
+    {
+        first_error = status;
+    }
+
+    status = adbms6830_rd48_checked(dev, RDCFGB, shared_buf);
+    if(status == HAL_OK)
+    {
+        adbms6830_parse_cfgb(dev, shared_buf);
+    }
+    else if(first_error == HAL_OK)
+    {
+        first_error = status;
+    }
+
+    for(uint8_t ic = 0u; (ic < (uint8_t)dev->num_ics) && (ic < ADBMS6830_MAX_TRACKED_ICS); ic++)
+    {
+        uint16_t bit = (uint16_t)(1u << ic);
+        bool mismatch = false;
+
+        if(memcmp(dev->ics[ic].configa.tx_data, dev->ics[ic].configa.rx_data, TX_DATA) != 0)
+        {
+            dev->health.configa_mismatch_mask |= bit;
+            mismatch = true;
+        }
+        if(memcmp(dev->ics[ic].configb.tx_data, dev->ics[ic].configb.rx_data, TX_DATA) != 0)
+        {
+            dev->health.configb_mismatch_mask |= bit;
+            mismatch = true;
+        }
+        if(mismatch)
+        {
+            dev->health.config_mismatch_mask |= bit;
+            dev->health.config_mismatch_count[ic]++;
+        }
+    }
+
+    if((first_error == HAL_OK) && (dev->health.config_mismatch_mask != 0u))
+    {
+        first_error = HAL_ERROR;
+    }
+
+    adbms6830_diag_note_status(dev, ADBMS6830_SPI_OP_CONFIG_CHECK, first_error);
+    if(dev->spi_debug.enabled)
+    {
+        dev->spi_debug.last_op = ADBMS6830_SPI_OP_CONFIG_CHECK;
+        dev->spi_debug.last_status = first_error;
+    }
+
+    return first_error;
+}
+
+HAL_StatusTypeDef adbms6830_run_cell_adc_self_test(adbms6830_driver_t *dev)
+{
+    HAL_StatusTypeDef first_error = HAL_OK;
+    HAL_StatusTypeDef status;
+    uint8_t adcv_diag_cmd[2];
+
+    if(dev == NULL)
+    {
+        return HAL_ERROR;
+    }
+
+    dev->health.cell_adc_self_test_count++;
+    if(dev->spi_debug.enabled)
+    {
+        dev->spi_debug.last_op = ADBMS6830_SPI_OP_CELL_ADC_SELF_TEST;
+    }
+
+    /* Exercise the cell ADC path with filter reset, then poll and read status.
+     * This is a bring-up diagnostic hook; final pass/fail interpretation must
+     * be confirmed against the ADBMS6830 datasheet and bench measurements.
+     */
+    adcv_diag_cmd[0] = 0x02u | (uint8_t)RD_ON;
+    adcv_diag_cmd[1] = ((uint8_t)SINGLE << 7u) | ((uint8_t)DCP_OFF << 4u)
+                     | ((uint8_t)RSTF_ON << 2u) | ((uint8_t)OW_OFF_ALL_CH & 0x03u)
+                     | 0x60u;
+    adbms6830_wakeup(dev);
+    status = adbms6830_cmd_checked(dev, adcv_diag_cmd);
+    if(status != HAL_OK)
+    {
+        first_error = status;
+    }
+
+    status = adbms6830_cmd_checked(dev, PLCADC);
+    if((status != HAL_OK) && (first_error == HAL_OK))
+    {
+        first_error = status;
+    }
+
+    status = adbms6830_read_status(dev, false);
+    if((status != HAL_OK) && (first_error == HAL_OK))
+    {
+        first_error = status;
+    }
+
+    adbms6830_diag_note_status(dev, ADBMS6830_SPI_OP_CELL_ADC_SELF_TEST, first_error);
+    if(dev->spi_debug.enabled)
+    {
+        dev->spi_debug.last_op = ADBMS6830_SPI_OP_CELL_ADC_SELF_TEST;
+        dev->spi_debug.last_status = first_error;
+    }
+    return first_error;
+}
+
+HAL_StatusTypeDef adbms6830_run_open_wire_check(adbms6830_driver_t *dev, bool odd_channels)
+{
+    HAL_StatusTypeDef status;
+    uint8_t adcv_ow_cmd[2];
+    OW_C_S owcs = odd_channels ? OW_ON_ODD_CH : OW_ON_EVEN_CH;
+    adbms6830_spi_op_t op = odd_channels ? ADBMS6830_SPI_OP_OPEN_WIRE_ODD :
+                                            ADBMS6830_SPI_OP_OPEN_WIRE_EVEN;
+
+    if(dev == NULL)
+    {
+        return HAL_ERROR;
+    }
+
+    if(odd_channels)
+    {
+        dev->health.open_wire_odd_count++;
+    }
+    else
+    {
+        dev->health.open_wire_even_count++;
+    }
+
+    if(dev->spi_debug.enabled)
+    {
+        dev->spi_debug.last_op = op;
+    }
+
+    adcv_ow_cmd[0] = 0x02u | (uint8_t)RD_ON;
+    adcv_ow_cmd[1] = ((uint8_t)SINGLE << 7u) | ((uint8_t)DCP_OFF << 4u)
+                   | ((uint8_t)RSTF_ON << 2u) | ((uint8_t)owcs & 0x03u) | 0x60u;
+    adbms6830_wakeup(dev);
+    status = adbms6830_cmd_checked(dev, adcv_ow_cmd);
+
+    adbms6830_diag_note_status(dev, op, status);
+    if(dev->spi_debug.enabled)
+    {
+        dev->spi_debug.last_op = op;
+        dev->spi_debug.last_status = status;
+    }
+    return status;
+}
+
+HAL_StatusTypeDef adbms6830_run_aux_gpio_diagnostic(adbms6830_driver_t *dev)
+{
+    HAL_StatusTypeDef first_error = HAL_OK;
+    HAL_StatusTypeDef status;
+    uint8_t adax_cmd[2] = { ADAX_CMD_BYTE0, ADAX_CMD_BYTE1 };
+
+    if(dev == NULL)
+    {
+        return HAL_ERROR;
+    }
+
+    dev->health.aux_gpio_diag_count++;
+    if(dev->spi_debug.enabled)
+    {
+        dev->spi_debug.last_op = ADBMS6830_SPI_OP_AUX_GPIO_DIAG;
+    }
+
+    adbms6830_wakeup(dev);
+    status = adbms6830_cmd_checked(dev, adax_cmd);
+    if(status != HAL_OK)
+    {
+        first_error = status;
+    }
+
+    status = adbms6830_rd48_checked(dev, RDAUXA, shared_buf);
+    if(status == HAL_OK)
+    {
+        adbms6830_parse_aux_gpio(dev, shared_buf);
+    }
+    else if(first_error == HAL_OK)
+    {
+        first_error = status;
+    }
+
+    status = adbms6830_read_status(dev, false);
+    if((status != HAL_OK) && (first_error == HAL_OK))
+    {
+        first_error = status;
+    }
+
+    adbms6830_diag_note_status(dev, ADBMS6830_SPI_OP_AUX_GPIO_DIAG, first_error);
+    if(dev->spi_debug.enabled)
+    {
+        dev->spi_debug.last_op = ADBMS6830_SPI_OP_AUX_GPIO_DIAG;
+        dev->spi_debug.last_status = first_error;
+    }
+    return first_error;
+}
+
 void adBms6830_init(adbms6830_driver_t* dev,
 					   uint8_t num_ics,
 					   adbms6830_asic* ics,
@@ -850,6 +1136,8 @@ void adBms6830_init(adbms6830_driver_t* dev,
 	dev->spi_debug.last_tx_status = HAL_OK;
 	dev->spi_debug.last_rx_status = HAL_OK;
 	dev->spi_debug.last_xfer_status = HAL_OK;
+	memset(&dev->health, 0, sizeof(dev->health));
+	dev->health.last_status = HAL_OK;
 	adbms6830_note_counter_reset(dev);
 
 	for(uint8_t ic = 0u; ic < ADBMS6830_MAX_TRACKED_ICS; ic++)
@@ -1371,6 +1659,10 @@ static HAL_StatusTypeDef adbms6830_rd48_checked(adbms6830_driver_t* dev,
     /* 2. Wakeup the isoSPI Daisy Chain */
     adbms6830_wakeup(dev);
 
+    dev->health.last_pec_pass_mask = 0u;
+    dev->health.last_pec_fail_mask = 0u;
+    dev->health.last_cmd_counter_mismatch_mask = 0u;
+
     if(dev->spi_debug.enabled)
     {
         dev->spi_debug.last_op = ADBMS6830_SPI_OP_RD48;
@@ -1401,6 +1693,7 @@ static HAL_StatusTypeDef adbms6830_rd48_checked(adbms6830_driver_t* dev,
         if (received_pec != calculated_pec)
         {
             rx_pec_error = 1u;
+            adbms6830_note_pec_result(dev, current_ic, false);
             if(dev->spi_debug.enabled)
             {
                 dev->spi_debug.last_read_pec_fail_mask |= (uint16_t)(1u << current_ic);
@@ -1410,6 +1703,7 @@ static HAL_StatusTypeDef adbms6830_rd48_checked(adbms6830_driver_t* dev,
         else
         {
             rx_pec_error = 0u;
+            adbms6830_note_pec_result(dev, current_ic, true);
             if(dev->spi_debug.enabled)
             {
                 dev->spi_debug.last_read_pec_pass_mask |= (uint16_t)(1u << current_ic);

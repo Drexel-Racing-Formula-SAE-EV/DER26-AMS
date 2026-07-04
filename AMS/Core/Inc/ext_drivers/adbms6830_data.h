@@ -29,7 +29,12 @@ typedef enum
   ADBMS6830_SPI_OP_COLD_WAKE,
   ADBMS6830_SPI_OP_READ_SID,
   ADBMS6830_SPI_OP_READ_STATUS,
-  ADBMS6830_SPI_OP_CLEAR_FLAGS
+  ADBMS6830_SPI_OP_CLEAR_FLAGS,
+  ADBMS6830_SPI_OP_CONFIG_CHECK,
+  ADBMS6830_SPI_OP_CELL_ADC_SELF_TEST,
+  ADBMS6830_SPI_OP_OPEN_WIRE_EVEN,
+  ADBMS6830_SPI_OP_OPEN_WIRE_ODD,
+  ADBMS6830_SPI_OP_AUX_GPIO_DIAG
 } adbms6830_spi_op_t;
 
 typedef struct
@@ -96,6 +101,33 @@ typedef struct
   uint16_t gpi_mask;
   uint8_t revision;
 } adbms6830_ic_diag_t;
+
+typedef struct
+{
+  adbms6830_spi_op_t last_op;
+  HAL_StatusTypeDef last_status;
+
+  uint16_t last_pec_pass_mask;
+  uint16_t last_pec_fail_mask;
+  uint16_t sticky_pec_fail_mask;
+  uint16_t last_cmd_counter_mismatch_mask;
+  uint16_t sticky_cmd_counter_mismatch_mask;
+
+  uint16_t configa_mismatch_mask;
+  uint16_t configb_mismatch_mask;
+  uint16_t config_mismatch_mask;
+
+  uint32_t pec_pass_count[ADBMS6830_MAX_TRACKED_ICS];
+  uint32_t pec_fail_count[ADBMS6830_MAX_TRACKED_ICS];
+  uint32_t cmd_counter_mismatch_count[ADBMS6830_MAX_TRACKED_ICS];
+  uint32_t config_mismatch_count[ADBMS6830_MAX_TRACKED_ICS];
+
+  uint32_t config_readback_count;
+  uint32_t cell_adc_self_test_count;
+  uint32_t open_wire_even_count;
+  uint32_t open_wire_odd_count;
+  uint32_t aux_gpio_diag_count;
+} adbms6830_diag_health_t;
 
 
 /* BMS ic main structure */
@@ -168,6 +200,7 @@ typedef struct
 
   adbms6830_spi_debug_t spi_debug;
   adbms6830_ic_diag_t diag[ADBMS6830_MAX_TRACKED_ICS];
+  adbms6830_diag_health_t health;
 } adbms6830_driver_t;
 
 #endif /* INC_EXT_DRIVERS_ADBMS6830_DATA_H_ */

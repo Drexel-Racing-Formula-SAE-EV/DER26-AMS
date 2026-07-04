@@ -50,6 +50,12 @@ HAL_StatusTypeDef adbms6830_spi_probe_rdcfga(adbms6830_driver_t *dev);
 HAL_StatusTypeDef adbms6830_read_sid(adbms6830_driver_t *dev);
 HAL_StatusTypeDef adbms6830_read_status(adbms6830_driver_t *dev, bool inject_spiflt);
 HAL_StatusTypeDef adbms6830_clear_all_flags(adbms6830_driver_t *dev);
+const adbms6830_diag_health_t *adbms6830_diag_health_get(const adbms6830_driver_t *dev);
+void adbms6830_diag_health_clear(adbms6830_driver_t *dev);
+HAL_StatusTypeDef adbms6830_verify_config_readback(adbms6830_driver_t *dev);
+HAL_StatusTypeDef adbms6830_run_cell_adc_self_test(adbms6830_driver_t *dev);
+HAL_StatusTypeDef adbms6830_run_open_wire_check(adbms6830_driver_t *dev, bool odd_channels);
+HAL_StatusTypeDef adbms6830_run_aux_gpio_diagnostic(adbms6830_driver_t *dev);
 
 ///* I2C COMM primitives */
 //void adbms6830_i2c_write(adbms6830_driver_t *dev, uint8_t slave_addr, uint8_t data);
