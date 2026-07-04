@@ -4,7 +4,7 @@
 Authored by Mahad Faisal, 2026.
 | Test function | Purpose |
 |---|---|
-| `test_accumulator_stats_and_balance` | Verifies voltage min/max/total stats, full-usable scan gating, bounded SMB count, balance mask generation, balance clear. |
+| `test_accumulator_stats_and_balance` | Verifies voltage min/max/total stats, full-usable scan gating, bounded SMB count, PWM balance selection, DCC stays clear, and balance clear. |
 | `test_voltage_stats_boundaries_and_fuzz` | Fuzzes valid/invalid cell-code combinations and verifies only usable/fresh readings affect pack stats. |
 | `test_voltage_fault_policy_and_stale_tolerance` | Verifies voltage fault staging, charge-stop behavior, hard OV/UV latching, and single-scan PEC/miss tolerance versus persistent stale-cell fail-closed behavior. |
 | `test_system_sil_boot_ready_and_bms_conjunction` | System-level SIL: verifies BMS_OK cannot assert before both current and voltage are valid, and that either current-invalid or voltage-not-ready keeps BMS_OK low. |

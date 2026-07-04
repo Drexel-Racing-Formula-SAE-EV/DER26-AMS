@@ -1281,9 +1281,14 @@ void adbms6830_reset_cfg(adbms6830_driver_t *dev)
 		vuv_value = (uint16_t )(under_voltage + 2 * (1 << (rbits - 1)));
 		vuv_value &= 0xFFF;
 		dev->ics[i].tx_cfgb.vuv = vuv_value;
+		dev->ics[i].tx_cfgb.dtmen = 1u;
 		dev->ics[i].tx_cfgb.dtrng = RANG_0_TO_63_MIN;
 		dev->ics[i].tx_cfgb.dcto = TIME_1MIN_OR_0_26HR;
 		dev->ics[i].tx_cfgb.dcc = 0u;
+		memset(dev->ics[i].PwmA.pwma, 0, sizeof(dev->ics[i].PwmA.pwma));
+		memset(dev->ics[i].PwmB.pwmb, 0, sizeof(dev->ics[i].PwmB.pwmb));
+		memset(dev->ics[i].pwma.tx_data, 0, sizeof(dev->ics[i].pwma.tx_data));
+		memset(dev->ics[i].pwmb.tx_data, 0, sizeof(dev->ics[i].pwmb.tx_data));
 	}
 }
 
@@ -1323,6 +1328,86 @@ HAL_StatusTypeDef adbms6830_wrcfgb_checked(adbms6830_driver_t *dev)
 		}
 	}
 	return adbms6830_wr48_checked(dev, WRCFGB, shared_buf);
+}
+
+static void adbms6830_pack_pwma(adbms6830_driver_t *dev)
+{
+	adbms6830_asic *ics = dev->ics;
+	for(uint8_t curr_ic = 0; curr_ic < dev->num_ics; curr_ic++)
+	{
+		memset(ics[curr_ic].pwma.tx_data, 0, TX_DATA);
+		ics[curr_ic].pwma.tx_data[0] = (uint8_t)(((ics[curr_ic].PwmA.pwma[1] & 0x0Fu) << 4) |
+		                                         (ics[curr_ic].PwmA.pwma[0] & 0x0Fu));
+		ics[curr_ic].pwma.tx_data[1] = (uint8_t)(((ics[curr_ic].PwmA.pwma[3] & 0x0Fu) << 4) |
+		                                         (ics[curr_ic].PwmA.pwma[2] & 0x0Fu));
+		ics[curr_ic].pwma.tx_data[2] = (uint8_t)(((ics[curr_ic].PwmA.pwma[5] & 0x0Fu) << 4) |
+		                                         (ics[curr_ic].PwmA.pwma[4] & 0x0Fu));
+		ics[curr_ic].pwma.tx_data[3] = (uint8_t)(((ics[curr_ic].PwmA.pwma[7] & 0x0Fu) << 4) |
+		                                         (ics[curr_ic].PwmA.pwma[6] & 0x0Fu));
+		ics[curr_ic].pwma.tx_data[4] = (uint8_t)(((ics[curr_ic].PwmA.pwma[9] & 0x0Fu) << 4) |
+		                                         (ics[curr_ic].PwmA.pwma[8] & 0x0Fu));
+		ics[curr_ic].pwma.tx_data[5] = (uint8_t)(((ics[curr_ic].PwmA.pwma[11] & 0x0Fu) << 4) |
+		                                         (ics[curr_ic].PwmA.pwma[10] & 0x0Fu));
+	}
+}
+
+static void adbms6830_pack_pwmb(adbms6830_driver_t *dev)
+{
+	adbms6830_asic *ics = dev->ics;
+	for(uint8_t curr_ic = 0; curr_ic < dev->num_ics; curr_ic++)
+	{
+		memset(ics[curr_ic].pwmb.tx_data, 0, TX_DATA);
+		ics[curr_ic].pwmb.tx_data[0] = (uint8_t)(((ics[curr_ic].PwmB.pwmb[1] & 0x0Fu) << 4) |
+		                                         (ics[curr_ic].PwmB.pwmb[0] & 0x0Fu));
+		ics[curr_ic].pwmb.tx_data[1] = (uint8_t)(((ics[curr_ic].PwmB.pwmb[3] & 0x0Fu) << 4) |
+		                                         (ics[curr_ic].PwmB.pwmb[2] & 0x0Fu));
+	}
+}
+
+HAL_StatusTypeDef adbms6830_wrpwma_checked(adbms6830_driver_t *dev)
+{
+	if((dev == NULL) || (dev->ics == NULL) || (dev->num_ics <= 0))
+	{
+		return HAL_ERROR;
+	}
+
+	adbms6830_pack_pwma(dev);
+	for(uint8_t cic = 0; cic < dev->num_ics; cic++)
+	{
+		for(uint8_t data = 0; data < TX_DATA; data++)
+		{
+			shared_buf[(cic * TX_DATA) + data] = dev->ics[cic].pwma.tx_data[data];
+		}
+	}
+	return adbms6830_wr48_checked(dev, WRPWM1, shared_buf);
+}
+
+HAL_StatusTypeDef adbms6830_wrpwmb_checked(adbms6830_driver_t *dev)
+{
+	if((dev == NULL) || (dev->ics == NULL) || (dev->num_ics <= 0))
+	{
+		return HAL_ERROR;
+	}
+
+	adbms6830_pack_pwmb(dev);
+	for(uint8_t cic = 0; cic < dev->num_ics; cic++)
+	{
+		for(uint8_t data = 0; data < TX_DATA; data++)
+		{
+			shared_buf[(cic * TX_DATA) + data] = dev->ics[cic].pwmb.tx_data[data];
+		}
+	}
+	return adbms6830_wr48_checked(dev, WRPWM2, shared_buf);
+}
+
+HAL_StatusTypeDef adbms6830_write_pwm_checked(adbms6830_driver_t *dev)
+{
+	HAL_StatusTypeDef status = adbms6830_wrpwma_checked(dev);
+	if(status != HAL_OK)
+	{
+		return status;
+	}
+	return adbms6830_wrpwmb_checked(dev);
 }
 
 void adbms6830_rdcfga(adbms6830_driver_t *dev)

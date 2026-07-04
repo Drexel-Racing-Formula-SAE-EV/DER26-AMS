@@ -1282,6 +1282,49 @@ static void test_adbms_spi_coldwake_and_clear_flags(void)
     EXPECT_TRUE(ics[0].clrflag.tx_data[5] == 0xDFu);
 }
 
+static void test_adbms_pwm_write_packing(void)
+{
+    adbms6830_driver_t dev;
+    adbms6830_asic ics[1];
+    SPI_HandleTypeDef spi;
+    GPIO_TypeDef gpio_a;
+    GPIO_TypeDef gpio_b;
+    uint16_t frame_len = (uint16_t)(CMDSZ + PEC15SZ + TX_DATA + DPECSZ);
+
+    memset(&spi, 0, sizeof(spi));
+    memset(&gpio_a, 0, sizeof(gpio_a));
+    memset(&gpio_b, 0, sizeof(gpio_b));
+    unit_adbms_init_driver(&dev, ics, &spi, &gpio_a, &gpio_b, 1u);
+
+    ics[0].PwmA.pwma[0] = PWM_33_0_PCT;
+    ics[0].PwmA.pwma[1] = PWM_66_0_PCT;
+    ics[0].PwmA.pwma[10] = PWM_19_8_PCT;
+    ics[0].PwmA.pwma[11] = PWM_26_4_PCT;
+    unit_spi_reset();
+    EXPECT_TRUE(adbms6830_wrpwma_checked(&dev) == HAL_OK);
+    EXPECT_TRUE(unit_spi_tx_calls == 1u);
+    EXPECT_TRUE(unit_spi_last_tx_len == frame_len);
+    EXPECT_TRUE(unit_spi_last_tx[0] == 0x00u);
+    EXPECT_TRUE(unit_spi_last_tx[1] == 0x20u);
+    EXPECT_TRUE(unit_spi_last_tx[4] == ((PWM_66_0_PCT << 4) | PWM_33_0_PCT));
+    EXPECT_TRUE(unit_spi_last_tx[9] == ((PWM_26_4_PCT << 4) | PWM_19_8_PCT));
+
+    ics[0].PwmB.pwmb[0] = PWM_39_6_PCT;
+    ics[0].PwmB.pwmb[1] = PWM_46_2_PCT;
+    ics[0].PwmB.pwmb[2] = PWM_52_8_PCT;
+    ics[0].PwmB.pwmb[3] = PWM_59_4_PCT;
+    unit_spi_reset();
+    EXPECT_TRUE(adbms6830_wrpwmb_checked(&dev) == HAL_OK);
+    EXPECT_TRUE(unit_spi_tx_calls == 1u);
+    EXPECT_TRUE(unit_spi_last_tx_len == frame_len);
+    EXPECT_TRUE(unit_spi_last_tx[0] == 0x00u);
+    EXPECT_TRUE(unit_spi_last_tx[1] == 0x21u);
+    EXPECT_TRUE(unit_spi_last_tx[4] == ((PWM_46_2_PCT << 4) | PWM_39_6_PCT));
+    EXPECT_TRUE(unit_spi_last_tx[5] == ((PWM_59_4_PCT << 4) | PWM_52_8_PCT));
+    EXPECT_TRUE(unit_spi_last_tx[6] == 0u);
+    EXPECT_TRUE(unit_spi_last_tx[9] == 0u);
+}
+
 
 static void unit_adbms2950_init_driver(adbms2950_driver_t *dev,
                                        adbms2950_asic *ics,
@@ -1445,6 +1488,7 @@ int main(void)
     run_test("ADBMS SPI rd48 PEC masks", test_adbms_spi_debug_rd48_pec_masks_and_clear);
     run_test("ADBMS SPI SID/status/counter diagnostics", test_adbms_spi_sid_status_and_counter_mismatch);
     run_test("ADBMS SPI cold wake and clear flags", test_adbms_spi_coldwake_and_clear_flags);
+    run_test("ADBMS PWM write packing", test_adbms_pwm_write_packing);
     run_test("ADBMS2950 SPI write/full-duplex", test_adbms2950_spi_debug_write_and_full_duplex_paths);
     run_test("ADBMS2950 SPI probe PEC masks", test_adbms2950_spi_probe_pec_masks_and_clear);
     run_test("current sensor conversion/range", test_current_sensor_conversion_zero_and_range_selection);

@@ -27,6 +27,42 @@ void smb_read_temp(adbms6830_driver_t* dev);
 void apm_read_vbadc_viadc(adbms2950_driver_t* apm);
 void apm_read_temps(adbms2950_driver_t* apm);
 
+static void accumulator_clear_balance_shadow(adbms6830_asic *ic)
+{
+    if(ic == NULL)
+    {
+        return;
+    }
+
+    ic->tx_cfgb.dtmen = 1u;
+    ic->tx_cfgb.dtrng = RANG_0_TO_63_MIN;
+    ic->tx_cfgb.dcto = TIME_1MIN_OR_0_26HR;
+    ic->tx_cfgb.dcc = 0u;
+    memset(ic->PwmA.pwma, 0, sizeof(ic->PwmA.pwma));
+    memset(ic->PwmB.pwmb, 0, sizeof(ic->PwmB.pwmb));
+}
+
+static void accumulator_set_balance_pwm_cell(adbms6830_asic *ic, uint8_t cell, uint8_t duty)
+{
+    if((ic == NULL) || (cell >= CELL))
+    {
+        return;
+    }
+
+    if(cell < PWMA)
+    {
+        ic->PwmA.pwma[cell] = (uint8_t)(duty & 0x0Fu);
+    }
+    else
+    {
+        uint8_t pwmb_index = (uint8_t)(cell - PWMA);
+        if(pwmb_index < PWMB)
+        {
+            ic->PwmB.pwmb[pwmb_index] = (uint8_t)(duty & 0x0Fu);
+        }
+    }
+}
+
 void accumulator_init(accumulator_t *dev,
 				      SPI_HandleTypeDef *hspi,
 					  GPIO_TypeDef *cs_port_a,
@@ -791,9 +827,9 @@ int accumulator_set_balance(accumulator_t *dev)
 
     for(uint8_t ic = 0; ic < ic_count; ic++)
     {
-        uint16_t dcc_mask = 0;
         uint16_t cohort_min_mv = UINT16_MAX;
         uint8_t balance_count = 0u;
+        accumulator_clear_balance_shadow(&smb_ics[ic]);
 
         for(uint8_t cell = 0; cell < NCELLS; cell++)
         {
@@ -811,7 +847,6 @@ int accumulator_set_balance(accumulator_t *dev)
 
         if(cohort_min_mv == UINT16_MAX)
         {
-            smb_ics[ic].tx_cfgb.dcc = 0u;
             continue;
         }
 
@@ -827,15 +862,18 @@ int accumulator_set_balance(accumulator_t *dev)
                (cell_mv > (uint16_t)(cohort_min_mv + BALANCE_ON_DELTA_MV)) &&
                (balance_count < BALANCE_MAX_CELLS_PER_SEG))
             {
-                dcc_mask |= (uint16_t)(1u << cell);
+                accumulator_set_balance_pwm_cell(&smb_ics[ic], cell, BALANCE_PWM_DUTY);
                 balance_count++;
             }
         }
-        smb_ics[ic].tx_cfgb.dcc = dcc_mask;
     }
 
     adbms6830_wakeup(smb);
-    return (adbms6830_wrcfgb_checked(smb) == HAL_OK) ? 0 : -1;
+    if(adbms6830_wrcfgb_checked(smb) != HAL_OK)
+    {
+        return -1;
+    }
+    return (adbms6830_write_pwm_checked(smb) == HAL_OK) ? 0 : -1;
 }
 
 int accumulator_clear_balance(accumulator_t *dev)
@@ -851,8 +889,10 @@ int accumulator_clear_balance(accumulator_t *dev)
 
     for(uint8_t ic = 0; ic < ic_count; ic++)
     {
-        smb_ics[ic].tx_cfgb.dcc = 0;
+        accumulator_clear_balance_shadow(&smb_ics[ic]);
     }
     adbms6830_wakeup(smb);
-    return (adbms6830_wrcfgb_checked(smb) == HAL_OK) ? 0 : -1;
+    HAL_StatusTypeDef cfg_status = adbms6830_wrcfgb_checked(smb);
+    HAL_StatusTypeDef pwm_status = adbms6830_write_pwm_checked(smb);
+    return ((cfg_status == HAL_OK) && (pwm_status == HAL_OK)) ? 0 : -1;
 }

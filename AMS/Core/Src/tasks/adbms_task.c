@@ -193,7 +193,13 @@ void adbms_task_fn(void *argument)
 	    data->adbms_scan_count++;
 
 	    /* Turn off balancing before reading so cell voltages recover from load. */
-	    accumulator_clear_balance(acc);
+	    if(accumulator_clear_balance(acc) != 0)
+	    {
+	        data->adbms_last_diag_status = HAL_ERROR;
+	        data->adbms_status_fault = true;
+	        data->adbms_diag_fault = true;
+	        set_bms(0);
+	    }
 	    osDelay(100);
 
         (void)accumulator_read_volt(acc);

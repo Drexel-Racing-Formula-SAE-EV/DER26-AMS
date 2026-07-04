@@ -175,7 +175,7 @@ make AMS_ROOT=/absolute/path/to/DER26-AMS-feature-canbus_charger asan
 | Temperature stats | Fake NTC raw values | max/average temperature, valid count, invalid-temp skip |
 | Invalid temps | all temp channels invalid | `temp_fault` asserts and `BMS_OK` drops |
 | Cold valid temps | valid 0 C NTC values | no false temp fault |
-| Balancing | pack with one high cell and one low cell | high cells balanced, low/invalid cells not balanced |
+| Balancing | pack with one high cell and one low cell | high cells get bounded ADBMS PWM duty, DCC stays off, low/invalid cells not balanced |
 | Balancing on faults | invalid/no voltage data | balancing blocked and cleared |
 | AMS ECU telemetry | fake state/current/IMD/voltage/temp/fan fields | 62 packets, headers `0..61`, CAN ID, word layout |
 | AMS logger telemetry | fake pack/current/temp/fan/fault/ADBMS debug fields | dashboard IDs `0x690..0x6A5`, all cells, all temps, masks, invalid sentinels |
