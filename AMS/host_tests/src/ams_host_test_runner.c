@@ -2006,7 +2006,8 @@ static void test_system_sil_charger_disable_from_dynamic_gates(void)
     run_one_canbus_task_iteration(&app);
     CHECK(tx_count == HOST_CHARGE_CAN_FRAME_COUNT);
     CHECK(tx_log[HOST_CHARGER_FRAME_INDEX].data[4] == 1u);
-    CHECK(app.bms_state == false);
+    CHECK((app.board.charger.disable_reason_mask & CHARGER_DISABLE_REASON_VOLTAGE_CHARGE_STOP) != 0u);
+    CHECK(app.bms_state == true);
 
     sil_prepare_ready_system(STATE_CHARGE, 0.0f, 3.700f);
     app.board.canbus.hcan = &hcan;
@@ -2035,6 +2036,32 @@ static void test_system_sil_charger_disable_from_dynamic_gates(void)
     run_one_canbus_task_iteration(&app);
     CHECK(tx_count == HOST_CHARGE_CAN_FRAME_COUNT);
     CHECK(tx_log[HOST_CHARGER_FRAME_INDEX].data[4] == 1u);
+    CHECK((app.board.charger.disable_reason_mask & CHARGER_DISABLE_REASON_CURRENT_INVALID) != 0u);
+    CHECK(app.bms_state == false);
+
+    sil_prepare_ready_system(STATE_CHARGE, 0.0f, 3.700f);
+    app.board.canbus.hcan = &hcan;
+    charger_init(&app.board.charger, &app.board.canbus);
+    app.board.charger.last_rx_tick = fake_tick;
+    app.bms_state = false;
+    bms_pin_state = GPIO_PIN_RESET;
+    tx_count = 0u;
+    tx_free_level = 3u;
+    run_one_canbus_task_iteration(&app);
+    CHECK(tx_count == HOST_CHARGE_CAN_FRAME_COUNT);
+    CHECK(tx_log[HOST_CHARGER_FRAME_INDEX].data[4] == 1u);
+    CHECK(app.board.charger.disable_reason_mask == CHARGER_DISABLE_REASON_BMS_NOT_OK);
+    CHECK(app.charger_fault == false);
+    CHECK(app.bms_state == false);
+
+    sil_run_voltage_sample(&app);
+    CHECK(app.bms_state == true);
+    tx_count = 0u;
+    tx_free_level = 3u;
+    run_one_canbus_task_iteration(&app);
+    CHECK(tx_log[HOST_CHARGER_FRAME_INDEX].data[4] == 0u);
+    CHECK(app.board.charger.disable_reason_mask == CHARGER_DISABLE_REASON_NONE);
+    CHECK(app.bms_state == true);
 }
 
 static void test_system_sil_deterministic_fault_injection_invariants(void)

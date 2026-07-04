@@ -106,3 +106,10 @@ faulted, increments `tx_fail_count`, and drops BMS_OK.
 CAN auto-retransmission is enabled in STM32 CAN init so arbitration loss or a
 transient failed attempt is retried by the CAN peripheral.
 
+Charger disable does not always mean BMS_OK should be forced low. A voltage
+charge-stop condition sends charger byte 4 as `01` so the charger backs off, but
+it leaves BMS_OK under the normal measurement/fault gates so controlled
+balancing can continue. Safety-critical charger disable reasons still force
+BMS_OK low, including charger hardware/status fault, charger command TX failure,
+hard fault, invalid voltage/current data, voltage/temp/current fault, and
+temperature charge-stop.

@@ -411,6 +411,21 @@ static bool logger_disable_charge(const app_data_t *data, bool charger_hw_fault)
     return charger_disable_reasons(data, charger_hw_fault) != CHARGER_DISABLE_REASON_NONE;
 }
 
+static bool charger_disable_reasons_force_bms_low(uint16_t reasons)
+{
+    const uint16_t safety_mask = CHARGER_DISABLE_REASON_HW_FAULT |
+                                 CHARGER_DISABLE_REASON_HARD_FAULT |
+                                 CHARGER_DISABLE_REASON_VOLTAGE_FAULT |
+                                 CHARGER_DISABLE_REASON_VOLTAGE_INVALID |
+                                 CHARGER_DISABLE_REASON_TEMP_CHARGE_STOP |
+                                 CHARGER_DISABLE_REASON_TEMP_FAULT |
+                                 CHARGER_DISABLE_REASON_CURRENT_FAULT |
+                                 CHARGER_DISABLE_REASON_CURRENT_INVALID |
+                                 CHARGER_DISABLE_REASON_TX_FAIL;
+
+    return (reasons & safety_mask) != 0u;
+}
+
 static HAL_StatusTypeDef send_logger_summaries(canbus_device_t *canbus,
                                                const app_data_t *data,
                                                uint8_t sequence)
@@ -820,7 +835,7 @@ void canbus_task_fn(void *arg)
 
             ccs->disable_reason_mask = disable_reasons;
             data->charger_fault = charger_hw_fault;
-            if(disable_charge)
+            if(charger_disable_reasons_force_bms_low(disable_reasons))
             {
                 set_bms(0);
             }
