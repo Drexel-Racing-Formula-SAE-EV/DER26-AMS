@@ -1,4 +1,5 @@
 /*
+ * Author: Mahad Faisal (2026)
  * DER26 AMS host-side plug-in test runner.
  *
  * This is intentionally a host test harness, not firmware code. It compiles a
@@ -49,6 +50,7 @@ static bool fake_adbms_use_custom_voltage_masks = false;
 static uint16_t fake_adbms_updated_masks[ADBMS6830_MAX_TRACKED_ICS];
 static uint16_t fake_adbms_pec_masks[ADBMS6830_MAX_TRACKED_ICS];
 static HAL_StatusTypeDef fake_adbms_diag_status = HAL_OK;
+static uint16_t fake_adbms_config_mismatch_mask = 0u;
 
 static uint16_t adc_count_for_mcu_voltage(float v);
 static uint16_t adc_count_for_sensor_voltage(float v);
@@ -207,7 +209,7 @@ uint16_t ams_heartbeat_update(app_data_t *d, uint32_t now)
 
 // External driver stubs used by accumulator/CLI paths
 static HAL_StatusTypeDef fake_adbms_wrcfgb_status = HAL_OK;
-void adBms6830_init(adbms6830_driver_t* dev, uint8_t num_ics, adbms6830_asic* ics, SPI_HandleTypeDef* hspi, GPIO_TypeDef* cs_port_a, GPIO_TypeDef* cs_port_b, uint16_t cs_pin_a, uint16_t cs_pin_b, TIM_HandleTypeDef *htim){ if(dev){ dev->num_ics=num_ics; dev->ics=ics; dev->hspi=hspi; dev->cs_port[0]=cs_port_a; dev->cs_port[1]=cs_port_b; dev->cs_pin[0]=cs_pin_a; dev->cs_pin[1]=cs_pin_b; dev->htim=htim; memset(&dev->spi_debug, 0, sizeof(dev->spi_debug)); memset(&dev->health, 0, sizeof(dev->health)); dev->spi_debug.last_status=HAL_OK; dev->spi_debug.last_tx_status=HAL_OK; dev->spi_debug.last_rx_status=HAL_OK; dev->spi_debug.last_xfer_status=HAL_OK; dev->health.last_status=HAL_OK; for(uint8_t ic=0; ic<ADBMS6830_MAX_TRACKED_ICS; ic++){ dev->last_cell_updated_mask[ic]=0u; dev->last_cell_pec_mask[ic]=0u; dev->last_temp_updated_mask[ic]=0u; } } }
+void adBms6830_init(adbms6830_driver_t* dev, uint8_t num_ics, adbms6830_asic* ics, SPI_HandleTypeDef* hspi, GPIO_TypeDef* cs_port_a, GPIO_TypeDef* cs_port_b, uint16_t cs_pin_a, uint16_t cs_pin_b, TIM_HandleTypeDef *htim){ if(dev){ dev->num_ics=num_ics; dev->ics=ics; dev->hspi=hspi; dev->cs_port[0]=cs_port_a; dev->cs_port[1]=cs_port_b; dev->cs_pin[0]=cs_pin_a; dev->cs_pin[1]=cs_pin_b; dev->htim=htim; dev->string=STRING_B; memset(&dev->spi_debug, 0, sizeof(dev->spi_debug)); memset(&dev->health, 0, sizeof(dev->health)); dev->spi_debug.last_status=HAL_OK; dev->spi_debug.last_tx_status=HAL_OK; dev->spi_debug.last_rx_status=HAL_OK; dev->spi_debug.last_xfer_status=HAL_OK; dev->health.last_status=HAL_OK; for(uint8_t ic=0; ic<ADBMS6830_MAX_TRACKED_ICS; ic++){ dev->last_cell_updated_mask[ic]=0u; dev->last_cell_pec_mask[ic]=0u; dev->last_temp_updated_mask[ic]=0u; } } }
 void adbms6830_reset_cfg(adbms6830_driver_t *dev){(void)dev;} void adbms6830_srst(adbms6830_driver_t *dev){(void)dev;} void adbms6830_wrcfga(adbms6830_driver_t *dev){(void)dev;} void adbms6830_wrcfgb(adbms6830_driver_t *dev){(void)adbms6830_wrcfgb_checked(dev);} HAL_StatusTypeDef adbms6830_wrcfgb_checked(adbms6830_driver_t *dev){(void)dev; return fake_adbms_wrcfgb_status;} void adbms6830_rdcfga(adbms6830_driver_t *dev){(void)dev;} void adbms6830_rdcfgb(adbms6830_driver_t *dev){(void)dev;}
 void adbms6830_adcv(adbms6830_driver_t *dev, RD rd, CONT cont, DCP dcp, RSTF rstf, OW_C_S owcs){(void)dev;(void)rd;(void)cont;(void)dcp;(void)rstf;(void)owcs;} void adbms6830_wakeup(adbms6830_driver_t* dev){(void)dev;} void adbms6830_us_delay(adbms6830_driver_t* dev, uint16_t microseconds){(void)dev;(void)microseconds;} void adbms6830_start_adc_cell_voltage_measurement(adbms6830_driver_t *dev){(void)dev;} void adbms6830_parse_cell(adbms6830_driver_t *dev, uint8_t *data, GRP grp){(void)dev;(void)data;(void)grp;}
 void adbms6830_wakeup_cold(adbms6830_driver_t* dev){ if(dev){ dev->spi_debug.last_op = ADBMS6830_SPI_OP_COLD_WAKE; } }
@@ -260,6 +262,15 @@ HAL_StatusTypeDef adbms6830_spi_probe_rdcfga(adbms6830_driver_t *dev){
     dev->spi_debug.rx_count++;
     return HAL_OK;
 }
+HAL_StatusTypeDef adbms6830_spi_probe_rdcfga_on_string(adbms6830_driver_t *dev, adbms_string string){
+    if((dev == NULL) || (string > STRING_B)) return HAL_ERROR;
+    adbms_string previous = dev->string;
+    dev->string = string;
+    HAL_StatusTypeDef status = adbms6830_spi_probe_rdcfga(dev);
+    dev->spi_debug.last_string = string;
+    dev->string = previous;
+    return status;
+}
 HAL_StatusTypeDef adbms6830_read_sid(adbms6830_driver_t *dev){
     if(dev == NULL) return HAL_ERROR;
     for(uint8_t ic = 0u; (dev->ics != NULL) && (ic < (uint8_t)dev->num_ics) && (ic < ADBMS6830_MAX_TRACKED_ICS); ic++){
@@ -307,10 +318,13 @@ HAL_StatusTypeDef adbms6830_verify_config_readback(adbms6830_driver_t *dev){
     dev->health.last_status = fake_adbms_diag_status;
     dev->spi_debug.last_op = ADBMS6830_SPI_OP_CONFIG_CHECK;
     dev->spi_debug.last_status = fake_adbms_diag_status;
-    if(dev->num_ics > 1){
-        dev->health.configb_mismatch_mask = 0x0002u;
-        dev->health.config_mismatch_mask = 0x0002u;
-        dev->health.config_mismatch_count[1]++;
+    dev->health.configa_mismatch_mask = 0u;
+    dev->health.configb_mismatch_mask = fake_adbms_config_mismatch_mask;
+    dev->health.config_mismatch_mask = fake_adbms_config_mismatch_mask;
+    for(uint8_t ic = 0u; ic < ADBMS6830_MAX_TRACKED_ICS; ic++){
+        if((fake_adbms_config_mismatch_mask & (uint16_t)(1u << ic)) != 0u){
+            dev->health.config_mismatch_count[ic]++;
+        }
     }
     return fake_adbms_diag_status;
 }
@@ -479,7 +493,7 @@ static int16_t raw_for_temp_c(float temp_c){ return raw_for_ntc_voltage(ntc_volt
 
 static void sil_mark_all_heartbeats_alive(app_data_t *d);
 
-static void init_fake_app(void){ memset(&app,0,sizeof(app)); app.acc.smb.num_ics = NSMBS; app.acc.smb.ics = app.acc.smb_ics; current_fault_init(&app.current_fault_state); voltage_fault_init(&app.voltage_fault_state); temperature_fault_init(&app.temp_fault_state); ams_heartbeat_init(&app, fake_tick); app.current_meas_reason = CURRENT_SENSOR_REASON_ADC_READ; app.current_fault_reason = CURRENT_FAULT_REASON_SENSOR_NOT_READY; app.voltage_fault_reason = VOLTAGE_FAULT_REASON_NOT_READY; app.temp_fault = true; app.temp_read_fault = true; app.temp_fan_max = true; app.temp_fault_reason = TEMPERATURE_FAULT_REASON_NOT_READY; fake_adbms_voltage_masks_full_update(); fake_adc_read_index = 0u; fake_adbms_wrcfgb_status = HAL_OK; fake_can_add_tx_status = HAL_OK; }
+static void init_fake_app(void){ memset(&app,0,sizeof(app)); app.acc.smb.num_ics = NSMBS; app.acc.smb.ics = app.acc.smb_ics; current_fault_init(&app.current_fault_state); voltage_fault_init(&app.voltage_fault_state); temperature_fault_init(&app.temp_fault_state); ams_heartbeat_init(&app, fake_tick); app.current_meas_reason = CURRENT_SENSOR_REASON_ADC_READ; app.current_fault_reason = CURRENT_FAULT_REASON_SENSOR_NOT_READY; app.voltage_fault_reason = VOLTAGE_FAULT_REASON_NOT_READY; app.temp_fault = true; app.temp_read_fault = true; app.temp_fan_max = true; app.temp_fault_reason = TEMPERATURE_FAULT_REASON_NOT_READY; fake_adbms_voltage_masks_full_update(); fake_adc_read_index = 0u; fake_adbms_wrcfgb_status = HAL_OK; fake_adbms_diag_status = HAL_OK; fake_adbms_config_mismatch_mask = 0u; fake_can_add_tx_status = HAL_OK; }
 
 static void host_mark_updated_cells(app_data_t *d)
 {
@@ -2566,6 +2580,7 @@ static void test_adbms6830_diagnostic_commands_and_cli_health(void)
     app.acc.smb.num_ics = NSMBS;
     app.acc.smb.ics = app.acc.smb_ics;
     fake_adbms_diag_status = HAL_OK;
+    fake_adbms_config_mismatch_mask = 0x0002u;
 
     app.acc.smb.health.sticky_pec_fail_mask = 0x0004u;
     app.acc.smb.health.last_pec_pass_mask = 0x001Bu;
@@ -2590,6 +2605,7 @@ static void test_adbms6830_diagnostic_commands_and_cli_health(void)
     CHECK(strstr(cli_capture, "diag op:cell_adc_diag") != NULL);
     CHECK(app.acc.smb.health.cell_adc_self_test_count == 1u);
 
+    app.state = STATE_CHARGE;
     sil_prepare_cli_capture();
     get_spi_debug(2, oweven);
     CHECK(strstr(cli_capture, "Open-wire even-channel command status: OK") != NULL);
@@ -2621,6 +2637,132 @@ static void test_adbms6830_diagnostic_commands_and_cli_health(void)
     CHECK(strstr(cli_capture, "Cell ADC diagnostic hook status: ERROR") != NULL);
     CHECK(strstr(cli_capture, "status:ERROR") != NULL);
     fake_adbms_diag_status = HAL_OK;
+    fake_adbms_config_mismatch_mask = 0u;
+}
+
+static void test_adbms_periodic_diagnostics_and_safe_open_wire(void)
+{
+    init_fake_app();
+    fill_nominal_pack(&app, 3.700f);
+    app.state = STATE_DISCARGE;
+    app.current_valid = true;
+    app.current_fault = false;
+    app.bms_state = true;
+    bms_pin_state = GPIO_PIN_SET;
+
+    for(uint8_t i = 0u; i < 9u; i++)
+    {
+        run_one_adbms_task_iteration(&app);
+    }
+    CHECK(app.adbms_status_diag_count == 0u);
+    CHECK(app.adbms_config_diag_count == 0u);
+    CHECK(app.adbms_open_wire_diag_count == 0u);
+    CHECK(app.adbms_diag_fault == false);
+
+    run_one_adbms_task_iteration(&app);
+    CHECK(app.adbms_status_diag_count == 1u);
+    CHECK(app.adbms_config_diag_count == 0u);
+    CHECK(app.adbms_open_wire_diag_count == 0u);
+    CHECK(app.adbms_diag_fault == false);
+
+    for(uint8_t i = 0u; i < 49u; i++)
+    {
+        run_one_adbms_task_iteration(&app);
+    }
+    CHECK(app.adbms_scan_count == 59u);
+    CHECK(app.adbms_config_diag_count == 0u);
+
+    fake_adbms_config_mismatch_mask = 0x0004u;
+    run_one_adbms_task_iteration(&app);
+    CHECK(app.adbms_config_diag_count == 1u);
+    CHECK(app.adbms_config_fault == true);
+    CHECK(app.adbms_diag_fault == true);
+    CHECK(app.bms_state == false);
+    CHECK(bms_pin_state == GPIO_PIN_RESET);
+    fake_adbms_config_mismatch_mask = 0u;
+    run_one_adbms_task_iteration(&app);
+    CHECK(app.adbms_config_diag_count == 1u);
+    CHECK(app.adbms_config_fault == true);
+    CHECK(app.adbms_diag_fault == true);
+
+    init_fake_app();
+    fill_nominal_pack(&app, 3.700f);
+    app.state = STATE_BALANCE;
+    app.current_valid = true;
+    app.current_fault = false;
+    app.bms_state = true;
+    app.adbms_scan_count = ADBMS_OPEN_WIRE_DIAG_PERIOD_CYCLES - 1u;
+    run_one_adbms_task_iteration(&app);
+    CHECK(app.adbms_open_wire_diag_count == 1u);
+    CHECK(app.acc.smb.health.open_wire_even_count == 1u);
+    CHECK(app.acc.smb.health.open_wire_odd_count == 0u);
+    CHECK(app.adbms_open_wire_fault == false);
+}
+
+static void test_adbms_cli_scan_guard_and_cs_probe_commands(void)
+{
+    static SPI_HandleTypeDef hspi;
+    static GPIO_TypeDef cs_a;
+    static GPIO_TypeDef cs_b;
+    char *probe[] = {"spi", "probe"};
+    char *probea[] = {"spi", "probea"};
+    char *probeb[] = {"spi", "probeb"};
+    char *oweven[] = {"spi", "oweven"};
+    char *apm_probe[] = {"apm", "probe"};
+
+    init_fake_app();
+    hspi.Init.CLKPolarity = SPI_POLARITY_HIGH;
+    hspi.Init.CLKPhase = SPI_PHASE_2EDGE;
+    hspi.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_256;
+    hspi.Init.FirstBit = SPI_FIRSTBIT_MSB;
+    accumulator_init(&app.acc, &hspi, &cs_a, &cs_b, 0x0002u, 0x0004u, NULL);
+    CHECK(app.acc.smb.cs_port[STRING_A] == &cs_a);
+    CHECK(app.acc.smb.cs_port[STRING_B] == &cs_b);
+    CHECK(app.acc.smb.cs_pin[STRING_A] == 0x0002u);
+    CHECK(app.acc.smb.cs_pin[STRING_B] == 0x0004u);
+    CHECK(app.acc.smb.string == STRING_B);
+    app.acc.smb.hspi = &hspi;
+    app.acc.smb.num_ics = NSMBS;
+    app.acc.smb.ics = app.acc.smb_ics;
+    app.acc.smb.string = STRING_B;
+
+    app.adbms_scan_active = true;
+    sil_prepare_cli_capture();
+    CHECK(get_spi_debug(2, probe) == 0);
+    CHECK(strstr(cli_capture, "spi probe refused") != NULL);
+    CHECK(app.acc.smb.spi_debug.rx_count == 0u);
+
+    app.adbms_scan_active = false;
+    sil_prepare_cli_capture();
+    CHECK(get_spi_debug(2, probea) == 0);
+    CHECK(strstr(cli_capture, "CS_A/stringA probe status: OK") != NULL);
+    CHECK(app.acc.smb.spi_debug.last_string == STRING_A);
+    CHECK(app.acc.smb.string == STRING_B);
+
+    sil_prepare_cli_capture();
+    CHECK(get_spi_debug(2, probeb) == 0);
+    CHECK(strstr(cli_capture, "CS_B/stringB probe status: OK") != NULL);
+    CHECK(app.acc.smb.spi_debug.last_string == STRING_B);
+    CHECK(app.acc.smb.string == STRING_B);
+
+    app.state = STATE_DISCARGE;
+    sil_prepare_cli_capture();
+    CHECK(get_spi_debug(2, oweven) == 0);
+    CHECK(strstr(cli_capture, "Open-wire refused") != NULL);
+    CHECK(app.acc.smb.health.open_wire_even_count == 0u);
+
+    app.state = STATE_CHARGE;
+    sil_prepare_cli_capture();
+    CHECK(get_spi_debug(2, oweven) == 0);
+    CHECK(strstr(cli_capture, "Open-wire even-channel command status: OK") != NULL);
+    CHECK(app.acc.smb.health.open_wire_even_count == 1u);
+
+    app.acc.apm.hspi = &hspi;
+    app.acc.apm.num_ics = 1u;
+    app.adbms_scan_active = true;
+    sil_prepare_cli_capture();
+    CHECK(get_apm_debug(2, apm_probe) == 0);
+    CHECK(strstr(cli_capture, "apm probe refused") != NULL);
 }
 
 static void test_software_heartbeat_monitor_faults_and_recovery(void)
@@ -3330,6 +3472,8 @@ static void test_system_sil_temperature_mux_cadence_no_false_stale(void)
                 CHECK(app.temp_valid == true);
                 CHECK(app.temp_fault == false);
                 CHECK(app.temp_usable_sensor_count == AMS_EXPECTED_TEMP_SENSOR_COUNT);
+                CHECK(app.temp_warning == false);
+                CHECK(app.temp_fault_reason == TEMPERATURE_FAULT_REASON_NONE);
             }
             else
             {
@@ -4117,6 +4261,8 @@ int main(void){
     test_system_sil_current_boundary_timing_edges(); puts("PASS system SIL current debounce boundary timing");
     test_system_sil_cli_can_diagnostic_consistency(); puts("PASS system SIL CLI/CAN diagnostic consistency");
     test_adbms6830_diagnostic_commands_and_cli_health(); puts("PASS ADBMS6830 diagnostic commands/CLI health");
+    test_adbms_periodic_diagnostics_and_safe_open_wire(); puts("PASS ADBMS6830 periodic diagnostics/safe open-wire");
+    test_adbms_cli_scan_guard_and_cs_probe_commands(); puts("PASS ADBMS CLI scan guard/CS probe commands");
     test_software_heartbeat_monitor_faults_and_recovery(); puts("PASS software heartbeat monitor faults/recovery");
     test_system_sil_bringup_status_and_bmsok_inhibit(); puts("PASS system SIL bring-up status/BMS_OK inhibit");
     test_system_sil_contradictory_dhab_vs_2950_observable_non_gating(); puts("PASS system SIL DHAB vs 2950 contradiction observable/non-gating");

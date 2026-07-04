@@ -3,6 +3,7 @@
  *
  *  Created on: May 13, 2025
  *      Author: cole
+ *      Modified by: Mahad Faisal (major firmware updates, 2026)
  */
 
 #include "ext_drivers/adbms2950.h"

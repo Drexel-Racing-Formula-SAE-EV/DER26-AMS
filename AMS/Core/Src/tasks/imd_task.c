@@ -2,6 +2,7 @@
 *   imd_task.h
 *   Created: 3/25/2024
 *   Author: Brendan Hoag
+*   Modified by: Mahad Faisal (major firmware updates, 2026)
 *   Purpose: Device driver task for IR151-3204 ground fault monitoring system
 *   datasheet: https://www.benderinc.com/products/ground-fault-monitoring-ungrounded/isometer-ir155-03-04-series/
 */

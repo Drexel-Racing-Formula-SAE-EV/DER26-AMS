@@ -3,6 +3,7 @@
  *
  *  Created on: Jun 9, 2025
  *      Author: realb
+ *      Modified by: Mahad Faisal (major firmware updates, 2026)
  */
 
 #include "ext_drivers/adbms_shared.h"

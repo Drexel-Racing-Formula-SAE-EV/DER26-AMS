@@ -1,6 +1,7 @@
 /**
  * @file canbus.c
  * @author Cole Bardin (cab572@drexel.edu)
+ * @author Mahad Faisal (major firmware updates, 2026)
  * @brief
  * @version 0.1
  * @date 2023-04-24

@@ -2,6 +2,7 @@
 *   imd.h
 *   Created: 2/5/2024
 *   Author: Brendan Hoag
+*   Modified by: Mahad Faisal (major firmware updates, 2026)
 *   Purpose: Device driver for IR151-3204 ground fault monitoring system
 *   datasheet: https://www.benderinc.com/products/ground-fault-monitoring-ungrounded/isometer-ir155-03-04-series/
 */

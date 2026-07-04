@@ -1,5 +1,7 @@
 # DER26 AMS Host Test Harness
 
+
+Authored by Mahad Faisal, 2026.
 Reusable host-side test harness for the DER26 AMS firmware.
 
 This folder is meant to be copied into the AMS repository as:

@@ -3,6 +3,7 @@
  *
  *  Created on: Jan 29, 2024
  *      Author: cole
+ *      Modified by: Mahad Faisal (major firmware updates, 2026)
  */
 
 #include "app.h"
@@ -213,6 +214,16 @@ void app_create()
 	app.estimator_fault = false;
 
 	app.charger_fault = false;
+	app.adbms_diag_fault = false;
+	app.adbms_config_fault = false;
+	app.adbms_status_fault = false;
+	app.adbms_open_wire_fault = false;
+	app.adbms_scan_active = false;
+	app.adbms_scan_count = 0u;
+	app.adbms_status_diag_count = 0u;
+	app.adbms_config_diag_count = 0u;
+	app.adbms_open_wire_diag_count = 0u;
+	app.adbms_last_diag_status = HAL_OK;
 	app.task_heartbeat_fault = false;
 	app.logger_heartbeat_fault = false;
 	app.heartbeat_stale_mask = 0u;

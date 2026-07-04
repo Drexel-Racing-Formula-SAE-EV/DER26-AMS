@@ -1,6 +1,7 @@
 
 /*
  * ams_unit_test_runner.c
+ * Author: Mahad Faisal (2026)
  *
  * Dedicated host-side unit tests for the AMS physics-only DAEKF estimator.
  *

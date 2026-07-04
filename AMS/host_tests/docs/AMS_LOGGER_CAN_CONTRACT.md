@@ -1,5 +1,7 @@
 # AMS Dashboard/Logger CAN Contract
 
+
+Authored by Mahad Faisal, 2026.
 This contract is for a passive in-car ESP32 dashboard/logger. The ESP32 may
 display, log, and stream telemetry, but it must not be required for BMS_OK,
 charger control, ADBMS SPI/isoSPI communication, AIR control, or any other AMS

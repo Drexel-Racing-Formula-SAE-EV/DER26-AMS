@@ -3,11 +3,105 @@
  *
  *  Created on: June 3, 2025
  *      Author: Cole Bardin
+ *      Modified by: Mahad Faisal (major firmware updates, 2026)
  */
 
 #include <tasks/adbms_task.h>
 
+#define ADBMS_STATUS_DIAG_PERIOD_CYCLES       10u
+#define ADBMS_CONFIG_DIAG_PERIOD_CYCLES       60u
+#define ADBMS_OPEN_WIRE_DIAG_PERIOD_CYCLES   300u
+
 void adbms_task_fn(void *argument);
+
+static bool adbms_status_diag_has_safety_fault(const adbms6830_driver_t *smb)
+{
+    if(smb == NULL)
+    {
+        return true;
+    }
+
+    for(uint8_t ic = 0u; (ic < (uint8_t)smb->num_ics) && (ic < ADBMS6830_MAX_TRACKED_ICS); ic++)
+    {
+        const adbms6830_ic_diag_t *diag = &smb->diag[ic];
+        if(!diag->statc_valid || !diag->statd_valid || !diag->state_valid)
+        {
+            return true;
+        }
+        if((diag->spiflt != 0u) || (diag->sleep != 0u) ||
+           (diag->thsd != 0u) || (diag->tmodchk != 0u) ||
+           (diag->oscchk != 0u))
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static bool adbms_open_wire_auto_allowed(const app_data_t *data)
+{
+    return (data != NULL) &&
+           (data->state == STATE_BALANCE) &&
+           data->voltage_valid &&
+           data->temp_valid &&
+           data->current_valid &&
+           !data->hard_fault &&
+           !data->voltage_fault &&
+           !data->temp_fault &&
+           !data->current_fault;
+}
+
+static void adbms_task_run_periodic_diagnostics(app_data_t *data)
+{
+    accumulator_t *acc;
+    adbms6830_driver_t *smb;
+    HAL_StatusTypeDef status;
+
+    if(data == NULL)
+    {
+        return;
+    }
+
+    acc = &data->acc;
+    smb = &acc->smb;
+
+    if((data->adbms_scan_count % ADBMS_STATUS_DIAG_PERIOD_CYCLES) == 0u)
+    {
+        status = adbms6830_read_status(smb, false);
+        data->adbms_last_diag_status = status;
+        data->adbms_status_diag_count++;
+        data->adbms_status_fault = ((status != HAL_OK) ||
+                                    adbms_status_diag_has_safety_fault(smb));
+    }
+
+    if((data->adbms_scan_count % ADBMS_CONFIG_DIAG_PERIOD_CYCLES) == 0u)
+    {
+        const adbms6830_diag_health_t *health;
+
+        status = adbms6830_verify_config_readback(smb);
+        data->adbms_last_diag_status = status;
+        data->adbms_config_diag_count++;
+        health = adbms6830_diag_health_get(smb);
+        data->adbms_config_fault = ((status != HAL_OK) ||
+                                    ((health != NULL) &&
+                                     (health->config_mismatch_mask != 0u)));
+    }
+
+    if(((data->adbms_scan_count % ADBMS_OPEN_WIRE_DIAG_PERIOD_CYCLES) == 0u) &&
+       adbms_open_wire_auto_allowed(data))
+    {
+        bool odd = ((data->adbms_open_wire_diag_count & 1u) != 0u);
+        status = adbms6830_run_open_wire_check(smb, odd);
+        data->adbms_last_diag_status = status;
+        data->adbms_open_wire_diag_count++;
+        data->adbms_open_wire_fault = (status != HAL_OK);
+    }
+
+    data->adbms_diag_fault = (data->adbms_config_fault ||
+                              data->adbms_status_fault ||
+                              data->adbms_open_wire_fault);
+}
 
 static void adbms_task_publish_voltage_state(app_data_t *data)
 {
@@ -94,11 +188,13 @@ void adbms_task_fn(void *argument)
 
 	for(;;)
 	{
-        entry = osKernelGetTickCount();
+	    entry = osKernelGetTickCount();
+	    data->adbms_scan_active = true;
+	    data->adbms_scan_count++;
 
-        /* Turn off balancing before reading so cell voltages recover from load. */
-        accumulator_clear_balance(acc);
-        osDelay(100);
+	    /* Turn off balancing before reading so cell voltages recover from load. */
+	    accumulator_clear_balance(acc);
+	    osDelay(100);
 
         (void)accumulator_read_volt(acc);
         accumulator_update_voltage_stats_at(acc, osKernelGetTickCount());
@@ -126,20 +222,27 @@ void adbms_task_fn(void *argument)
                                              (1000u / ADBMS_FREQ));
         adbms_task_publish_temperature_state(data);
 
-        if(data->temp_fault)
-        {
-            set_bms(0);
-        }
-        ams_heartbeat_kick(data, AMS_HEARTBEAT_TEMP, osKernelGetTickCount());
+	    if(data->temp_fault)
+	    {
+	        set_bms(0);
+	    }
+	    ams_heartbeat_kick(data, AMS_HEARTBEAT_TEMP, osKernelGetTickCount());
 
-        bool bms_ok_ready = (data->voltage_valid &&
-                             !data->voltage_fault &&
-                             data->temp_valid &&
-                             !data->temp_fault &&
-                             !data->task_heartbeat_fault &&
-                             ((data->state != STATE_CHARGE) || !data->temp_charge_stop) &&
-                             !data->fuse_fault &&
-                             !data->charger_fault &&
+	    adbms_task_run_periodic_diagnostics(data);
+	    if(data->adbms_diag_fault)
+	    {
+	        set_bms(0);
+	    }
+
+	    bool bms_ok_ready = (data->voltage_valid &&
+	                         !data->voltage_fault &&
+	                         data->temp_valid &&
+	                         !data->temp_fault &&
+	                         !data->adbms_diag_fault &&
+	                         !data->task_heartbeat_fault &&
+	                             ((data->state != STATE_CHARGE) || !data->temp_charge_stop) &&
+	                             !data->fuse_fault &&
+	                             !data->charger_fault &&
                              !data->hard_fault &&
                              data->current_valid &&
                              !data->current_fault);
@@ -162,8 +265,9 @@ void adbms_task_fn(void *argument)
         else
         {
             accumulator_clear_balance(acc);
-        }
+	        }
 
-        osDelayUntil(entry + (1000 / ADBMS_FREQ));
+	        data->adbms_scan_active = false;
+	        osDelayUntil(entry + (1000 / ADBMS_FREQ));
 	}
 }

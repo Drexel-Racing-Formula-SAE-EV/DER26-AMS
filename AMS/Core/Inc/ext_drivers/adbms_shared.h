@@ -3,6 +3,7 @@
  *
  *  Created on: Jun 9, 2025
  *      Author: cole
+ *      Modified by: Mahad Faisal (major firmware updates, 2026)
  */
 
 #ifndef INC_EXT_DRIVERS_ADBMS_SHARED_H_

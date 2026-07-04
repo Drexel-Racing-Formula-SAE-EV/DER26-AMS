@@ -1,5 +1,7 @@
 # Charger CAN Bring-Up Guide
 
+
+Authored by Mahad Faisal, 2026.
 This guide is for low-voltage bench validation of the plug-in charger CAN path.
 Do not connect high voltage until the charger command, charger status frame,
 BMS_OK behavior, and charge inhibit behavior are understood on a CAN sniffer.

@@ -3,6 +3,7 @@
  *
  *  Created on: Mar 3th, 2024
  *      Author: Justin Nguyen
+ *      Modified by: Mahad Faisal (major firmware updates, 2026)
  */
 
 #ifndef INC_CURRENT_SENSOR_H_

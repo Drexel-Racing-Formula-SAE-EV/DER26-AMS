@@ -1,5 +1,7 @@
 # Quickstart
 
+
+Authored by Mahad Faisal, 2026.
 ## 1. Put the harness in the AMS repo
 
 ```bash

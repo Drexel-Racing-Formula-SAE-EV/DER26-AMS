@@ -3,6 +3,7 @@
  *
  *  Created on: Jun 9, 2026
  *      Author: logan
+ *      Modified by: Mahad Faisal (major firmware updates, 2026)
  */
 
 #ifndef INC_EXT_DRIVERS_CHARGER_H_

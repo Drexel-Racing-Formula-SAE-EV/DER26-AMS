@@ -1,5 +1,6 @@
 /*
  * estimator_task.c
+ * Author: Mahad Faisal (2026)
  *
  * Runs the advisory P42A DAEKF estimator at 10 Hz. The estimator is deliberately
  * non-authoritative: it does not control BMS_OK, AIRs, charging, shutdown, or

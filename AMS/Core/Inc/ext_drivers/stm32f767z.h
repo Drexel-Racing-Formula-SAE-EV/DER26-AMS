@@ -3,6 +3,7 @@
  *
  *  Created on: Jan 29, 2024
  *      Author: cole
+ *      Modified by: Mahad Faisal (major firmware updates, 2026)
  */
 
 #ifndef INC_EXT_DRIVERS_STM32F407G_H_

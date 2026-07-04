@@ -1,5 +1,6 @@
 /*
  * ams_estimator_lut.h
+ * Author: Mahad Faisal (2026)
  *
  * P42A ECM lookup tables used by the AMS physics-only DAEKF estimator.
  * Values are copied from the validated 75s6p P42A HIL plant / RA estimator

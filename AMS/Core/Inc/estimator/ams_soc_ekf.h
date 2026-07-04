@@ -1,5 +1,6 @@
 /*
  * ams_soc_ekf.h
+ * Author: Mahad Faisal (2026)
  *
  * Physics-only adaptive dual EKF for the DER AMS.
  *

@@ -3,6 +3,7 @@
  *
  *  Created on: May 13, 2025
  *      Author: realb
+ *      Modified by: Mahad Faisal (major firmware updates, 2026)
  */
 
 #ifndef INC_EXT_DRIVERS_ADBMS6830_DATA_H_

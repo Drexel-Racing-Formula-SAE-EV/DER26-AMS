@@ -1,5 +1,6 @@
 /*
  * voltage_fault.c
+ * Author: Mahad Faisal (2026)
  *
  * Staged cell-voltage policy for DER26 AMS.
  *

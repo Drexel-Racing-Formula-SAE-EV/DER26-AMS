@@ -3,6 +3,7 @@
  *
  *  Created on: Feb 1, 2024
  *      Author: cole
+ *      Modified by: Mahad Faisal (major firmware updates, 2026)
  */
 
 #ifndef INC_EXT_DRIVERS_ACCUMULATOR_H_

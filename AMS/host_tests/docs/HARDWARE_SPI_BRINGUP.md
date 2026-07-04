@@ -1,5 +1,7 @@
 # AMS Hardware SPI Bring-Up Guide
 
+
+Authored by Mahad Faisal, 2026.
 This guide is for first bench tests of the AMS board ADBMS SPI/isoSPI path.
 It assumes the ADBMS6822 is on the AMS board, the ADBMS6830 devices are on the
 SMBs, and the ADBMS2950/APM path is debug-only until verified.
@@ -101,6 +103,8 @@ spi enable
 spi coldwake
 spi status
 spi probe
+spi probea
+spi probeb
 spi sid
 spi stat
 spi cfgchk
@@ -115,6 +119,8 @@ Expected useful signs:
 ```text
 spi status shows CPOL:HIGH CPHA:2EDGE
 spi probe returns OK or at least records a non-OK HAL status
+spi probea/probeb explicitly exercise CS_A and CS_B so the AMS-side
+chip-select and ADBMS6822 channel routing can be confirmed on the scope
 spi sid shows valid 48-bit serial IDs for each responding IC
 spi stat exposes SLEEP/SPIFLT/THSD/OSCCHK and OV/UV status flags
 TX preview shows command bytes plus PEC
@@ -155,6 +161,17 @@ dummy bytes continue clocking during the readback phase
 MISO is not stuck low/high if the ADBMS chain responds
 CS_B returns high after the transaction
 ```
+
+Use `spi probea` and `spi probeb` when validating hardware routing:
+
+```text
+spi probea  -> only CS_A / STRINGA_CS should pulse
+spi probeb  -> only CS_B / STRINGB_CS should pulse
+```
+
+The normal SMB/ADBMS6830 chain is expected on CS_B. The APM/ADBMS2950 path uses
+CS_A and remains debug-only until CS, SPI, PEC, scaling, and shunt polarity are
+bench-proven.
 
 The driver uses one full-duplex transfer for reads:
 

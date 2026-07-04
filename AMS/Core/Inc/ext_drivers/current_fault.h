@@ -1,5 +1,6 @@
 /*
  * current_fault.h
+ * Author: Mahad Faisal (2026)
  *
  * Current measurement/fault policy for DER26 AMS.
  *

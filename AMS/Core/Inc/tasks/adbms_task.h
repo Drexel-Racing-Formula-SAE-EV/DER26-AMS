@@ -3,6 +3,7 @@
  *
  *  Created on: June 3, 2025
  *      Author: Cole Bardin
+ *      Modified by: Mahad Faisal (major firmware updates, 2026)
  */
 
 #ifndef __ADBMS_TASK_H_

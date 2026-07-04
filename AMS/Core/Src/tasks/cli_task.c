@@ -1,6 +1,7 @@
 /**
 * @file cli_task.c
 * @author Cole Bardin (cab572@drexel.edu)
+* @author Mahad Faisal (major firmware updates, 2026)
 * @brief
 * @version 0.1
 * @date 2023-10-24
@@ -57,7 +58,7 @@ command_t cmds[] =
 	{"tempsns", &get_temperature_sensor, "gets one sensor: tempsns <ic> <sensor 0-23>"},
 	{"current", &get_current, "gets current sensor raw counts/voltages/status"},
 	{"charger", &get_charger, "gets charger CAN command/status/debug state"},
-	{"spi", &get_spi_debug, "ADBMS6830 SPI debug: spi [status|probe|sid|stat|staterr|cfgchk|cellst|oweven|owodd|auxdiag|wake|coldwake|clrflag|clear|diagclear|enable|disable]"},
+	{"spi", &get_spi_debug, "ADBMS6830 SPI debug: spi [status|probe|probea|probeb|sid|stat|staterr|cfgchk|cellst|oweven|owodd|auxdiag|wake|coldwake|clrflag|clear|diagclear|enable|disable]"},
 	{"apm", &get_apm_debug, "ADBMS2950/APM debug: apm [status|probe|clear|enable|disable]"},
 	{"bmsok", &bmsok_control, "BMS_OK control: bmsok [status|release|inhibit]"},
 	{"state", &set_state, "gets or sets the AMS state [charge|discharge]"},
@@ -661,6 +662,31 @@ int get_temperature_sensor(int argc, char *argv[])
 
 
 
+static bool cli_adbms_scan_busy(void)
+{
+    return (data != NULL) && data->adbms_scan_active;
+}
+
+static bool cli_adbms_open_wire_state_allowed(void)
+{
+    return (data != NULL) &&
+           ((data->state == STATE_CHARGE) || (data->state == STATE_BALANCE));
+}
+
+static bool cli_adbms_refuse_active_scan(const char *name)
+{
+    if(!cli_adbms_scan_busy())
+    {
+        return false;
+    }
+
+    snprintf(outline, CLI_LINESZ,
+             "%s refused: ADBMS task scan active, retry after current scan",
+             (name != NULL) ? name : "ADBMS command");
+    (void)cli_printline(cli, outline);
+    return true;
+}
+
 int get_spi_debug(int argc, char *argv[])
 {
     int ret = 0;
@@ -671,8 +697,8 @@ int get_spi_debug(int argc, char *argv[])
     SPI_HandleTypeDef *hspi = smb->hspi;
     uint8_t ic_count = smb_ic_count(smb);
 
-    if((argc >= 2) && (argv[1] != NULL))
-    {
+	    if((argc >= 2) && (argv[1] != NULL))
+	    {
         if(!strcmp(argv[1], "clear"))
         {
             adbms6830_spi_debug_clear(smb);
@@ -688,91 +714,169 @@ int get_spi_debug(int argc, char *argv[])
             adbms6830_spi_debug_enable(smb, false);
             ret |= cli_printline(cli, "ADBMS SPI debug disabled");
         }
-        else if(!strcmp(argv[1], "probe"))
-        {
-            probe_status = adbms6830_spi_probe_rdcfga(smb);
-            snprintf(outline, CLI_LINESZ, "RDCFGA probe status: %s", cli_hal_status_str(probe_status));
-            ret |= cli_printline(cli, outline);
-        }
-        else if(!strcmp(argv[1], "sid"))
-        {
-            probe_status = adbms6830_read_sid(smb);
-            snprintf(outline, CLI_LINESZ, "RDSID status: %s", cli_hal_status_str(probe_status));
-            ret |= cli_printline(cli, outline);
-        }
-        else if(!strcmp(argv[1], "stat"))
-        {
-            probe_status = adbms6830_read_status(smb, false);
-            snprintf(outline, CLI_LINESZ, "RDSTATC/D/E status: %s", cli_hal_status_str(probe_status));
-            ret |= cli_printline(cli, outline);
-        }
-        else if(!strcmp(argv[1], "staterr"))
-        {
-            probe_status = adbms6830_read_status(smb, true);
-            snprintf(outline, CLI_LINESZ, "RDSTATCERR/D/E status: %s", cli_hal_status_str(probe_status));
-            ret |= cli_printline(cli, outline);
-        }
-        else if(!strcmp(argv[1], "wake"))
-        {
-            if(smb->spi_debug.enabled)
-            {
-                smb->spi_debug.last_op = ADBMS6830_SPI_OP_WAKE;
-            }
-            adbms6830_wakeup(smb);
-            ret |= cli_printline(cli, "ADBMS wake pulses sent");
-        }
-        else if(!strcmp(argv[1], "coldwake"))
-        {
-            adbms6830_wakeup_cold(smb);
-            ret |= cli_printline(cli, "ADBMS cold wake pulse train sent");
-        }
-        else if(!strcmp(argv[1], "clrflag"))
-        {
-            probe_status = adbms6830_clear_all_flags(smb);
-            snprintf(outline, CLI_LINESZ, "CLRFLAG all status: %s", cli_hal_status_str(probe_status));
-            ret |= cli_printline(cli, outline);
-        }
+	        else if(!strcmp(argv[1], "probe"))
+	        {
+	            if(cli_adbms_refuse_active_scan("spi probe"))
+	            {
+	                return ret;
+	            }
+	            probe_status = adbms6830_spi_probe_rdcfga(smb);
+	            snprintf(outline, CLI_LINESZ, "RDCFGA probe status: %s", cli_hal_status_str(probe_status));
+	            ret |= cli_printline(cli, outline);
+	        }
+	        else if(!strcmp(argv[1], "probea"))
+	        {
+	            if(cli_adbms_refuse_active_scan("spi probea"))
+	            {
+	                return ret;
+	            }
+	            probe_status = adbms6830_spi_probe_rdcfga_on_string(smb, STRING_A);
+	            snprintf(outline, CLI_LINESZ, "RDCFGA CS_A/stringA probe status: %s", cli_hal_status_str(probe_status));
+	            ret |= cli_printline(cli, outline);
+	        }
+	        else if(!strcmp(argv[1], "probeb"))
+	        {
+	            if(cli_adbms_refuse_active_scan("spi probeb"))
+	            {
+	                return ret;
+	            }
+	            probe_status = adbms6830_spi_probe_rdcfga_on_string(smb, STRING_B);
+	            snprintf(outline, CLI_LINESZ, "RDCFGA CS_B/stringB probe status: %s", cli_hal_status_str(probe_status));
+	            ret |= cli_printline(cli, outline);
+	        }
+	        else if(!strcmp(argv[1], "sid"))
+	        {
+	            if(cli_adbms_refuse_active_scan("spi sid"))
+	            {
+	                return ret;
+	            }
+	            probe_status = adbms6830_read_sid(smb);
+	            snprintf(outline, CLI_LINESZ, "RDSID status: %s", cli_hal_status_str(probe_status));
+	            ret |= cli_printline(cli, outline);
+	        }
+	        else if(!strcmp(argv[1], "stat"))
+	        {
+	            if(cli_adbms_refuse_active_scan("spi stat"))
+	            {
+	                return ret;
+	            }
+	            probe_status = adbms6830_read_status(smb, false);
+	            snprintf(outline, CLI_LINESZ, "RDSTATC/D/E status: %s", cli_hal_status_str(probe_status));
+	            ret |= cli_printline(cli, outline);
+	        }
+	        else if(!strcmp(argv[1], "staterr"))
+	        {
+	            if(cli_adbms_refuse_active_scan("spi staterr"))
+	            {
+	                return ret;
+	            }
+	            probe_status = adbms6830_read_status(smb, true);
+	            snprintf(outline, CLI_LINESZ, "RDSTATCERR/D/E status: %s", cli_hal_status_str(probe_status));
+	            ret |= cli_printline(cli, outline);
+	        }
+	        else if(!strcmp(argv[1], "wake"))
+	        {
+	            if(cli_adbms_refuse_active_scan("spi wake"))
+	            {
+	                return ret;
+	            }
+	            if(smb->spi_debug.enabled)
+	            {
+	                smb->spi_debug.last_op = ADBMS6830_SPI_OP_WAKE;
+	            }
+	            adbms6830_wakeup(smb);
+	            ret |= cli_printline(cli, "ADBMS wake pulses sent");
+	        }
+	        else if(!strcmp(argv[1], "coldwake"))
+	        {
+	            if(cli_adbms_refuse_active_scan("spi coldwake"))
+	            {
+	                return ret;
+	            }
+	            adbms6830_wakeup_cold(smb);
+	            ret |= cli_printline(cli, "ADBMS cold wake pulse train sent");
+	        }
+	        else if(!strcmp(argv[1], "clrflag"))
+	        {
+	            if(cli_adbms_refuse_active_scan("spi clrflag"))
+	            {
+	                return ret;
+	            }
+	            probe_status = adbms6830_clear_all_flags(smb);
+	            snprintf(outline, CLI_LINESZ, "CLRFLAG all status: %s", cli_hal_status_str(probe_status));
+	            ret |= cli_printline(cli, outline);
+	        }
         else if(!strcmp(argv[1], "diagclear"))
         {
             adbms6830_diag_health_clear(smb);
             ret |= cli_printline(cli, "ADBMS diagnostic health counters cleared");
         }
-        else if(!strcmp(argv[1], "cfgchk"))
-        {
-            probe_status = adbms6830_verify_config_readback(smb);
-            snprintf(outline, CLI_LINESZ, "CFGA/CFGB readback check status: %s", cli_hal_status_str(probe_status));
-            ret |= cli_printline(cli, outline);
-        }
-        else if(!strcmp(argv[1], "cellst"))
-        {
-            probe_status = adbms6830_run_cell_adc_self_test(smb);
-            snprintf(outline, CLI_LINESZ, "Cell ADC diagnostic hook status: %s", cli_hal_status_str(probe_status));
-            ret |= cli_printline(cli, outline);
-        }
-        else if(!strcmp(argv[1], "oweven"))
-        {
-            probe_status = adbms6830_run_open_wire_check(smb, false);
-            snprintf(outline, CLI_LINESZ, "Open-wire even-channel command status: %s", cli_hal_status_str(probe_status));
-            ret |= cli_printline(cli, outline);
-        }
-        else if(!strcmp(argv[1], "owodd"))
-        {
-            probe_status = adbms6830_run_open_wire_check(smb, true);
-            snprintf(outline, CLI_LINESZ, "Open-wire odd-channel command status: %s", cli_hal_status_str(probe_status));
-            ret |= cli_printline(cli, outline);
-        }
-        else if(!strcmp(argv[1], "auxdiag"))
-        {
-            probe_status = adbms6830_run_aux_gpio_diagnostic(smb);
-            snprintf(outline, CLI_LINESZ, "AUX/GPIO diagnostic hook status: %s", cli_hal_status_str(probe_status));
-            ret |= cli_printline(cli, outline);
-        }
-        else if(strcmp(argv[1], "status"))
-        {
-            ret |= cli_printline(cli, "Usage: spi [status|probe|sid|stat|staterr|cfgchk|cellst|oweven|owodd|auxdiag|wake|coldwake|clrflag|clear|diagclear|enable|disable]");
-            return ret;
-        }
-    }
+	        else if(!strcmp(argv[1], "cfgchk"))
+	        {
+	            if(cli_adbms_refuse_active_scan("spi cfgchk"))
+	            {
+	                return ret;
+	            }
+	            probe_status = adbms6830_verify_config_readback(smb);
+	            snprintf(outline, CLI_LINESZ, "CFGA/CFGB readback check status: %s", cli_hal_status_str(probe_status));
+	            ret |= cli_printline(cli, outline);
+	        }
+	        else if(!strcmp(argv[1], "cellst"))
+	        {
+	            if(cli_adbms_refuse_active_scan("spi cellst"))
+	            {
+	                return ret;
+	            }
+	            probe_status = adbms6830_run_cell_adc_self_test(smb);
+	            snprintf(outline, CLI_LINESZ, "Cell ADC diagnostic hook status: %s", cli_hal_status_str(probe_status));
+	            ret |= cli_printline(cli, outline);
+	        }
+	        else if(!strcmp(argv[1], "oweven"))
+	        {
+	            if(cli_adbms_refuse_active_scan("spi oweven"))
+	            {
+	                return ret;
+	            }
+	            if(!cli_adbms_open_wire_state_allowed())
+	            {
+	                ret |= cli_printline(cli, "Open-wire refused: use only in charge/balance service state");
+	                return ret;
+	            }
+	            probe_status = adbms6830_run_open_wire_check(smb, false);
+	            snprintf(outline, CLI_LINESZ, "Open-wire even-channel command status: %s", cli_hal_status_str(probe_status));
+	            ret |= cli_printline(cli, outline);
+	        }
+	        else if(!strcmp(argv[1], "owodd"))
+	        {
+	            if(cli_adbms_refuse_active_scan("spi owodd"))
+	            {
+	                return ret;
+	            }
+	            if(!cli_adbms_open_wire_state_allowed())
+	            {
+	                ret |= cli_printline(cli, "Open-wire refused: use only in charge/balance service state");
+	                return ret;
+	            }
+	            probe_status = adbms6830_run_open_wire_check(smb, true);
+	            snprintf(outline, CLI_LINESZ, "Open-wire odd-channel command status: %s", cli_hal_status_str(probe_status));
+	            ret |= cli_printline(cli, outline);
+	        }
+	        else if(!strcmp(argv[1], "auxdiag"))
+	        {
+	            if(cli_adbms_refuse_active_scan("spi auxdiag"))
+	            {
+	                return ret;
+	            }
+	            probe_status = adbms6830_run_aux_gpio_diagnostic(smb);
+	            snprintf(outline, CLI_LINESZ, "AUX/GPIO diagnostic hook status: %s", cli_hal_status_str(probe_status));
+	            ret |= cli_printline(cli, outline);
+	        }
+	        else if(strcmp(argv[1], "status"))
+	        {
+	            ret |= cli_printline(cli, "Usage: spi [status|probe|probea|probeb|sid|stat|staterr|cfgchk|cellst|oweven|owodd|auxdiag|wake|coldwake|clrflag|clear|diagclear|enable|disable]");
+	            return ret;
+	        }
+	    }
 
     dbg = adbms6830_spi_debug_get(smb);
     if(dbg == NULL)
@@ -796,8 +900,8 @@ int get_spi_debug(int argc, char *argv[])
         ret |= cli_printline(cli, "SPI handle is NULL");
     }
 
-    snprintf(outline, CLI_LINESZ,
-             "dbg en:%d op:%s string:%u status:%s tx:%lu rx:%lu err:%lu",
+	    snprintf(outline, CLI_LINESZ,
+	             "dbg en:%d op:%s string:%u status:%s tx:%lu rx:%lu err:%lu",
              dbg->enabled,
              adbms6830_spi_op_str(dbg->last_op),
              (unsigned)dbg->last_string,
@@ -805,7 +909,25 @@ int get_spi_debug(int argc, char *argv[])
              (unsigned long)dbg->tx_count,
              (unsigned long)dbg->rx_count,
              (unsigned long)dbg->error_count);
-    ret |= cli_printline(cli, outline);
+	    ret |= cli_printline(cli, outline);
+
+	    snprintf(outline, CLI_LINESZ,
+	             "scan active:%d count:%lu diag fault:%d cfg:%d stat:%d ow:%d last:%s",
+	             data->adbms_scan_active,
+	             (unsigned long)data->adbms_scan_count,
+	             data->adbms_diag_fault,
+	             data->adbms_config_fault,
+	             data->adbms_status_fault,
+	             data->adbms_open_wire_fault,
+	             cli_hal_status_str(data->adbms_last_diag_status));
+	    ret |= cli_printline(cli, outline);
+
+	    snprintf(outline, CLI_LINESZ,
+	             "diag periodic status:%lu cfg:%lu openwire:%lu",
+	             (unsigned long)data->adbms_status_diag_count,
+	             (unsigned long)data->adbms_config_diag_count,
+	             (unsigned long)data->adbms_open_wire_diag_count);
+	    ret |= cli_printline(cli, outline);
 
     snprintf(outline, CLI_LINESZ,
              "cmd:%02X %02X len tx:%u rx:%u total:%u",
@@ -957,12 +1079,16 @@ int get_apm_debug(int argc, char *argv[])
             adbms2950_spi_debug_enable(apm, false);
             ret |= cli_printline(cli, "ADBMS2950 SPI debug disabled");
         }
-        else if(!strcmp(argv[1], "probe"))
-        {
-            probe_status = adbms2950_spi_probe_rdcfga(apm);
-            snprintf(outline, CLI_LINESZ, "ADBMS2950 RDCFGA probe status: %s", cli_hal_status_str(probe_status));
-            ret |= cli_printline(cli, outline);
-        }
+	        else if(!strcmp(argv[1], "probe"))
+	        {
+	            if(cli_adbms_refuse_active_scan("apm probe"))
+	            {
+	                return ret;
+	            }
+	            probe_status = adbms2950_spi_probe_rdcfga(apm);
+	            snprintf(outline, CLI_LINESZ, "ADBMS2950 RDCFGA probe status: %s", cli_hal_status_str(probe_status));
+	            ret |= cli_printline(cli, outline);
+	        }
         else if(strcmp(argv[1], "status"))
         {
             ret |= cli_printline(cli, "Usage: apm [status|probe|clear|enable|disable]");
@@ -992,8 +1118,8 @@ int get_apm_debug(int argc, char *argv[])
         ret |= cli_printline(cli, "SPI handle is NULL");
     }
 
-    snprintf(outline, CLI_LINESZ,
-             "apm dbg en:%d op:%s string:%u status:%s tx:%lu rx:%lu err:%lu ics:%u",
+	    snprintf(outline, CLI_LINESZ,
+	             "apm dbg en:%d op:%s string:%u status:%s tx:%lu rx:%lu err:%lu ics:%u",
              dbg->enabled,
              adbms2950_spi_op_str(dbg->last_op),
              (unsigned)dbg->last_string,
@@ -1002,7 +1128,8 @@ int get_apm_debug(int argc, char *argv[])
              (unsigned long)dbg->rx_count,
              (unsigned long)dbg->error_count,
              (unsigned)apm->num_ics);
-    ret |= cli_printline(cli, outline);
+	    ret |= cli_printline(cli, outline);
+	    ret |= cli_printline(cli, "APM safety: debug-only, non-gating until bench CS/SPI/PEC/scaling/shunt polarity are proven");
 
     snprintf(outline, CLI_LINESZ,
              "cmd:%02X %02X len tx:%u rx:%u total:%u",

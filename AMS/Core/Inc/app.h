@@ -3,6 +3,7 @@
  *
  *  Created on: Jan 29, 2024
  *      Author: cole
+ *      Modified by: Mahad Faisal (major firmware updates, 2026)
  */
 
 #ifndef INC_APP_H_
@@ -186,6 +187,16 @@ typedef struct
     bool fan_state;
 
 	bool charger_fault;
+	bool adbms_diag_fault;
+	bool adbms_config_fault;
+	bool adbms_status_fault;
+	bool adbms_open_wire_fault;
+	bool adbms_scan_active;
+	uint32_t adbms_scan_count;
+	uint32_t adbms_status_diag_count;
+	uint32_t adbms_config_diag_count;
+	uint32_t adbms_open_wire_diag_count;
+	HAL_StatusTypeDef adbms_last_diag_status;
 	bool task_heartbeat_fault;
 	bool logger_heartbeat_fault;
 	uint16_t heartbeat_stale_mask;

@@ -1,5 +1,6 @@
 /*
  * current_fault.c
+ * Author: Mahad Faisal (2026)
  *
  * DER26 AMS current fault policy.
  *

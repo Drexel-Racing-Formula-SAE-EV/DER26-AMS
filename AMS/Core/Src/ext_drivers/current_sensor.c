@@ -3,6 +3,7 @@
  *
  *  Created on: Mar 3th, 2024
  *      Author: Justin Nguyen
+ *      Modified by: Mahad Faisal (major firmware updates, 2026)
  */
 
 #include <ext_drivers/current_sensor.h>

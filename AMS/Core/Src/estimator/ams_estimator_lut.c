@@ -1,5 +1,6 @@
 /*
  * ams_estimator_lut.c
+ * Author: Mahad Faisal (2026)
  *
  * P42A lookup data for the physics-only AMS DAEKF.
  * Table layout is table[soc_index + temp_index * soc_count].

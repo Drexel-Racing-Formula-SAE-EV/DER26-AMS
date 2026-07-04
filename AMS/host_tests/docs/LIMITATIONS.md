@@ -1,5 +1,7 @@
 # Limitations
 
+
+Authored by Mahad Faisal, 2026.
 This harness is intentionally host-side. It is a fast regression tool, not a safety certification tool.
 
 It cannot validate:

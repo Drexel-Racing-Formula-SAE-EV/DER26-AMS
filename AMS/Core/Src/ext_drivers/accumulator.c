@@ -3,6 +3,7 @@
  *
  *  Created on: Feb 1, 2024
  *      Author: cole
+ *      Modified by: Mahad Faisal (major firmware updates, 2026)
  */
 
 #include "ext_drivers/accumulator.h"
@@ -103,7 +104,7 @@ void accumulator_init(accumulator_t *dev,
 	memset(dev->apm_ics, 0, sizeof(dev->apm_ics));
 #endif
 
-	adBms6830_init(&dev->smb, NSMBS, dev->smb_ics, hspi, cs_port_b, cs_port_b, cs_pin_b, cs_pin_b, htim);
+	adBms6830_init(&dev->smb, NSMBS, dev->smb_ics, hspi, cs_port_a, cs_port_b, cs_pin_a, cs_pin_b, htim);
 }
 
 int accumulator_read_volt(accumulator_t *dev)

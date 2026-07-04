@@ -1,5 +1,6 @@
 /*
  * ams_soc_ekf.c
+ * Author: Mahad Faisal (2026)
  *
  * No-NN adaptive dual EKF ported from the RA8M1 BMS estimator into a small,
  * instance-based STM32 AMS module.

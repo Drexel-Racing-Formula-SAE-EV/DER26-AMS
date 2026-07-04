@@ -3,6 +3,7 @@
  *
  *  Created on: Jan 22, 2024
  *      Author: Cassius Garcia
+ *      Modified by: Mahad Faisal (major firmware updates, 2026)
  */
 
 #ifndef INC_FANS_H_

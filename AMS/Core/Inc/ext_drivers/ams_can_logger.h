@@ -1,5 +1,6 @@
 /*
  * ams_can_logger.h
+ * Author: Mahad Faisal (2026)
  *
  * Passive in-car AMS dashboard/logger CAN contract.
  *

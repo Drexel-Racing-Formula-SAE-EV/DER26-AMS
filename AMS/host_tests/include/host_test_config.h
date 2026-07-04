@@ -1,3 +1,8 @@
+/*
+ * host_test_config.h
+ * Author: Mahad Faisal (2026)
+ */
+
 #ifndef AMS_HOST_TEST_CONFIG_H
 #define AMS_HOST_TEST_CONFIG_H
 

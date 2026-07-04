@@ -3,6 +3,7 @@
  *
  *  Created on: Feb 5, 2024
  *      Author: Cassius Garcia
+ *      Modified by: Mahad Faisal (major firmware updates, 2026)
  */
 #include "tasks/fan_task.h"
 

@@ -1,5 +1,7 @@
 # Test Matrix
 
+
+Authored by Mahad Faisal, 2026.
 | Test function | Purpose |
 |---|---|
 | `test_accumulator_stats_and_balance` | Verifies voltage min/max/total stats, full-usable scan gating, bounded SMB count, balance mask generation, balance clear. |
@@ -66,6 +68,8 @@ Unit-only additions:
 | `test_adbms_spi_sid_status_and_counter_mismatch` | Verifies ADBMS6830 RDSID parsing, RDSTATC/RDSTATD/RDSTATE diagnostic parsing, and command-counter mismatch detection. |
 | `test_adbms_spi_coldwake_and_clear_flags` | Verifies conservative cold-wake pulse generation and CLRFLAG all-flag packing/command dispatch. |
 | `test_adbms6830_diagnostic_commands_and_cli_health` | Verifies ADBMS6830 config readback, cell ADC diagnostic hook, open-wire command hooks, AUX/GPIO diagnostic hook, sticky health counters, and CLI visibility. |
+| `test_adbms_periodic_diagnostics_and_safe_open_wire` | Verifies low-rate ADBMS6830 status/config diagnostics, config mismatch fail-closed behavior, and automatic open-wire scheduling only in balance/service state. |
+| `test_adbms_cli_scan_guard_and_cs_probe_commands` | Verifies CLI SPI probes are refused during active ADBMS scans, CS_A/CS_B probe commands select the intended chip-select path, and manual open-wire is charge/balance gated. |
 | `test_adbms2950_spi_debug_write_and_full_duplex_paths` | Verifies ADBMS2950/APM SPI write and full-duplex read debug state, CS wrapping, dummy-byte TX padding, RX extraction, HAL error propagation, and counters/previews. |
 | `test_adbms2950_spi_probe_pec_masks_and_clear` | Verifies ADBMS2950/APM RDCFGA probe debug capture, PEC pass/fail masks, command-counter capture, debug clear/enable behavior, and SPI op strings. |
 

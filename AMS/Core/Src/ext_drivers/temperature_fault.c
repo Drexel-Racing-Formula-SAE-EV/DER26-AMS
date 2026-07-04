@@ -1,5 +1,6 @@
 /*
  * temperature_fault.c
+ * Author: Mahad Faisal (2026)
  *
  * Temperature policy for DER26 AMS.
  *
@@ -236,11 +237,10 @@ void temperature_fault_update_with_period(temperature_fault_state_t *state,
         return;
     }
 
-    if(!acc->temp_full_updated)
-    {
-        state->warning = true;
-        state->reason = TEMPERATURE_FAULT_REASON_PARTIAL_SCAN;
-    }
+    /* The SMB mux intentionally updates three of twenty-four temperature
+     * sensors per ADBMS cycle. Once the full sensor set is fresh and usable,
+     * a partial update in this cycle is normal cadence, not a warning.
+     */
 }
 
 const char *temperature_fault_reason_str(temperature_fault_reason_t reason)

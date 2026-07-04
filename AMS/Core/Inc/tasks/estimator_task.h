@@ -1,5 +1,6 @@
 /*
  * estimator_task.h
+ * Author: Mahad Faisal (2026)
  *
  * Advisory AMS SoC estimator task.
  */

@@ -3,6 +3,7 @@
  *
  *  Created on: May 13, 2025
  *      Author: realb
+ *      Modified by: Mahad Faisal (major firmware updates, 2026)
  */
 
 #ifndef INC_EXT_DRIVERS_ADBMS6830_FUNCTIONS_H_
@@ -47,6 +48,7 @@ void adbms6830_spi_debug_clear(adbms6830_driver_t *dev);
 const adbms6830_spi_debug_t *adbms6830_spi_debug_get(const adbms6830_driver_t *dev);
 const char *adbms6830_spi_op_str(adbms6830_spi_op_t op);
 HAL_StatusTypeDef adbms6830_spi_probe_rdcfga(adbms6830_driver_t *dev);
+HAL_StatusTypeDef adbms6830_spi_probe_rdcfga_on_string(adbms6830_driver_t *dev, adbms_string string);
 HAL_StatusTypeDef adbms6830_read_sid(adbms6830_driver_t *dev);
 HAL_StatusTypeDef adbms6830_read_status(adbms6830_driver_t *dev, bool inject_spiflt);
 HAL_StatusTypeDef adbms6830_clear_all_flags(adbms6830_driver_t *dev);

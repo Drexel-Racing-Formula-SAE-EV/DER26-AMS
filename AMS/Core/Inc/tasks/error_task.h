@@ -1,6 +1,7 @@
 /**
  * @file error_task.h
  * @author Ian Kennedy (ibk24@drexel.edu)
+ * @author Mahad Faisal (major firmware updates, 2026)
  * @brief
  * @version 0.1
  * @date 2026-06-08

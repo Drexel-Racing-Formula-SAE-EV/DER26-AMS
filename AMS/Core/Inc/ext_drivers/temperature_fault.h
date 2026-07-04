@@ -1,5 +1,6 @@
 /*
  * temperature_fault.h
+ * Author: Mahad Faisal (2026)
  *
  * DER26 AMS temperature validity, fault, and fan policy.
  */

@@ -3,6 +3,7 @@
  *
  *  Created on: May 13, 2025
  *      Author: realb
+ *      Modified by: Mahad Faisal (major firmware updates, 2026)
  */
 
 #include <math.h>
@@ -738,6 +739,24 @@ HAL_StatusTypeDef adbms6830_spi_probe_rdcfga(adbms6830_driver_t *dev)
     return status;
 }
 
+HAL_StatusTypeDef adbms6830_spi_probe_rdcfga_on_string(adbms6830_driver_t *dev, adbms_string string)
+{
+    HAL_StatusTypeDef status;
+    adbms_string previous;
+
+    if((dev == NULL) || (string > STRING_B))
+    {
+        return HAL_ERROR;
+    }
+
+    previous = dev->string;
+    dev->string = string;
+    status = adbms6830_spi_probe_rdcfga(dev);
+    dev->string = previous;
+
+    return status;
+}
+
 HAL_StatusTypeDef adbms6830_read_sid(adbms6830_driver_t *dev)
 {
     HAL_StatusTypeDef status;
@@ -1153,6 +1172,7 @@ void adBms6830_init(adbms6830_driver_t* dev,
 	adbms6830_set_cs(dev, 1);
 	dev->string = STRING_A;
 	adbms6830_set_cs(dev, 1);
+	dev->string = STRING_B;
 
 	adbms6830_srst(dev);
 	adbms6830_us_delay(dev, 300);
