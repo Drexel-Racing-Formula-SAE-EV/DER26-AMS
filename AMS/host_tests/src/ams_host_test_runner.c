@@ -2838,6 +2838,7 @@ static void test_system_sil_long_run_seeded_fuzz_invariants(void)
     uint32_t stale_voltage_seen = 0u;
 
     sil_prepare_ready_system(STATE_DISCARGE, 0.0f, 3.700f);
+    sil_attach_fans(&app);
     app.board.canbus.hcan = &hcan;
     charger_init(&app.board.charger, &app.board.canbus);
     app.board.charger.last_rx_tick = fake_tick;
@@ -2958,6 +2959,283 @@ static void test_system_sil_long_run_seeded_fuzz_invariants(void)
     CHECK(voltage_fault_seen > 0u);
     CHECK(invalid_current_seen > 0u);
     CHECK(stale_voltage_seen > 0u);
+}
+
+static void test_system_sil_concurrent_heartbeat_starvation_and_recovery(void)
+{
+    sil_prepare_ready_system(STATE_DISCARGE, 0.0f, 3.700f);
+
+    for(uint16_t i = 0u; i < 180u; i++)
+    {
+        sil_run_current_sample(&app, 0.0f);
+    }
+    CHECK(app.current_valid == true);
+    CHECK(app.bms_state == true);
+
+    run_one_error_task_iteration(&app);
+    CHECK(app.task_heartbeat_fault == true);
+    CHECK((app.heartbeat_stale_mask & AMS_HEARTBEAT_BIT(AMS_HEARTBEAT_ADBMS)) != 0u);
+    CHECK((app.heartbeat_stale_mask & AMS_HEARTBEAT_BIT(AMS_HEARTBEAT_TEMP)) != 0u);
+    CHECK((app.heartbeat_stale_mask & AMS_HEARTBEAT_BIT(AMS_HEARTBEAT_CAN)) != 0u);
+    CHECK((app.heartbeat_stale_mask & AMS_HEARTBEAT_BIT(AMS_HEARTBEAT_CURRENT)) == 0u);
+    CHECK(app.bms_state == false);
+    sil_assert_safety_invariants(&app, "heartbeat_starved_current_only");
+
+    fake_adbms_voltage_masks_full_update();
+    sil_run_voltage_sample(&app);
+    CHECK(app.task_heartbeat_fault == false);
+    CHECK(app.voltage_valid == true);
+    CHECK(app.temp_valid == true);
+    CHECK(app.bms_state == false);
+
+    run_one_error_task_iteration(&app);
+    CHECK(app.hard_fault == false);
+    CHECK(app.task_heartbeat_fault == false);
+    CHECK(app.bms_state == false);
+
+    sil_run_voltage_sample(&app);
+    CHECK(app.bms_state == true);
+    sil_assert_safety_invariants(&app, "heartbeat_recovered_after_adbms");
+
+    sil_mark_all_heartbeats_alive(&app);
+    fake_tick += AMS_HEARTBEAT_LOGGER_TIMEOUT_MS + 1u;
+    ams_heartbeat_kick(&app, AMS_HEARTBEAT_ADBMS, fake_tick);
+    ams_heartbeat_kick(&app, AMS_HEARTBEAT_CURRENT, fake_tick);
+    ams_heartbeat_kick(&app, AMS_HEARTBEAT_TEMP, fake_tick);
+    ams_heartbeat_kick(&app, AMS_HEARTBEAT_CAN, fake_tick);
+    run_one_error_task_iteration(&app);
+    CHECK(app.task_heartbeat_fault == false);
+    CHECK(app.logger_heartbeat_fault == true);
+    CHECK(app.hard_fault == false);
+    CHECK(app.bms_state == true);
+    sil_assert_safety_invariants(&app, "logger_heartbeat_starved_only");
+}
+
+static void test_system_sil_concurrent_charger_tx_recovery_ordering(void)
+{
+    static CAN_HandleTypeDef hcan;
+
+    sil_prepare_ready_system(STATE_CHARGE, 0.0f, 3.700f);
+    app.board.canbus.hcan = &hcan;
+    charger_init(&app.board.charger, &app.board.canbus);
+    app.board.charger.last_rx_tick = fake_tick;
+
+    fake_can_add_tx_status = HAL_ERROR;
+    sil_run_can_charge_iteration(&app, &hcan);
+    CHECK(app.board.charger.tx_fail == true);
+    CHECK(app.board.charger.last_tx_status == HAL_ERROR);
+    CHECK(app.board.charger.tx_fail_count == 1u);
+    CHECK(app.canbus_fault == true);
+    CHECK(app.charger_fault == true);
+    CHECK(app.bms_state == false);
+    sil_assert_safety_invariants(&app, "charger_tx_fail_drops_bms");
+
+    fake_can_add_tx_status = HAL_OK;
+    sil_run_voltage_sample(&app);
+    CHECK(app.bms_state == false);
+    CHECK(app.charger_fault == true);
+
+    sil_run_can_charge_iteration(&app, &hcan);
+    CHECK(app.board.charger.tx_fail == false);
+    CHECK(app.board.charger.last_tx_status == HAL_OK);
+    CHECK(app.charger_fault == true);
+    CHECK(app.bms_state == false);
+    CHECK(tx_log[HOST_CHARGER_FRAME_INDEX].data[4] == CHARGER_CMD_DISABLE);
+    sil_assert_safety_invariants(&app, "charger_tx_first_success_still_conservative");
+
+    sil_run_voltage_sample(&app);
+    CHECK(app.bms_state == false);
+    sil_run_can_charge_iteration(&app, &hcan);
+    CHECK(app.charger_fault == false);
+    CHECK(app.bms_state == false);
+    CHECK(tx_log[HOST_CHARGER_FRAME_INDEX].data[4] == CHARGER_CMD_DISABLE);
+
+    sil_run_voltage_sample(&app);
+    CHECK(app.bms_state == true);
+    sil_assert_safety_invariants(&app, "charger_tx_recovered_after_fault_clear");
+
+    app.board.charger.last_rx_tick = fake_tick;
+    sil_run_can_charge_iteration(&app, &hcan);
+    CHECK(app.charger_fault == false);
+    CHECK(app.canbus_fault == false);
+    CHECK(tx_log[HOST_CHARGER_FRAME_INDEX].data[4] == CHARGER_CMD_ENABLE);
+    CHECK(app.bms_state == true);
+    sil_assert_safety_invariants(&app, "charger_tx_enable_after_recovery");
+}
+
+static void test_system_sil_concurrent_seeded_scheduler_abuse(void)
+{
+    static CAN_HandleTypeDef hcan;
+    uint32_t rng = 0xC0A11E57u;
+    uint32_t bms_true_seen = 0u;
+    uint32_t bms_false_seen = 0u;
+    uint32_t heartbeat_fault_seen = 0u;
+    uint32_t canbus_fault_seen = 0u;
+    uint32_t temp_fault_seen = 0u;
+    uint32_t fan_max_seen = 0u;
+    uint32_t charger_tx_fail_seen = 0u;
+
+    sil_prepare_ready_system(STATE_DISCARGE, 0.0f, 3.700f);
+    app.board.canbus.hcan = &hcan;
+    charger_init(&app.board.charger, &app.board.canbus);
+    app.board.charger.last_rx_tick = fake_tick;
+
+    for(uint32_t cycle = 0u; cycle < 2500u; cycle++)
+    {
+        if((cycle % 125u) == 0u)
+        {
+            sil_prepare_ready_system((cycle & 0x80u) ? STATE_CHARGE : STATE_DISCARGE, 0.0f, 3.700f);
+            sil_attach_fans(&app);
+            app.board.canbus.hcan = &hcan;
+            charger_init(&app.board.charger, &app.board.canbus);
+            app.board.charger.last_rx_tick = fake_tick;
+            fake_can_add_tx_status = HAL_OK;
+            tx_free_level = 3u;
+        }
+
+        uint32_t r = sil_rng_next(&rng);
+        if((r & 0x1Fu) == 0u)
+        {
+            app.state = STATE_CHARGE;
+        }
+        else if((r & 0x1Fu) == 1u)
+        {
+            app.state = STATE_DISCARGE;
+        }
+        else if((r & 0x3Fu) == 2u)
+        {
+            app.state = STATE_BALANCE;
+        }
+
+        if((r & 0x7Fu) == 0x24u)
+        {
+            app.board.charger.last_rx_tick = fake_tick - (CHARGER_RX_TIMEOUT_MS + 1u);
+        }
+        else if(app.state == STATE_CHARGE)
+        {
+            app.board.charger.last_rx_tick = fake_tick;
+        }
+
+        if((r & 0xFFu) == 0x5Au)
+        {
+            app.fuse_fault = true;
+        }
+        else if((cycle % 125u) == 1u)
+        {
+            app.fuse_fault = false;
+        }
+
+        switch((r >> 8) % 8u)
+        {
+            case 0u: sil_set_all_temps(&app, 25.0f, (1UL << NTEMPS) - 1UL); break;
+            case 1u: sil_set_all_temps(&app, 50.0f, (1UL << NTEMPS) - 1UL); break;
+            case 2u: sil_set_all_temps(&app, 61.0f, (1UL << NTEMPS) - 1UL); break;
+            case 3u: sil_set_all_temps(&app, 25.0f, 0u); break;
+            default: break;
+        }
+
+        sil_write_all_cells(&app, 3.700f);
+        switch((r >> 12) % 10u)
+        {
+            case 0u: sil_set_cell_voltage(&app, (uint8_t)(r % NSMBS), (uint8_t)((r >> 4) % NCELLS), 4.200f); break;
+            case 1u: sil_set_cell_voltage(&app, (uint8_t)(r % NSMBS), (uint8_t)((r >> 4) % NCELLS), 2.500f); break;
+            case 2u: sil_set_cell_voltage(&app, (uint8_t)(r % NSMBS), (uint8_t)((r >> 4) % NCELLS), 4.180f); break;
+            default: break;
+        }
+
+        if((r & 0x3Fu) == 0x11u)
+        {
+            fake_adbms_voltage_masks_all_missing(true);
+        }
+        else if((r & 0x1Fu) == 0x0Cu)
+        {
+            fake_adbms_voltage_masks_one_missing((uint8_t)(r % NSMBS),
+                                                 (uint8_t)((r >> 4) % NCELLS),
+                                                 true);
+        }
+        else
+        {
+            fake_adbms_voltage_masks_full_update();
+        }
+
+        uint8_t op = (uint8_t)((r >> 20) % 8u);
+        if(op == 0u)
+        {
+            float current_a;
+            switch((r >> 24) % 8u)
+            {
+                case 0u: current_a = 0.0f; break;
+                case 1u: current_a = 75.0f; break;
+                case 2u: current_a = 130.0f; break;
+                case 3u: current_a = 260.0f; break;
+                case 4u: current_a = -6.0f; break;
+                case 5u: current_a = -12.5f; break;
+                case 6u: current_a = -31.0f; break;
+                default: current_a = -55.0f; break;
+            }
+            sil_run_current_sample(&app, current_a);
+        }
+        else if(op == 1u)
+        {
+            sil_run_current_adc_status(&app,
+                                       ((r >> 3) & 1u) ? HAL_TIMEOUT : HAL_OK,
+                                       ((r >> 4) & 1u) ? HAL_ERROR : HAL_OK);
+        }
+        else if(op == 2u)
+        {
+            sil_run_voltage_sample(&app);
+        }
+        else if(op == 3u)
+        {
+            fake_can_add_tx_status = ((r >> 5) & 1u) ? HAL_ERROR : HAL_OK;
+            tx_free_level = ((r >> 6) & 1u) ? 0u : 3u;
+            sil_run_can_charge_iteration(&app, &hcan);
+            if(fake_can_add_tx_status != HAL_OK || tx_free_level == 0u)
+            {
+                charger_tx_fail_seen += (app.state == STATE_CHARGE) ? 1u : 0u;
+            }
+            fake_can_add_tx_status = HAL_OK;
+            tx_free_level = 3u;
+        }
+        else if(op == 4u)
+        {
+            run_one_error_task_iteration(&app);
+        }
+        else if(op == 5u)
+        {
+            run_one_fan_task_iteration(&app);
+        }
+        else if(op == 6u)
+        {
+            fake_tick += (r & 1u) ? (AMS_HEARTBEAT_CURRENT_TIMEOUT_MS + 1u) :
+                                    (AMS_HEARTBEAT_CAN_TIMEOUT_MS + 1u);
+            run_one_error_task_iteration(&app);
+        }
+        else
+        {
+            sil_run_voltage_sample(&app);
+            run_one_error_task_iteration(&app);
+        }
+
+        sil_assert_safety_invariants(&app, "concurrent_seeded_scheduler_abuse");
+        bms_true_seen += app.bms_state ? 1u : 0u;
+        bms_false_seen += app.bms_state ? 0u : 1u;
+        heartbeat_fault_seen += app.task_heartbeat_fault ? 1u : 0u;
+        canbus_fault_seen += app.canbus_fault ? 1u : 0u;
+        temp_fault_seen += app.temp_fault ? 1u : 0u;
+        fan_max_seen += (app.fan_state && (app.board.fans[0].duty_cycle >= 99.9f)) ? 1u : 0u;
+    }
+
+    fake_can_add_tx_status = HAL_OK;
+    tx_free_level = 3u;
+
+    CHECK(bms_true_seen > 0u);
+    CHECK(bms_false_seen > 0u);
+    CHECK(heartbeat_fault_seen > 0u);
+    CHECK(canbus_fault_seen > 0u);
+    CHECK(temp_fault_seen > 0u);
+    CHECK(fan_max_seen > 0u);
+    CHECK(charger_tx_fail_seen > 0u);
 }
 
 static void test_temp_invalid_and_cold_valid_fault_behavior(void){
@@ -3817,6 +4095,9 @@ int main(void){
     test_system_sil_contradictory_dhab_vs_2950_observable_non_gating(); puts("PASS system SIL DHAB vs 2950 contradiction observable/non-gating");
     test_system_sil_startup_garbage_never_enables_bms(); puts("PASS system SIL startup garbage never enables BMS_OK");
     test_system_sil_long_run_seeded_fuzz_invariants(); puts("PASS system SIL 10000-cycle seeded fuzz invariants");
+    test_system_sil_concurrent_heartbeat_starvation_and_recovery(); puts("PASS system SIL concurrent heartbeat starvation/recovery");
+    test_system_sil_concurrent_charger_tx_recovery_ordering(); puts("PASS system SIL concurrent charger TX recovery ordering");
+    test_system_sil_concurrent_seeded_scheduler_abuse(); puts("PASS system SIL concurrent seeded scheduler abuse");
     test_temp_stats(); puts("PASS temp stats");
     test_temp_invalid_and_cold_valid_fault_behavior(); puts("PASS temp invalid/cold-valid fault behavior");
     test_system_sil_temperature_mux_cadence_no_false_stale(); puts("PASS system SIL temperature mux cadence no false stale");
