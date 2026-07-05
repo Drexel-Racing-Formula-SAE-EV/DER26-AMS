@@ -40,6 +40,7 @@ int get_current(int argc, char *argv[]);
 int get_charger(int argc, char *argv[]);
 int get_spi_debug(int argc, char *argv[]);
 int get_apm_debug(int argc, char *argv[]);
+int get_bringup(int argc, char *argv[]);
 int bmsok_control(int argc, char *argv[]);
 int set_state(int argc, char *argv[]);
 int cause_fault(int argc, char *argv[]);
@@ -60,6 +61,7 @@ command_t cmds[] =
 	{"charger", &get_charger, "gets charger CAN command/status/debug state"},
 	{"spi", &get_spi_debug, "ADBMS6830 SPI debug: spi [status|probe|probea|probeb|sid|stat|staterr|cfgchk|cellst|oweven|owodd|auxdiag|wake|coldwake|clrflag|clear|diagclear|enable|disable]"},
 	{"apm", &get_apm_debug, "ADBMS2950/APM debug: apm [status|probe|clear|enable|disable]"},
+	{"bringup", &get_bringup, "bench bring-up summaries: bringup [help|board|adbms6830|apm2950|charger-lv|charger-battery|ready|snapshot|evidence]"},
 	{"bmsok", &bmsok_control, "BMS_OK control: bmsok [status|release|inhibit]"},
 	{"state", &set_state, "gets or sets the AMS state [charge|discharge]"},
 	{"cause_fault", &cause_fault, "cause BMS fault for tech"},
@@ -671,6 +673,113 @@ static bool cli_adbms_open_wire_state_allowed(void)
 {
     return (data != NULL) &&
            ((data->state == STATE_CHARGE) || (data->state == STATE_BALANCE));
+}
+
+static const char *cli_passfail(bool ok)
+{
+    return ok ? "PASS" : "FAIL";
+}
+
+static const char *cli_passblock(bool ok)
+{
+    return ok ? "PASS" : "BLOCKED";
+}
+
+static bool cli_spi6_mode3_ok(const SPI_HandleTypeDef *hspi)
+{
+    return (hspi != NULL) &&
+           (hspi->Init.CLKPolarity == SPI_POLARITY_HIGH) &&
+           (hspi->Init.CLKPhase == SPI_PHASE_2EDGE) &&
+           (hspi->Init.FirstBit == SPI_FIRSTBIT_MSB);
+}
+
+static bool cli_preview_all_value(const uint8_t *buf, uint16_t len, uint8_t value)
+{
+    if((buf == NULL) || (len == 0u))
+    {
+        return false;
+    }
+
+    for(uint16_t i = 0u; i < len; i++)
+    {
+        if(buf[i] != value)
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static uint16_t cli_expected_ic_mask(uint8_t count)
+{
+    uint16_t mask = 0u;
+    uint8_t bounded = (count > NSMBS) ? NSMBS : count;
+
+    for(uint8_t i = 0u; i < bounded; i++)
+    {
+        mask |= (uint16_t)(1u << i);
+    }
+
+    return mask;
+}
+
+static uint16_t cli_sid_valid_mask(const adbms6830_driver_t *smb, uint8_t count)
+{
+    uint16_t mask = 0u;
+
+    if(smb == NULL)
+    {
+        return 0u;
+    }
+
+    for(uint8_t i = 0u; i < count; i++)
+    {
+        if(smb->diag[i].sid_valid)
+        {
+            mask |= (uint16_t)(1u << i);
+        }
+    }
+
+    return mask;
+}
+
+static uint16_t cli_stat_valid_mask(const adbms6830_driver_t *smb, uint8_t count)
+{
+    uint16_t mask = 0u;
+
+    if(smb == NULL)
+    {
+        return 0u;
+    }
+
+    for(uint8_t i = 0u; i < count; i++)
+    {
+        if(smb->diag[i].statc_valid && smb->diag[i].statd_valid && smb->diag[i].state_valid)
+        {
+            mask |= (uint16_t)(1u << i);
+        }
+    }
+
+    return mask;
+}
+
+static bool cli_charger_hw_fault(const charger_t *ccs)
+{
+    return (ccs != NULL) &&
+           (ccs->hardware_fail || ccs->overtemp_fail ||
+            ccs->input_volt_fail || ccs->voltage_sense_fail ||
+            ccs->communication_fail || ccs->tx_fail);
+}
+
+static uint32_t cli_charger_rx_age_ms(const charger_t *ccs)
+{
+    if((ccs == NULL) || (ccs->last_rx_tick == 0u))
+    {
+        return 0xFFFFFFFFu;
+    }
+
+    return osKernelGetTickCount() - ccs->last_rx_tick;
 }
 
 static bool cli_adbms_refuse_active_scan(const char *name)
@@ -1286,13 +1395,357 @@ int get_charger(int argc, char *argv[])
     ret |= cli_printline(cli, outline);
 
     snprintf(outline, CLI_LINESZ,
-             "Charger CAN tx:0x%08lX rx:0x%08lX byte4 enable:%u disable:%u",
+             "Charger CAN tx:0x%08lX rx:0x%08lX BYTE5/data[4] enable:%u disable:%u",
              (unsigned long)CCS_CANBUS_ID,
              (unsigned long)CHARGER_RX_ID,
              CHARGER_CMD_ENABLE,
              CHARGER_CMD_DISABLE);
     ret |= cli_printline(cli, outline);
 
+    return ret;
+}
+
+int get_bringup(int argc, char *argv[])
+{
+    int ret = 0;
+    const char *mode = ((argc >= 2) && (argv != NULL) && (argv[1] != NULL)) ? argv[1] : "help";
+    adbms6830_driver_t *smb = &data->acc.smb;
+    adbms2950_driver_t *apm = &data->acc.apm;
+    charger_t *ccs = &data->board.charger;
+    const adbms6830_spi_debug_t *smb_dbg = adbms6830_spi_debug_get(smb);
+    const adbms6830_diag_health_t *smb_health = adbms6830_diag_health_get(smb);
+    const adbms2950_spi_debug_t *apm_dbg = adbms2950_spi_debug_get(apm);
+    uint8_t smb_count = smb_ic_count(smb);
+    uint16_t expected_mask = cli_expected_ic_mask(smb_count);
+
+    if(!strcmp(mode, "help"))
+    {
+        ret |= cli_printline(cli, "bringup board          - LV board-only checklist, no accumulator required");
+        ret |= cli_printline(cli, "bringup adbms6830      - SMB chain SPI/CS/PEC/SID/status summary");
+        ret |= cli_printline(cli, "bringup apm2950        - ADBMS2950/APM debug-only summary");
+        ret |= cli_printline(cli, "bringup charger-lv     - charger CAN low-voltage sniffer checklist");
+        ret |= cli_printline(cli, "bringup charger-battery - stricter charger test once battery path is safe");
+        ret |= cli_printline(cli, "bringup ready          - BMS_OK release checklist; does not release output");
+        ret |= cli_printline(cli, "bringup snapshot       - compact state snapshot");
+        ret |= cli_printline(cli, "bringup evidence       - bench evidence to capture before changing phase");
+        return ret;
+    }
+
+    if(!strcmp(mode, "board") || !strcmp(mode, "snapshot"))
+    {
+        SPI_HandleTypeDef *hspi = smb->hspi;
+        current_sensor_t *cs = &data->board.current_sensor;
+        bool spi_ok = cli_spi6_mode3_ok(hspi);
+        bool current_alive = data->current_valid && cs->last_read_ok &&
+                             (fabsf(cs->sensor_voltage_high - 2.5f) <= 0.35f) &&
+                             (fabsf(cs->sensor_voltage_low - 2.5f) <= 0.35f) &&
+                             (fabsf(data->current) <= 5.0f);
+
+        snprintf(outline, CLI_LINESZ,
+                 "BRINGUP BOARD build:%s state:%s BMS_OK:%d inhibit:%d",
+                 AMS_HW_BRINGUP ? "hw-bringup" : "normal",
+                 ams_state_to_str(data->state),
+                 data->bms_state,
+                 data->bms_output_inhibit);
+        ret |= cli_printline(cli, outline);
+
+        snprintf(outline, CLI_LINESZ,
+                 "spi6=%s CPOL:%s CPHA:%s first:%s",
+                 cli_passfail(spi_ok),
+                 (hspi != NULL) ? cli_spi_polarity_str(hspi->Init.CLKPolarity) : "NULL",
+                 (hspi != NULL) ? cli_spi_phase_str(hspi->Init.CLKPhase) : "NULL",
+                 ((hspi != NULL) && (hspi->Init.FirstBit == SPI_FIRSTBIT_MSB)) ? "MSB" : "not_MSB");
+        ret |= cli_printline(cli, outline);
+
+        snprintf(outline, CLI_LINESZ,
+                 "current_zero=%s valid:%d reason:%s adcH:%u adcL:%u sensorH:%d.%03d sensorL:%d.%03d",
+                 current_alive ? "PASS" : "WARN",
+                 data->current_valid,
+                 current_sensor_reason_str(data->current_meas_reason),
+                 cs->count_high,
+                 cs->count_low,
+                 (int)cs->sensor_voltage_high,
+                 abs((int)roundf((cs->sensor_voltage_high - (float)((int)cs->sensor_voltage_high)) * 1000.0f)),
+                 (int)cs->sensor_voltage_low,
+                 abs((int)roundf((cs->sensor_voltage_low - (float)((int)cs->sensor_voltage_low)) * 1000.0f)));
+        ret |= cli_printline(cli, outline);
+
+        ret |= cli_printline(cli, "current_zero note: PASS if DHAB is LV-powered; WARN can be OK if harness omits DHAB");
+
+        snprintf(outline, CLI_LINESZ,
+                 "no_accumulator voltage:%s temp:%s expected_not_ready_without_cells",
+                 data->voltage_valid ? "present" : "not_ready",
+                 data->temp_valid ? "present" : "not_ready");
+        ret |= cli_printline(cli, outline);
+
+        snprintf(outline, CLI_LINESZ,
+                 "heartbeat seen:0x%04X stale:0x%04X safety:0x%04X",
+                 data->heartbeat.seen_mask,
+                 data->heartbeat.stale_mask,
+                 data->heartbeat.safety_stale_mask);
+        ret |= cli_printline(cli, outline);
+
+        if(!strcmp(mode, "snapshot"))
+        {
+            snprintf(outline, CLI_LINESZ,
+                     "faults hard:%d voltage:%d temp:%d current:%d charger:%d adbms_diag:%d",
+                     data->hard_fault,
+                     data->voltage_fault,
+                     data->temp_fault,
+                     data->current_fault,
+                     data->charger_fault,
+                     data->adbms_diag_fault);
+            ret |= cli_printline(cli, outline);
+        }
+        return ret;
+    }
+
+    if(!strcmp(mode, "adbms6830") || !strcmp(mode, "chain"))
+    {
+        uint16_t sid_mask = cli_sid_valid_mask(smb, smb_count);
+        uint16_t stat_mask = cli_stat_valid_mask(smb, smb_count);
+        bool mode_ok = cli_spi6_mode3_ok(smb->hspi);
+        bool hal_ok = (smb_dbg != NULL) && (smb_dbg->last_status == HAL_OK) &&
+                      (smb_dbg->last_xfer_status == HAL_OK);
+        bool pec_ok = (smb_dbg != NULL) &&
+                      ((smb_dbg->last_read_pec_fail_mask & expected_mask) == 0u) &&
+                      (((smb_dbg->last_read_pec_pass_mask & expected_mask) == expected_mask) ||
+                       (smb_dbg->rx_count == 0u));
+        bool rx_all_zero = (smb_dbg != NULL) &&
+                           cli_preview_all_value(smb_dbg->last_rx_preview,
+                                                 ADBMS6830_SPI_DEBUG_PREVIEW_BYTES,
+                                                 0x00u);
+        bool rx_all_ff = (smb_dbg != NULL) &&
+                         cli_preview_all_value(smb_dbg->last_rx_preview,
+                                               ADBMS6830_SPI_DEBUG_PREVIEW_BYTES,
+                                               0xFFu);
+
+        snprintf(outline, CLI_LINESZ,
+                 "BRINGUP ADBMS6830 ic:%u expected_mask:0x%04X scan:%d debug:%d",
+                 smb_count,
+                 expected_mask,
+                 data->adbms_scan_active,
+                 (smb_dbg != NULL) ? smb_dbg->enabled : 0);
+        ret |= cli_printline(cli, outline);
+
+        snprintf(outline, CLI_LINESZ,
+                 "mode=%s last_op:%s string:%s status:%s tx:%lu rx:%lu err:%lu",
+                 cli_passfail(mode_ok),
+                 (smb_dbg != NULL) ? adbms6830_spi_op_str(smb_dbg->last_op) : "none",
+                 ((smb_dbg != NULL) && (smb_dbg->last_string == STRING_A)) ? "CS_A" : "CS_B",
+                 (smb_dbg != NULL) ? cli_hal_status_str(smb_dbg->last_status) : "NULL",
+                 (unsigned long)((smb_dbg != NULL) ? smb_dbg->tx_count : 0u),
+                 (unsigned long)((smb_dbg != NULL) ? smb_dbg->rx_count : 0u),
+                 (unsigned long)((smb_dbg != NULL) ? smb_dbg->error_count : 0u));
+        ret |= cli_printline(cli, outline);
+
+        snprintf(outline, CLI_LINESZ,
+                 "response=%s hal=%s pec=%s pass:0x%04X fail:0x%04X cmd_mis:0x%04X",
+                 ((smb_dbg == NULL) || (smb_dbg->rx_count == 0u)) ? "NO_READ" :
+                     (rx_all_zero ? "FAIL all_zero" : (rx_all_ff ? "FAIL all_ff" : "PASS changing")),
+                 cli_passfail(hal_ok),
+                 cli_passfail(pec_ok),
+                 (smb_dbg != NULL) ? smb_dbg->last_read_pec_pass_mask : 0u,
+                 (smb_dbg != NULL) ? smb_dbg->last_read_pec_fail_mask : 0u,
+                 (smb_dbg != NULL) ? smb_dbg->cmd_counter_mismatch_mask : 0u);
+        ret |= cli_printline(cli, outline);
+
+        snprintf(outline, CLI_LINESZ,
+                 "sid=%s mask:0x%04X stat=%s mask:0x%04X diag_fault:%d cfg:%d stat:%d ow:%d",
+                 cli_passfail((sid_mask & expected_mask) == expected_mask),
+                 sid_mask,
+                 cli_passfail((stat_mask & expected_mask) == expected_mask),
+                 stat_mask,
+                 data->adbms_diag_fault,
+                 data->adbms_config_fault,
+                 data->adbms_status_fault,
+                 data->adbms_open_wire_fault);
+        ret |= cli_printline(cli, outline);
+
+        if(smb_health != NULL)
+        {
+            snprintf(outline, CLI_LINESZ,
+                     "health status:%s cfg:0x%04X sticky_pec:0x%04X sticky_cmd:0x%04X",
+                     cli_hal_status_str(smb_health->last_status),
+                     smb_health->config_mismatch_mask,
+                     smb_health->sticky_pec_fail_mask,
+                     smb_health->sticky_cmd_counter_mismatch_mask);
+            ret |= cli_printline(cli, outline);
+        }
+
+        ret |= cli_printline(cli, "next: spi coldwake -> spi probea/probeb -> spi sid -> spi stat -> bringup adbms6830");
+        return ret;
+    }
+
+    if(!strcmp(mode, "apm2950") || !strcmp(mode, "apm"))
+    {
+        bool initialized = (apm->hspi != NULL) && (apm->num_ics > 0u);
+        bool rx_all_zero = (apm_dbg != NULL) &&
+                           cli_preview_all_value(apm_dbg->last_rx_preview,
+                                                 ADBMS2950_SPI_DEBUG_PREVIEW_BYTES,
+                                                 0x00u);
+        bool rx_all_ff = (apm_dbg != NULL) &&
+                         cli_preview_all_value(apm_dbg->last_rx_preview,
+                                               ADBMS2950_SPI_DEBUG_PREVIEW_BYTES,
+                                               0xFFu);
+
+        snprintf(outline, CLI_LINESZ,
+                 "BRINGUP APM2950 initialized:%d build_debug:%d DEBUG_ONLY_NON_GATING",
+                 initialized,
+                 AMS_ENABLE_APM_2950_DEBUG);
+        ret |= cli_printline(cli, outline);
+
+        snprintf(outline, CLI_LINESZ,
+                 "mode=%s op:%s status:%s tx:%lu rx:%lu err:%lu ics:%u",
+                 cli_passfail(cli_spi6_mode3_ok(apm->hspi)),
+                 (apm_dbg != NULL) ? adbms2950_spi_op_str(apm_dbg->last_op) : "none",
+                 (apm_dbg != NULL) ? cli_hal_status_str(apm_dbg->last_status) : "NULL",
+                 (unsigned long)((apm_dbg != NULL) ? apm_dbg->tx_count : 0u),
+                 (unsigned long)((apm_dbg != NULL) ? apm_dbg->rx_count : 0u),
+                 (unsigned long)((apm_dbg != NULL) ? apm_dbg->error_count : 0u),
+                 (unsigned)apm->num_ics);
+        ret |= cli_printline(cli, outline);
+
+        snprintf(outline, CLI_LINESZ,
+                 "response=%s pec_pass:0x%04X pec_fail:0x%04X scaling=UNPROVEN shunt_polarity=UNPROVEN",
+                 ((apm_dbg == NULL) || (apm_dbg->rx_count == 0u)) ? "NO_READ" :
+                     (rx_all_zero ? "FAIL all_zero" : (rx_all_ff ? "FAIL all_ff" : "PASS changing")),
+                 (apm_dbg != NULL) ? apm_dbg->last_read_pec_pass_mask : 0u,
+                 (apm_dbg != NULL) ? apm_dbg->last_read_pec_fail_mask : 0u);
+        ret |= cli_printline(cli, outline);
+        ret |= cli_printline(cli, "next: enable AMS_ENABLE_APM_2950_DEBUG only for intentional APM probing");
+        return ret;
+    }
+
+    if(!strcmp(mode, "charger-lv") || !strcmp(mode, "charger"))
+    {
+        uint16_t v_deci = (uint16_t)roundf(CHARGE_MAX_VOLTAGE * 10.0f);
+        uint16_t i_deci = (uint16_t)roundf(CHARGE_MAX_CURRENT * 10.0f);
+        uint32_t age_ms = cli_charger_rx_age_ms(ccs);
+
+        ret |= cli_printline(cli, "BRINGUP CHARGER_LV battery_required=NO sniffer_required=YES");
+        snprintf(outline, CLI_LINESZ,
+                 "protocol tx:0x%08lX rx:0x%08lX BYTE5/data[4] 0=allow 1=disable",
+                 (unsigned long)CCS_CANBUS_ID,
+                 (unsigned long)CHARGER_RX_ID);
+        ret |= cli_printline(cli, outline);
+
+        snprintf(outline, CLI_LINESZ,
+                 "allow_frame:%02X %02X %02X %02X %02X disable_frame:%02X %02X %02X %02X %02X",
+                 (unsigned)((v_deci >> 8) & 0xFFu),
+                 (unsigned)(v_deci & 0xFFu),
+                 (unsigned)((i_deci >> 8) & 0xFFu),
+                 (unsigned)(i_deci & 0xFFu),
+                 CHARGER_CMD_ENABLE,
+                 (unsigned)((v_deci >> 8) & 0xFFu),
+                 (unsigned)(v_deci & 0xFFu),
+                 (unsigned)((i_deci >> 8) & 0xFFu),
+                 (unsigned)(i_deci & 0xFFu),
+                 CHARGER_CMD_DISABLE);
+        ret |= cli_printline(cli, outline);
+
+        snprintf(outline, CLI_LINESZ,
+                 "counts tx:%lu rx:%lu txfail:%lu rx_age:%s%lu hw_fault:%d disable_mask:0x%04X",
+                 (unsigned long)ccs->tx_count,
+                 (unsigned long)ccs->rx_count,
+                 (unsigned long)ccs->tx_fail_count,
+                 (age_ms == 0xFFFFFFFFu) ? "never/" : "",
+                 (unsigned long)((age_ms == 0xFFFFFFFFu) ? 0u : age_ms),
+                 cli_charger_hw_fault(ccs),
+                 ccs->disable_reason_mask);
+        ret |= cli_printline(cli, outline);
+
+        ret |= cli_printline(cli, "timeout_test=TODO send valid frames, stop them, confirm charger shuts output off near 5s");
+        ret |= cli_printline(cli, "next: state charge -> sniff 0x1806E5F4 -> charger -> bmsok inhibit -> verify BYTE5/data[4]=01");
+        return ret;
+    }
+
+    if(!strcmp(mode, "charger-battery"))
+    {
+        uint32_t age_ms = cli_charger_rx_age_ms(ccs);
+        bool rx_fresh = (ccs->last_rx_tick != 0u) &&
+                        (age_ms <= CHARGER_RX_TIMEOUT_MS) &&
+                        !ccs->communication_fail;
+        bool voltage_ready = data->voltage_valid && !data->voltage_fault && !data->voltage_fault_latched;
+        bool temp_ready = data->temp_valid && !data->temp_fault && !data->temp_fault_latched && !data->temp_charge_stop;
+        bool current_ready = data->current_valid && !data->current_fault && !data->current_fault_latched;
+        bool charger_clean = rx_fresh && !cli_charger_hw_fault(ccs) &&
+                             (ccs->disable_reason_mask == CHARGER_DISABLE_REASON_NONE);
+        bool ready = (data->state == STATE_CHARGE) && data->bms_state &&
+                     voltage_ready && temp_ready && current_ready && charger_clean;
+
+        snprintf(outline, CLI_LINESZ,
+                 "BRINGUP CHARGER_BATTERY verdict=%s state:%s BMS_OK:%d rx_fresh:%d",
+                 cli_passblock(ready),
+                 ams_state_to_str(data->state),
+                 data->bms_state,
+                 rx_fresh);
+        ret |= cli_printline(cli, outline);
+
+        snprintf(outline, CLI_LINESZ,
+                 "gates voltage:%d temp:%d current:%d charger_clean:%d rx_age_ms:%lu mask:0x%04X",
+                 voltage_ready,
+                 temp_ready,
+                 current_ready,
+                 charger_clean,
+                 (unsigned long)((age_ms == 0xFFFFFFFFu) ? 0u : age_ms),
+                 ccs->disable_reason_mask);
+        ret |= cli_printline(cli, outline);
+        ret |= cli_printline(cli, "requires: LV charger CAN proven, safe battery/accumulator path, contactor/charging procedure approved");
+        return ret;
+    }
+
+    if(!strcmp(mode, "ready"))
+    {
+        bool voltage_ready = data->voltage_valid && !data->voltage_fault && !data->voltage_fault_latched;
+        bool temp_ready = data->temp_valid && !data->temp_fault && !data->temp_fault_latched &&
+                          ((data->state != STATE_CHARGE) || !data->temp_charge_stop);
+        bool current_ready = data->current_valid && !data->current_fault && !data->current_fault_latched;
+        bool heartbeat_ready = !data->task_heartbeat_fault;
+        bool hard_ready = !data->hard_fault && !data->fuse_fault && !data->adbms_diag_fault;
+        bool release_ok = voltage_ready && temp_ready && current_ready && heartbeat_ready && hard_ready;
+
+        snprintf(outline, CLI_LINESZ,
+                 "BRINGUP READY release_allowed=%s output_inhibit:%d BMS_OK:%d",
+                 release_ok ? "YES" : "NO",
+                 data->bms_output_inhibit,
+                 data->bms_state);
+        ret |= cli_printline(cli, outline);
+
+        snprintf(outline, CLI_LINESZ,
+                 "gates voltage:%d temp:%d current:%d heartbeat:%d hard:%d charger_fault:%d",
+                 voltage_ready,
+                 temp_ready,
+                 current_ready,
+                 heartbeat_ready,
+                 hard_ready,
+                 data->charger_fault);
+        ret |= cli_printline(cli, outline);
+
+        snprintf(outline, CLI_LINESZ,
+                 "counts cells:%u/%u temps:%u/%u charge_stop:%d",
+                 (unsigned)data->voltage_usable_cell_count,
+                 (unsigned)AMS_EXPECTED_CELL_COUNT,
+                 (unsigned)data->temp_usable_sensor_count,
+                 (unsigned)AMS_EXPECTED_TEMP_SENSOR_COUNT,
+                 data->charge_voltage_stop);
+        ret |= cli_printline(cli, outline);
+        ret |= cli_printline(cli, "note: this command does not run bmsok release");
+        return ret;
+    }
+
+    if(!strcmp(mode, "evidence"))
+    {
+        ret |= cli_printline(cli, "BRINGUP EVIDENCE capture before phase changes:");
+        ret |= cli_printline(cli, "1 status; bringup board; bmsok status; fault");
+        ret |= cli_printline(cli, "2 spi clear; spi enable; spi coldwake; spi probea/probeb; spi sid; spi stat; bringup adbms6830");
+        ret |= cli_printline(cli, "3 current; volt; temp; bringup ready");
+        ret |= cli_printline(cli, "4 charger; bringup charger-lv plus CAN sniffer frame screenshots/logs");
+        ret |= cli_printline(cli, "5 for battery/charger only: bringup charger-battery after approved safe setup");
+        return ret;
+    }
+
+    ret |= cli_printline(cli, "Usage: bringup [help|board|adbms6830|apm2950|charger-lv|charger-battery|ready|snapshot|evidence]");
     return ret;
 }
 

@@ -15,14 +15,16 @@ The firmware uses the TC/Elcon-style extended CAN charger protocol:
 | AMS/BMS to charger | `0x1806E5F4` | `1000 ms` | max terminal voltage, max charge current, control byte |
 | Charger to AMS/BMS | `0x18FF50E5` | about `1000 ms` | output voltage, output current, status flags |
 
-AMS command payload:
+AMS command payload. The charger datasheet calls the control field `BYTE5`
+using 1-indexed byte naming; firmware uses the same physical byte as
+`data[4]`.
 
-| Byte | Meaning | Scaling |
-|---:|---|---|
-| 0..1 | max allowable charging terminal voltage | big-endian, `0.1 V/bit` |
-| 2..3 | max allowable charging current | big-endian, `0.1 A/bit` |
-| 4 | control | `0 = enable/start`, `1 = battery protection / close output` |
-| 5..7 | reserved | currently `0` |
+| Firmware byte | Datasheet byte | Meaning | Scaling |
+|---:|---:|---|---|
+| `data[0..1]` | `BYTE1..2` | max allowable charging terminal voltage | big-endian, `0.1 V/bit` |
+| `data[2..3]` | `BYTE3..4` | max allowable charging current | big-endian, `0.1 A/bit` |
+| `data[4]` | `BYTE5` | control | `0 = enable/start`, `1 = battery protection / close output` |
+| `data[5..7]` | `BYTE6..8` | reserved | currently `0` |
 
 Current firmware targets:
 
@@ -45,6 +47,7 @@ polarity.
 4. Use the CLI to enter charge state:
    ```text
    state charge
+   bringup charger-lv
    charger
    bmsok status
    ```
@@ -57,10 +60,11 @@ polarity.
 7. Confirm the charger responds on extended ID `0x18FF50E5`.
 8. Run `charger` again and verify `rx_count`, `read_voltage`, `read_current`,
    `flags`, and `rx_age_ms` update.
-9. Force a safe inhibit condition and confirm byte 4 becomes `01`.
+9. Force a safe inhibit condition and confirm `BYTE5/data[4]` becomes `01`.
    Good first tests are:
    ```text
    bmsok inhibit
+   bringup charger-lv
    charger
    ```
 10. Return to a safe non-charge state when finished:
@@ -78,7 +82,7 @@ If the charger does not start:
 |---|---|
 | No `0x1806E5F4` frame | AMS CAN TX, charge state, CAN task, BMS_OK gates |
 | `0x1806E5F4` present but no ACK/status | wiring, termination, baud rate, charger config, charger power |
-| Byte 4 is `01` | AMS is intentionally disabling charge; check `charger` disable mask |
+| `BYTE5/data[4]` is `01` | AMS is intentionally disabling charge; check `charger` disable mask |
 | `tx_fail:1` | AMS could not place the charger command on CAN |
 | `rx_comm:1` | AMS has not received charger status for more than `5000 ms` |
 | charger flags nonzero | charger is reporting its own hardware/status fault |
@@ -92,12 +96,20 @@ The `charger` CLI command prints:
 |---|---|
 | target voltage/current | command values the AMS is sending |
 | read voltage/current | latest parsed charger status values |
-| raw flags | byte 4 from the charger status frame |
+| raw flags | charger status flag byte from the charger-to-AMS frame |
 | `rx_comm` | charger status timeout |
 | `tx_fail` | AMS CAN transmit failure for charger command |
 | `txfail` | count of failed charger command transmissions |
 | `disable_mask` | bitmask of AMS reasons for sending disable byte `1` |
-| CAN IDs / byte4 values | quick check against the sniffer |
+| CAN IDs / `BYTE5/data[4]` values | quick check against the sniffer and datasheet naming |
+
+The `bringup charger-lv` command prints the same protocol convention, the
+expected allow frame `0C 30 00 64 00`, the matching disable frame ending in
+`01`, live TX/RX counters, and a reminder to test charger-side CAN loss.
+
+The `bringup charger-battery` command is intentionally stricter. It should stay
+`BLOCKED` until the battery/accumulator path is actually safe, the charger has a
+fresh status frame, BMS_OK is true, and voltage/current/temp gates are clean.
 
 ## Firmware Safety Behavior
 
@@ -109,9 +121,26 @@ CAN auto-retransmission is enabled in STM32 CAN init so arbitration loss or a
 transient failed attempt is retried by the CAN peripheral.
 
 Charger disable does not always mean BMS_OK should be forced low. A voltage
-charge-stop condition sends charger byte 4 as `01` so the charger backs off, but
+charge-stop condition sends charger `BYTE5/data[4]` as `01` so the charger backs off, but
 it leaves BMS_OK under the normal measurement/fault gates so controlled
 balancing can continue. Safety-critical charger disable reasons still force
 BMS_OK low, including charger hardware/status fault, charger command TX failure,
 hard fault, invalid voltage/current data, voltage/temp/current fault, and
 temperature charge-stop.
+
+## Charger CAN-Loss Backstop Test
+
+At least one real integration of this charger protocol reports that the charger
+will stop output on its own after several seconds without valid CAN commands.
+Treat this as a hardware backstop to verify, not as a firmware assumption.
+
+Low-voltage test:
+
+1. Confirm valid AMS command frames on `0x1806E5F4`.
+2. Confirm `BYTE5/data[4] = 00` while charge is allowed.
+3. Stop AMS charger command transmission by leaving charge state, unplugging the
+   CAN TX path in a controlled LV setup, or using another approved bench method.
+4. Measure how long the specific charger firmware takes to report CAN loss or
+   shut output off.
+5. Record the observed timeout in the bench log and update this guide if it is
+   not close to the firmware-side `5000 ms` receive timeout.

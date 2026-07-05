@@ -80,6 +80,7 @@ ADBMS6822 SPI6 expected: mode3 CPOL HIGH CPHA 2EDGE
 
 ```text
 status
+bringup board
 bmsok status
 ```
 
@@ -89,9 +90,14 @@ Expected:
 BMS_OK:0
 inhibit:1
 SPI6 CPOL:HIGH CPHA:2EDGE
+bringup board reports spi6=PASS
 ```
 
 If CPOL/CPHA do not match, stop and fix firmware/config before chasing hardware.
+In a board-only harness with no accumulator connected, voltage and temperature
+may correctly report not-ready. If the DHAB current sensor is powered from LV,
+`bringup board` should report `current_zero=PASS` near mid-scale; if the harness
+does not power the DHAB, a current warning is expected and should be recorded.
 
 ## ADBMS6830 / SMB SPI Test Order
 
@@ -109,6 +115,7 @@ spi sid
 spi stat
 spi cfgchk
 spi status
+bringup adbms6830
 volt
 fault
 status
@@ -130,6 +137,7 @@ command counters are visible when response frames are valid
 command-counter mismatch mask remains 0 during a stable command sequence
 diag sticky PEC/counter masks stay 0 during repeated stable reads
 spi cfgchk reports OK and config mismatch masks remain 0
+bringup adbms6830 reports mode=PASS, response=PASS changing, PEC/SID/STAT pass
 volt shows usable/updated/stale/PEC cell counts
 ```
 
@@ -138,6 +146,7 @@ Bad but useful signs:
 ```text
 HAL_TIMEOUT or HAL_ERROR increments error_count
 RX preview all 00 or all FF
+bringup adbms6830 reports response=FAIL all_zero or response=FAIL all_ff
 PEC fail mask set for all ICs
 updated cell count stays 0
 voltage reason remains not_ready or stale_scan
@@ -270,6 +279,7 @@ apm enable
 apm status
 apm probe
 apm status
+bringup apm2950
 ```
 
 Expected:
@@ -277,6 +287,7 @@ Expected:
 ```text
 APM debug counters update
 APM TX/RX previews are visible
+bringup apm2950 says DEBUG_ONLY_NON_GATING
 APM failures do not change BMS_OK
 normal current/voltage/fault logic still ignores APM
 ```
@@ -294,6 +305,7 @@ status shows voltage valid
 volt shows full usable cell coverage
 fault shows no hard fault
 temp data is valid or fan fail-safe behavior is understood
+bringup ready reports release_allowed=YES
 BMS_OK output has been observed low while inhibited
 ```
 

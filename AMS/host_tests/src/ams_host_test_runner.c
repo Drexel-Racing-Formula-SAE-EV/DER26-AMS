@@ -2950,6 +2950,139 @@ static void test_system_sil_bringup_status_and_bmsok_inhibit(void)
     CHECK(strstr(cli_capture, "CPOL:HIGH CPHA:2EDGE") != NULL);
 }
 
+static void test_bringup_cli_board_ready_and_adbms_summaries(void)
+{
+    static SPI_HandleTypeDef hspi;
+    char *board_argv[] = {"bringup", "board", NULL};
+    char *ready_argv[] = {"bringup", "ready", NULL};
+    char *adbms_argv[] = {"bringup", "adbms6830", NULL};
+
+    init_fake_app();
+    hspi.Init.CLKPolarity = SPI_POLARITY_HIGH;
+    hspi.Init.CLKPhase = SPI_PHASE_2EDGE;
+    hspi.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_256;
+    hspi.Init.FirstBit = SPI_FIRSTBIT_MSB;
+    app.acc.smb.hspi = &hspi;
+    app.bms_output_inhibit = true;
+    app.board.current_sensor.last_read_ok = true;
+    app.board.current_sensor.sensor_voltage_high = 2.50f;
+    app.board.current_sensor.sensor_voltage_low = 2.50f;
+    app.board.current_sensor.count_high = 1861u;
+    app.board.current_sensor.count_low = 1861u;
+    app.current_valid = true;
+    app.current = 0.0f;
+    app.current_meas_reason = CURRENT_SENSOR_REASON_OK;
+
+    sil_prepare_cli_capture();
+    CHECK(get_bringup(2, board_argv) == 0);
+    CHECK(strstr(cli_capture, "BRINGUP BOARD") != NULL);
+    CHECK(strstr(cli_capture, "spi6=PASS") != NULL);
+    CHECK(strstr(cli_capture, "current_zero=PASS") != NULL);
+    CHECK(strstr(cli_capture, "expected_not_ready_without_cells") != NULL);
+
+    sil_prepare_cli_capture();
+    CHECK(get_bringup(2, ready_argv) == 0);
+    CHECK(strstr(cli_capture, "BRINGUP READY") != NULL);
+    CHECK(strstr(cli_capture, "release_allowed=NO") != NULL);
+    CHECK(strstr(cli_capture, "does not run bmsok release") != NULL);
+    CHECK(app.bms_output_inhibit == true);
+    CHECK(app.bms_state == false);
+
+    app.acc.smb.spi_debug.enabled = true;
+    app.acc.smb.spi_debug.rx_count = 1u;
+    app.acc.smb.spi_debug.last_status = HAL_OK;
+    app.acc.smb.spi_debug.last_xfer_status = HAL_OK;
+    memset(app.acc.smb.spi_debug.last_rx_preview, 0xFF, sizeof(app.acc.smb.spi_debug.last_rx_preview));
+    app.acc.smb.spi_debug.last_read_pec_fail_mask = 0x001Fu;
+
+    sil_prepare_cli_capture();
+    CHECK(get_bringup(2, adbms_argv) == 0);
+    CHECK(strstr(cli_capture, "BRINGUP ADBMS6830") != NULL);
+    CHECK(strstr(cli_capture, "mode=PASS") != NULL);
+    CHECK(strstr(cli_capture, "response=FAIL all_ff") != NULL);
+    CHECK(strstr(cli_capture, "pec=FAIL") != NULL);
+
+    for(uint8_t i = 0u; i < ADBMS6830_SPI_DEBUG_PREVIEW_BYTES; i++)
+    {
+        app.acc.smb.spi_debug.last_rx_preview[i] = (uint8_t)(0x20u + i);
+    }
+    app.acc.smb.spi_debug.last_read_pec_fail_mask = 0u;
+    app.acc.smb.spi_debug.last_read_pec_pass_mask = 0x001Fu;
+    for(uint8_t ic = 0u; ic < NSMBS; ic++)
+    {
+        app.acc.smb.diag[ic].sid_valid = true;
+        app.acc.smb.diag[ic].statc_valid = true;
+        app.acc.smb.diag[ic].statd_valid = true;
+        app.acc.smb.diag[ic].state_valid = true;
+    }
+
+    sil_prepare_cli_capture();
+    CHECK(get_bringup(2, adbms_argv) == 0);
+    CHECK(strstr(cli_capture, "response=PASS changing") != NULL);
+    CHECK(strstr(cli_capture, "pec=PASS") != NULL);
+    CHECK(strstr(cli_capture, "sid=PASS") != NULL);
+    CHECK(strstr(cli_capture, "stat=PASS") != NULL);
+}
+
+static void test_bringup_cli_apm_and_charger_phase_split(void)
+{
+    static SPI_HandleTypeDef hspi;
+    static CAN_HandleTypeDef hcan;
+    char *apm_argv[] = {"bringup", "apm2950", NULL};
+    char *charger_lv_argv[] = {"bringup", "charger-lv", NULL};
+    char *charger_battery_argv[] = {"bringup", "charger-battery", NULL};
+
+    init_fake_app();
+    sil_prepare_cli_capture();
+    CHECK(get_bringup(2, apm_argv) == 0);
+    CHECK(strstr(cli_capture, "BRINGUP APM2950") != NULL);
+    CHECK(strstr(cli_capture, "initialized:0") != NULL);
+    CHECK(strstr(cli_capture, "DEBUG_ONLY_NON_GATING") != NULL);
+
+    hspi.Init.CLKPolarity = SPI_POLARITY_HIGH;
+    hspi.Init.CLKPhase = SPI_PHASE_2EDGE;
+    hspi.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_256;
+    hspi.Init.FirstBit = SPI_FIRSTBIT_MSB;
+    app.acc.apm.hspi = &hspi;
+    app.acc.apm.num_ics = 1u;
+    app.acc.apm.spi_debug.rx_count = 1u;
+    app.acc.apm.spi_debug.last_status = HAL_OK;
+    memset(app.acc.apm.spi_debug.last_rx_preview, 0xFF, sizeof(app.acc.apm.spi_debug.last_rx_preview));
+
+    sil_prepare_cli_capture();
+    CHECK(get_bringup(2, apm_argv) == 0);
+    CHECK(strstr(cli_capture, "initialized:1") != NULL);
+    CHECK(strstr(cli_capture, "mode=PASS") != NULL);
+    CHECK(strstr(cli_capture, "response=FAIL all_ff") != NULL);
+    CHECK(strstr(cli_capture, "scaling=UNPROVEN") != NULL);
+
+    init_fake_app();
+    charger_init(&app.board.charger, &app.board.canbus);
+    sil_prepare_cli_capture();
+    CHECK(get_bringup(2, charger_lv_argv) == 0);
+    CHECK(strstr(cli_capture, "BRINGUP CHARGER_LV") != NULL);
+    CHECK(strstr(cli_capture, "BYTE5/data[4] 0=allow 1=disable") != NULL);
+    CHECK(strstr(cli_capture, "allow_frame:0C 30 00 64 00") != NULL);
+    CHECK(strstr(cli_capture, "timeout_test=TODO") != NULL);
+
+    sil_prepare_cli_capture();
+    CHECK(get_bringup(2, charger_battery_argv) == 0);
+    CHECK(strstr(cli_capture, "BRINGUP CHARGER_BATTERY") != NULL);
+    CHECK(strstr(cli_capture, "verdict=BLOCKED") != NULL);
+
+    sil_prepare_ready_system(STATE_CHARGE, 0.0f, 3.700f);
+    app.board.canbus.hcan = &hcan;
+    charger_init(&app.board.charger, &app.board.canbus);
+    app.board.charger.rx_count = 1u;
+    app.board.charger.last_rx_tick = fake_tick;
+    app.board.charger.disable_reason_mask = CHARGER_DISABLE_REASON_NONE;
+
+    sil_prepare_cli_capture();
+    CHECK(get_bringup(2, charger_battery_argv) == 0);
+    CHECK(strstr(cli_capture, "verdict=PASS") != NULL);
+    CHECK(strstr(cli_capture, "charger_clean:1") != NULL);
+}
+
 static void test_system_sil_contradictory_dhab_vs_2950_observable_non_gating(void)
 {
     sil_prepare_ready_system(STATE_DISCARGE, 0.0f, 3.700f);
@@ -4212,7 +4345,7 @@ static void test_charger_command_priority_tx_failure_and_cli(void)
     CHECK(strstr(cli_capture, "tx_fail:1") != NULL);
     CHECK(strstr(cli_capture, "disable_mask:") != NULL);
     CHECK(strstr(cli_capture, "tx:0x1806E5F4") != NULL);
-    CHECK(strstr(cli_capture, "byte4 enable:0 disable:1") != NULL);
+    CHECK(strstr(cli_capture, "BYTE5/data[4] enable:0 disable:1") != NULL);
 }
 
 static void test_telemetry_absent_segments_and_invalid_channels(void){
@@ -4300,6 +4433,8 @@ int main(void){
     test_adbms_cli_scan_guard_and_cs_probe_commands(); puts("PASS ADBMS CLI scan guard/CS probe commands");
     test_software_heartbeat_monitor_faults_and_recovery(); puts("PASS software heartbeat monitor faults/recovery");
     test_system_sil_bringup_status_and_bmsok_inhibit(); puts("PASS system SIL bring-up status/BMS_OK inhibit");
+    test_bringup_cli_board_ready_and_adbms_summaries(); puts("PASS bring-up CLI board/ready/ADBMS summaries");
+    test_bringup_cli_apm_and_charger_phase_split(); puts("PASS bring-up CLI APM/charger phase split");
     test_system_sil_contradictory_dhab_vs_2950_observable_non_gating(); puts("PASS system SIL DHAB vs 2950 contradiction observable/non-gating");
     test_system_sil_startup_garbage_never_enables_bms(); puts("PASS system SIL startup garbage never enables BMS_OK");
     test_system_sil_long_run_seeded_fuzz_invariants(); puts("PASS system SIL 10000-cycle seeded fuzz invariants");

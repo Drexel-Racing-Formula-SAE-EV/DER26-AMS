@@ -42,21 +42,29 @@ Pass does not mean hardware is validated. You still need CubeIDE build, board fl
 
 ## Hardware bring-up CLI order
 
-See `docs/HARDWARE_SPI_BRINGUP.md` for the full hardware SPI/isoSPI test plan.
+See `docs/HARDWARE_SPI_BRINGUP.md` for the full hardware SPI/isoSPI test plan
+and `docs/BRINGUP_CLI_REFERENCE.md` for the staged CLI summary commands.
 
 For first board tests, build with `AMS_HW_BRINGUP=1` so BMS_OK stays inhibited until manually released:
 
 ```text
 status
+bringup board
+bmsok status
 spi clear
+spi enable
 spi coldwake
+spi probea
+spi probeb
 spi probe
 spi sid
 spi stat
 spi status
+bringup adbms6830
 volt
 current
-bmsok status
+temp
+bringup ready
 bmsok release
 ```
 
