@@ -12,11 +12,40 @@
 
 #include "tasks/cli_task.h"
 #include "main.h"
+#include <limits.h>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 #include "ext_drivers/cli.h"
+
+#ifndef AMS_RENODE_FAKE_ADBMS
+#define AMS_RENODE_FAKE_ADBMS AMS_RENODE
+#endif
+
+#ifndef AMS_RENODE_FAKE_CURRENT
+#define AMS_RENODE_FAKE_CURRENT AMS_RENODE
+#endif
+
+#ifndef AMS_RENODE_FAKE_CHARGER
+#define AMS_RENODE_FAKE_CHARGER AMS_RENODE
+#endif
+
+#ifndef AMS_RENODE_FAKE_TEMP
+#define AMS_RENODE_FAKE_TEMP AMS_RENODE
+#endif
+
+#ifndef AMS_RENODE_CAN_CAPTURE
+#define AMS_RENODE_CAN_CAPTURE AMS_RENODE
+#endif
+
+#if AMS_RENODE
+#define AMS_BUILD_MODE_STR "renode"
+#elif AMS_HW_BRINGUP
+#define AMS_BUILD_MODE_STR "hw-bringup"
+#else
+#define AMS_BUILD_MODE_STR "normal"
+#endif
 
 /**
 * @brief Actual CLI task function
@@ -40,10 +69,19 @@ int get_current(int argc, char *argv[]);
 int get_charger(int argc, char *argv[]);
 int get_spi_debug(int argc, char *argv[]);
 int get_apm_debug(int argc, char *argv[]);
+int get_adbms_fake(int argc, char *argv[]);
+int get_current_fake(int argc, char *argv[]);
+int get_charger_fake(int argc, char *argv[]);
+int get_temp_fake(int argc, char *argv[]);
+int get_canlog(int argc, char *argv[]);
+int get_scenario(int argc, char *argv[]);
 int get_bringup(int argc, char *argv[]);
 int bmsok_control(int argc, char *argv[]);
 int set_state(int argc, char *argv[]);
 int cause_fault(int argc, char *argv[]);
+
+static void cli_reset_fault_domain(const char *domain);
+static void cli_set_state_value(state_t state);
 
 char outline[CLI_LINESZ];
 app_data_t *data;
@@ -61,9 +99,15 @@ command_t cmds[] =
 	{"charger", &get_charger, "gets charger CAN command/status/debug state"},
 	{"spi", &get_spi_debug, "ADBMS6830 SPI debug: spi [status|probe|probea|probeb|sid|stat|staterr|cfgchk|cellst|oweven|owodd|auxdiag|wake|coldwake|clrflag|clear|diagclear|enable|disable]"},
 	{"apm", &get_apm_debug, "ADBMS2950/APM debug: apm [status|probe|clear|enable|disable]"},
+	{"adbmsfake", &get_adbms_fake, "Renode fake ADBMS6830 controls: adbmsfake [status|reset|healthy|all|cell|ov|uv|aux|pec|missing|counter]"},
+	{"currentfake", &get_current_fake, "Renode fake DHAB current sensor controls"},
+	{"chargerfake", &get_charger_fake, "Renode fake charger CAN controls"},
+	{"tempfake", &get_temp_fake, "Renode fake SMB thermistor controls"},
+	{"canlog", &get_canlog, "Renode CAN TX capture summary: canlog [status|clear]"},
+	{"scenario", &get_scenario, "Renode scenario setup: scenario [healthy|charge-ready|ov|uv|hot|charger-timeout|current-trip]"},
 	{"bringup", &get_bringup, "bench bring-up summaries: bringup [help|board|adbms6830|apm2950|charger-lv|charger-battery|ready|snapshot|evidence]"},
 	{"bmsok", &bmsok_control, "BMS_OK control: bmsok [status|release|inhibit]"},
-	{"state", &set_state, "gets or sets the AMS state [charge|discharge]"},
+	{"state", &set_state, "gets or sets the AMS state [start|charge|discharge|balance|error]"},
 	{"cause_fault", &cause_fault, "cause BMS fault for tech"},
 };
 
@@ -246,10 +290,10 @@ void cli_task_fn(void *arg)
     int ret = 0;
 
     snprintf(outline, CLI_LINESZ, "~~~~~~~~~~ DER AMS FW V%d.%d.%d ~~~~~~~~~~", VER_MAJOR, VER_MINOR, VER_BUG);
-	cli_printline(local_cli, outline);
+    cli_printline(local_cli, outline);
     snprintf(outline, CLI_LINESZ,
              "Build:%s APM2950:%d BMS_OK_inhibit:%d",
-             AMS_HW_BRINGUP ? "hw-bringup" : "normal",
+             AMS_BUILD_MODE_STR,
              AMS_ENABLE_APM_2950_DEBUG,
              data->bms_output_inhibit);
     cli_printline(local_cli, outline);
@@ -342,7 +386,7 @@ int get_status(int argc, char *argv[])
              VER_MAJOR,
              VER_MINOR,
              VER_BUG,
-             AMS_HW_BRINGUP ? "hw-bringup" : "normal",
+             AMS_BUILD_MODE_STR,
              ams_state_to_str(data->state),
              data->bms_state,
              data->bms_output_inhibit,
@@ -416,6 +460,36 @@ int get_status(int argc, char *argv[])
 int get_faults(int argc, char *argv[])
 {
 	int ret = 0;
+
+    if(argc >= 2)
+    {
+        if(!strcmp(argv[1], "help"))
+        {
+            ret |= cli_printline(cli, "Usage: fault [reset-current|reset-voltage|reset-temp|reset-charger|reset-all]");
+            return ret;
+        }
+        if(!strcmp(argv[1], "reset-current") ||
+           !strcmp(argv[1], "reset-voltage") ||
+           !strcmp(argv[1], "reset-temp") ||
+           !strcmp(argv[1], "reset-charger") ||
+           !strcmp(argv[1], "reset-all") ||
+           !strcmp(argv[1], "current") ||
+           !strcmp(argv[1], "voltage") ||
+           !strcmp(argv[1], "temp") ||
+           !strcmp(argv[1], "charger") ||
+           !strcmp(argv[1], "all"))
+        {
+            cli_reset_fault_domain(argv[1]);
+            snprintf(outline, CLI_LINESZ, "Fault reset command applied: %s; BMS_OK forced low", argv[1]);
+            ret |= cli_printline(cli, outline);
+        }
+        else
+        {
+            ret |= cli_printline(cli, "Usage: fault [reset-current|reset-voltage|reset-temp|reset-charger|reset-all]");
+            return ret;
+        }
+    }
+
 	ret |= cli_printline(cli, "System faults:");
 	snprintf(outline, CLI_LINESZ, "hard:   %d", data->hard_fault);
 	ret |= cli_printline(cli, outline);
@@ -796,6 +870,1158 @@ static bool cli_adbms_refuse_active_scan(const char *name)
     return true;
 }
 
+static bool cli_refuse_renode_physical_spi(const char *name)
+{
+#if AMS_RENODE && !AMS_RENODE_FAKE_ADBMS
+    snprintf(outline, CLI_LINESZ,
+             "%s unavailable in Renode: no physical ADBMS/SPI chain is modeled; use status/bringup summaries",
+             (name != NULL) ? name : "SPI command");
+    (void)cli_printline(cli, outline);
+    return true;
+#else
+    (void)name;
+    return false;
+#endif
+}
+
+static bool cli_parse_u16_arg(const char *text, uint16_t *out)
+{
+    char *end = NULL;
+    unsigned long value;
+
+    if((text == NULL) || (out == NULL))
+    {
+        return false;
+    }
+
+    value = strtoul(text, &end, 0);
+    if((end == text) || ((end != NULL) && (*end != '\0')) || (value > 0xFFFFul))
+    {
+        return false;
+    }
+
+    *out = (uint16_t)value;
+    return true;
+}
+
+static bool cli_parse_u32_arg(const char *text, uint32_t *out)
+{
+    char *end = NULL;
+    unsigned long value;
+
+    if((text == NULL) || (out == NULL))
+    {
+        return false;
+    }
+
+    value = strtoul(text, &end, 0);
+    if((end == text) || ((end != NULL) && (*end != '\0')))
+    {
+        return false;
+    }
+
+    *out = (uint32_t)value;
+    return true;
+}
+
+static bool cli_parse_i16_arg(const char *text, int16_t *out)
+{
+    char *end = NULL;
+    long value;
+
+    if((text == NULL) || (out == NULL))
+    {
+        return false;
+    }
+
+    value = strtol(text, &end, 0);
+    if((end == text) || ((end != NULL) && (*end != '\0')) ||
+       (value < INT16_MIN) || (value > INT16_MAX))
+    {
+        return false;
+    }
+
+    *out = (int16_t)value;
+    return true;
+}
+
+static bool cli_parse_float_arg(const char *text, float *out)
+{
+    char *end = NULL;
+    float value;
+
+    if((text == NULL) || (out == NULL))
+    {
+        return false;
+    }
+
+    value = strtof(text, &end);
+    if((end == text) || ((end != NULL) && (*end != '\0')) || !isfinite(value))
+    {
+        return false;
+    }
+
+    *out = value;
+    return true;
+}
+
+static bool cli_parse_bool_arg(const char *text, bool *out)
+{
+    if((text == NULL) || (out == NULL))
+    {
+        return false;
+    }
+
+    if(!strcmp(text, "1") || !strcmp(text, "on") || !strcmp(text, "true") || !strcmp(text, "yes"))
+    {
+        *out = true;
+        return true;
+    }
+
+    if(!strcmp(text, "0") || !strcmp(text, "off") || !strcmp(text, "false") || !strcmp(text, "no"))
+    {
+        *out = false;
+        return true;
+    }
+
+    return false;
+}
+
+static bool cli_parse_fake_mask_arg(const char *text, uint16_t *out)
+{
+    if((text != NULL) && (!strcmp(text, "none") || !strcmp(text, "clear")))
+    {
+        if(out != NULL)
+        {
+            *out = 0u;
+        }
+        return true;
+    }
+
+    return cli_parse_u16_arg(text, out);
+}
+
+static void cli_publish_voltage_fault_state(void)
+{
+    voltage_fault_state_t *fault = &data->voltage_fault_state;
+
+    data->voltage_valid = fault->voltage_valid;
+    data->voltage_read_fault = fault->read_fault;
+    data->voltage_warning = fault->warning;
+    data->charge_voltage_stop = fault->charge_stop;
+    data->overvoltage_fault = fault->overvoltage_fault;
+    data->undervoltage_fault = fault->undervoltage_fault;
+    data->voltage_fault_latched = fault->latched;
+    data->voltage_fault_reason = fault->reason;
+    data->voltage_fault_latched_reason = fault->latched_reason;
+    data->voltage_fault = (fault->read_fault ||
+                           fault->overvoltage_fault ||
+                           fault->undervoltage_fault ||
+                           fault->latched);
+}
+
+static void cli_publish_temperature_fault_state(void)
+{
+    temperature_fault_state_t *fault = &data->temp_fault_state;
+
+    data->temp_valid = fault->temp_valid;
+    data->temp_read_fault = fault->read_fault;
+    data->temp_warning = fault->warning;
+    data->temp_fan_max = fault->fan_max;
+    data->temp_charge_stop = fault->charge_stop;
+    data->temp_overtemp_pending = fault->pending;
+    data->overtemp_fault = fault->overtemp_fault;
+    data->severe_overtemp_fault = fault->severe_overtemp_fault;
+    data->temp_fault_latched = fault->latched;
+    data->temp_fault_reason = fault->reason;
+    data->temp_fault_pending_reason = fault->pending_reason;
+    data->temp_fault_latched_reason = fault->latched_reason;
+    data->temp_fault_pending_ms = fault->pending_ms;
+    data->temp_fault = (fault->read_fault ||
+                        fault->overtemp_fault ||
+                        fault->latched);
+}
+
+static void cli_publish_current_fault_state(void)
+{
+    current_fault_state_t *fault = &data->current_fault_state;
+
+    data->current_sensor_fault = fault->sensor_fault;
+    data->current_overcurrent_warning = fault->warning;
+    data->current_overcurrent_pending = fault->pending;
+    data->current_overcurrent_fault = fault->confirmed;
+    data->current_fault_latched = fault->latched;
+    data->current_fault_reason = fault->reason;
+    data->current_fault_latched_reason = fault->latched_reason;
+    data->current_fault_mode = fault->mode;
+    data->current_fault = (data->current_sensor_fault ||
+                           data->current_overcurrent_fault ||
+                           data->current_fault_latched);
+}
+
+static void cli_reset_fault_domain(const char *domain)
+{
+    if((domain == NULL) || !strcmp(domain, "reset-all") || !strcmp(domain, "all"))
+    {
+        voltage_fault_reset_latch(&data->voltage_fault_state);
+        temperature_fault_reset_latch(&data->temp_fault_state);
+        current_fault_reset_latch(&data->current_fault_state);
+        data->hard_fault = false;
+        data->soft_fault = false;
+        data->charger_fault = false;
+        data->board.charger.tx_fail = false;
+        data->board.charger.communication_fail = false;
+        data->board.charger.disable_reason_mask = CHARGER_DISABLE_REASON_NONE;
+    }
+    else if(!strcmp(domain, "reset-current") || !strcmp(domain, "current"))
+    {
+        current_fault_reset_latch(&data->current_fault_state);
+    }
+    else if(!strcmp(domain, "reset-voltage") || !strcmp(domain, "voltage"))
+    {
+        voltage_fault_reset_latch(&data->voltage_fault_state);
+    }
+    else if(!strcmp(domain, "reset-temp") || !strcmp(domain, "temp"))
+    {
+        temperature_fault_reset_latch(&data->temp_fault_state);
+    }
+    else if(!strcmp(domain, "reset-charger") || !strcmp(domain, "charger"))
+    {
+        data->charger_fault = false;
+        data->board.charger.tx_fail = false;
+        data->board.charger.communication_fail = false;
+        data->board.charger.disable_reason_mask = CHARGER_DISABLE_REASON_NONE;
+    }
+
+    cli_publish_voltage_fault_state();
+    cli_publish_temperature_fault_state();
+    cli_publish_current_fault_state();
+    set_bms(0);
+}
+
+static int cli_print_adbms_fake_status(void)
+{
+    adbms6830_fake_status_t status = adbms6830_fake_get_status();
+    int ret = 0;
+
+    snprintf(outline, CLI_LINESZ,
+             "ADBMSFAKE enabled:%d initialized:%d model_ics:%u zero_based_indices",
+             status.enabled,
+             status.initialized,
+             status.ic_count);
+    ret |= cli_printline(cli, outline);
+
+    snprintf(outline, CLI_LINESZ,
+             "fault_masks pec:0x%04X missing:0x%04X counter:0x%04X",
+             status.pec_fail_mask,
+             status.missing_mask,
+             status.counter_fault_mask);
+    ret |= cli_printline(cli, outline);
+
+    snprintf(outline, CLI_LINESZ,
+             "cells min:%umV ic:%u cell:%u max:%umV ic:%u cell:%u",
+             status.min_cell_mv,
+             status.min_cell_ic,
+             status.min_cell_index,
+             status.max_cell_mv,
+             status.max_cell_ic,
+             status.max_cell_index);
+    ret |= cli_printline(cli, outline);
+
+    return ret;
+}
+
+int get_adbms_fake(int argc, char *argv[])
+{
+    int ret = 0;
+    uint16_t a = 0u;
+    uint16_t b = 0u;
+    uint16_t c = 0u;
+    int16_t raw = 0;
+
+    if(!adbms6830_fake_enabled())
+    {
+        ret |= cli_printline(cli, "adbmsfake unavailable: build with AMS_RENODE_FAKE_ADBMS=1");
+        return ret;
+    }
+
+    if((argc < 2) || (argv[1] == NULL) || !strcmp(argv[1], "status"))
+    {
+        return cli_print_adbms_fake_status();
+    }
+
+    if(!strcmp(argv[1], "help"))
+    {
+        ret |= cli_printline(cli, "Usage:");
+        ret |= cli_printline(cli, "  adbmsfake status");
+        ret |= cli_printline(cli, "  adbmsfake reset|healthy");
+        ret |= cli_printline(cli, "  adbmsfake all <mv>");
+        ret |= cli_printline(cli, "  adbmsfake cell <ic 0-15> <cell 0-14> <mv>");
+        ret |= cli_printline(cli, "  adbmsfake ov|uv <ic 0-15> <cell 0-14>");
+        ret |= cli_printline(cli, "  adbmsfake aux <ic 0-15> <gpio 0-2> <raw>");
+        ret |= cli_printline(cli, "  adbmsfake pec|missing|counter <mask|none>");
+        ret |= cli_printline(cli, "Then observe through: spi probe/sid/stat/cfgchk, volt, temp, fault, bringup adbms6830");
+        return ret;
+    }
+
+    if(!strcmp(argv[1], "reset") || !strcmp(argv[1], "healthy"))
+    {
+        adbms6830_fake_reset();
+        ret |= cli_printline(cli, "ADBMS fake reset to healthy nominal 3.70V cells and valid PEC/counters");
+        ret |= cli_print_adbms_fake_status();
+        return ret;
+    }
+
+    if(!strcmp(argv[1], "all"))
+    {
+        if((argc < 3) || !cli_parse_u16_arg(argv[2], &a) ||
+           (adbms6830_fake_set_all_cells_mv(a) != 0))
+        {
+            ret |= cli_printline(cli, "Usage: adbmsfake all <mv 1000-5000>");
+            return ret;
+        }
+        snprintf(outline, CLI_LINESZ, "ADBMS fake all cells set to %umV", a);
+        ret |= cli_printline(cli, outline);
+        return ret;
+    }
+
+    if(!strcmp(argv[1], "cell"))
+    {
+        if((argc < 5) ||
+           !cli_parse_u16_arg(argv[2], &a) ||
+           !cli_parse_u16_arg(argv[3], &b) ||
+           !cli_parse_u16_arg(argv[4], &c) ||
+           (adbms6830_fake_set_cell_mv((uint8_t)a, (uint8_t)b, c) != 0))
+        {
+            ret |= cli_printline(cli, "Usage: adbmsfake cell <ic 0-15> <cell 0-14> <mv 1000-5000>");
+            return ret;
+        }
+        snprintf(outline, CLI_LINESZ, "ADBMS fake ic:%u cell:%u set to %umV", a, b, c);
+        ret |= cli_printline(cli, outline);
+        return ret;
+    }
+
+    if(!strcmp(argv[1], "ov") || !strcmp(argv[1], "uv"))
+    {
+        uint16_t mv = !strcmp(argv[1], "ov") ? 4250u : 2300u;
+
+        if((argc < 4) ||
+           !cli_parse_u16_arg(argv[2], &a) ||
+           !cli_parse_u16_arg(argv[3], &b) ||
+           (adbms6830_fake_set_cell_mv((uint8_t)a, (uint8_t)b, mv) != 0))
+        {
+            ret |= cli_printline(cli, "Usage: adbmsfake ov|uv <ic 0-15> <cell 0-14>");
+            return ret;
+        }
+        snprintf(outline, CLI_LINESZ, "ADBMS fake ic:%u cell:%u set to %umV %s injection",
+                 a, b, mv, !strcmp(argv[1], "ov") ? "OV" : "UV");
+        ret |= cli_printline(cli, outline);
+        return ret;
+    }
+
+    if(!strcmp(argv[1], "aux"))
+    {
+        if((argc < 5) ||
+           !cli_parse_u16_arg(argv[2], &a) ||
+           !cli_parse_u16_arg(argv[3], &b) ||
+           !cli_parse_i16_arg(argv[4], &raw) ||
+           (adbms6830_fake_set_aux_raw((uint8_t)a, (uint8_t)b, raw) != 0))
+        {
+            ret |= cli_printline(cli, "Usage: adbmsfake aux <ic 0-15> <gpio 0-2> <raw -32768..32767>");
+            return ret;
+        }
+        snprintf(outline, CLI_LINESZ, "ADBMS fake ic:%u gpio:%u AUX raw set to %d", a, b, raw);
+        ret |= cli_printline(cli, outline);
+        return ret;
+    }
+
+    if(!strcmp(argv[1], "pec") || !strcmp(argv[1], "missing") || !strcmp(argv[1], "counter"))
+    {
+        if((argc < 3) || !cli_parse_fake_mask_arg(argv[2], &a))
+        {
+            ret |= cli_printline(cli, "Usage: adbmsfake pec|missing|counter <mask|none>");
+            return ret;
+        }
+
+        if(!strcmp(argv[1], "pec"))
+        {
+            adbms6830_fake_set_pec_fail_mask(a);
+        }
+        else if(!strcmp(argv[1], "missing"))
+        {
+            adbms6830_fake_set_missing_mask(a);
+        }
+        else
+        {
+            adbms6830_fake_set_counter_fault_mask(a);
+        }
+
+        snprintf(outline, CLI_LINESZ, "ADBMS fake %s mask set to 0x%04X", argv[1], a);
+        ret |= cli_printline(cli, outline);
+        ret |= cli_print_adbms_fake_status();
+        return ret;
+    }
+
+    ret |= cli_printline(cli, "Usage: adbmsfake [help|status|reset|healthy|all|cell|ov|uv|aux|pec|missing|counter]");
+    return ret;
+}
+
+static int cli_print_current_fake_status(void)
+{
+    current_sensor_fake_status_t status = current_sensor_fake_get_status();
+    int ret = 0;
+    int whole = 0;
+    int decimal = 0;
+
+    snprintf(outline, CLI_LINESZ,
+             "CURRENTFAKE enabled:%d adc_fail:%d raw_override:%d reads:%lu",
+             status.enabled,
+             status.adc_fail,
+             status.raw_override,
+             (unsigned long)status.read_count);
+    ret |= cli_printline(cli, outline);
+
+    cli_fixed1(status.requested_current_a, &whole, &decimal);
+    snprintf(outline, CLI_LINESZ, "requested:%d.%01dA positive=discharge negative=charge/regen",
+             whole, decimal);
+    ret |= cli_printline(cli, outline);
+
+    cli_fixed1(status.channel_50a_current_a, &whole, &decimal);
+    snprintf(outline, CLI_LINESZ, "model 50A:%d.%01dA adcL:%u", whole, decimal, status.count_low);
+    ret |= cli_printline(cli, outline);
+
+    cli_fixed1(status.channel_800a_current_a, &whole, &decimal);
+    snprintf(outline, CLI_LINESZ, "model 800A:%d.%01dA adcH:%u", whole, decimal, status.count_high);
+    ret |= cli_printline(cli, outline);
+
+    ret |= cli_printline(cli, "Observe firmware acceptance with: current, fault, status, bringup board");
+    return ret;
+}
+
+int get_current_fake(int argc, char *argv[])
+{
+    int ret = 0;
+    float a = 0.0f;
+    float b = 0.0f;
+    uint16_t raw_low = 0u;
+    uint16_t raw_high = 0u;
+    int whole = 0;
+    int decimal = 0;
+    bool on = false;
+
+    if(!current_sensor_fake_enabled())
+    {
+        ret |= cli_printline(cli, "currentfake unavailable: build with AMS_RENODE_FAKE_CURRENT=1");
+        return ret;
+    }
+
+    if((argc < 2) || (argv[1] == NULL) || !strcmp(argv[1], "status"))
+    {
+        return cli_print_current_fake_status();
+    }
+
+    if(!strcmp(argv[1], "help"))
+    {
+        ret |= cli_printline(cli, "Usage:");
+        ret |= cli_printline(cli, "  currentfake status");
+        ret |= cli_printline(cli, "  currentfake reset|zero");
+        ret |= cli_printline(cli, "  currentfake amps <signed_A>       positive=discharge, negative=charge/regen");
+        ret |= cli_printline(cli, "  currentfake charge <positive_A>   shortcut for amps -A");
+        ret |= cli_printline(cli, "  currentfake mismatch <50A_A> <800A_A>");
+        ret |= cli_printline(cli, "  currentfake raw <low_adc> <high_adc>");
+        ret |= cli_printline(cli, "  currentfake clearraw");
+        ret |= cli_printline(cli, "  currentfake rail <low|high>");
+        ret |= cli_printline(cli, "  currentfake fail <on|off>");
+        return ret;
+    }
+
+    if(!strcmp(argv[1], "reset") || !strcmp(argv[1], "zero"))
+    {
+        current_sensor_fake_reset();
+        (void)current_sensor_fake_set_current_a(0.0f);
+        ret |= cli_printline(cli, "Current fake reset to DHAB mid-scale zero-current");
+        return cli_print_current_fake_status();
+    }
+
+    if(!strcmp(argv[1], "amps"))
+    {
+        if((argc < 3) || !cli_parse_float_arg(argv[2], &a) ||
+           (current_sensor_fake_set_current_a(a) != 0))
+        {
+            ret |= cli_printline(cli, "Usage: currentfake amps <signed_A -900..900>");
+            return ret;
+        }
+        cli_fixed1(a, &whole, &decimal);
+        snprintf(outline, CLI_LINESZ, "Current fake set to %d.%01dA", whole, decimal);
+        ret |= cli_printline(cli, outline);
+        return cli_print_current_fake_status();
+    }
+
+    if(!strcmp(argv[1], "charge"))
+    {
+        if((argc < 3) || !cli_parse_float_arg(argv[2], &a) || (a < 0.0f) ||
+           (current_sensor_fake_set_current_a(-a) != 0))
+        {
+            ret |= cli_printline(cli, "Usage: currentfake charge <positive_A>");
+            return ret;
+        }
+        cli_fixed1(-a, &whole, &decimal);
+        snprintf(outline, CLI_LINESZ, "Current fake set to charge current %d.%01dA", whole, decimal);
+        ret |= cli_printline(cli, outline);
+        return cli_print_current_fake_status();
+    }
+
+    if(!strcmp(argv[1], "mismatch"))
+    {
+        if((argc < 4) || !cli_parse_float_arg(argv[2], &a) || !cli_parse_float_arg(argv[3], &b) ||
+           (current_sensor_fake_set_channel_currents_a(a, b) != 0))
+        {
+            ret |= cli_printline(cli, "Usage: currentfake mismatch <50A_channel_A> <800A_channel_A>");
+            return ret;
+        }
+        ret |= cli_printline(cli, "Current fake channel mismatch injected");
+        return cli_print_current_fake_status();
+    }
+
+    if(!strcmp(argv[1], "raw"))
+    {
+        if((argc < 4) || !cli_parse_u16_arg(argv[2], &raw_low) ||
+           !cli_parse_u16_arg(argv[3], &raw_high) ||
+           (current_sensor_fake_set_raw_counts(raw_low, raw_high) != 0))
+        {
+            ret |= cli_printline(cli, "Usage: currentfake raw <low_adc 0-4095> <high_adc 0-4095>");
+            return ret;
+        }
+        ret |= cli_printline(cli, "Current fake raw ADC override set");
+        return cli_print_current_fake_status();
+    }
+
+    if(!strcmp(argv[1], "clearraw"))
+    {
+        current_sensor_fake_clear_raw_override();
+        ret |= cli_printline(cli, "Current fake raw ADC override cleared");
+        return cli_print_current_fake_status();
+    }
+
+    if(!strcmp(argv[1], "rail"))
+    {
+        if((argc < 3) || (argv[2] == NULL))
+        {
+            ret |= cli_printline(cli, "Usage: currentfake rail <low|high>");
+            return ret;
+        }
+        if(!strcmp(argv[2], "low"))
+        {
+            (void)current_sensor_fake_set_raw_counts(0u, 0u);
+        }
+        else if(!strcmp(argv[2], "high"))
+        {
+            (void)current_sensor_fake_set_raw_counts(4095u, 4095u);
+        }
+        else
+        {
+            ret |= cli_printline(cli, "Usage: currentfake rail <low|high>");
+            return ret;
+        }
+        ret |= cli_printline(cli, "Current fake ADC rail fault injected");
+        return cli_print_current_fake_status();
+    }
+
+    if(!strcmp(argv[1], "fail"))
+    {
+        if((argc < 3) || !cli_parse_bool_arg(argv[2], &on))
+        {
+            ret |= cli_printline(cli, "Usage: currentfake fail <on|off>");
+            return ret;
+        }
+        current_sensor_fake_set_adc_fail(on);
+        snprintf(outline, CLI_LINESZ, "Current fake ADC failure %s", on ? "enabled" : "disabled");
+        ret |= cli_printline(cli, outline);
+        return cli_print_current_fake_status();
+    }
+
+    ret |= cli_printline(cli, "Usage: currentfake [help|status|reset|zero|amps|charge|mismatch|raw|clearraw|rail|fail]");
+    return ret;
+}
+
+static int cli_print_charger_fake_status(void)
+{
+    charger_fake_status_t status = charger_fake_get_status();
+    int ret = 0;
+    int whole = 0;
+    int decimal = 0;
+
+    snprintf(outline, CLI_LINESZ,
+             "CHARGERFAKE enabled:%d online:%d auto_reply:%d tx_fail:%d hold_timeout:%d flags:0x%02X",
+             status.enabled,
+             status.online,
+             status.auto_reply,
+             status.force_tx_fail,
+             status.hold_timeout,
+             status.flags);
+    ret |= cli_printline(cli, outline);
+
+    cli_fixed1(status.command_voltage, &whole, &decimal);
+    snprintf(outline, CLI_LINESZ, "last command V:%d.%01d", whole, decimal);
+    ret |= cli_printline(cli, outline);
+
+    cli_fixed1(status.command_current, &whole, &decimal);
+    snprintf(outline, CLI_LINESZ,
+             "last command I:%d.%01d BYTE5/data[4]:%u allow:%u disable:%u",
+             whole,
+             decimal,
+             status.last_control,
+             CHARGER_CMD_ENABLE,
+             CHARGER_CMD_DISABLE);
+    ret |= cli_printline(cli, outline);
+
+    cli_fixed1(status.readback_voltage, &whole, &decimal);
+    snprintf(outline, CLI_LINESZ, "manual readback V:%d.%01d", whole, decimal);
+    ret |= cli_printline(cli, outline);
+
+    cli_fixed1(status.readback_current, &whole, &decimal);
+    snprintf(outline, CLI_LINESZ, "manual readback I:%d.%01d", whole, decimal);
+    ret |= cli_printline(cli, outline);
+
+    snprintf(outline, CLI_LINESZ,
+             "counts cmd:%lu reply:%lu fake_txfail:%lu payload:%02X %02X %02X %02X %02X %02X %02X %02X",
+             (unsigned long)status.command_count,
+             (unsigned long)status.reply_count,
+             (unsigned long)status.tx_fail_count,
+             status.last_payload[0],
+             status.last_payload[1],
+             status.last_payload[2],
+             status.last_payload[3],
+             status.last_payload[4],
+             status.last_payload[5],
+             status.last_payload[6],
+             status.last_payload[7]);
+    ret |= cli_printline(cli, outline);
+    ret |= cli_printline(cli, "Observe firmware state with: charger, fault, status, bringup charger-lv");
+    return ret;
+}
+
+int get_charger_fake(int argc, char *argv[])
+{
+    int ret = 0;
+    bool on = false;
+    uint16_t flags = 0u;
+    float voltage = 0.0f;
+    float current = 0.0f;
+
+    if(!charger_fake_enabled())
+    {
+        ret |= cli_printline(cli, "chargerfake unavailable: build with AMS_RENODE_FAKE_CHARGER=1");
+        return ret;
+    }
+
+    if((argc < 2) || (argv[1] == NULL) || !strcmp(argv[1], "status"))
+    {
+        return cli_print_charger_fake_status();
+    }
+
+    if(!strcmp(argv[1], "help"))
+    {
+        ret |= cli_printline(cli, "Usage:");
+        ret |= cli_printline(cli, "  chargerfake status");
+        ret |= cli_printline(cli, "  chargerfake reset|healthy");
+        ret |= cli_printline(cli, "  chargerfake online <on|off>");
+        ret |= cli_printline(cli, "  chargerfake autoreply <on|off>");
+        ret |= cli_printline(cli, "  chargerfake txfail <on|off>");
+        ret |= cli_printline(cli, "  chargerfake timeout <on|off>");
+        ret |= cli_printline(cli, "  chargerfake flags <0x00-0x0F>");
+        ret |= cli_printline(cli, "  chargerfake readback <voltage_V> <current_A>");
+        ret |= cli_printline(cli, "  chargerfake rxgood");
+        return ret;
+    }
+
+    if(!strcmp(argv[1], "reset") || !strcmp(argv[1], "healthy"))
+    {
+        charger_fake_reset();
+        data->board.charger.flags = 0u;
+        data->board.charger.communication_fail = false;
+        ret |= cli_printline(cli, "Charger fake reset to online healthy auto-reply");
+        return cli_print_charger_fake_status();
+    }
+
+    if(!strcmp(argv[1], "online") || !strcmp(argv[1], "autoreply") ||
+       !strcmp(argv[1], "txfail") || !strcmp(argv[1], "timeout"))
+    {
+        if((argc < 3) || !cli_parse_bool_arg(argv[2], &on))
+        {
+            ret |= cli_printline(cli, "Usage: chargerfake online|autoreply|txfail|timeout <on|off>");
+            return ret;
+        }
+
+        if(!strcmp(argv[1], "online"))
+        {
+            charger_fake_set_online(on);
+        }
+        else if(!strcmp(argv[1], "autoreply"))
+        {
+            charger_fake_set_auto_reply(on);
+        }
+        else if(!strcmp(argv[1], "txfail"))
+        {
+            charger_fake_set_tx_fail(on);
+        }
+        else
+        {
+            charger_fake_set_timeout(on);
+            if(on)
+            {
+                data->board.charger.last_rx_tick = osKernelGetTickCount() - CHARGER_RX_TIMEOUT_MS - 1u;
+                data->board.charger.communication_fail = true;
+            }
+            else
+            {
+                data->board.charger.communication_fail = false;
+                data->board.charger.last_rx_tick = osKernelGetTickCount();
+                charger_fake_set_online(true);
+            }
+        }
+
+        snprintf(outline, CLI_LINESZ, "Charger fake %s set to %s", argv[1], on ? "on" : "off");
+        ret |= cli_printline(cli, outline);
+        return cli_print_charger_fake_status();
+    }
+
+    if(!strcmp(argv[1], "flags"))
+    {
+        if((argc < 3) || !cli_parse_u16_arg(argv[2], &flags) || (flags > 0xFFu))
+        {
+            ret |= cli_printline(cli, "Usage: chargerfake flags <0x00-0xFF>");
+            return ret;
+        }
+        charger_fake_set_flags((uint8_t)flags);
+        snprintf(outline, CLI_LINESZ, "Charger fake flags set to 0x%02X", flags);
+        ret |= cli_printline(cli, outline);
+        return cli_print_charger_fake_status();
+    }
+
+    if(!strcmp(argv[1], "readback"))
+    {
+        if((argc < 4) || !cli_parse_float_arg(argv[2], &voltage) ||
+           !cli_parse_float_arg(argv[3], &current) ||
+           (charger_fake_set_readback(voltage, current) != 0))
+        {
+            ret |= cli_printline(cli, "Usage: chargerfake readback <voltage_V 0-500> <current_A 0-100>");
+            return ret;
+        }
+        ret |= cli_printline(cli, "Charger fake manual readback set");
+        return cli_print_charger_fake_status();
+    }
+
+    if(!strcmp(argv[1], "rxgood"))
+    {
+        charger_fake_set_online(true);
+        charger_fake_set_timeout(false);
+        charger_fake_set_flags(0u);
+        (void)charger_fake_set_readback(CHARGE_MAX_VOLTAGE, CHARGE_MAX_CURRENT);
+        data->board.charger.communication_fail = false;
+        data->board.charger.last_rx_tick = osKernelGetTickCount();
+        ret |= cli_printline(cli, "Charger fake prepared for healthy RX on next charge command");
+        return cli_print_charger_fake_status();
+    }
+
+    ret |= cli_printline(cli, "Usage: chargerfake [help|status|reset|healthy|online|autoreply|txfail|timeout|flags|readback|rxgood]");
+    return ret;
+}
+
+static void cli_refresh_temperature_from_accumulator(void)
+{
+    accumulator_update_temp_stats_at(&data->acc, osKernelGetTickCount());
+    data->max_temp = data->acc.max_temp;
+    data->avg_temp = data->acc.avg_temp;
+    temperature_fault_update_with_period(&data->temp_fault_state,
+                                         &data->acc,
+                                         (1000u / ADBMS_FREQ));
+    cli_publish_temperature_fault_state();
+}
+
+static int cli_print_temp_fake_status(void)
+{
+    accumulator_temp_fake_status_t status = accumulator_temp_fake_get_status(&data->acc);
+    int ret = 0;
+    int whole = 0;
+    int decimal = 0;
+
+    snprintf(outline, CLI_LINESZ,
+             "TEMPFAKE enabled:%d initialized:%d hold_missing:%d applies:%lu",
+             status.enabled,
+             status.initialized,
+             status.hold_missing,
+             (unsigned long)status.apply_count);
+    ret |= cli_printline(cli, outline);
+
+    cli_fixed1(status.min_temp_c, &whole, &decimal);
+    snprintf(outline, CLI_LINESZ, "min:%d.%01dC SMB%u/S%u",
+             whole, decimal, status.min_seg, status.min_sensor);
+    ret |= cli_printline(cli, outline);
+
+    cli_fixed1(status.max_temp_c, &whole, &decimal);
+    snprintf(outline, CLI_LINESZ, "max:%d.%01dC SMB%u/S%u",
+             whole, decimal, status.max_seg, status.max_sensor);
+    ret |= cli_printline(cli, outline);
+
+    for(uint8_t seg = 0u; seg < NSMBS; seg++)
+    {
+        snprintf(outline, CLI_LINESZ,
+                 "SMB%u missing:0x%06lX invalid:0x%06lX",
+                 seg,
+                 (unsigned long)status.missing_mask[seg],
+                 (unsigned long)status.invalid_mask[seg]);
+        ret |= cli_printline(cli, outline);
+    }
+
+    ret |= cli_printline(cli, "Observe firmware acceptance with: temp, fault, status, bringup ready");
+    return ret;
+}
+
+int get_temp_fake(int argc, char *argv[])
+{
+    int ret = 0;
+    float temp_c = 0.0f;
+    uint16_t seg = 0u;
+    uint16_t sensor = 0u;
+    uint32_t mask = 0u;
+    bool on = false;
+
+    if(!accumulator_temp_fake_enabled())
+    {
+        ret |= cli_printline(cli, "tempfake unavailable: build with AMS_RENODE_FAKE_TEMP=1");
+        return ret;
+    }
+
+    if((argc < 2) || (argv[1] == NULL) || !strcmp(argv[1], "status"))
+    {
+        return cli_print_temp_fake_status();
+    }
+
+    if(!strcmp(argv[1], "help"))
+    {
+        ret |= cli_printline(cli, "Usage:");
+        ret |= cli_printline(cli, "  tempfake status");
+        ret |= cli_printline(cli, "  tempfake reset|healthy");
+        ret |= cli_printline(cli, "  tempfake all <C>");
+        ret |= cli_printline(cli, "  tempfake sensor <smb 0-4> <sensor 0-23> <C>");
+        ret |= cli_printline(cli, "  tempfake hot <smb> <sensor> [C=65]");
+        ret |= cli_printline(cli, "  tempfake cold <smb> <sensor> [C=-5]");
+        ret |= cli_printline(cli, "  tempfake missing <smb> <mask24|none>");
+        ret |= cli_printline(cli, "  tempfake invalid <smb> <mask24|none>");
+        ret |= cli_printline(cli, "  tempfake holdmissing <on|off>");
+        return ret;
+    }
+
+    if(!strcmp(argv[1], "reset") || !strcmp(argv[1], "healthy"))
+    {
+        accumulator_temp_fake_reset(&data->acc);
+        cli_refresh_temperature_from_accumulator();
+        ret |= cli_printline(cli, "Temp fake reset to full healthy 25C SMB thermistors");
+        return cli_print_temp_fake_status();
+    }
+
+    if(!strcmp(argv[1], "all"))
+    {
+        if((argc < 3) || !cli_parse_float_arg(argv[2], &temp_c) ||
+           (accumulator_temp_fake_set_all(&data->acc, temp_c) != 0))
+        {
+            ret |= cli_printline(cli, "Usage: tempfake all <C -40..150>");
+            return ret;
+        }
+        cli_refresh_temperature_from_accumulator();
+        ret |= cli_printline(cli, "Temp fake all sensors updated");
+        return cli_print_temp_fake_status();
+    }
+
+    if(!strcmp(argv[1], "sensor") || !strcmp(argv[1], "hot") || !strcmp(argv[1], "cold"))
+    {
+        if((argc < 4) ||
+           !cli_parse_u16_arg(argv[2], &seg) ||
+           !cli_parse_u16_arg(argv[3], &sensor))
+        {
+            ret |= cli_printline(cli, "Usage: tempfake sensor|hot|cold <smb 0-4> <sensor 0-23> [C]");
+            return ret;
+        }
+
+        if(!strcmp(argv[1], "hot"))
+        {
+            temp_c = 65.0f;
+            if((argc >= 5) && !cli_parse_float_arg(argv[4], &temp_c))
+            {
+                ret |= cli_printline(cli, "Usage: tempfake hot <smb> <sensor> [C]");
+                return ret;
+            }
+        }
+        else if(!strcmp(argv[1], "cold"))
+        {
+            temp_c = -5.0f;
+            if((argc >= 5) && !cli_parse_float_arg(argv[4], &temp_c))
+            {
+                ret |= cli_printline(cli, "Usage: tempfake cold <smb> <sensor> [C]");
+                return ret;
+            }
+        }
+        else if((argc < 5) || !cli_parse_float_arg(argv[4], &temp_c))
+        {
+            ret |= cli_printline(cli, "Usage: tempfake sensor <smb 0-4> <sensor 0-23> <C>");
+            return ret;
+        }
+
+        if(accumulator_temp_fake_set_sensor(&data->acc, (uint8_t)seg, (uint8_t)sensor, temp_c) != 0)
+        {
+            ret |= cli_printline(cli, "ERROR: tempfake sensor out of range or invalid temperature");
+            return ret;
+        }
+        cli_refresh_temperature_from_accumulator();
+        ret |= cli_printline(cli, "Temp fake sensor updated");
+        return cli_print_temp_fake_status();
+    }
+
+    if(!strcmp(argv[1], "missing") || !strcmp(argv[1], "invalid"))
+    {
+        if((argc < 4) || !cli_parse_u16_arg(argv[2], &seg))
+        {
+            ret |= cli_printline(cli, "Usage: tempfake missing|invalid <smb 0-4> <mask24|none>");
+            return ret;
+        }
+
+        if(!strcmp(argv[3], "none") || !strcmp(argv[3], "clear"))
+        {
+            mask = 0u;
+        }
+        else if(!cli_parse_u32_arg(argv[3], &mask))
+        {
+            ret |= cli_printline(cli, "Usage: tempfake missing|invalid <smb 0-4> <mask24|none>");
+            return ret;
+        }
+
+        if(seg >= NSMBS)
+        {
+            ret |= cli_printline(cli, "ERROR: smb must be 0-4");
+            return ret;
+        }
+
+        if(!strcmp(argv[1], "missing"))
+        {
+            accumulator_temp_fake_set_missing_mask(&data->acc, (uint8_t)seg, mask);
+        }
+        else
+        {
+            accumulator_temp_fake_set_invalid_mask(&data->acc, (uint8_t)seg, mask);
+        }
+        cli_refresh_temperature_from_accumulator();
+        ret |= cli_printline(cli, "Temp fake mask updated");
+        return cli_print_temp_fake_status();
+    }
+
+    if(!strcmp(argv[1], "holdmissing"))
+    {
+        if((argc < 3) || !cli_parse_bool_arg(argv[2], &on))
+        {
+            ret |= cli_printline(cli, "Usage: tempfake holdmissing <on|off>");
+            return ret;
+        }
+        accumulator_temp_fake_set_hold_missing(&data->acc, on);
+        cli_refresh_temperature_from_accumulator();
+        snprintf(outline, CLI_LINESZ, "Temp fake holdmissing %s", on ? "on" : "off");
+        ret |= cli_printline(cli, outline);
+        return cli_print_temp_fake_status();
+    }
+
+    ret |= cli_printline(cli, "Usage: tempfake [help|status|reset|healthy|all|sensor|hot|cold|missing|invalid|holdmissing]");
+    return ret;
+}
+
+int get_canlog(int argc, char *argv[])
+{
+    int ret = 0;
+    canbus_capture_status_t status;
+
+    if(!canbus_capture_enabled())
+    {
+        ret |= cli_printline(cli, "canlog unavailable: build with AMS_RENODE_CAN_CAPTURE=1");
+        return ret;
+    }
+
+    if((argc >= 2) && (argv[1] != NULL) && !strcmp(argv[1], "clear"))
+    {
+        canbus_capture_clear();
+        ret |= cli_printline(cli, "CAN capture counters cleared");
+    }
+    else if((argc >= 2) && (argv[1] != NULL) && strcmp(argv[1], "status"))
+    {
+        ret |= cli_printline(cli, "Usage: canlog [status|clear]");
+        return ret;
+    }
+
+    status = canbus_capture_get_status();
+    snprintf(outline, CLI_LINESZ,
+             "CANLOG enabled:%d total:%lu std:%lu ext:%lu",
+             status.enabled,
+             (unsigned long)status.total_tx,
+             (unsigned long)status.std_tx,
+             (unsigned long)status.ext_tx);
+    ret |= cli_printline(cli, outline);
+
+    snprintf(outline, CLI_LINESZ,
+             "buckets ecu:%lu est:%lu logger:%lu charger:%lu other:%lu",
+             (unsigned long)status.ecu_tx,
+             (unsigned long)status.estimator_tx,
+             (unsigned long)status.logger_tx,
+             (unsigned long)status.charger_tx,
+             (unsigned long)status.other_tx);
+    ret |= cli_printline(cli, outline);
+
+    snprintf(outline, CLI_LINESZ,
+             "last ide:%lu id:0x%08lX data:%02X %02X %02X %02X %02X %02X %02X %02X",
+             (unsigned long)status.last_ide,
+             (unsigned long)status.last_id,
+             status.last_payload[0],
+             status.last_payload[1],
+             status.last_payload[2],
+             status.last_payload[3],
+             status.last_payload[4],
+             status.last_payload[5],
+             status.last_payload[6],
+             status.last_payload[7]);
+    ret |= cli_printline(cli, outline);
+
+    snprintf(outline, CLI_LINESZ,
+             "logger 690:%lu 691:%lu 692:%lu 693:%lu 694:%lu 695:%lu",
+             (unsigned long)status.logger_id_count[0],
+             (unsigned long)status.logger_id_count[1],
+             (unsigned long)status.logger_id_count[2],
+             (unsigned long)status.logger_id_count[3],
+             (unsigned long)status.logger_id_count[4],
+             (unsigned long)status.logger_id_count[5]);
+    ret |= cli_printline(cli, outline);
+
+    snprintf(outline, CLI_LINESZ,
+             "logger 696:%lu 697:%lu 698:%lu 699:%lu 69A:%lu 69B:%lu",
+             (unsigned long)status.logger_id_count[6],
+             (unsigned long)status.logger_id_count[7],
+             (unsigned long)status.logger_id_count[8],
+             (unsigned long)status.logger_id_count[9],
+             (unsigned long)status.logger_id_count[10],
+             (unsigned long)status.logger_id_count[11]);
+    ret |= cli_printline(cli, outline);
+
+    snprintf(outline, CLI_LINESZ,
+             "logger detail 6A0:%lu 6A1:%lu 6A2:%lu 6A3:%lu 6A4:%lu 6A5:%lu",
+             (unsigned long)status.logger_id_count[12],
+             (unsigned long)status.logger_id_count[13],
+             (unsigned long)status.logger_id_count[14],
+             (unsigned long)status.logger_id_count[15],
+             (unsigned long)status.logger_id_count[16],
+             (unsigned long)status.logger_id_count[17]);
+    ret |= cli_printline(cli, outline);
+    return ret;
+}
+
+static void cli_set_state_value(state_t state)
+{
+    data->state = state;
+    if(state == STATE_CHARGE)
+    {
+        data->board.charger.last_rx_tick = osKernelGetTickCount();
+    }
+    if(data->board.canbus.hcan != NULL)
+    {
+        HAL_CAN_ActivateNotification(data->board.canbus.hcan, CAN_IT_RX_FIFO0_MSG_PENDING);
+    }
+}
+
+static void cli_scenario_common_healthy(void)
+{
+    adbms6830_fake_reset();
+    (void)current_sensor_fake_set_current_a(0.0f);
+    accumulator_temp_fake_reset(&data->acc);
+    charger_fake_reset();
+    canbus_capture_clear();
+    cli_reset_fault_domain("reset-all");
+    cli_set_state_value(STATE_DISCARGE);
+    cli_refresh_temperature_from_accumulator();
+}
+
+int get_scenario(int argc, char *argv[])
+{
+    int ret = 0;
+    const char *name = ((argc >= 2) && (argv != NULL) && (argv[1] != NULL)) ? argv[1] : "help";
+
+    if(!strcmp(name, "help"))
+    {
+        ret |= cli_printline(cli, "Usage: scenario [healthy|charge-ready|ov|uv|hot|cold|charger-timeout|charger-txfail|current-trip]");
+        ret |= cli_printline(cli, "Scenarios set fake inputs only; observe with status/fault/volt/temp/current/charger/canlog");
+        return ret;
+    }
+
+    if(!strcmp(name, "healthy"))
+    {
+        cli_scenario_common_healthy();
+    }
+    else if(!strcmp(name, "charge-ready"))
+    {
+        cli_scenario_common_healthy();
+        cli_set_state_value(STATE_CHARGE);
+        charger_fake_set_auto_reply(true);
+        charger_fake_set_online(true);
+        charger_fake_set_timeout(false);
+    }
+    else if(!strcmp(name, "ov"))
+    {
+        cli_scenario_common_healthy();
+        (void)adbms6830_fake_set_cell_mv(0u, 3u, 4250u);
+    }
+    else if(!strcmp(name, "uv"))
+    {
+        cli_scenario_common_healthy();
+        (void)adbms6830_fake_set_cell_mv(2u, 7u, 2300u);
+    }
+    else if(!strcmp(name, "hot"))
+    {
+        cli_scenario_common_healthy();
+        (void)accumulator_temp_fake_set_sensor(&data->acc, 0u, 0u, 65.0f);
+        cli_refresh_temperature_from_accumulator();
+    }
+    else if(!strcmp(name, "cold"))
+    {
+        cli_scenario_common_healthy();
+        (void)accumulator_temp_fake_set_sensor(&data->acc, 0u, 0u, -5.0f);
+        cli_refresh_temperature_from_accumulator();
+    }
+    else if(!strcmp(name, "charger-timeout"))
+    {
+        cli_scenario_common_healthy();
+        cli_set_state_value(STATE_CHARGE);
+        charger_fake_set_timeout(true);
+        data->board.charger.last_rx_tick = osKernelGetTickCount() - CHARGER_RX_TIMEOUT_MS - 1u;
+        data->board.charger.communication_fail = true;
+    }
+    else if(!strcmp(name, "charger-txfail"))
+    {
+        cli_scenario_common_healthy();
+        cli_set_state_value(STATE_CHARGE);
+        charger_fake_set_tx_fail(true);
+    }
+    else if(!strcmp(name, "current-trip"))
+    {
+        cli_scenario_common_healthy();
+        cli_set_state_value(STATE_START);
+        (void)current_sensor_fake_set_current_a(70.0f);
+    }
+    else
+    {
+        ret |= cli_printline(cli, "Usage: scenario [healthy|charge-ready|ov|uv|hot|cold|charger-timeout|charger-txfail|current-trip]");
+        return ret;
+    }
+
+    snprintf(outline, CLI_LINESZ, "Scenario applied: %s", name);
+    ret |= cli_printline(cli, outline);
+    ret |= cli_printline(cli, "Wait a task cycle, then run: status; fault; volt; temp; current; charger; canlog");
+    return ret;
+}
+
 int get_spi_debug(int argc, char *argv[])
 {
     int ret = 0;
@@ -825,6 +2051,10 @@ int get_spi_debug(int argc, char *argv[])
         }
 	        else if(!strcmp(argv[1], "probe"))
 	        {
+	            if(cli_refuse_renode_physical_spi("spi probe"))
+	            {
+	                return ret;
+	            }
 	            if(cli_adbms_refuse_active_scan("spi probe"))
 	            {
 	                return ret;
@@ -835,6 +2065,10 @@ int get_spi_debug(int argc, char *argv[])
 	        }
 	        else if(!strcmp(argv[1], "probea"))
 	        {
+	            if(cli_refuse_renode_physical_spi("spi probea"))
+	            {
+	                return ret;
+	            }
 	            if(cli_adbms_refuse_active_scan("spi probea"))
 	            {
 	                return ret;
@@ -845,6 +2079,10 @@ int get_spi_debug(int argc, char *argv[])
 	        }
 	        else if(!strcmp(argv[1], "probeb"))
 	        {
+	            if(cli_refuse_renode_physical_spi("spi probeb"))
+	            {
+	                return ret;
+	            }
 	            if(cli_adbms_refuse_active_scan("spi probeb"))
 	            {
 	                return ret;
@@ -855,6 +2093,10 @@ int get_spi_debug(int argc, char *argv[])
 	        }
 	        else if(!strcmp(argv[1], "sid"))
 	        {
+	            if(cli_refuse_renode_physical_spi("spi sid"))
+	            {
+	                return ret;
+	            }
 	            if(cli_adbms_refuse_active_scan("spi sid"))
 	            {
 	                return ret;
@@ -865,6 +2107,10 @@ int get_spi_debug(int argc, char *argv[])
 	        }
 	        else if(!strcmp(argv[1], "stat"))
 	        {
+	            if(cli_refuse_renode_physical_spi("spi stat"))
+	            {
+	                return ret;
+	            }
 	            if(cli_adbms_refuse_active_scan("spi stat"))
 	            {
 	                return ret;
@@ -875,6 +2121,10 @@ int get_spi_debug(int argc, char *argv[])
 	        }
 	        else if(!strcmp(argv[1], "staterr"))
 	        {
+	            if(cli_refuse_renode_physical_spi("spi staterr"))
+	            {
+	                return ret;
+	            }
 	            if(cli_adbms_refuse_active_scan("spi staterr"))
 	            {
 	                return ret;
@@ -885,6 +2135,10 @@ int get_spi_debug(int argc, char *argv[])
 	        }
 	        else if(!strcmp(argv[1], "wake"))
 	        {
+	            if(cli_refuse_renode_physical_spi("spi wake"))
+	            {
+	                return ret;
+	            }
 	            if(cli_adbms_refuse_active_scan("spi wake"))
 	            {
 	                return ret;
@@ -898,6 +2152,10 @@ int get_spi_debug(int argc, char *argv[])
 	        }
 	        else if(!strcmp(argv[1], "coldwake"))
 	        {
+	            if(cli_refuse_renode_physical_spi("spi coldwake"))
+	            {
+	                return ret;
+	            }
 	            if(cli_adbms_refuse_active_scan("spi coldwake"))
 	            {
 	                return ret;
@@ -907,6 +2165,10 @@ int get_spi_debug(int argc, char *argv[])
 	        }
 	        else if(!strcmp(argv[1], "clrflag"))
 	        {
+	            if(cli_refuse_renode_physical_spi("spi clrflag"))
+	            {
+	                return ret;
+	            }
 	            if(cli_adbms_refuse_active_scan("spi clrflag"))
 	            {
 	                return ret;
@@ -922,6 +2184,10 @@ int get_spi_debug(int argc, char *argv[])
         }
 	        else if(!strcmp(argv[1], "cfgchk"))
 	        {
+	            if(cli_refuse_renode_physical_spi("spi cfgchk"))
+	            {
+	                return ret;
+	            }
 	            if(cli_adbms_refuse_active_scan("spi cfgchk"))
 	            {
 	                return ret;
@@ -932,6 +2198,10 @@ int get_spi_debug(int argc, char *argv[])
 	        }
 	        else if(!strcmp(argv[1], "cellst"))
 	        {
+	            if(cli_refuse_renode_physical_spi("spi cellst"))
+	            {
+	                return ret;
+	            }
 	            if(cli_adbms_refuse_active_scan("spi cellst"))
 	            {
 	                return ret;
@@ -942,6 +2212,10 @@ int get_spi_debug(int argc, char *argv[])
 	        }
 	        else if(!strcmp(argv[1], "oweven"))
 	        {
+	            if(cli_refuse_renode_physical_spi("spi oweven"))
+	            {
+	                return ret;
+	            }
 	            if(cli_adbms_refuse_active_scan("spi oweven"))
 	            {
 	                return ret;
@@ -957,6 +2231,10 @@ int get_spi_debug(int argc, char *argv[])
 	        }
 	        else if(!strcmp(argv[1], "owodd"))
 	        {
+	            if(cli_refuse_renode_physical_spi("spi owodd"))
+	            {
+	                return ret;
+	            }
 	            if(cli_adbms_refuse_active_scan("spi owodd"))
 	            {
 	                return ret;
@@ -972,6 +2250,10 @@ int get_spi_debug(int argc, char *argv[])
 	        }
 	        else if(!strcmp(argv[1], "auxdiag"))
 	        {
+	            if(cli_refuse_renode_physical_spi("spi auxdiag"))
+	            {
+	                return ret;
+	            }
 	            if(cli_adbms_refuse_active_scan("spi auxdiag"))
 	            {
 	                return ret;
@@ -1190,6 +2472,10 @@ int get_apm_debug(int argc, char *argv[])
         }
 	        else if(!strcmp(argv[1], "probe"))
 	        {
+	            if(cli_refuse_renode_physical_spi("apm probe"))
+	            {
+	                return ret;
+	            }
 	            if(cli_adbms_refuse_active_scan("apm probe"))
 	            {
 	                return ret;
@@ -1443,7 +2729,7 @@ int get_bringup(int argc, char *argv[])
 
         snprintf(outline, CLI_LINESZ,
                  "BRINGUP BOARD build:%s state:%s BMS_OK:%d inhibit:%d",
-                 AMS_HW_BRINGUP ? "hw-bringup" : "normal",
+                 AMS_BUILD_MODE_STR,
                  ams_state_to_str(data->state),
                  data->bms_state,
                  data->bms_output_inhibit);
@@ -1752,7 +3038,7 @@ int get_bringup(int argc, char *argv[])
 int get_version(int argc, char *argv[])
 {
 	int ret = 0;
-	snprintf(outline, CLI_LINESZ, "v%d.%d.%d %s", VER_MAJOR, VER_MINOR, VER_BUG, AMS_HW_BRINGUP ? "hw-bringup" : "normal");
+	snprintf(outline, CLI_LINESZ, "v%d.%d.%d %s", VER_MAJOR, VER_MINOR, VER_BUG, AMS_BUILD_MODE_STR);
 	ret |= cli_printline(cli, outline);
 	return ret;
 }
@@ -1812,31 +3098,27 @@ int set_state(int argc, char *argv[])
     }
     else if(argc == 2)
     {
-        if(!strcmp(argv[1], "charge")){
-        	data->state = STATE_CHARGE;
-        	data->board.charger.last_rx_tick = osKernelGetTickCount();
-        }
-        else if(!strcmp(argv[1], "discharge")) data->state = STATE_DISCARGE;
+        if(!strcmp(argv[1], "start")) cli_set_state_value(STATE_START);
+        else if(!strcmp(argv[1], "charge")) cli_set_state_value(STATE_CHARGE);
+        else if(!strcmp(argv[1], "discharge")) cli_set_state_value(STATE_DISCARGE);
+        else if(!strcmp(argv[1], "balance")) cli_set_state_value(STATE_BALANCE);
+        else if(!strcmp(argv[1], "error")) cli_set_state_value(STATE_ERROR);
+        else if(!strcmp(argv[1], "null")) cli_set_state_value(STATE_NULL);
         else
         {
             snprintf(outline, CLI_LINESZ, "ERROR: unrecognized state: %s", argv[1]);
             cli_printline(cli, outline);
-            cli_printline(cli, "Usage: state [charge|discharge]");
+            cli_printline(cli, "Usage: state [start|charge|discharge|balance|error|null]");
             return 1;
         }
 
         snprintf(outline, CLI_LINESZ, "AMS State: %s", ams_state_to_str(data->state));
         ret |= cli_printline(cli, outline);
-
-        if(data->board.canbus.hcan != NULL)
-        {
-            HAL_CAN_ActivateNotification(data->board.canbus.hcan, CAN_IT_RX_FIFO0_MSG_PENDING);
-        }
     }
     else
     {
         cli_printline(cli, "ERROR: too many arguments");
-        cli_printline(cli, "Usage: state [charge|discharge]");
+        cli_printline(cli, "Usage: state [start|charge|discharge|balance|error|null]");
         return 1;
     }
 

@@ -1,0 +1,19 @@
+# DER26 AMS Renode CLI smoke.
+#
+# Run from repository root after:
+#   ./ci/stm32/build_ams_headless_gcc.sh
+#
+# Then:
+#   renode --console -e "include @AMS/renode/scripts/ams_f767_cli_smoke.resc"
+
+using sysbus
+
+mach create "der26-ams"
+machine LoadPlatformDescription @AMS/renode/platforms/ams_f767zi_stm32f746_compat.repl
+
+logLevel 3
+showAnalyzer sysbus.usart3
+
+sysbus LoadELF @AMS/build/DER26-AMS.elf
+
+start

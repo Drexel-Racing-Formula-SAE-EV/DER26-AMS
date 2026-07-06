@@ -122,7 +122,11 @@ int main(void)
   MX_GPIO_Init();
   MX_ADC1_Init();
   MX_ADC2_Init();
+#if AMS_RENODE
+  hcan1.Instance = CAN1;
+#else
   MX_CAN1_Init();
+#endif
   MX_SPI6_Init();
   MX_TIM2_Init();
   MX_TIM3_Init();

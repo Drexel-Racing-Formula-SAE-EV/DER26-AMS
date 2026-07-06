@@ -1,0 +1,11 @@
+// DER26 AMS STM32F767ZI compatibility platform.
+//
+// Renode has a built-in STM32F746 platform that is close enough for a first
+// boot/CLI smoke, but STM32F746 maps 384 KB SRAM while STM32F767ZI has 512 KB.
+// The AMS linker script places the initial stack near 0x20080000, so add only
+// the non-overlapping upper F767 SRAM window.
+
+using "platforms/cpus/stm32f746.repl"
+
+sram_f767_extra: Memory.MappedMemory @ sysbus 0x20060000
+    size: 0x20000

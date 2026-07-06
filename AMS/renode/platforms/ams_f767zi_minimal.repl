@@ -1,0 +1,74 @@
+// Experimental minimal STM32F767ZITx platform skeleton for Renode.
+//
+// This is intentionally not a full STM32F767 model. It is a fallback for
+// debugging early boot/platform-description issues if the built-in STM32F746
+// compatibility platform is not available or does not match a local Renode
+// install.
+
+nvic: IRQControllers.NVIC @ sysbus 0xE000E000
+    systickFrequency: 216000000
+    priorityMask: 0xF0
+    IRQ -> cpu@0
+
+cpu: CPU.CortexM @ sysbus
+    cpuType: "cortex-m7"
+    nvic: nvic
+
+flash: Memory.MappedMemory @ sysbus 0x08000000
+    size: 0x200000
+
+ram: Memory.MappedMemory @ sysbus 0x20000000
+    size: 0x80000
+
+// Core STM32F7 system blocks used during HAL init.
+rcc: Miscellaneous.STM32F4_RCC @ sysbus 0x40023800
+exti: IRQControllers.STM32F4_EXTI @ sysbus 0x40013C00
+syscfg: Miscellaneous.STM32_SYSCFG @ sysbus 0x40013800
+
+// AMS CLI UART: USART3 on PD8/PD9, APB1 base 0x40004800, IRQ 39.
+usart3: UART.STM32F7_USART @ sysbus 0x40004800
+    frequency: 54000000
+    IRQ -> nvic@39
+
+// AMS CAN: CAN1 on PD0/PD1, base 0x40006400. RX0 interrupt is IRQ 20.
+can1: CAN.STMCAN @ sysbus 0x40006400
+    IRQ -> nvic@20
+
+// AMS ADBMS SPI: SPI6 on PG12/PG13/PG14, base 0x40015400, IRQ 86.
+spi6: SPI.STM32SPI @ sysbus 0x40015400
+    IRQ -> nvic@86
+
+// Timers touched by generated init/fan/current timing paths.
+tim1: Timers.STM32_Timer @ sysbus 0x40010000
+    frequency: 108000000
+    IRQ -> nvic@25
+
+tim2: Timers.STM32_Timer @ sysbus 0x40000000
+    frequency: 54000000
+    IRQ -> nvic@28
+
+tim3: Timers.STM32_Timer @ sysbus 0x40000400
+    frequency: 54000000
+    IRQ -> nvic@29
+
+tim4: Timers.STM32_Timer @ sysbus 0x40000800
+    frequency: 54000000
+    IRQ -> nvic@30
+
+tim5: Timers.STM32_Timer @ sysbus 0x40000C00
+    frequency: 54000000
+    IRQ -> nvic@50
+
+// ADC handles exist in the firmware; detailed input modeling is a later stage.
+adc1: Analog.STM32_ADC @ sysbus 0x40012000
+adc2: Analog.STM32_ADC @ sysbus 0x40012100
+
+gpioa: GPIOPort.STM32_GPIOPort @ sysbus 0x40020000
+gpiob: GPIOPort.STM32_GPIOPort @ sysbus 0x40020400
+gpioc: GPIOPort.STM32_GPIOPort @ sysbus 0x40020800
+gpiod: GPIOPort.STM32_GPIOPort @ sysbus 0x40020C00
+gpioe: GPIOPort.STM32_GPIOPort @ sysbus 0x40021000
+gpiof: GPIOPort.STM32_GPIOPort @ sysbus 0x40021400
+gpiog: GPIOPort.STM32_GPIOPort @ sysbus 0x40021800
+gpioh: GPIOPort.STM32_GPIOPort @ sysbus 0x40021C00
+gpioi: GPIOPort.STM32_GPIOPort @ sysbus 0x40022000

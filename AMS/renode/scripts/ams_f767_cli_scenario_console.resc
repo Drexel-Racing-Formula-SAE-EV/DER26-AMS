@@ -1,0 +1,22 @@
+# DER26 AMS Renode fake-input scenario console.
+#
+# Run from repository root after:
+#   AMS_RENODE=1 ./ci/stm32/build_ams_headless_gcc.sh
+#
+# Then:
+#   renode --console -e "include @AMS/renode/scripts/ams_f767_cli_scenario_console.resc"
+#
+# After the UART analyzer prints the AMS banner, paste commands from:
+#   AMS/renode/scripts/cli_scenario_commands.txt
+
+using sysbus
+
+mach create "der26-ams"
+machine LoadPlatformDescription @AMS/renode/platforms/ams_f767zi_stm32f746_compat.repl
+
+logLevel 3
+showAnalyzer sysbus.usart3
+
+sysbus LoadELF @AMS/build/DER26-AMS.elf
+
+start

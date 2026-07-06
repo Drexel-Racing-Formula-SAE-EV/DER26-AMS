@@ -116,6 +116,22 @@ typedef struct
 	adbms6830_driver_t smb;
 } accumulator_t;
 
+typedef struct
+{
+	bool enabled;
+	bool initialized;
+	bool hold_missing;
+	uint32_t missing_mask[NSMBS];
+	uint32_t invalid_mask[NSMBS];
+	float min_temp_c;
+	float max_temp_c;
+	uint8_t min_seg;
+	uint8_t min_sensor;
+	uint8_t max_seg;
+	uint8_t max_sensor;
+	uint32_t apply_count;
+} accumulator_temp_fake_status_t;
+
 void accumulator_init(accumulator_t *dev,
 				      SPI_HandleTypeDef *hspi,
 					  GPIO_TypeDef *cs_port_a,
@@ -141,5 +157,14 @@ int16_t accumulator_temp_deci_c(const accumulator_t *dev, uint8_t seg, uint8_t s
 uint8_t accumulator_configured_smb_count(const accumulator_t *dev);
 int accumulator_set_balance(accumulator_t *dev);
 int accumulator_clear_balance(accumulator_t *dev);
+
+bool accumulator_temp_fake_enabled(void);
+void accumulator_temp_fake_reset(accumulator_t *dev);
+int accumulator_temp_fake_set_all(accumulator_t *dev, float temp_c);
+int accumulator_temp_fake_set_sensor(accumulator_t *dev, uint8_t seg, uint8_t sensor, float temp_c);
+void accumulator_temp_fake_set_missing_mask(accumulator_t *dev, uint8_t seg, uint32_t mask);
+void accumulator_temp_fake_set_invalid_mask(accumulator_t *dev, uint8_t seg, uint32_t mask);
+void accumulator_temp_fake_set_hold_missing(accumulator_t *dev, bool hold_missing);
+accumulator_temp_fake_status_t accumulator_temp_fake_get_status(const accumulator_t *dev);
 
 #endif /* INC_EXT_DRIVERS_ACCUMULATOR_H_ */

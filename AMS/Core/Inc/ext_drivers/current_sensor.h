@@ -67,6 +67,19 @@ typedef struct
     uint32_t channel_low;
 } current_sensor_t;
 
+typedef struct
+{
+    bool enabled;
+    bool adc_fail;
+    bool raw_override;
+    float requested_current_a;
+    float channel_50a_current_a;
+    float channel_800a_current_a;
+    uint16_t count_low;
+    uint16_t count_high;
+    uint32_t read_count;
+} current_sensor_fake_status_t;
+
 void current_sensor_init(current_sensor_t *dev,
                          ADC_HandleTypeDef *hadc_low,
                          ADC_HandleTypeDef *hadc_high,
@@ -77,5 +90,14 @@ float current_sensor_convert(current_sensor_t *dev);
 bool current_sensor_read_adc(current_sensor_t *dev);
 const char *current_sensor_reason_str(current_sensor_reason_t reason);
 const char *current_sensor_range_str(current_sensor_range_t range);
+
+bool current_sensor_fake_enabled(void);
+void current_sensor_fake_reset(void);
+int current_sensor_fake_set_current_a(float current_a);
+int current_sensor_fake_set_channel_currents_a(float current_50a, float current_800a);
+int current_sensor_fake_set_raw_counts(uint16_t count_low, uint16_t count_high);
+void current_sensor_fake_clear_raw_override(void);
+void current_sensor_fake_set_adc_fail(bool fail);
+current_sensor_fake_status_t current_sensor_fake_get_status(void);
 
 #endif /* INC_CURRENT_SENSOR_H_ */

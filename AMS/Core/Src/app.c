@@ -270,27 +270,51 @@ void app_create()
 	app.cli_task = cli_task_start(&app);
 	app.fan_task = fan_task_start(&app);
 	app.error_task = error_task_start(&app);
+#if AMS_RENODE && !AMS_RENODE_FAKE_CHARGER
+	app.canbus_task = NULL;
+#else
 	app.canbus_task = canbus_task_start(&app);
+#endif
 //	app.air_task = air_task_start(&app);
 //	app.imd_task = imd_task_start(&app);
+#if AMS_RENODE && !AMS_RENODE_FAKE_CURRENT
+	app.current_task = NULL;
+#else
 	app.current_task = current_task_start(&app);
+#endif
+#if AMS_RENODE && !AMS_RENODE_FAKE_ADBMS
+	app.adbms_task = NULL;
+#else
 	app.adbms_task = adbms_task_start(&app);
+#endif
 	app.estimator_task = estimator_task_start(&app);
 
 	assert(app.cli_task != NULL);
 	assert(app.fan_task != NULL);
 	assert(app.error_task != NULL);
+#if !AMS_RENODE || AMS_RENODE_FAKE_CHARGER
 	assert(app.canbus_task != NULL);
+#endif
+#if !AMS_RENODE || AMS_RENODE_FAKE_CURRENT
 	assert(app.current_task != NULL);
+#endif
+#if !AMS_RENODE || AMS_RENODE_FAKE_ADBMS
 	assert(app.adbms_task != NULL);
+#endif
 	assert(app.estimator_task != NULL);
 
 	if((app.cli_task == NULL) ||
 	   (app.fan_task == NULL) ||
 	   (app.error_task == NULL) ||
+#if !AMS_RENODE || AMS_RENODE_FAKE_CHARGER
 	   (app.canbus_task == NULL) ||
+#endif
+#if !AMS_RENODE || AMS_RENODE_FAKE_CURRENT
 	   (app.current_task == NULL) ||
+#endif
+#if !AMS_RENODE || AMS_RENODE_FAKE_ADBMS
 	   (app.adbms_task == NULL) ||
+#endif
 	   (app.estimator_task == NULL))
 	{
 		set_bms(0);

@@ -358,6 +358,15 @@ HAL_StatusTypeDef adbms6830_run_aux_gpio_diagnostic(adbms6830_driver_t *dev){
     dev->spi_debug.last_status = fake_adbms_diag_status;
     return fake_adbms_diag_status;
 }
+bool adbms6830_fake_enabled(void){ return false; }
+void adbms6830_fake_reset(void){}
+int adbms6830_fake_set_all_cells_mv(uint16_t mv){ (void)mv; return -1; }
+int adbms6830_fake_set_cell_mv(uint8_t ic, uint8_t cell, uint16_t mv){ (void)ic; (void)cell; (void)mv; return -1; }
+int adbms6830_fake_set_aux_raw(uint8_t ic, uint8_t channel, int16_t raw){ (void)ic; (void)channel; (void)raw; return -1; }
+void adbms6830_fake_set_pec_fail_mask(uint16_t mask){ (void)mask; }
+void adbms6830_fake_set_missing_mask(uint16_t mask){ (void)mask; }
+void adbms6830_fake_set_counter_fault_mask(uint16_t mask){ (void)mask; }
+adbms6830_fake_status_t adbms6830_fake_get_status(void){ adbms6830_fake_status_t status = {0}; return status; }
 
 int mux_read_gpio_voltage(adbms6830_driver_t *dev, uint8_t sensor_num){
     if(fake_mux_write_enable && dev && dev->ics && dev->num_ics > 0 && sensor_num < 24){

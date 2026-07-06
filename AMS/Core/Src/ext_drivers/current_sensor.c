@@ -10,6 +10,14 @@
 #include <ext_drivers/stm32f767z.h>
 #include <math.h>
 
+#ifndef AMS_RENODE
+#define AMS_RENODE 0
+#endif
+
+#ifndef AMS_RENODE_FAKE_CURRENT
+#define AMS_RENODE_FAKE_CURRENT AMS_RENODE
+#endif
+
 #define CURRENT_ADC_VREF_V              3.3f
 #define CURRENT_ADC_MAX_COUNT           4095.0f
 #define CURRENT_ADC_TIMEOUT_MS          5u
@@ -46,9 +54,45 @@
  */
 #define CURRENT_SENSOR_50A_CHANNEL_IS_HIGH 0u
 
+#if AMS_RENODE_FAKE_CURRENT
+typedef struct
+{
+    bool initialized;
+    bool enabled;
+    bool adc_fail;
+    bool raw_override;
+    float requested_current_a;
+    float current_50a_a;
+    float current_800a_a;
+    uint16_t count_low;
+    uint16_t count_high;
+    uint32_t read_count;
+} current_sensor_fake_model_t;
+
+static current_sensor_fake_model_t current_sensor_fake;
+#endif
+
 static float current_sensor_adc_count_to_voltage(uint16_t count)
 {
     return ((float)count * CURRENT_ADC_VREF_V) / CURRENT_ADC_MAX_COUNT;
+}
+
+static uint16_t current_sensor_adc_voltage_to_count(float adc_voltage)
+{
+    float count;
+
+    if(!isfinite(adc_voltage) || (adc_voltage <= 0.0f))
+    {
+        return 0u;
+    }
+
+    count = (adc_voltage * CURRENT_ADC_MAX_COUNT) / CURRENT_ADC_VREF_V;
+    if(count >= CURRENT_ADC_MAX_COUNT)
+    {
+        return (uint16_t)CURRENT_ADC_MAX_COUNT;
+    }
+
+    return (uint16_t)(count + 0.5f);
 }
 
 static float current_sensor_adc_voltage_to_sensor_voltage(float adc_voltage)
@@ -59,6 +103,11 @@ static float current_sensor_adc_voltage_to_sensor_voltage(float adc_voltage)
 static float current_sensor_voltage_to_current(float sensor_voltage, float sensitivity_v_per_a)
 {
     return (sensor_voltage - DHAB_OFFSET_V) / sensitivity_v_per_a;
+}
+
+static float current_sensor_current_to_sensor_voltage(float current_a, float sensitivity_v_per_a)
+{
+    return DHAB_OFFSET_V + (current_a * sensitivity_v_per_a);
 }
 
 static bool current_sensor_adc_count_implausible(uint16_t count)
@@ -91,6 +140,202 @@ static void current_sensor_set_invalid(current_sensor_t *dev, current_sensor_rea
     dev->selected_range = CURRENT_SENSOR_RANGE_UNKNOWN;
     dev->reason = reason;
 }
+
+#if AMS_RENODE_FAKE_CURRENT
+static void current_sensor_fake_ensure(void)
+{
+    if(current_sensor_fake.initialized)
+    {
+        return;
+    }
+
+    current_sensor_fake.initialized = true;
+    current_sensor_fake.enabled = true;
+    current_sensor_fake.adc_fail = false;
+    current_sensor_fake.raw_override = false;
+    current_sensor_fake.requested_current_a = 0.0f;
+    current_sensor_fake.current_50a_a = 0.0f;
+    current_sensor_fake.current_800a_a = 0.0f;
+    current_sensor_fake.count_low = current_sensor_adc_voltage_to_count(DHAB_OFFSET_V * SENSOR_DIVIDER_GAIN);
+    current_sensor_fake.count_high = current_sensor_fake.count_low;
+    current_sensor_fake.read_count = 0u;
+}
+
+static uint16_t current_sensor_fake_count_for_current(float current_a, float sensitivity_v_per_a)
+{
+    float sensor_voltage = current_sensor_current_to_sensor_voltage(current_a, sensitivity_v_per_a);
+    float adc_voltage;
+
+    if(sensor_voltage <= DHAB_SENSOR_CLAMP_LOW_V)
+    {
+        sensor_voltage = DHAB_SENSOR_CLAMP_LOW_V;
+    }
+    else if(sensor_voltage >= DHAB_SENSOR_CLAMP_HIGH_V)
+    {
+        sensor_voltage = DHAB_SENSOR_CLAMP_HIGH_V;
+    }
+
+    adc_voltage = sensor_voltage * SENSOR_DIVIDER_GAIN;
+    return current_sensor_adc_voltage_to_count(adc_voltage);
+}
+
+static void current_sensor_fake_update_counts_from_currents(void)
+{
+    uint16_t count_50a = current_sensor_fake_count_for_current(current_sensor_fake.current_50a_a,
+                                                               DHAB_CH_50A_SENS_V_PER_A);
+    uint16_t count_800a = current_sensor_fake_count_for_current(current_sensor_fake.current_800a_a,
+                                                                DHAB_CH_800A_SENS_V_PER_A);
+
+#if CURRENT_SENSOR_50A_CHANNEL_IS_HIGH
+    current_sensor_fake.count_high = count_50a;
+    current_sensor_fake.count_low = count_800a;
+#else
+    current_sensor_fake.count_low = count_50a;
+    current_sensor_fake.count_high = count_800a;
+#endif
+}
+
+bool current_sensor_fake_enabled(void)
+{
+    current_sensor_fake_ensure();
+    return current_sensor_fake.enabled;
+}
+
+void current_sensor_fake_reset(void)
+{
+    current_sensor_fake.initialized = false;
+    current_sensor_fake_ensure();
+}
+
+int current_sensor_fake_set_current_a(float current_a)
+{
+    current_sensor_fake_ensure();
+    if(!isfinite(current_a) || (current_a < -900.0f) || (current_a > 900.0f))
+    {
+        return -1;
+    }
+
+    current_sensor_fake.enabled = true;
+    current_sensor_fake.adc_fail = false;
+    current_sensor_fake.raw_override = false;
+    current_sensor_fake.requested_current_a = current_a;
+    current_sensor_fake.current_50a_a = current_a;
+    current_sensor_fake.current_800a_a = current_a;
+    current_sensor_fake_update_counts_from_currents();
+    return 0;
+}
+
+int current_sensor_fake_set_channel_currents_a(float current_50a, float current_800a)
+{
+    current_sensor_fake_ensure();
+    if(!isfinite(current_50a) || !isfinite(current_800a) ||
+       (current_50a < -900.0f) || (current_50a > 900.0f) ||
+       (current_800a < -900.0f) || (current_800a > 900.0f))
+    {
+        return -1;
+    }
+
+    current_sensor_fake.enabled = true;
+    current_sensor_fake.adc_fail = false;
+    current_sensor_fake.raw_override = false;
+    current_sensor_fake.requested_current_a = current_50a;
+    current_sensor_fake.current_50a_a = current_50a;
+    current_sensor_fake.current_800a_a = current_800a;
+    current_sensor_fake_update_counts_from_currents();
+    return 0;
+}
+
+int current_sensor_fake_set_raw_counts(uint16_t count_low, uint16_t count_high)
+{
+    current_sensor_fake_ensure();
+    if((count_low > (uint16_t)CURRENT_ADC_MAX_COUNT) ||
+       (count_high > (uint16_t)CURRENT_ADC_MAX_COUNT))
+    {
+        return -1;
+    }
+
+    current_sensor_fake.enabled = true;
+    current_sensor_fake.adc_fail = false;
+    current_sensor_fake.raw_override = true;
+    current_sensor_fake.count_low = count_low;
+    current_sensor_fake.count_high = count_high;
+    return 0;
+}
+
+void current_sensor_fake_clear_raw_override(void)
+{
+    current_sensor_fake_ensure();
+    current_sensor_fake.raw_override = false;
+    current_sensor_fake_update_counts_from_currents();
+}
+
+void current_sensor_fake_set_adc_fail(bool fail)
+{
+    current_sensor_fake_ensure();
+    current_sensor_fake.enabled = true;
+    current_sensor_fake.adc_fail = fail;
+}
+
+current_sensor_fake_status_t current_sensor_fake_get_status(void)
+{
+    current_sensor_fake_status_t status;
+
+    current_sensor_fake_ensure();
+    status.enabled = current_sensor_fake.enabled;
+    status.adc_fail = current_sensor_fake.adc_fail;
+    status.raw_override = current_sensor_fake.raw_override;
+    status.requested_current_a = current_sensor_fake.requested_current_a;
+    status.channel_50a_current_a = current_sensor_fake.current_50a_a;
+    status.channel_800a_current_a = current_sensor_fake.current_800a_a;
+    status.count_low = current_sensor_fake.count_low;
+    status.count_high = current_sensor_fake.count_high;
+    status.read_count = current_sensor_fake.read_count;
+    return status;
+}
+#else
+bool current_sensor_fake_enabled(void)
+{
+    return false;
+}
+
+void current_sensor_fake_reset(void)
+{
+}
+
+int current_sensor_fake_set_current_a(float current_a)
+{
+    (void)current_a;
+    return -1;
+}
+
+int current_sensor_fake_set_channel_currents_a(float current_50a, float current_800a)
+{
+    (void)current_50a;
+    (void)current_800a;
+    return -1;
+}
+
+int current_sensor_fake_set_raw_counts(uint16_t count_low, uint16_t count_high)
+{
+    (void)count_low;
+    (void)count_high;
+    return -1;
+}
+
+void current_sensor_fake_clear_raw_override(void)
+{
+}
+
+void current_sensor_fake_set_adc_fail(bool fail)
+{
+    (void)fail;
+}
+
+current_sensor_fake_status_t current_sensor_fake_get_status(void)
+{
+    return (current_sensor_fake_status_t){0};
+}
+#endif
 
 const char *current_sensor_reason_str(current_sensor_reason_t reason)
 {
@@ -273,6 +518,31 @@ bool current_sensor_read_adc(current_sensor_t *dev)
     dev->count_high_fresh = false;
     dev->count_low_fresh = false;
     dev->last_read_ok = false;
+
+#if AMS_RENODE_FAKE_CURRENT
+    current_sensor_fake_ensure();
+    if(current_sensor_fake.enabled)
+    {
+        current_sensor_fake.read_count++;
+        if(current_sensor_fake.adc_fail)
+        {
+            current_sensor_set_invalid(dev, CURRENT_SENSOR_REASON_ADC_READ);
+            return false;
+        }
+
+        if(!current_sensor_fake.raw_override)
+        {
+            current_sensor_fake_update_counts_from_currents();
+        }
+
+        dev->count_high = current_sensor_fake.count_high;
+        dev->count_low = current_sensor_fake.count_low;
+        dev->count_high_fresh = true;
+        dev->count_low_fresh = true;
+        dev->last_read_ok = true;
+        return true;
+    }
+#endif
 
     if((dev->hadc_high == NULL) || (dev->hadc_low == NULL))
     {

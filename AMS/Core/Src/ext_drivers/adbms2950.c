@@ -11,6 +11,10 @@
 #include <stddef.h>
 #include <string.h>
 
+#ifndef AMS_RENODE
+#define AMS_RENODE 0
+#endif
+
 uint8_t buf[BUFSZ] = {0};
 uint8_t wrbuf[BUFSZ] = {0};
 static uint8_t adbms2950_spi_txrx_tx_buf[BUFSZ] = {0};
@@ -340,6 +344,7 @@ void adbms2950_init(adbms2950_driver_t *dev,
 	dev->string = STRING_A;
 	adbms2950_set_cs(dev, 1);
 
+#if !AMS_RENODE
 	adbms2950_wakeup(dev);
 	adbms2950_srst(dev);
 	// 8ms delay. DS and vendor code recommend
@@ -380,6 +385,7 @@ void adbms2950_init(adbms2950_driver_t *dev,
 
 	// Add delay for device to start
 	adbms2950_us_delay(dev, 8000);
+#endif
 }
 
 
@@ -971,6 +977,11 @@ void adbms2950_set_cs(adbms2950_driver_t* dev, uint8_t state)
 
 void adbms2950_us_delay(adbms2950_driver_t* dev, uint16_t microseconds)
 {
+#if AMS_RENODE
+	(void)dev;
+	(void)microseconds;
+	return;
+#else
 	if((dev == NULL) || (dev->htim == NULL))
 	{
 		return;
@@ -979,6 +990,7 @@ void adbms2950_us_delay(adbms2950_driver_t* dev, uint16_t microseconds)
 	__HAL_TIM_SET_COUNTER(dev->htim, 0);
 	while (__HAL_TIM_GET_COUNTER(dev->htim) < microseconds);
 	return;
+#endif
 }
 
 

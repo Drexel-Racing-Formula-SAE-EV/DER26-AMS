@@ -1,0 +1,14 @@
+# DER26 AMS Renode CLI smoke using the local minimal platform skeleton.
+# Prefer ams_f767_cli_smoke.resc first.
+
+using sysbus
+
+mach create "der26-ams-minimal"
+machine LoadPlatformDescription @AMS/renode/platforms/ams_f767zi_minimal.repl
+
+logLevel 3
+showAnalyzer sysbus.usart3
+
+sysbus LoadELF @AMS/build/DER26-AMS.elf
+
+start

@@ -20,6 +20,18 @@
 #include <math.h>
 #include <string.h>
 
+#ifndef AMS_RENODE
+#define AMS_RENODE 0
+#endif
+
+#ifndef AMS_RENODE_FAKE_CHARGER
+#define AMS_RENODE_FAKE_CHARGER AMS_RENODE
+#endif
+
+#ifndef AMS_RENODE_CAN_CAPTURE
+#define AMS_RENODE_CAN_CAPTURE AMS_RENODE
+#endif
+
 void canbus_task_fn(void *arg);
 
 #define ECU_SEG_CELLS 15u
@@ -34,8 +46,138 @@ void canbus_task_fn(void *arg);
 #define ECU_TEMP_INVALID_DECI_C ((uint16_t)0x8000u)
 #define CAN_TX_TIMEOUT_TICKS 10u
 
+#if AMS_RENODE_FAKE_CHARGER
+typedef struct
+{
+    bool initialized;
+    bool enabled;
+    bool online;
+    bool auto_reply;
+    bool force_tx_fail;
+    bool hold_timeout;
+    uint8_t flags;
+    uint8_t last_control;
+    float command_voltage;
+    float command_current;
+    float readback_voltage;
+    float readback_current;
+    uint32_t command_count;
+    uint32_t reply_count;
+    uint32_t tx_fail_count;
+    uint8_t last_payload[8];
+} charger_fake_model_t;
+
+static charger_fake_model_t charger_fake;
+#endif
+
+#if AMS_RENODE_CAN_CAPTURE
+static canbus_capture_status_t canbus_capture = {
+    .enabled = true
+};
+
+static int canbus_capture_logger_index(uint32_t id)
+{
+    if((id >= AMS_LOGGER_CAN_ID_HEARTBEAT) && (id <= AMS_LOGGER_CAN_ID_TASK_HEALTH))
+    {
+        return (int)(id - AMS_LOGGER_CAN_ID_HEARTBEAT);
+    }
+
+    if((id >= AMS_LOGGER_CAN_ID_CELL_DETAIL) && (id <= AMS_LOGGER_CAN_ID_VOLTAGE_PEC))
+    {
+        return (int)(12u + (id - AMS_LOGGER_CAN_ID_CELL_DETAIL));
+    }
+
+    return -1;
+}
+
+static void canbus_capture_record(uint32_t ide, uint32_t id, const uint8_t payload[8])
+{
+    int logger_index;
+
+    if(!canbus_capture.enabled || (payload == NULL))
+    {
+        return;
+    }
+
+    canbus_capture.total_tx++;
+    canbus_capture.last_id = id;
+    canbus_capture.last_ide = ide;
+    memcpy(canbus_capture.last_payload, payload, DATALEN);
+
+    if(ide == CAN_ID_EXT)
+    {
+        canbus_capture.ext_tx++;
+        if(id == CCS_CANBUS_ID)
+        {
+            canbus_capture.charger_tx++;
+        }
+        else
+        {
+            canbus_capture.other_tx++;
+        }
+        return;
+    }
+
+    canbus_capture.std_tx++;
+    if(id == ECU_CANBUS_ID)
+    {
+        canbus_capture.ecu_tx++;
+        return;
+    }
+    if(id == AMS_ESTIMATOR_STATUS_CAN_ID)
+    {
+        canbus_capture.estimator_tx++;
+        return;
+    }
+
+    logger_index = canbus_capture_logger_index(id);
+    if((logger_index >= 0) && (logger_index < (int)(sizeof(canbus_capture.logger_id_count) / sizeof(canbus_capture.logger_id_count[0]))))
+    {
+        canbus_capture.logger_tx++;
+        canbus_capture.logger_id_count[logger_index]++;
+        return;
+    }
+
+    canbus_capture.other_tx++;
+}
+
+bool canbus_capture_enabled(void)
+{
+    return canbus_capture.enabled;
+}
+
+void canbus_capture_clear(void)
+{
+    memset(&canbus_capture, 0, sizeof(canbus_capture));
+    canbus_capture.enabled = true;
+}
+
+canbus_capture_status_t canbus_capture_get_status(void)
+{
+    return canbus_capture;
+}
+#else
+bool canbus_capture_enabled(void)
+{
+    return false;
+}
+
+void canbus_capture_clear(void)
+{
+}
+
+canbus_capture_status_t canbus_capture_get_status(void)
+{
+    return (canbus_capture_status_t){0};
+}
+#endif
+
 static HAL_StatusTypeDef canbus_wait_tx_mailbox(canbus_device_t *canbus)
 {
+#if AMS_RENODE_FAKE_CHARGER
+    (void)canbus;
+    return HAL_OK;
+#else
     if((canbus == NULL) || (canbus->hcan == NULL))
     {
         return HAL_ERROR;
@@ -53,6 +195,7 @@ static HAL_StatusTypeDef canbus_wait_tx_mailbox(canbus_device_t *canbus)
     }
 
     return HAL_OK;
+#endif
 }
 
 static HAL_StatusTypeDef canbus_send(canbus_device_t *canbus,
@@ -60,10 +203,17 @@ static HAL_StatusTypeDef canbus_send(canbus_device_t *canbus,
                                      uint32_t id,
                                      const uint8_t payload[8])
 {
+#if AMS_RENODE_FAKE_CHARGER
+    if((canbus == NULL) || (payload == NULL))
+    {
+        return HAL_ERROR;
+    }
+#else
     if((canbus == NULL) || (canbus->hcan == NULL) || (payload == NULL))
     {
         return HAL_ERROR;
     }
+#endif
 
     CAN_TxHeaderTypeDef *tx_header = &canbus->tx_header;
 
@@ -80,13 +230,276 @@ static HAL_StatusTypeDef canbus_send(canbus_device_t *canbus,
         tx_header->StdId = id;
     }
 
+#if AMS_RENODE_CAN_CAPTURE
+    canbus_capture_record(ide, id, payload);
+#endif
+
     if(canbus_wait_tx_mailbox(canbus) != HAL_OK)
     {
         return HAL_TIMEOUT;
     }
 
+#if AMS_RENODE_FAKE_CHARGER
+    return HAL_OK;
+#else
     return HAL_CAN_AddTxMessage(canbus->hcan, tx_header, (uint8_t *)payload, &canbus->tx_mailbox);
+#endif
 }
+
+#if AMS_RENODE_FAKE_CHARGER
+static uint16_t charger_fake_be16(const uint8_t *data)
+{
+    return (uint16_t)(((uint16_t)data[0] << 8) | data[1]);
+}
+
+static uint16_t charger_fake_sat_10x(float value)
+{
+    float scaled;
+
+    if(!isfinite(value) || (value <= 0.0f))
+    {
+        return 0u;
+    }
+
+    scaled = value * 10.0f;
+    if(scaled >= 65535.0f)
+    {
+        return 65535u;
+    }
+
+    return (uint16_t)(scaled + 0.5f);
+}
+
+static void charger_fake_ensure(void)
+{
+    if(charger_fake.initialized)
+    {
+        return;
+    }
+
+    charger_fake.initialized = true;
+    charger_fake.enabled = true;
+    charger_fake.online = true;
+    charger_fake.auto_reply = true;
+    charger_fake.force_tx_fail = false;
+    charger_fake.hold_timeout = false;
+    charger_fake.flags = 0u;
+    charger_fake.last_control = CHARGER_CMD_DISABLE;
+    charger_fake.command_voltage = 0.0f;
+    charger_fake.command_current = 0.0f;
+    charger_fake.readback_voltage = 0.0f;
+    charger_fake.readback_current = 0.0f;
+    charger_fake.command_count = 0u;
+    charger_fake.reply_count = 0u;
+    charger_fake.tx_fail_count = 0u;
+    memset(charger_fake.last_payload, 0, sizeof(charger_fake.last_payload));
+}
+
+static void charger_fake_apply_reply(app_data_t *data)
+{
+    charger_t *ccs;
+    float voltage;
+    float current;
+
+    if((data == NULL) || !charger_fake.enabled || !charger_fake.online ||
+       !charger_fake.auto_reply || charger_fake.hold_timeout)
+    {
+        return;
+    }
+
+    ccs = &data->board.charger;
+    if(charger_fake.last_control == CHARGER_CMD_DISABLE)
+    {
+        voltage = 0.0f;
+        current = 0.0f;
+    }
+    else if((charger_fake.readback_voltage > 0.0f) || (charger_fake.readback_current > 0.0f))
+    {
+        voltage = charger_fake.readback_voltage;
+        current = charger_fake.readback_current;
+    }
+    else
+    {
+        voltage = charger_fake.command_voltage;
+        current = charger_fake.command_current;
+    }
+
+    ccs->read_voltage = (float)charger_fake_sat_10x(voltage) * 0.1f;
+    ccs->read_current = (float)charger_fake_sat_10x(current) * 0.1f;
+    ccs->flags = charger_fake.flags;
+    ccs->hardware_fail = ((charger_fake.flags >> 0u) & 0x01u) != 0u;
+    ccs->overtemp_fail = ((charger_fake.flags >> 1u) & 0x01u) != 0u;
+    ccs->input_volt_fail = ((charger_fake.flags >> 2u) & 0x01u) != 0u;
+    ccs->voltage_sense_fail = ((charger_fake.flags >> 3u) & 0x01u) != 0u;
+    ccs->communication_fail = false;
+    ccs->last_rx_tick = osKernelGetTickCount();
+    ccs->rx_count++;
+    charger_fake.reply_count++;
+}
+
+static HAL_StatusTypeDef charger_fake_send_command(app_data_t *data, const uint8_t payload[8])
+{
+    charger_fake_ensure();
+    if((data == NULL) || (payload == NULL) || !charger_fake.enabled)
+    {
+        return HAL_ERROR;
+    }
+
+    memcpy(charger_fake.last_payload, payload, sizeof(charger_fake.last_payload));
+    charger_fake.command_voltage = (float)charger_fake_be16(&payload[0]) * 0.1f;
+    charger_fake.command_current = (float)charger_fake_be16(&payload[2]) * 0.1f;
+    charger_fake.last_control = payload[4];
+    charger_fake.command_count++;
+#if AMS_RENODE_CAN_CAPTURE
+    canbus_capture_record(CAN_ID_EXT, CCS_CANBUS_ID, payload);
+#endif
+
+    if(charger_fake.force_tx_fail)
+    {
+        charger_fake.tx_fail_count++;
+        return HAL_ERROR;
+    }
+
+    charger_fake_apply_reply(data);
+    return HAL_OK;
+}
+
+bool charger_fake_enabled(void)
+{
+    charger_fake_ensure();
+    return charger_fake.enabled;
+}
+
+void charger_fake_reset(void)
+{
+    charger_fake.initialized = false;
+    charger_fake_ensure();
+}
+
+void charger_fake_set_online(bool online)
+{
+    charger_fake_ensure();
+    charger_fake.enabled = true;
+    charger_fake.online = online;
+}
+
+void charger_fake_set_auto_reply(bool auto_reply)
+{
+    charger_fake_ensure();
+    charger_fake.enabled = true;
+    charger_fake.auto_reply = auto_reply;
+}
+
+void charger_fake_set_tx_fail(bool fail)
+{
+    charger_fake_ensure();
+    charger_fake.enabled = true;
+    charger_fake.force_tx_fail = fail;
+}
+
+void charger_fake_set_timeout(bool hold_timeout)
+{
+    charger_fake_ensure();
+    charger_fake.enabled = true;
+    charger_fake.hold_timeout = hold_timeout;
+    if(hold_timeout)
+    {
+        charger_fake.online = false;
+    }
+}
+
+void charger_fake_set_flags(uint8_t flags)
+{
+    charger_fake_ensure();
+    charger_fake.enabled = true;
+    charger_fake.flags = flags;
+}
+
+int charger_fake_set_readback(float voltage_v, float current_a)
+{
+    charger_fake_ensure();
+    if(!isfinite(voltage_v) || !isfinite(current_a) ||
+       (voltage_v < 0.0f) || (voltage_v > 500.0f) ||
+       (current_a < 0.0f) || (current_a > 100.0f))
+    {
+        return -1;
+    }
+
+    charger_fake.enabled = true;
+    charger_fake.readback_voltage = voltage_v;
+    charger_fake.readback_current = current_a;
+    return 0;
+}
+
+charger_fake_status_t charger_fake_get_status(void)
+{
+    charger_fake_status_t status;
+
+    charger_fake_ensure();
+    status.enabled = charger_fake.enabled;
+    status.online = charger_fake.online;
+    status.auto_reply = charger_fake.auto_reply;
+    status.force_tx_fail = charger_fake.force_tx_fail;
+    status.hold_timeout = charger_fake.hold_timeout;
+    status.flags = charger_fake.flags;
+    status.last_control = charger_fake.last_control;
+    status.command_voltage = charger_fake.command_voltage;
+    status.command_current = charger_fake.command_current;
+    status.readback_voltage = charger_fake.readback_voltage;
+    status.readback_current = charger_fake.readback_current;
+    status.command_count = charger_fake.command_count;
+    status.reply_count = charger_fake.reply_count;
+    status.tx_fail_count = charger_fake.tx_fail_count;
+    memcpy(status.last_payload, charger_fake.last_payload, sizeof(status.last_payload));
+    return status;
+}
+#else
+bool charger_fake_enabled(void)
+{
+    return false;
+}
+
+void charger_fake_reset(void)
+{
+}
+
+void charger_fake_set_online(bool online)
+{
+    (void)online;
+}
+
+void charger_fake_set_auto_reply(bool auto_reply)
+{
+    (void)auto_reply;
+}
+
+void charger_fake_set_tx_fail(bool fail)
+{
+    (void)fail;
+}
+
+void charger_fake_set_timeout(bool hold_timeout)
+{
+    (void)hold_timeout;
+}
+
+void charger_fake_set_flags(uint8_t flags)
+{
+    (void)flags;
+}
+
+int charger_fake_set_readback(float voltage_v, float current_a)
+{
+    (void)voltage_v;
+    (void)current_a;
+    return -1;
+}
+
+charger_fake_status_t charger_fake_get_status(void)
+{
+    return (charger_fake_status_t){0};
+}
+#endif
 
 static HAL_StatusTypeDef send_ams_packet(canbus_device_t *canbus,
                                          uint16_t packet,
@@ -851,7 +1264,11 @@ void canbus_task_fn(void *arg)
             can_data[6] = 0u;
             can_data[7] = 0u;
 
+#if AMS_RENODE_FAKE_CHARGER
+            HAL_StatusTypeDef charger_tx_status = charger_fake_send_command(data, can_data);
+#else
             HAL_StatusTypeDef charger_tx_status = canbus_send(canbus, CAN_ID_EXT, CCS_CANBUS_ID, can_data);
+#endif
             ret |= charger_tx_status;
             if(charger_tx_status == HAL_OK)
             {

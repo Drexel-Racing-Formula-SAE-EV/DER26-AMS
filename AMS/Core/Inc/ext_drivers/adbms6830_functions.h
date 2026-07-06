@@ -62,6 +62,32 @@ HAL_StatusTypeDef adbms6830_run_cell_adc_self_test(adbms6830_driver_t *dev);
 HAL_StatusTypeDef adbms6830_run_open_wire_check(adbms6830_driver_t *dev, bool odd_channels);
 HAL_StatusTypeDef adbms6830_run_aux_gpio_diagnostic(adbms6830_driver_t *dev);
 
+typedef struct
+{
+    bool enabled;
+    bool initialized;
+    uint8_t ic_count;
+    uint16_t pec_fail_mask;
+    uint16_t missing_mask;
+    uint16_t counter_fault_mask;
+    uint16_t min_cell_mv;
+    uint16_t max_cell_mv;
+    uint8_t min_cell_ic;
+    uint8_t min_cell_index;
+    uint8_t max_cell_ic;
+    uint8_t max_cell_index;
+} adbms6830_fake_status_t;
+
+bool adbms6830_fake_enabled(void);
+void adbms6830_fake_reset(void);
+int adbms6830_fake_set_all_cells_mv(uint16_t mv);
+int adbms6830_fake_set_cell_mv(uint8_t ic, uint8_t cell, uint16_t mv);
+int adbms6830_fake_set_aux_raw(uint8_t ic, uint8_t channel, int16_t raw);
+void adbms6830_fake_set_pec_fail_mask(uint16_t mask);
+void adbms6830_fake_set_missing_mask(uint16_t mask);
+void adbms6830_fake_set_counter_fault_mask(uint16_t mask);
+adbms6830_fake_status_t adbms6830_fake_get_status(void);
+
 ///* I2C COMM primitives */
 //void adbms6830_i2c_write(adbms6830_driver_t *dev, uint8_t slave_addr, uint8_t data);
 //void adbms6830_i2c_read(adbms6830_driver_t *dev, uint8_t slave_addr, uint8_t *rx_data);

@@ -61,7 +61,34 @@ typedef struct {
     uint32_t tx_fail_count;
 } charger_t;
 
+typedef struct {
+    bool enabled;
+    bool online;
+    bool auto_reply;
+    bool force_tx_fail;
+    bool hold_timeout;
+    uint8_t flags;
+    uint8_t last_control;
+    float command_voltage;
+    float command_current;
+    float readback_voltage;
+    float readback_current;
+    uint32_t command_count;
+    uint32_t reply_count;
+    uint32_t tx_fail_count;
+    uint8_t last_payload[8];
+} charger_fake_status_t;
+
 void charger_init(charger_t *dev, canbus_device_t *canbus);
+bool charger_fake_enabled(void);
+void charger_fake_reset(void);
+void charger_fake_set_online(bool online);
+void charger_fake_set_auto_reply(bool auto_reply);
+void charger_fake_set_tx_fail(bool fail);
+void charger_fake_set_timeout(bool hold_timeout);
+void charger_fake_set_flags(uint8_t flags);
+int charger_fake_set_readback(float voltage_v, float current_a);
+charger_fake_status_t charger_fake_get_status(void);
 
 #endif
 

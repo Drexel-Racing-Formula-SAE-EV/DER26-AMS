@@ -1,0 +1,99 @@
+# Paste these into the Renode USART3 analyzer after the AMS CLI banner appears.
+# Run one block at a time and read the normal firmware status output.
+
+help
+status
+fault
+
+# Healthy modeled board state.
+scenario healthy
+status
+fault
+volt
+temp
+current
+canlog
+
+# ADBMS6830 voltage fault path.
+scenario ov
+volt
+fault
+bringup adbms6830
+fault reset-voltage
+adbmsfake reset
+
+scenario uv
+volt
+fault
+fault reset-voltage
+adbmsfake reset
+
+# SMB temperature path.
+scenario hot
+temp
+fault
+fault reset-temp
+tempfake reset
+
+scenario cold
+temp
+fault
+tempfake missing 2 0x000003
+temp
+tempfake holdmissing on
+tempfake missing 2 0x000003
+temp
+tempfake reset
+fault reset-temp
+
+# DHAB current path.
+currentfake reset
+current
+currentfake amps 70
+current
+fault
+fault reset-current
+currentfake charge 10
+current
+currentfake mismatch 20 0
+current
+fault
+currentfake fail on
+current
+fault
+currentfake reset
+fault reset-current
+
+# Charger CAN command/readback path.
+scenario charge-ready
+charger
+canlog
+chargerfake flags 0x02
+charger
+fault
+chargerfake txfail on
+charger
+fault
+chargerfake txfail off
+fault reset-charger
+chargerfake timeout on
+charger
+fault
+chargerfake reset
+fault reset-charger
+
+# CAN transmit capture after normal task traffic.
+canlog clear
+state discharge
+status
+canlog
+state charge
+chargerfake rxgood
+charger
+canlog
+
+# Return to a clean modeled state.
+scenario healthy
+fault reset-all
+status
+fault
