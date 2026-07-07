@@ -240,6 +240,17 @@ static void build_json_state(char *buf, size_t cap, const ams_dash_state_t *s)
                 s->adbms2950_error_count_u8,
                 s->adbms2950_pec_fail_mask);
 
+    json_append(buf, cap, &off,
+                "\"tasks\":{\"stale_mask\":%u,\"seen_mask\":%u,"
+                "\"safety_stale_mask\":%u,\"task_heartbeat_fault\":%s,"
+                "\"logger_heartbeat_fault\":%s,\"logger_count\":%u},",
+                s->heartbeat_stale_mask,
+                s->heartbeat_seen_mask,
+                s->heartbeat_safety_stale_mask,
+                flag_set(s->task_health_flags, 0u) ? "true" : "false",
+                flag_set(s->task_health_flags, 1u) ? "true" : "false",
+                s->logger_heartbeat_count);
+
     append_cell_array(buf, cap, &off, s);
     json_append(buf, cap, &off, ",");
     append_temp_array(buf, cap, &off, s);
@@ -286,8 +297,8 @@ static esp_err_t csv_handler(httpd_req_t *req)
     char line[512];
     int n = snprintf(line,
                      sizeof(line),
-                     "rx_frames,stale,bms_ok,state,pack_V,current_A,min_cell_mV,max_cell_mV,max_temp_C,min_temp_C,temp_valid,voltage_valid,current_valid,smb_errors,smb_pec_fail_mask\n"
-                     "%lu,%d,%d,%u,%.1f,%.1f,%u,%u,%.1f,%.1f,%d,%d,%d,%u,%u\n",
+                     "rx_frames,stale,bms_ok,state,pack_V,current_A,min_cell_mV,max_cell_mV,max_temp_C,min_temp_C,temp_valid,voltage_valid,current_valid,smb_errors,smb_pec_fail_mask,heartbeat_stale_mask,heartbeat_safety_stale_mask,task_flags\n"
+                     "%lu,%d,%d,%u,%.1f,%.1f,%u,%u,%.1f,%.1f,%d,%d,%d,%u,%u,%u,%u,%u\n",
                      (unsigned long)s.rx_frames,
                      ams_dash_data_stale(&s, (uint32_t)esp_log_timestamp(), DASH_STALE_TIMEOUT_MS) ? 1 : 0,
                      flag_set(s.status_flags, 0u) ? 1 : 0,
@@ -302,7 +313,10 @@ static esp_err_t csv_handler(httpd_req_t *req)
                      flag_set(s.validity_flags, 0u) ? 1 : 0,
                      flag_set(s.validity_flags, 1u) ? 1 : 0,
                      s.adbms6830_error_count,
-                     s.adbms6830_pec_fail_mask);
+                     s.adbms6830_pec_fail_mask,
+                     s.heartbeat_stale_mask,
+                     s.heartbeat_safety_stale_mask,
+                     s.task_health_flags);
 
     if(n < 0)
     {
@@ -336,6 +350,7 @@ static const char INDEX_HTML[] =
 "<div class='card'><div class='label'>Fault Reasons</div><pre id='faults'></pre></div>"
 "<div class='card'><div class='label'>ADBMS Link</div><pre id='adbms'></pre></div>"
 "<div class='card'><div class='label'>Health</div><pre id='health'></pre></div>"
+"<div class='card'><div class='label'>Tasks</div><pre id='tasks'></pre></div>"
 "</div><div class='card'><div class='label'>Browser Log</div><div id='logcount'>0 samples</div>"
 "<button onclick='downloadLog()'>Download CSV log</button> <button onclick='rows=[];drawLogCount()'>Clear</button></div>"
 "<p><a href='/api/state'>JSON</a> | <a href='/api/snapshot.csv'>CSV snapshot</a></p>"
@@ -357,6 +372,7 @@ static const char INDEX_HTML[] =
 "document.getElementById('faults').textContent=JSON.stringify(s.faults,null,2);"
 "document.getElementById('adbms').textContent=JSON.stringify(s.adbms,null,2);"
 "document.getElementById('health').textContent=JSON.stringify(s.health,null,2);"
+"document.getElementById('tasks').textContent=JSON.stringify(s.tasks,null,2);"
 "addRow(s);"
 "}catch(e){document.getElementById('stale').textContent='offline';document.getElementById('stale').className='pill bad';}}"
 "setInterval(tick,500);tick();</script></body></html>";

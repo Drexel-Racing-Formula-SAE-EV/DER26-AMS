@@ -48,6 +48,7 @@ static UART_HandleTypeDef cli_dummy_uart;
 static CAN_RxHeaderTypeDef fake_rx_hdr;
 static uint8_t fake_rx_data[8];
 static HAL_StatusTypeDef fake_rx_status = HAL_OK;
+static CAN_HandleTypeDef hil_fake_hcan;
 static jmp_buf task_exit_jmp;
 static int task_exit_after_delay_until = 0;
 static int fake_mux_write_enable = 1;
@@ -562,6 +563,48 @@ static void host_mark_updated_temps(app_data_t *d, uint32_t mask)
     {
         d->acc.smb.last_temp_updated_mask[ic] = (ic < (uint8_t)d->acc.smb.num_ics) ? (mask & ((1UL << NTEMPS) - 1UL)) : 0u;
     }
+}
+
+static void host_send_hil_cell_triplet(uint8_t seg,
+                                       uint8_t first_cell,
+                                       uint16_t mv0,
+                                       uint16_t mv1,
+                                       uint16_t mv2)
+{
+    memset(&fake_rx_hdr, 0, sizeof(fake_rx_hdr));
+    fake_rx_hdr.IDE = CAN_ID_STD;
+    fake_rx_hdr.StdId = AMS_HIL_CAN_ID_CELL_SAMPLE;
+    fake_rx_hdr.DLC = 8u;
+    fake_rx_data[0] = seg;
+    fake_rx_data[1] = first_cell;
+    fake_rx_data[2] = (uint8_t)(mv0 >> 8);
+    fake_rx_data[3] = (uint8_t)(mv0 & 0xFFu);
+    fake_rx_data[4] = (uint8_t)(mv1 >> 8);
+    fake_rx_data[5] = (uint8_t)(mv1 & 0xFFu);
+    fake_rx_data[6] = (uint8_t)(mv2 >> 8);
+    fake_rx_data[7] = (uint8_t)(mv2 & 0xFFu);
+    HAL_CAN_RxFifo0MsgPendingCallback(&hil_fake_hcan);
+}
+
+static void host_send_hil_temp_triplet(uint8_t seg,
+                                       uint8_t first_sensor,
+                                       int16_t t0_deci_c,
+                                       int16_t t1_deci_c,
+                                       int16_t t2_deci_c)
+{
+    memset(&fake_rx_hdr, 0, sizeof(fake_rx_hdr));
+    fake_rx_hdr.IDE = CAN_ID_STD;
+    fake_rx_hdr.StdId = AMS_HIL_CAN_ID_TEMP_SAMPLE;
+    fake_rx_hdr.DLC = 8u;
+    fake_rx_data[0] = seg;
+    fake_rx_data[1] = first_sensor;
+    fake_rx_data[2] = (uint8_t)((uint16_t)t0_deci_c >> 8);
+    fake_rx_data[3] = (uint8_t)((uint16_t)t0_deci_c & 0xFFu);
+    fake_rx_data[4] = (uint8_t)((uint16_t)t1_deci_c >> 8);
+    fake_rx_data[5] = (uint8_t)((uint16_t)t1_deci_c & 0xFFu);
+    fake_rx_data[6] = (uint8_t)((uint16_t)t2_deci_c >> 8);
+    fake_rx_data[7] = (uint8_t)((uint16_t)t2_deci_c & 0xFFu);
+    HAL_CAN_RxFifo0MsgPendingCallback(&hil_fake_hcan);
 }
 
 static void test_accumulator_stats_and_balance(void){
@@ -4663,6 +4706,141 @@ static void test_hil_parser_and_estimator_core(void){
     CHECK(tx_log[0].stdid == AMS_ESTIMATOR_STATUS_CAN_ID);
     CHECK((tx_log[0].data[1] & AMS_EKF_FLAG_VALID) != 0u);
     CHECK((tx_log[0].data[1] & AMS_EKF_FLAG_HIL_SOURCE) != 0u);
+
+    fake_rx_hdr.StdId = AMS_HIL_CAN_ID_MEAS; fake_rx_hdr.DLC = 8;
+    v_10mV = 45000u; /* 450.00 V: proves 75s HIL uses 10 mV/count, not 1 mV/count. */
+    i_10mA = 12345;  /* +123.45 A, positive discharge convention. */
+    t_cC = -123;     /* -1.23 C signed temp handling. */
+    fake_rx_data[0]=(uint8_t)(v_10mV>>8); fake_rx_data[1]=(uint8_t)v_10mV;
+    fake_rx_data[2]=(uint8_t)((uint16_t)i_10mA>>8); fake_rx_data[3]=(uint8_t)((uint16_t)i_10mA);
+    fake_rx_data[4]=(uint8_t)((uint16_t)t_cC>>8); fake_rx_data[5]=(uint8_t)((uint16_t)t_cC);
+    fake_rx_data[6]=79u; fake_rx_data[7]=0u; fake_tick=1300u;
+    HAL_CAN_RxFifo0MsgPendingCallback(&hcan);
+    CHECK(fabsf(app.hil.meas.v_pack_V - 450.0f) < 0.02f);
+    CHECK(fabsf(app.hil.meas.i_pack_A - 123.45f) < 0.02f);
+    CHECK(fabsf(app.hil.meas.t_surf_C + 1.23f) < 0.02f);
+}
+
+static void test_hil_adbms_image_replaces_raw_reads(void)
+{
+    init_fake_app();
+    fake_tick = 1000u;
+
+    for(uint8_t seg = 0u; seg < NSMBS; seg++)
+    {
+        for(uint8_t first = 0u; first < NCELLS; first = (uint8_t)(first + 3u))
+        {
+            uint16_t mv[3] = {3700u, 3701u, 3702u};
+            for(uint8_t n = 0u; n < 3u; n++)
+            {
+                uint8_t cell = (uint8_t)(first + n);
+                if(cell < NCELLS)
+                {
+                    mv[n] = (uint16_t)(3600u + ((uint16_t)seg * 15u) + cell);
+                }
+            }
+            if((seg == 3u) && (first == 12u))
+            {
+                mv[2] = 4123u;
+            }
+            if((seg == 1u) && (first == 0u))
+            {
+                mv[0] = 3201u;
+            }
+            host_send_hil_cell_triplet(seg, first, mv[0], mv[1], mv[2]);
+        }
+
+        for(uint8_t first = 0u; first < NTEMPS; first = (uint8_t)(first + 3u))
+        {
+            int16_t t[3] = {250, 251, 252};
+            for(uint8_t n = 0u; n < 3u; n++)
+            {
+                uint8_t sensor = (uint8_t)(first + n);
+                if(sensor < NTEMPS)
+                {
+                    t[n] = (int16_t)(240 + (int16_t)seg + (int16_t)sensor);
+                }
+            }
+            if((seg == 4u) && (first == 21u))
+            {
+                t[2] = 615;
+            }
+            if((seg == 0u) && (first == 0u))
+            {
+                t[0] = -55;
+            }
+            host_send_hil_temp_triplet(seg, first, t[0], t[1], t[2]);
+        }
+    }
+
+    accumulator_hil_refresh_update_masks(&app.acc, fake_tick, AMS_HIL_ADBMS_IMAGE_TIMEOUT_MS);
+    accumulator_update_voltage_stats_at(&app.acc, fake_tick);
+    accumulator_update_temp_stats_at(&app.acc, fake_tick);
+
+    CHECK(app.acc.voltage_full_updated);
+    CHECK(app.acc.voltage_full_usable);
+    CHECK(app.acc.valid_voltage_count == (uint16_t)(NSMBS * NCELLS));
+    CHECK(app.acc.min_voltage_mv == 3201u);
+    CHECK(app.acc.max_voltage_mv == 4123u);
+    CHECK(accumulator_cell_voltage_mv(&app.acc, 3u, 14u) == 4123u);
+
+    CHECK(app.acc.temp_full_updated);
+    CHECK(app.acc.temp_full_usable);
+    CHECK(app.acc.valid_temp_count == (uint16_t)(NSMBS * NTEMPS));
+    CHECK(app.acc.min_temp_deci_c >= -56 && app.acc.min_temp_deci_c <= -54);
+    CHECK(app.acc.max_temp_deci_c >= 614 && app.acc.max_temp_deci_c <= 616);
+
+    fake_tick += (AMS_HIL_ADBMS_IMAGE_TIMEOUT_MS + 1u);
+    accumulator_hil_refresh_update_masks(&app.acc, fake_tick, AMS_HIL_ADBMS_IMAGE_TIMEOUT_MS);
+    accumulator_update_voltage_stats_at(&app.acc, fake_tick);
+    accumulator_update_temp_stats_at(&app.acc, fake_tick);
+
+    CHECK(app.acc.updated_voltage_count == 0u);
+    CHECK(app.acc.updated_temp_count == 0u);
+    CHECK(app.acc.voltage_full_updated == false);
+    CHECK(app.acc.temp_full_updated == false);
+    CHECK(app.acc.valid_voltage_count == (uint16_t)(NSMBS * NCELLS));
+    CHECK(app.acc.valid_temp_count == (uint16_t)(NSMBS * NTEMPS));
+
+    fake_tick += ACCUMULATOR_TEMP_STALE_TIMEOUT_MS;
+    accumulator_hil_refresh_update_masks(&app.acc, fake_tick, AMS_HIL_ADBMS_IMAGE_TIMEOUT_MS);
+    accumulator_update_voltage_stats_at(&app.acc, fake_tick);
+    accumulator_update_temp_stats_at(&app.acc, fake_tick);
+
+    CHECK(app.acc.valid_voltage_count == 0u);
+    CHECK(app.acc.valid_temp_count == 0u);
+
+#if AMS_HIL_REPLACE_ADBMS
+    init_fake_app();
+    fake_tick = 2000u;
+    bms_pin_state = GPIO_PIN_RESET;
+    app.state = STATE_DISCARGE;
+    app.current_valid = true;
+    app.current_fault = false;
+    app.task_heartbeat_fault = false;
+
+    for(uint8_t seg = 0u; seg < NSMBS; seg++)
+    {
+        for(uint8_t first = 0u; first < NCELLS; first = (uint8_t)(first + 3u))
+        {
+            host_send_hil_cell_triplet(seg, first, 3700u, 3700u, 3700u);
+        }
+        for(uint8_t first = 0u; first < NTEMPS; first = (uint8_t)(first + 3u))
+        {
+            host_send_hil_temp_triplet(seg, first, 250, 250, 250);
+        }
+    }
+
+    run_one_adbms_task_iteration(&app);
+
+    CHECK(app.voltage_valid == true);
+    CHECK(app.voltage_fault == false);
+    CHECK(app.temp_valid == true);
+    CHECK(app.temp_fault == false);
+    CHECK(app.adbms_diag_fault == false);
+    CHECK(app.acc.valid_voltage_count == (uint16_t)(NSMBS * NCELLS));
+    CHECK(app.acc.valid_temp_count == (uint16_t)(NSMBS * NTEMPS));
+#endif
 }
 
 static void test_charge_state_disable_matrix(void){
@@ -4822,6 +5000,11 @@ static void test_periods_and_driver_edge_cases(void){
 }
 
 int main(void){
+#if AMS_HOST_ONLY_HIL_ADBMS_TEST
+    test_hil_adbms_image_replaces_raw_reads(); puts("PASS HIL ADBMS image replacement");
+    puts("ALL HIL ADBMS REPLACEMENT TESTS PASSED");
+    return 0;
+#else
     test_accumulator_stats_and_balance(); puts("PASS accumulator stats/balance");
     test_voltage_stats_boundaries_and_fuzz(); puts("PASS voltage boundary/fuzz stats");
     test_voltage_fault_policy_and_strict_scan_freshness(); puts("PASS voltage fault strict scan freshness policy");
@@ -4881,6 +5064,7 @@ int main(void){
     test_estimator_step_faults_and_scalability(); puts("PASS estimator step faults/scalability");
     test_hil_parser_edge_cases(); puts("PASS HIL parser edge cases");
     test_hil_parser_and_estimator_core(); puts("PASS HIL parser and estimator core");
+    test_hil_adbms_image_replaces_raw_reads(); puts("PASS HIL ADBMS image replacement");
     test_estimator_task_hil_and_hardware_paths(); puts("PASS estimator task HIL/hardware paths");
     test_estimator_status_packet_edges(); puts("PASS estimator status packet edges");
     test_can_rx_filter_matrix(); puts("PASS CAN RX filter matrix");
@@ -4895,4 +5079,5 @@ int main(void){
     test_fault_matrix_extra(); puts("PASS fault matrix extra");
     puts("ALL COMPREHENSIVE HOST INJECTION TESTS PASSED");
     return 0;
+#endif
 }

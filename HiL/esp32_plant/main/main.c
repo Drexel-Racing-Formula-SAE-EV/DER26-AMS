@@ -32,6 +32,20 @@
  *     [4:5]  T_max    int16   0.01 C
  *     [6:7]  T_avg    int16   0.01 C
  *
+ *   0x210 — ADBMS replacement cell triplet
+ *     [0]    segment  uint8   0..4
+ *     [1]    first    uint8   first cell index in this triplet
+ *     [2:3]  cell0    uint16  1 mV
+ *     [4:5]  cell1    uint16  1 mV
+ *     [6:7]  cell2    uint16  1 mV
+ *
+ *   0x211 — ADBMS replacement temperature triplet
+ *     [0]    segment  uint8   0..4
+ *     [1]    first    uint8   first thermistor index in this triplet
+ *     [2:3]  temp0    int16   0.1 C
+ *     [4:5]  temp1    int16   0.1 C
+ *     [6:7]  temp2    int16   0.1 C
+ *
  * IMPORTANT: 0x200 voltage scaling is now 10 mV/bit, not 1 mV/bit.
  * The old 1 mV scale would saturate above 65.535 V and cannot represent a
  * 75s accumulator. Update the receiver decode to V_pack = raw * 0.01f.
@@ -59,6 +73,8 @@ static const char *TAG = "P42A_PLANT";
 #define CAN_ID_MEAS         0x200U
 #define CAN_ID_TRUTH        0x201U
 #define CAN_ID_AMS_SUMMARY  0x202U
+#define CAN_ID_CELL_SAMPLE  0x210U
+#define CAN_ID_TEMP_SAMPLE  0x211U
 #define CAN_ID_PLANT_CTRL   0x300U
 
 #define PLANT_CMD_RESET0    0xA5U
@@ -92,6 +108,9 @@ static const char *TAG = "P42A_PLANT";
 #define TEMP_COUNTS_PER_C 100.0f
 #define CURRENT_COUNTS_PER_A 100.0f
 #define SOC_COUNTS_PER_UNIT 10000.0f
+
+#define CELL_SAMPLE_STRIDE 3U
+#define TEMP_SAMPLE_STRIDE 3U
 
 /* Generated Simulink model state. */
 static RT_MODEL_drev_75s6p_p42a_accu_T s_plant_M;
@@ -130,6 +149,8 @@ typedef struct {
     float T_surf;
     float T_core;
     float SoC_true;
+    float V_group[PLANT_NUM_GROUPS];
+    float T_sensor[PLANT_NUM_THERMISTORS];
     float V_min;
     float V_max;
     float T_max;
@@ -340,6 +361,70 @@ static void pack_ams_summary(const plant_can_snapshot_t *d, uint8_t *buf)
     buf[7] = (uint8_t)((uint16_t)tavg_cC & 0xFFU);
 }
 
+static void pack_cell_sample(const plant_can_snapshot_t *d,
+                             uint8_t seg,
+                             uint8_t first_cell,
+                             uint8_t *buf)
+{
+    if ((d == NULL) || (buf == NULL)) {
+        return;
+    }
+
+    buf[0] = seg;
+    buf[1] = first_cell;
+
+    for (uint8_t n = 0U; n < CELL_SAMPLE_STRIDE; n++)
+    {
+        uint8_t cell = (uint8_t)(first_cell + n);
+        uint16_t mv = 0U;
+
+        if ((seg < PLANT_NUM_SEGMENTS) && (cell < 15U))
+        {
+            uint32_t group = ((uint32_t)seg * 15U) + cell;
+            if (group < PLANT_NUM_GROUPS)
+            {
+                mv = sat_u16(d->V_group[group] * GROUP_VOLTAGE_COUNTS_PER_V);
+            }
+        }
+
+        uint8_t off = (uint8_t)(2U + (2U * n));
+        buf[off] = (uint8_t)(mv >> 8);
+        buf[off + 1U] = (uint8_t)(mv & 0xFFU);
+    }
+}
+
+static void pack_temp_sample(const plant_can_snapshot_t *d,
+                             uint8_t seg,
+                             uint8_t first_sensor,
+                             uint8_t *buf)
+{
+    if ((d == NULL) || (buf == NULL)) {
+        return;
+    }
+
+    buf[0] = seg;
+    buf[1] = first_sensor;
+
+    for (uint8_t n = 0U; n < TEMP_SAMPLE_STRIDE; n++)
+    {
+        uint8_t sensor = (uint8_t)(first_sensor + n);
+        int16_t deci_c = 0;
+
+        if ((seg < PLANT_NUM_SEGMENTS) && (sensor < 24U))
+        {
+            uint32_t therm = ((uint32_t)seg * 24U) + sensor;
+            if (therm < PLANT_NUM_THERMISTORS)
+            {
+                deci_c = sat_i16(d->T_sensor[therm] * 10.0f);
+            }
+        }
+
+        uint8_t off = (uint8_t)(2U + (2U * n));
+        buf[off] = (uint8_t)((uint16_t)deci_c >> 8);
+        buf[off + 1U] = (uint8_t)((uint16_t)deci_c & 0xFFU);
+    }
+}
+
 static void plant_model_reset(void)
 {
     memset(&s_plant_DW, 0, sizeof(s_plant_DW));
@@ -406,6 +491,8 @@ static bool read_can_snapshot(plant_can_snapshot_t *snap)
     snap->T_surf = plant_shared.T_surf;
     snap->T_core = plant_shared.T_core;
     snap->SoC_true = plant_shared.SoC_true;
+    memcpy(snap->V_group, plant_shared.V_group, sizeof(snap->V_group));
+    memcpy(snap->T_sensor, plant_shared.T_sensor, sizeof(snap->T_sensor));
     snap->V_min = plant_shared.V_min;
     snap->V_max = plant_shared.V_max;
     snap->T_max = plant_shared.T_max;
@@ -515,6 +602,8 @@ static void can_tx_task(void *pvParameters)
     uint8_t meas_buf[8] = {0};
     uint8_t truth_buf[8] = {0};
     uint8_t ams_buf[8] = {0};
+    uint8_t cell_buf[8] = {0};
+    uint8_t temp_buf[8] = {0};
 
     uint32_t tx_count = 0U;
 
@@ -535,8 +624,33 @@ static void can_tx_task(void *pvParameters)
             esp_err_t e1 = mcp2515_send_frame(CAN_ID_MEAS, meas_buf, 8);
             esp_err_t e2 = mcp2515_send_frame(CAN_ID_TRUTH, truth_buf, 8);
             esp_err_t e3 = mcp2515_send_frame(CAN_ID_AMS_SUMMARY, ams_buf, 8);
+            bool image_ok = true;
 
-            if ((e1 == ESP_OK) && (e2 == ESP_OK) && (e3 == ESP_OK))
+            for (uint8_t seg = 0U; seg < PLANT_NUM_SEGMENTS; seg++)
+            {
+                for (uint8_t first = 0U; first < 15U; first = (uint8_t)(first + CELL_SAMPLE_STRIDE))
+                {
+                    pack_cell_sample(&snap, seg, first, cell_buf);
+                    if (mcp2515_send_frame(CAN_ID_CELL_SAMPLE, cell_buf, 8) != ESP_OK)
+                    {
+                        image_ok = false;
+                    }
+                }
+            }
+
+            for (uint8_t seg = 0U; seg < PLANT_NUM_SEGMENTS; seg++)
+            {
+                for (uint8_t first = 0U; first < 24U; first = (uint8_t)(first + TEMP_SAMPLE_STRIDE))
+                {
+                    pack_temp_sample(&snap, seg, first, temp_buf);
+                    if (mcp2515_send_frame(CAN_ID_TEMP_SAMPLE, temp_buf, 8) != ESP_OK)
+                    {
+                        image_ok = false;
+                    }
+                }
+            }
+
+            if ((e1 == ESP_OK) && (e2 == ESP_OK) && (e3 == ESP_OK) && image_ok)
             {
                 tx_count++;
 
@@ -556,7 +670,7 @@ static void can_tx_task(void *pvParameters)
             }
             else
             {
-                printf("TX FAIL e1=%d e2=%d e3=%d\n", e1, e2, e3);
+                printf("TX FAIL e1=%d e2=%d e3=%d image_ok=%d\n", e1, e2, e3, image_ok ? 1 : 0);
             }
         }
         else

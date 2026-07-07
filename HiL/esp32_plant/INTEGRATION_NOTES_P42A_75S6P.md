@@ -13,6 +13,9 @@ This project keeps the existing ESP32 plant-node architecture and replaces only 
 - shared plant state protected by `plant_mutex`
 - current profile infrastructure from `drive_profiles.h`
 
+The MCP2515 driver is configured for 250 kbit/s with an 8 MHz crystal, matching
+the AMS STM32 CAN1 timing (`Prescaler=12`, `BS1=15TQ`, `BS2=2TQ`).
+
 ## Replaced/updated
 
 - The old DFN replay `main.c` was replaced with a live Simulink plant-step loop.
@@ -58,6 +61,33 @@ A new optional AMS summary frame is sent at `0x202`:
 [4:5] T_max int16,  0.01 C/bit
 [6:7] T_avg int16,  0.01 C/bit
 ```
+
+## ADBMS replacement image frames
+
+For bench firmware built with `AMS_HIL_REPLACE_ADBMS=1`, the plant also sends
+a complete logical replacement for the ADBMS read layer:
+
+```text
+0x210 cell triplet:
+[0]   segment index, 0..4
+[1]   first cell index in this triplet
+[2:3] cell[first + 0] uint16, 1 mV/bit
+[4:5] cell[first + 1] uint16, 1 mV/bit
+[6:7] cell[first + 2] uint16, 1 mV/bit
+
+0x211 temperature triplet:
+[0]   segment index, 0..4
+[1]   first thermistor index in this triplet
+[2:3] temp[first + 0] int16, 0.1 C/bit
+[4:5] temp[first + 1] int16, 0.1 C/bit
+[6:7] temp[first + 2] int16, 0.1 C/bit
+```
+
+The ESP32 sends 25 cell-image frames and 40 thermistor-image frames per plant
+tick. The AMS parser converts these into the same accumulator raw structures
+and update masks used by the ADBMS6830 path, then the existing voltage and
+temperature fault logic runs unchanged. Freshness is still enforced; stale
+image frames do not keep BMS_OK alive.
 
 ## Build note
 

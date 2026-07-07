@@ -30,7 +30,9 @@ Source input contained an ESP-IDF project plus Eclipse workspace metadata and a 
 - fixed MCP2515 RX SPI buffer sizing
 - added argument/state checks in the MCP2515 driver
 - made MCP2515 init return errors instead of using `ESP_ERROR_CHECK()` abort paths
+- aligned the MCP2515 timing with AMS CAN1 at 250 kbit/s for an 8 MHz crystal
 - documented that 75s pack voltage uses 10 mV/count on CAN ID `0x200`
+- added CAN `0x210`/`0x211` ADBMS replacement image frames for bench HIL firmware
 
 ## Validation performed in sandbox
 

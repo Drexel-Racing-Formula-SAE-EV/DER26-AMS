@@ -125,6 +125,25 @@ static void test_detail_and_masks(void)
     CHECK(s.voltage_pec_mask[3] == 0x0101u);
 }
 
+static void test_task_health_frame(void)
+{
+    ams_dash_state_t s;
+    ams_dash_state_init(&s);
+
+    const uint8_t task_health[8] = {
+        0x12u, 0x34u, 0x00u, 0x1Fu, 0x00u, 0x05u, 0x03u, 0x77u
+    };
+    ams_can_frame_t th = frame(AMS_LOGGER_CAN_ID_TASK_HEALTH, task_health);
+    CHECK(ams_dash_decode_frame(&s, &th, 60u));
+    CHECK(s.heartbeat_stale_mask == 0x1234u);
+    CHECK(s.heartbeat_seen_mask == 0x001Fu);
+    CHECK(s.heartbeat_safety_stale_mask == 0x0005u);
+    CHECK(s.task_health_flags == 0x03u);
+    CHECK(s.logger_heartbeat_count == 0x77u);
+    CHECK(s.logger_frames == 1u);
+    CHECK(s.unknown_frames == 0u);
+}
+
 static void test_rejects_non_contract_frames(void)
 {
     ams_dash_state_t s;
@@ -152,6 +171,7 @@ int main(void)
 {
     test_summary_frames();
     test_detail_and_masks();
+    test_task_health_frame();
     test_rejects_non_contract_frames();
     puts("decoder_smoke_test PASS");
     return 0;

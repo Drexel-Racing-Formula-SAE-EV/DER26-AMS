@@ -193,6 +193,7 @@ void adbms_task_fn(void *argument)
 	    data->adbms_scan_count++;
 
 	    /* Turn off balancing before reading so cell voltages recover from load. */
+#if !AMS_HIL_REPLACE_ADBMS
 	    if(accumulator_clear_balance(acc) != 0)
 	    {
 	        data->adbms_last_diag_status = HAL_ERROR;
@@ -200,9 +201,16 @@ void adbms_task_fn(void *argument)
 	        data->adbms_diag_fault = true;
 	        set_bms(0);
 	    }
+#endif
 	    osDelay(100);
 
+#if AMS_HIL_REPLACE_ADBMS
+        accumulator_hil_refresh_update_masks(acc,
+                                             osKernelGetTickCount(),
+                                             AMS_HIL_ADBMS_IMAGE_TIMEOUT_MS);
+#else
         (void)accumulator_read_volt(acc);
+#endif
         accumulator_update_voltage_stats_at(acc, osKernelGetTickCount());
 
         data->max_voltage = acc->max_volt;
@@ -218,7 +226,13 @@ void adbms_task_fn(void *argument)
         }
         ams_heartbeat_kick(data, AMS_HEARTBEAT_ADBMS, osKernelGetTickCount());
 
+#if AMS_HIL_REPLACE_ADBMS
+        accumulator_hil_refresh_update_masks(acc,
+                                             osKernelGetTickCount(),
+                                             AMS_HIL_ADBMS_IMAGE_TIMEOUT_MS);
+#else
         (void)accumulator_read_temp(acc);
+#endif
         accumulator_update_temp_stats_at(acc, osKernelGetTickCount());
         data->max_temp = acc->max_temp;
         data->avg_temp = acc->avg_temp;
@@ -234,11 +248,19 @@ void adbms_task_fn(void *argument)
 	    }
 	    ams_heartbeat_kick(data, AMS_HEARTBEAT_TEMP, osKernelGetTickCount());
 
+#if AMS_HIL_REPLACE_ADBMS
+	    data->adbms_config_fault = false;
+	    data->adbms_status_fault = false;
+	    data->adbms_open_wire_fault = false;
+	    data->adbms_diag_fault = false;
+	    data->adbms_last_diag_status = HAL_OK;
+#else
 	    adbms_task_run_periodic_diagnostics(data);
 	    if(data->adbms_diag_fault)
 	    {
 	        set_bms(0);
 	    }
+#endif
 
 	    bool bms_ok_ready = (data->voltage_valid &&
 	                         !data->voltage_fault &&
@@ -255,6 +277,7 @@ void adbms_task_fn(void *argument)
         set_bms(bms_ok_ready);
 
         /* Voltage charge-stop can still balance; hard faults/temp stop cannot. */
+#if !AMS_HIL_REPLACE_ADBMS
 	        if((data->state == STATE_CHARGE) &&
 	           !data->balance_inhibit &&
 	           data->voltage_valid &&
@@ -273,6 +296,7 @@ void adbms_task_fn(void *argument)
         {
             accumulator_clear_balance(acc);
 	        }
+#endif
 
 	        data->adbms_scan_active = false;
 	        osDelayUntil(entry + (1000 / ADBMS_FREQ));

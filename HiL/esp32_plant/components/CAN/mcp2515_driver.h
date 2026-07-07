@@ -11,8 +11,8 @@
 /*
  * mcp2515_driver.h
  *
- * Minimal MCP2515 TX-only driver for ESP-IDF.
- * Configured for 500 kbps, 8 MHz crystal.
+ * Minimal MCP2515 TX/RX driver for ESP-IDF.
+ * Configured for 250 kbit/s, 8 MHz crystal, matching AMS CAN1.
  * SPI2_HOST (HSPI): MOSI=23 MISO=19 CLK=18 CS=5 INT=4
  */
 
@@ -30,14 +30,14 @@
 
 /*
  * mcp2515_init()
- * Resets MCP2515, configures for 500 kbps @ 8 MHz, enters Normal mode.
+ * Resets MCP2515, configures for 250 kbit/s @ 8 MHz, enters Normal mode.
  * Returns ESP_OK on success.
  */
 esp_err_t mcp2515_init(void);
 
 /*
  * mcp2515_send_frame()
- * Loads TXB0 and issues RTS. Blocks until TXB0 clears (~2 ms max at 500kbps).
+ * Loads TXB0 and issues RTS. Blocks until TXB0 clears.
  * id  : 11-bit standard CAN ID
  * data: up to 8 bytes
  * len : DLC (0–8)

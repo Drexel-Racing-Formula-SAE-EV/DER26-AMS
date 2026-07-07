@@ -121,6 +121,10 @@ void accumulator_init(accumulator_t *dev,
 	memset(dev->cell_voltage_valid, 0, sizeof(dev->cell_voltage_valid));
 	memset(dev->cell_voltage_last_update_ms, 0, sizeof(dev->cell_voltage_last_update_ms));
 	memset(dev->cell_voltage_consecutive_misses, 0, sizeof(dev->cell_voltage_consecutive_misses));
+	memset(dev->hil_cell_last_update_ms, 0, sizeof(dev->hil_cell_last_update_ms));
+	memset(dev->hil_temp_last_update_ms, 0, sizeof(dev->hil_temp_last_update_ms));
+	memset(dev->hil_cell_seen_mask, 0, sizeof(dev->hil_cell_seen_mask));
+	memset(dev->hil_temp_seen_mask, 0, sizeof(dev->hil_temp_seen_mask));
 	memset(dev->updated_voltage_mask, 0, sizeof(dev->updated_voltage_mask));
 	memset(dev->usable_voltage_mask, 0, sizeof(dev->usable_voltage_mask));
 	memset(dev->pec_fail_voltage_mask, 0, sizeof(dev->pec_fail_voltage_mask));
@@ -385,6 +389,176 @@ static uint16_t accumulator_code_to_mv(int16_t code)
     }
 
     return (uint16_t)((volts * 1000.0f) + 0.5f);
+}
+
+static int16_t accumulator_mv_to_code(uint16_t mv)
+{
+    float volts = (float)mv / 1000.0f;
+    float code = (volts / 0.000150f) - 10000.0f;
+
+    if(!isfinite(code))
+    {
+        return 0;
+    }
+    if(code >= (float)INT16_MAX)
+    {
+        return INT16_MAX;
+    }
+    if(code <= (float)INT16_MIN)
+    {
+        return INT16_MIN;
+    }
+
+    return (int16_t)lroundf(code);
+}
+
+static int16_t accumulator_temp_deci_c_to_raw(int16_t deci_c)
+{
+    float temp_c = (float)deci_c / 10.0f;
+    float temp_k = temp_c + 273.15f;
+
+    if((temp_k <= 0.0f) || !isfinite(temp_k))
+    {
+        return 0;
+    }
+
+    const float a = 3.354016435e-3f;
+    const float b = 2.565235509e-4f;
+    float r = 10000.0f * expf(((1.0f / temp_k) - a) / b);
+
+    if((r <= 0.0f) || !isfinite(r))
+    {
+        return 0;
+    }
+
+    float voltage = 5.0f * 10000.0f / (r + 10000.0f);
+    float raw = (voltage / 0.000150f) - 10000.0f;
+
+    if(!isfinite(raw))
+    {
+        return 0;
+    }
+    if(raw >= (float)INT16_MAX)
+    {
+        return INT16_MAX;
+    }
+    if(raw <= (float)INT16_MIN)
+    {
+        return INT16_MIN;
+    }
+
+    return (int16_t)lroundf(raw);
+}
+
+int accumulator_hil_ingest_cell_triplet(accumulator_t *dev,
+                                        uint8_t seg,
+                                        uint8_t first_cell,
+                                        const uint16_t cell_mv[3],
+                                        uint32_t now_ms)
+{
+    if((dev == NULL) || (cell_mv == NULL) || (seg >= NSMBS) || (first_cell >= NCELLS))
+    {
+        return -1;
+    }
+
+    adbms6830_asic *smb_ics = (dev->smb.ics != NULL) ? dev->smb.ics : dev->smb_ics;
+
+    for(uint8_t n = 0u; n < 3u; n++)
+    {
+        uint8_t cell = (uint8_t)(first_cell + n);
+        if(cell >= NCELLS)
+        {
+            break;
+        }
+
+        uint16_t bit = (uint16_t)(1u << cell);
+        smb_ics[seg].cell.c_codes[cell] = accumulator_mv_to_code(cell_mv[n]);
+        dev->hil_cell_last_update_ms[seg][cell] = now_ms;
+        dev->hil_cell_seen_mask[seg] |= bit;
+        dev->smb.last_cell_updated_mask[seg] |= bit;
+        dev->smb.last_cell_pec_mask[seg] &= (uint16_t)~bit;
+    }
+
+    return 0;
+}
+
+int accumulator_hil_ingest_temp_triplet(accumulator_t *dev,
+                                        uint8_t seg,
+                                        uint8_t first_sensor,
+                                        const int16_t temp_deci_c[3],
+                                        uint32_t now_ms)
+{
+    if((dev == NULL) || (temp_deci_c == NULL) || (seg >= NSMBS) || (first_sensor >= NTEMPS))
+    {
+        return -1;
+    }
+
+    adbms6830_asic *smb_ics = (dev->smb.ics != NULL) ? dev->smb.ics : dev->smb_ics;
+
+    for(uint8_t n = 0u; n < 3u; n++)
+    {
+        uint8_t sensor = (uint8_t)(first_sensor + n);
+        if(sensor >= NTEMPS)
+        {
+            break;
+        }
+
+        uint32_t bit = (uint32_t)(1UL << sensor);
+        smb_ics[seg].temp.raw[sensor] = accumulator_temp_deci_c_to_raw(temp_deci_c[n]);
+        dev->hil_temp_last_update_ms[seg][sensor] = now_ms;
+        dev->hil_temp_seen_mask[seg] |= bit;
+        dev->smb.last_temp_updated_mask[seg] |= bit;
+    }
+
+    return 0;
+}
+
+void accumulator_hil_refresh_update_masks(accumulator_t *dev,
+                                          uint32_t now_ms,
+                                          uint32_t timeout_ms)
+{
+    if(dev == NULL)
+    {
+        return;
+    }
+
+    for(uint8_t seg = 0u; seg < NSMBS; seg++)
+    {
+        uint16_t cell_mask = 0u;
+        uint32_t temp_mask = 0u;
+
+        for(uint8_t cell = 0u; cell < NCELLS; cell++)
+        {
+            uint16_t bit = (uint16_t)(1u << cell);
+            if((dev->hil_cell_seen_mask[seg] & bit) != 0u)
+            {
+                uint32_t age_ms = (now_ms >= dev->hil_cell_last_update_ms[seg][cell]) ?
+                                  (now_ms - dev->hil_cell_last_update_ms[seg][cell]) : 0u;
+                if(age_ms <= timeout_ms)
+                {
+                    cell_mask |= bit;
+                }
+            }
+        }
+
+        for(uint8_t sensor = 0u; sensor < NTEMPS; sensor++)
+        {
+            uint32_t bit = (uint32_t)(1UL << sensor);
+            if((dev->hil_temp_seen_mask[seg] & bit) != 0u)
+            {
+                uint32_t age_ms = (now_ms >= dev->hil_temp_last_update_ms[seg][sensor]) ?
+                                  (now_ms - dev->hil_temp_last_update_ms[seg][sensor]) : 0u;
+                if(age_ms <= timeout_ms)
+                {
+                    temp_mask |= bit;
+                }
+            }
+        }
+
+        dev->smb.last_cell_updated_mask[seg] = cell_mask;
+        dev->smb.last_cell_pec_mask[seg] = 0u;
+        dev->smb.last_temp_updated_mask[seg] = temp_mask;
+    }
 }
 
 static uint16_t accumulator_expected_cell_count(const accumulator_t *dev)

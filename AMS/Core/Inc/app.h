@@ -37,6 +37,12 @@
 #define AMS_HW_BRINGUP_BALANCE_INHIBIT_DEFAULT AMS_HW_BRINGUP
 #endif
 
+#ifndef AMS_HIL_REPLACE_ADBMS
+#define AMS_HIL_REPLACE_ADBMS 0
+#endif
+
+#define AMS_HIL_ADBMS_IMAGE_TIMEOUT_MS 500u
+
 #define ERR_FREQ 20
 #define CLI_FREQ 20
 #define AIR_FREQ 2 // used to be 10

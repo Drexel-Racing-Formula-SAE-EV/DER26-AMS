@@ -222,6 +222,14 @@ bool ams_dash_decode_frame(ams_dash_state_t *state,
             state->adbms2950_ic_count = d[7];
             break;
 
+        case AMS_LOGGER_CAN_ID_TASK_HEALTH:
+            state->heartbeat_stale_mask = be_u16(&d[0]);
+            state->heartbeat_seen_mask = be_u16(&d[2]);
+            state->heartbeat_safety_stale_mask = be_u16(&d[4]);
+            state->task_health_flags = d[6];
+            state->logger_heartbeat_count = d[7];
+            break;
+
         case AMS_LOGGER_CAN_ID_CELL_DETAIL:
             decode_cell_detail(state, d);
             break;

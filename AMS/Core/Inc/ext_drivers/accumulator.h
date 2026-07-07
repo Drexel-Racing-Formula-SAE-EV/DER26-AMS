@@ -89,6 +89,10 @@ typedef struct
 	bool cell_voltage_valid[NSMBS][NCELLS];
 	uint32_t cell_voltage_last_update_ms[NSMBS][NCELLS];
 	uint8_t cell_voltage_consecutive_misses[NSMBS][NCELLS];
+	uint32_t hil_cell_last_update_ms[NSMBS][NCELLS];
+	uint32_t hil_temp_last_update_ms[NSMBS][NTEMPS];
+	uint16_t hil_cell_seen_mask[NSMBS];
+	uint32_t hil_temp_seen_mask[NSMBS];
 
 	uint16_t updated_voltage_mask[NSMBS];
 	uint16_t usable_voltage_mask[NSMBS];
@@ -141,5 +145,18 @@ int16_t accumulator_temp_deci_c(const accumulator_t *dev, uint8_t seg, uint8_t s
 uint8_t accumulator_configured_smb_count(const accumulator_t *dev);
 int accumulator_set_balance(accumulator_t *dev);
 int accumulator_clear_balance(accumulator_t *dev);
+int accumulator_hil_ingest_cell_triplet(accumulator_t *dev,
+                                        uint8_t seg,
+                                        uint8_t first_cell,
+                                        const uint16_t cell_mv[3],
+                                        uint32_t now_ms);
+int accumulator_hil_ingest_temp_triplet(accumulator_t *dev,
+                                        uint8_t seg,
+                                        uint8_t first_sensor,
+                                        const int16_t temp_deci_c[3],
+                                        uint32_t now_ms);
+void accumulator_hil_refresh_update_masks(accumulator_t *dev,
+                                          uint32_t now_ms,
+                                          uint32_t timeout_ms);
 
 #endif /* INC_EXT_DRIVERS_ACCUMULATOR_H_ */
