@@ -42,6 +42,7 @@ int get_spi_debug(int argc, char *argv[]);
 int get_apm_debug(int argc, char *argv[]);
 int get_bringup(int argc, char *argv[]);
 int bmsok_control(int argc, char *argv[]);
+int balance_control(int argc, char *argv[]);
 int set_state(int argc, char *argv[]);
 int cause_fault(int argc, char *argv[]);
 
@@ -68,6 +69,7 @@ command_t cmds[] =
 	{"apm", &get_apm_debug, "ADBMS2950/APM debug: apm [status|probe|clear|enable|disable]"},
 	{"bringup", &get_bringup, "bench bring-up summaries: bringup [help|board|adbms6830|apm2950|charger-lv|charger-battery|ready|snapshot|evidence]"},
 	{"bmsok", &bmsok_control, "BMS_OK control: bmsok [status|release|inhibit]"},
+	{"balance", &balance_control, "balancing control: balance [status|inhibit|release|clear]"},
 	{"state", &set_state, "gets or sets the AMS state [charge|discharge]"},
 	{"cause_fault", &cause_fault, "cause BMS fault for tech"},
 };
@@ -342,16 +344,17 @@ int get_status(int argc, char *argv[])
     int ret = 0;
     SPI_HandleTypeDef *hspi = data->acc.smb.hspi;
 
-    snprintf(outline, CLI_LINESZ,
-             "FW v%d.%d.%d build:%s state:%s BMS_OK:%d inhibit:%d blocked:%lu",
-             VER_MAJOR,
-             VER_MINOR,
-             VER_BUG,
-             AMS_HW_BRINGUP ? "hw-bringup" : "normal",
-             ams_state_to_str(data->state),
-             data->bms_state,
-             data->bms_output_inhibit,
-             (unsigned long)data->bms_output_block_count);
+	snprintf(outline, CLI_LINESZ,
+	             "FW v%d.%d.%d build:%s state:%s BMS_OK:%d inhibit:%d balance_inhibit:%d blocked:%lu",
+	             VER_MAJOR,
+	             VER_MINOR,
+	             VER_BUG,
+	             AMS_HW_BRINGUP ? "hw-bringup" : "normal",
+	             ams_state_to_str(data->state),
+	             data->bms_state,
+	             data->bms_output_inhibit,
+	             data->balance_inhibit,
+	             (unsigned long)data->bms_output_block_count);
     ret |= cli_printline(cli, outline);
 
     snprintf(outline, CLI_LINESZ,
@@ -2339,6 +2342,54 @@ int bmsok_control(int argc, char *argv[])
              data->charger_fault);
     ret |= cli_printline(cli, outline);
 
+    return ret;
+}
+
+int balance_control(int argc, char *argv[])
+{
+    int ret = 0;
+
+    if((argc >= 2) && (argv[1] != NULL))
+    {
+        if(!strcmp(argv[1], "inhibit") || !strcmp(argv[1], "disable"))
+        {
+            data->balance_inhibit = true;
+            adbms_spi_lock();
+            int clear_ret = accumulator_clear_balance(&data->acc);
+            adbms_spi_unlock();
+            ret |= cli_printline(cli,
+                                 (clear_ret == 0) ?
+                                 "Balancing inhibited and PWM/DCC cleared" :
+                                 "Balancing inhibited; WARNING clear write failed");
+        }
+        else if(!strcmp(argv[1], "release") || !strcmp(argv[1], "enable"))
+        {
+            data->balance_inhibit = false;
+            ret |= cli_printline(cli, "Balancing release enabled; safety gates still apply");
+        }
+        else if(!strcmp(argv[1], "clear"))
+        {
+            adbms_spi_lock();
+            int clear_ret = accumulator_clear_balance(&data->acc);
+            adbms_spi_unlock();
+            ret |= cli_printline(cli,
+                                 (clear_ret == 0) ?
+                                 "Balancing PWM/DCC cleared" :
+                                 "WARNING balance clear write failed");
+        }
+        else if(strcmp(argv[1], "status"))
+        {
+            ret |= cli_printline(cli, "Usage: balance [status|inhibit|release|clear]");
+            return ret;
+        }
+    }
+
+    snprintf(outline, CLI_LINESZ,
+             "balance inhibit:%d state:%s note:%s",
+             data->balance_inhibit,
+             ams_state_to_str(data->state),
+             data->balance_inhibit ? "set for resistor-ladder/bench bring-up" : "charge-state safety gates control PWM");
+    ret |= cli_printline(cli, outline);
     return ret;
 }
 

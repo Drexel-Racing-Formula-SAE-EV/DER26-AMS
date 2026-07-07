@@ -21,6 +21,10 @@ AMS_ENABLE_APM_2950_DEBUG=0
 `AMS_HW_BRINGUP=1` keeps BMS_OK physically inhibited until the CLI command
 `bmsok release` is run. This lets the firmware boot, scan, and report status
 without accidentally enabling the downstream system.
+It also defaults balancing to inhibited so resistor-ladder or low-energy
+cell-simulator tests cannot accidentally turn on discharge PWM. Use
+`balance status`, `balance inhibit`, `balance clear`, and `balance release` from
+the UART CLI.
 
 Keep `AMS_ENABLE_APM_2950_DEBUG=0` for the first SMB/ADBMS6830 tests. Set it to
 `1` only when intentionally probing the ADBMS2950/APM path.

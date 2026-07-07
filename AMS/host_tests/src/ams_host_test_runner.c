@@ -120,6 +120,8 @@ static void cli_capture_clear(void)
 HAL_StatusTypeDef HAL_UART_Transmit(UART_HandleTypeDef *huart, const uint8_t *pData, uint16_t Size, uint32_t Timeout){ (void)huart;(void)Timeout; cli_capture_append(pData, Size); return HAL_OK; }
 HAL_StatusTypeDef HAL_UART_Transmit_IT(UART_HandleTypeDef *huart, const uint8_t *pData, uint16_t Size){ (void)huart; cli_capture_append(pData, Size); return HAL_OK; }
 HAL_StatusTypeDef HAL_UART_Receive_IT(UART_HandleTypeDef *huart, uint8_t *pData, uint16_t Size){ (void)huart;(void)pData;(void)Size; return HAL_OK; }
+void adbms_spi_lock(void){}
+void adbms_spi_unlock(void){}
 
 void set_bms(bool state){
     if(state && app.bms_output_inhibit){
@@ -1662,6 +1664,12 @@ static void test_system_sil_charge_stop_allows_balance_before_hard_ov(void)
     CHECK(sil_balance_pwm_duty(&app, 0u, 0u) == 0u);
     CHECK(sil_balance_pwm_duty(&app, 0u, 1u) == BALANCE_PWM_DUTY);
 
+    app.balance_inhibit = true;
+    sil_run_voltage_sample(&app);
+    CHECK(app.bms_state == true);
+    sil_expect_balancing_clear(&app);
+    app.balance_inhibit = false;
+
     sil_set_cell_voltage(&app, 0u, 1u, 4.200f);
     sil_run_voltage_sample(&app);
     CHECK(app.overvoltage_fault == true);
@@ -2998,6 +3006,9 @@ static void test_system_sil_bringup_status_and_bmsok_inhibit(void)
     char *status_argv[] = {"bmsok", "status", NULL};
     char *release_argv[] = {"bmsok", "release", NULL};
     char *inhibit_argv[] = {"bmsok", "inhibit", NULL};
+    char *balance_status_argv[] = {"balance", "status", NULL};
+    char *balance_inhibit_argv[] = {"balance", "inhibit", NULL};
+    char *balance_release_argv[] = {"balance", "release", NULL};
 
     init_fake_app();
     hspi.Init.CLKPolarity = SPI_POLARITY_HIGH;
@@ -3038,7 +3049,24 @@ static void test_system_sil_bringup_status_and_bmsok_inhibit(void)
     sil_prepare_cli_capture();
     CHECK(get_status(0, NULL) == 0);
     CHECK(strstr(cli_capture, "BMS_OK:0 inhibit:1") != NULL);
+    CHECK(strstr(cli_capture, "balance_inhibit:") != NULL);
     CHECK(strstr(cli_capture, "CPOL:HIGH CPHA:2EDGE") != NULL);
+
+    app.acc.smb_ics[0].PwmA.pwma[1] = BALANCE_PWM_DUTY;
+    sil_prepare_cli_capture();
+    CHECK(balance_control(2, balance_status_argv) == 0);
+    CHECK(strstr(cli_capture, "balance inhibit:0") != NULL);
+
+    sil_prepare_cli_capture();
+    CHECK(balance_control(2, balance_inhibit_argv) == 0);
+    CHECK(app.balance_inhibit == true);
+    CHECK(strstr(cli_capture, "Balancing inhibited") != NULL);
+    sil_expect_balancing_clear(&app);
+
+    sil_prepare_cli_capture();
+    CHECK(balance_control(2, balance_release_argv) == 0);
+    CHECK(app.balance_inhibit == false);
+    CHECK(strstr(cli_capture, "release enabled") != NULL);
 }
 
 static void test_bringup_cli_board_ready_and_adbms_summaries(void)

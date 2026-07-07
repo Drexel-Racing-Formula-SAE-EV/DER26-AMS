@@ -20,6 +20,7 @@ override normal safety gating.
 | `bringup ready` | BMS_OK release review | Would the normal safety gates allow release? This command does not run `bmsok release`. |
 | `bringup snapshot` | Any phase | Compact state/fault snapshot for logs. |
 | `bringup evidence` | Any phase | List of CLI outputs and bench artifacts to capture before changing phase. |
+| `balance inhibit` | Resistor-ladder/bench | Clears balance PWM/DCC and blocks automatic balancing until `balance release`. |
 
 ## First Board-Only Flow
 
@@ -30,6 +31,8 @@ an accumulator.
 status
 bringup board
 bmsok status
+balance status
+balance inhibit
 fault
 ```
 
@@ -38,6 +41,7 @@ Expected:
 ```text
 BMS_OK remains 0
 output_inhibit remains 1 in AMS_HW_BRINGUP builds
+balance_inhibit remains 1 in AMS_HW_BRINGUP builds
 spi6=PASS
 voltage/temp may be not_ready without cells
 current_zero=PASS if the DHAB sensor is LV-powered and sitting at mid-scale
@@ -66,6 +70,7 @@ real proof point after flashing the fixes.
 ```text
 spi clear
 spi enable
+balance inhibit
 spi pins
 spi cspins both 10
 spi cs b pulse 10

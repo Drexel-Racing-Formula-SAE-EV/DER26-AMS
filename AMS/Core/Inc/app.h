@@ -33,6 +33,10 @@
 #define AMS_HW_BRINGUP_BMS_OK_RELEASED_DEFAULT 0
 #endif
 
+#ifndef AMS_HW_BRINGUP_BALANCE_INHIBIT_DEFAULT
+#define AMS_HW_BRINGUP_BALANCE_INHIBIT_DEFAULT AMS_HW_BRINGUP
+#endif
+
 #define ERR_FREQ 20
 #define CLI_FREQ 20
 #define AIR_FREQ 2 // used to be 10
@@ -204,6 +208,7 @@ typedef struct
     bool bms_state;
     bool bms_output_inhibit;
     uint32_t bms_output_block_count;
+    bool balance_inhibit;
 
 	state_t state;
 

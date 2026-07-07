@@ -255,9 +255,10 @@ void adbms_task_fn(void *argument)
         set_bms(bms_ok_ready);
 
         /* Voltage charge-stop can still balance; hard faults/temp stop cannot. */
-        if((data->state == STATE_CHARGE) &&
-           data->voltage_valid &&
-           !data->voltage_fault &&
+	        if((data->state == STATE_CHARGE) &&
+	           !data->balance_inhibit &&
+	           data->voltage_valid &&
+	           !data->voltage_fault &&
            data->temp_valid &&
            !data->temp_charge_stop &&
            !data->temp_fault &&

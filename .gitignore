@@ -31,4 +31,3 @@ HiL/**/*.log
 # CI/headless build outputs
 AMS/build/
 ci_artifacts/
-SetupSTM32CubeProgrammer_win64.exe

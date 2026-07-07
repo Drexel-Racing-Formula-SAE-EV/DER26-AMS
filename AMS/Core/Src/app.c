@@ -235,6 +235,11 @@ void app_create()
 	app.bms_output_inhibit = false;
 #endif
 	app.bms_output_block_count = 0u;
+#if AMS_HW_BRINGUP_BALANCE_INHIBIT_DEFAULT
+	app.balance_inhibit = true;
+#else
+	app.balance_inhibit = false;
+#endif
 
 	app.air_state = false;
 	app.imd_ok = true;
