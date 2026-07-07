@@ -67,11 +67,12 @@ Unit-only additions:
 | `test_voltage_fault_read_failure_precedence_and_strings` | Verifies not-ready, partial/stale/PEC read-fault precedence, warning-only partial usable scans, and voltage fault reason strings. |
 | `test_adbms_spi_debug_write_and_full_duplex_paths` | Verifies SPI debug state for write and full-duplex read paths, CS wrapping, dummy-byte TX padding, RX extraction, HAL error propagation, and debug counters/previews. |
 | `test_adbms_spi_debug_rd48_pec_masks_and_clear` | Verifies `rd48` debug command capture, PEC pass/fail masks across multiple ICs, command-counter capture, debug clear/enable behavior, and SPI op strings. |
+| `test_adbms_spi_scope_activity` | Verifies the bench scope traffic helper preserves the selected string, emits the visible MOSI pattern, repeats valid RDCFGA command bursts, and rejects invalid repeat counts. |
 | `test_adbms_spi_sid_status_and_counter_mismatch` | Verifies ADBMS6830 RDSID parsing, RDSTATC/RDSTATD/RDSTATE diagnostic parsing, and command-counter mismatch detection. |
 | `test_adbms_spi_coldwake_and_clear_flags` | Verifies conservative cold-wake pulse generation and CLRFLAG all-flag packing/command dispatch. |
 | `test_adbms6830_diagnostic_commands_and_cli_health` | Verifies ADBMS6830 config readback, cell ADC diagnostic hook, open-wire command hooks, AUX/GPIO diagnostic hook, sticky health counters, and CLI visibility. |
 | `test_adbms_periodic_diagnostics_and_safe_open_wire` | Verifies low-rate ADBMS6830 status/config diagnostics, config mismatch fail-closed behavior, and automatic open-wire scheduling only in balance/service state. |
-| `test_adbms_cli_scan_guard_and_cs_probe_commands` | Verifies CLI SPI probes are refused during active ADBMS scans, CS_A/CS_B probe commands select the intended chip-select path, and manual open-wire is charge/balance gated. |
+| `test_adbms_cli_scan_guard_and_cs_probe_commands` | Verifies CLI SPI probes, PE4/PF4 candidate pin pulsing, and scope traffic are refused during active ADBMS scans, CS_A/CS_B probe commands select the intended chip-select path, scope preset/toggle mode drives default `spi scope`, scope mode reports bench probe guidance, and manual open-wire is charge/balance gated. |
 | `test_adbms2950_spi_debug_write_and_full_duplex_paths` | Verifies ADBMS2950/APM SPI write and full-duplex read debug state, CS wrapping, dummy-byte TX padding, RX extraction, HAL error propagation, and counters/previews. |
 | `test_adbms2950_spi_probe_pec_masks_and_clear` | Verifies ADBMS2950/APM RDCFGA probe debug capture, PEC pass/fail masks, command-counter capture, debug clear/enable behavior, and SPI op strings. |
 
@@ -81,7 +82,7 @@ Hardware bring-up notes:
 
 | Area | Purpose |
 |---|---|
-| ADBMS6830 SPI debug CLI | Firmware exposes `spi status`, `spi probe`, `spi sid`, `spi stat`, `spi staterr`, `spi cfgchk`, `spi cellst`, `spi oweven`, `spi owodd`, `spi auxdiag`, `spi wake`, `spi coldwake`, `spi clrflag`, `spi clear`, `spi diagclear`, `spi enable`, and `spi disable` for board-side ADBMS6830 chain bring-up. This is hardware-debug support; host tests still cover firmware transaction/debug logic, not physical SPI timing or cable integrity. |
+| ADBMS6830 SPI debug CLI | Firmware exposes `spi status`, `spi preset`, `spi toggle`, `spi scope`, `spi probe`, `spi sid`, `spi stat`, `spi staterr`, `spi cfgchk`, `spi cellst`, `spi oweven`, `spi owodd`, `spi auxdiag`, `spi wake`, `spi coldwake`, `spi clrflag`, `spi clear`, `spi diagclear`, `spi enable`, and `spi disable` for board-side ADBMS6830 chain bring-up. This is hardware-debug support; host tests still cover firmware transaction/debug logic, not physical SPI timing or cable integrity. |
 | ADBMS2950/APM SPI debug CLI | Firmware exposes `apm status`, `apm probe`, `apm clear`, `apm enable`, and `apm disable`. APM initialization remains gated behind `AMS_ENABLE_APM_2950_DEBUG=1` until the NDA datasheet and board bring-up are complete. |
 | Hardware bring-up BMS_OK inhibit | Firmware supports `AMS_HW_BRINGUP=1`, which defaults BMS_OK output inhibited until `bmsok release` is run from CLI. `bmsok inhibit` forces it low again. |
 | Staged bring-up CLI summaries | Firmware exposes `bringup board`, `bringup adbms6830`, `bringup apm2950`, `bringup charger-lv`, `bringup charger-battery`, `bringup ready`, `bringup snapshot`, and `bringup evidence` to make bench phase decisions repeatable without mutating safety state. |

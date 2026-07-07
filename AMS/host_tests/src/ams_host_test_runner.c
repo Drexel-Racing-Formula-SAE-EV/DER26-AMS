@@ -93,6 +93,7 @@ uint32_t HAL_TIM_ReadCapturedValue(const TIM_HandleTypeDef *htim, uint32_t chann
 GPIO_PinState HAL_GPIO_ReadPin(GPIO_TypeDef *port, uint16_t pin){ (void)port; (void)pin; return GPIO_PIN_SET; }
 void HAL_GPIO_WritePin(GPIO_TypeDef *port, uint16_t pin, GPIO_PinState state){ (void)port; (void)pin; bms_pin_state = state; }
 void HAL_GPIO_TogglePin(GPIO_TypeDef *port, uint16_t pin){ (void)port; (void)pin; bms_pin_state = !bms_pin_state; }
+void HAL_GPIO_Init(GPIO_TypeDef *port, GPIO_InitTypeDef *init){ (void)port; (void)init; }
 static void cli_capture_append(const uint8_t *pData, uint16_t Size)
 {
     if((pData == NULL) || (Size == 0u))
@@ -255,6 +256,7 @@ const char *adbms6830_spi_op_str(adbms6830_spi_op_t op){
         case ADBMS6830_SPI_OP_OPEN_WIRE_EVEN: return "open_wire_even";
         case ADBMS6830_SPI_OP_OPEN_WIRE_ODD: return "open_wire_odd";
         case ADBMS6830_SPI_OP_AUX_GPIO_DIAG: return "aux_gpio_diag";
+        case ADBMS6830_SPI_OP_SCOPE: return "scope";
         default: return "unknown";
     }
 }
@@ -273,6 +275,26 @@ HAL_StatusTypeDef adbms6830_spi_probe_rdcfga_on_string(adbms6830_driver_t *dev, 
     dev->spi_debug.last_string = string;
     dev->string = previous;
     return status;
+}
+HAL_StatusTypeDef adbms6830_scope_activity(adbms6830_driver_t *dev, adbms_string string, adbms6830_scope_mode_t mode, uint16_t repeat_count){
+    if((dev == NULL) || (string > STRING_B) || (repeat_count == 0u)) return HAL_ERROR;
+    adbms_string previous = dev->string;
+    uint16_t repeat = (repeat_count > 100u) ? 100u : repeat_count;
+    dev->string = string;
+    dev->spi_debug.enabled = true;
+    dev->spi_debug.last_op = ADBMS6830_SPI_OP_SCOPE;
+    dev->spi_debug.last_string = string;
+    dev->spi_debug.last_status = HAL_OK;
+    dev->spi_debug.last_cmd[0] = 0x00u;
+    dev->spi_debug.last_cmd[1] = 0x02u;
+    if(mode == ADBMS6830_SCOPE_READ){
+        dev->spi_debug.rx_count += repeat;
+    }
+    else{
+        dev->spi_debug.tx_count += repeat;
+    }
+    dev->string = previous;
+    return HAL_OK;
 }
 HAL_StatusTypeDef adbms6830_read_sid(adbms6830_driver_t *dev){
     if(dev == NULL) return HAL_ERROR;
@@ -2742,6 +2764,12 @@ static void test_adbms_cli_scan_guard_and_cs_probe_commands(void)
     char *probe[] = {"spi", "probe"};
     char *probea[] = {"spi", "probea"};
     char *probeb[] = {"spi", "probeb"};
+    char *cspins[] = {"spi", "cspins", "both", "3"};
+    char *scope[] = {"spi", "scope", "b", "read", "20"};
+    char *scope_default[] = {"spi", "scope"};
+    char *preset_status[] = {"spi", "preset", "status"};
+    char *preset_cmd[] = {"spi", "preset", "cmd"};
+    char *preset_toggle[] = {"spi", "toggle"};
     char *oweven[] = {"spi", "oweven"};
     char *apm_probe[] = {"apm", "probe"};
 
@@ -2767,7 +2795,29 @@ static void test_adbms_cli_scan_guard_and_cs_probe_commands(void)
     CHECK(strstr(cli_capture, "spi probe refused") != NULL);
     CHECK(app.acc.smb.spi_debug.rx_count == 0u);
 
+    sil_prepare_cli_capture();
+    CHECK(get_spi_debug(5, scope) == 0);
+    CHECK(strstr(cli_capture, "spi scope refused") != NULL);
+    CHECK(app.acc.smb.spi_debug.rx_count == 0u);
+
+    sil_prepare_cli_capture();
+    CHECK(get_spi_debug(4, cspins) == 0);
+    CHECK(strstr(cli_capture, "spi cspins refused") != NULL);
+
     app.adbms_scan_active = false;
+    sil_prepare_cli_capture();
+    CHECK(get_spi_debug(4, cspins) == 0);
+    CHECK(strstr(cli_capture, "pulsing PE4 block, then PF4 block") != NULL);
+    CHECK(strstr(cli_capture, "PE4/PF4 left idle high") != NULL);
+
+    sil_prepare_cli_capture();
+    CHECK(get_spi_debug(2, (char *[]){"spi", "pins"}) == 0);
+    CHECK(strstr(cli_capture, "CS_B:PE4") != NULL);
+
+    sil_prepare_cli_capture();
+    CHECK(get_spi_debug(2, (char *[]){"spi", "cspins"}) == 0);
+    CHECK(strstr(cli_capture, "alternating PE4 then PF4") != NULL);
+
     sil_prepare_cli_capture();
     CHECK(get_spi_debug(2, probea) == 0);
     CHECK(strstr(cli_capture, "CS_A/stringA probe status: OK") != NULL);
@@ -2779,6 +2829,37 @@ static void test_adbms_cli_scan_guard_and_cs_probe_commands(void)
     CHECK(strstr(cli_capture, "CS_B/stringB probe status: OK") != NULL);
     CHECK(app.acc.smb.spi_debug.last_string == STRING_B);
     CHECK(app.acc.smb.string == STRING_B);
+
+    adbms6830_spi_debug_clear(&app.acc.smb);
+    sil_prepare_cli_capture();
+    CHECK(get_spi_debug(5, scope) == 0);
+    CHECK(strstr(cli_capture, "scope string:CS_B mode:read repeat:20 status:OK") != NULL);
+    CHECK(strstr(cli_capture, "Probe MCU: SCK PG13") != NULL);
+    CHECK(app.acc.smb.spi_debug.last_op == ADBMS6830_SPI_OP_SCOPE);
+    CHECK(app.acc.smb.spi_debug.last_string == STRING_B);
+    CHECK(app.acc.smb.spi_debug.rx_count == 20u);
+    CHECK(app.acc.smb.string == STRING_B);
+
+    sil_prepare_cli_capture();
+    CHECK(get_spi_debug(3, preset_status) == 0);
+    CHECK(strstr(cli_capture, "scope preset string:CS_B mode:read repeat:20") != NULL);
+
+    sil_prepare_cli_capture();
+    CHECK(get_spi_debug(3, preset_cmd) == 0);
+    CHECK(strstr(cli_capture, "scope preset string:CS_B mode:cmd repeat:50") != NULL);
+
+    adbms6830_spi_debug_clear(&app.acc.smb);
+    sil_prepare_cli_capture();
+    CHECK(get_spi_debug(2, scope_default) == 0);
+    CHECK(strstr(cli_capture, "scope string:CS_B mode:cmd repeat:50 status:OK") != NULL);
+    CHECK(app.acc.smb.spi_debug.last_op == ADBMS6830_SPI_OP_SCOPE);
+    CHECK(app.acc.smb.spi_debug.last_string == STRING_B);
+    CHECK(app.acc.smb.spi_debug.tx_count == 50u);
+    CHECK(app.acc.smb.spi_debug.rx_count == 0u);
+
+    sil_prepare_cli_capture();
+    CHECK(get_spi_debug(2, preset_toggle) == 0);
+    CHECK(strstr(cli_capture, "scope preset string:CS_B mode:pattern repeat:20") != NULL);
 
     app.state = STATE_DISCARGE;
     sil_prepare_cli_capture();

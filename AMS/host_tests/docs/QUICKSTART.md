@@ -53,6 +53,8 @@ bringup board
 bmsok status
 spi clear
 spi enable
+spi preset normal
+spi scope
 spi coldwake
 spi probea
 spi probeb

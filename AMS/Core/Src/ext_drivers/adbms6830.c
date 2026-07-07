@@ -644,6 +644,7 @@ const char *adbms6830_spi_op_str(adbms6830_spi_op_t op)
     case ADBMS6830_SPI_OP_OPEN_WIRE_EVEN: return "open_wire_even";
     case ADBMS6830_SPI_OP_OPEN_WIRE_ODD: return "open_wire_odd";
     case ADBMS6830_SPI_OP_AUX_GPIO_DIAG: return "aux_gpio_diag";
+    case ADBMS6830_SPI_OP_SCOPE: return "scope";
     default:                      return "unknown";
     }
 }
@@ -754,6 +755,80 @@ HAL_StatusTypeDef adbms6830_spi_probe_rdcfga_on_string(adbms6830_driver_t *dev, 
     status = adbms6830_spi_probe_rdcfga(dev);
     dev->string = previous;
 
+    return status;
+}
+
+HAL_StatusTypeDef adbms6830_scope_activity(adbms6830_driver_t *dev,
+                                           adbms_string string,
+                                           adbms6830_scope_mode_t mode,
+                                           uint16_t repeat_count)
+{
+    static uint8_t scope_pattern[] =
+    {
+        0xAAu, 0x55u, 0xFFu, 0x00u, 0x69u, 0x96u, 0x12u, 0x34u
+    };
+    HAL_StatusTypeDef status = HAL_OK;
+    adbms_string previous;
+    uint16_t repeat;
+
+    if((dev == NULL) || (string > STRING_B) || (repeat_count == 0u))
+    {
+        return HAL_ERROR;
+    }
+
+    repeat = (repeat_count > 100u) ? 100u : repeat_count;
+    previous = dev->string;
+    dev->string = string;
+    adbms6830_spi_debug_enable(dev, true);
+
+    for(uint16_t i = 0u; i < repeat; i++)
+    {
+        if(dev->spi_debug.enabled)
+        {
+            dev->spi_debug.last_op = ADBMS6830_SPI_OP_SCOPE;
+        }
+
+        switch(mode)
+        {
+        case ADBMS6830_SCOPE_WAKE:
+            adbms6830_wakeup(dev);
+            status = HAL_OK;
+            break;
+        case ADBMS6830_SCOPE_CMD:
+            adbms6830_wakeup(dev);
+            status = adbms6830_cmd_checked(dev, RDCFGA);
+            if(dev->spi_debug.enabled)
+            {
+                dev->spi_debug.last_op = ADBMS6830_SPI_OP_SCOPE;
+            }
+            break;
+        case ADBMS6830_SCOPE_READ:
+            status = adbms6830_rd48_checked(dev, RDCFGA, shared_buf);
+            if(dev->spi_debug.enabled)
+            {
+                dev->spi_debug.last_op = ADBMS6830_SPI_OP_SCOPE;
+            }
+            break;
+        case ADBMS6830_SCOPE_PATTERN:
+            status = adbms6830_spi_write(dev,
+                                         scope_pattern,
+                                         (uint16_t)sizeof(scope_pattern),
+                                         1u);
+            break;
+        default:
+            status = HAL_ERROR;
+            break;
+        }
+
+        if(status != HAL_OK)
+        {
+            break;
+        }
+
+        adbms6830_us_delay(dev, 2000u);
+    }
+
+    dev->string = previous;
     return status;
 }
 

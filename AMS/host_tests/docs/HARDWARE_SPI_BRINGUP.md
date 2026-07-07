@@ -106,6 +106,8 @@ Run commands in this order:
 ```text
 spi clear
 spi enable
+spi preset normal
+spi scope
 spi coldwake
 spi status
 spi probe
@@ -125,6 +127,7 @@ Expected useful signs:
 
 ```text
 spi status shows CPOL:HIGH CPHA:2EDGE
+spi preset normal; spi scope produces repeated CS_B/SCK/MOSI/readback activity
 spi probe returns OK or at least records a non-OK HAL status
 spi probea/probeb explicitly exercise CS_A and CS_B so the AMS-side
 chip-select and ADBMS6822 channel routing can be confirmed on the scope
@@ -157,6 +160,75 @@ command-counter mismatch appears after missed/corrupt transactions
 
 Those results mean the debug path is working, even if hardware communication is
 not yet fixed.
+
+## Scope / Logic Analyzer Mode
+
+Use `spi scope` when you need a clean waveform before trusting the higher-level
+diagnostics:
+
+| Command | What it does | Use it for |
+|---|---|---|
+| `spi preset status` | Prints the selected scope preset. | Confirming what plain `spi scope` will do. |
+| `spi preset normal` then `spi scope` | Repeats real RDCFGA command + readback clocks on CS_B. | First full-path capture: MCU SPI6, ADBMS6822, isoSPI transformer, and MISO response. |
+| `spi preset cmd` then `spi scope` | Repeats valid RDCFGA command frames without readback clocks. | Proving CS/SCK/MOSI and ADBMS6822 IP/IM output when the SMB response path may be dead. |
+| `spi preset pattern` then `spi scope` | Repeats `AA 55 FF 00 69 96 12 34` on MOSI. | Signal integrity / pin mapping only. Treat as invalid ADBMS traffic. |
+| `spi preset a` then `spi scope` | Repeats real RDCFGA command + readback clocks on CS_A. | Checking alternate CS_A route without changing the normal CS_B default. |
+| `spi toggle` | Cycles normal -> command-only -> pattern -> CS_A readback. | Quick scope comparisons while moving probes. |
+| `spi scope b read 20` | Repeats real RDCFGA command + readback clocks on CS_B. | First full-path capture: MCU SPI6, ADBMS6822, isoSPI transformer, and MISO response. |
+| `spi scope b cmd 50` | Repeats valid RDCFGA command frames without readback clocks. | Proving CS/SCK/MOSI and ADBMS6822 IP/IM output when the SMB response path may be dead. |
+| `spi scope b pattern 20` | Repeats `AA 55 FF 00 69 96 12 34` on MOSI. | Signal integrity / pin mapping only. Treat as invalid ADBMS traffic. |
+| `spi scope a wake 20` | Repeats wake pulses on CS_A, no SCK. | Confirming the unused/alternate CS_A route without touching the normal CS_B SMB path. |
+
+For the normal SMB chain, start with CS_B:
+
+```text
+spi clear
+spi preset normal
+spi scope
+spi status
+```
+
+Expected analyzer setup:
+
+```text
+SCK  = PG13, idle high
+MISO = PG12
+MOSI = PG14
+CS_A = PE2
+CS_B = PE4
+```
+
+This mapping is based on net labels and connector pins, not the stale free-text
+pin note on the AMS schematic:
+
+```text
+AMS J5 pin 21: STRINGB_CS -> MCU breakout J801 pin 21: GP_OUT1 -> STM32 PE4
+AMS J5 pin 23: STRINGA_CS -> MCU breakout J801 pin 23: GP_OUT3 -> STM32 PE2
+AMS J5 pin 26: MOSI       -> MCU breakout J801 pin 26: SPI6_MOSI -> STM32 PG14
+AMS J5 pin 28: SCLK       -> MCU breakout J801 pin 28: SPI6_SCK  -> STM32 PG13
+AMS J5 pin 30: MISO       -> MCU breakout J801 pin 30: SPI6_MISO -> STM32 PG12
+```
+
+Cube/VSCode sanity: `DER26-AMS.ioc`, `Core/Inc/main.h`, and `Core/Src/main.c`
+must all agree on this pin map before flashing. If you build from VSCode/GCC,
+do not hand-move generated pin macros without also updating the `.ioc`, because
+the next CubeMX regeneration can silently undo or contradict the manual change.
+Because the AMS schematic has a conflicting free-text `CSB - PF4` note, run
+`spi cspins both 10` during first bench bringup and scope both PE4 and PF4. That
+command only pulses candidate pins for evidence; it does not change the normal
+ADBMS runtime `CS_B` mapping.
+
+On `spi preset normal; spi scope`, MOSI should begin each transaction with:
+
+```text
+00 02 2B 0A
+```
+
+That is RDCFGA plus command PEC. CS_B should stay low for the command and dummy
+readback clocks. If the MCU-side signals are correct but ADBMS6822 IP/IM or the
+SMB transformer pins do not move, focus on 6822 power/straps, transformer
+orientation/part/install, isolation passives, and harness continuity before
+chasing firmware.
 
 ## What To Check On The Logic Analyzer
 

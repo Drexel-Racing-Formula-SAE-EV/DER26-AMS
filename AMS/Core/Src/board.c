@@ -12,8 +12,8 @@
 #include "ext_drivers/charger.h"
 
 #define FAN_MAX 3360
-#define CUR_SEN_CH_L 14
-#define CUR_SEN_CH_H 1
+#define CUR_SEN_CH_L ADC_CHANNEL_10
+#define CUR_SEN_CH_H ADC_CHANNEL_3
 
 void board_init(board_t *board)
 {

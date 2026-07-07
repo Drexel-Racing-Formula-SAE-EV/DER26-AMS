@@ -48,6 +48,11 @@ int cause_fault(int argc, char *argv[]);
 char outline[CLI_LINESZ];
 app_data_t *data;
 cli_device_t *cli;
+static adbms_string cli_adbms_scope_default_string = STRING_B;
+static adbms6830_scope_mode_t cli_adbms_scope_default_mode = ADBMS6830_SCOPE_READ;
+static uint16_t cli_adbms_scope_default_repeat = 20u;
+static uint8_t cli_adbms_scope_preset_index = 0u;
+static bool cli_parse_scope_repeat(const char *arg, uint16_t *repeat_out);
 command_t cmds[] =
 {
 	{"help", &help, "print help menu"},
@@ -59,7 +64,7 @@ command_t cmds[] =
 	{"tempsns", &get_temperature_sensor, "gets one sensor: tempsns <ic> <sensor 0-23>"},
 	{"current", &get_current, "gets current sensor raw counts/voltages/status"},
 	{"charger", &get_charger, "gets charger CAN command/status/debug state"},
-	{"spi", &get_spi_debug, "ADBMS6830 SPI debug: spi [status|probe|probea|probeb|sid|stat|staterr|cfgchk|cellst|oweven|owodd|auxdiag|wake|coldwake|clrflag|clear|diagclear|enable|disable]"},
+	{"spi", &get_spi_debug, "ADBMS6830 SPI debug: spi [status|pins|cspins|cs|preset|toggle|probe|probea|probeb|scope|sid|stat|staterr|cfgchk|cellst|oweven|owodd|auxdiag|wake|coldwake|clrflag|clear|diagclear|enable|disable]"},
 	{"apm", &get_apm_debug, "ADBMS2950/APM debug: apm [status|probe|clear|enable|disable]"},
 	{"bringup", &get_bringup, "bench bring-up summaries: bringup [help|board|adbms6830|apm2950|charger-lv|charger-battery|ready|snapshot|evidence]"},
 	{"bmsok", &bmsok_control, "BMS_OK control: bmsok [status|release|inhibit]"},
@@ -409,7 +414,7 @@ int get_status(int argc, char *argv[])
         ret |= cli_printline(cli, "SPI6 handle unavailable");
     }
 
-    ret |= cli_printline(cli, "Bring-up order: spi clear -> spi probe -> spi status -> volt -> current -> bmsok release");
+    ret |= cli_printline(cli, "Bring-up order: spi clear -> spi preset normal -> spi scope -> spi probe -> spi status -> volt -> current -> bmsok release");
     return ret;
 }
 
@@ -796,6 +801,419 @@ static bool cli_adbms_refuse_active_scan(const char *name)
     return true;
 }
 
+static bool cli_parse_adbms_string(const char *arg, adbms_string *string_out)
+{
+    if((arg == NULL) || (string_out == NULL))
+    {
+        return false;
+    }
+
+    if((!strcmp(arg, "a")) || (!strcmp(arg, "A")) ||
+       (!strcmp(arg, "cs_a")) || (!strcmp(arg, "CSA")) ||
+       (!strcmp(arg, "stringa")))
+    {
+        *string_out = STRING_A;
+        return true;
+    }
+
+    if((!strcmp(arg, "b")) || (!strcmp(arg, "B")) ||
+       (!strcmp(arg, "cs_b")) || (!strcmp(arg, "CSB")) ||
+       (!strcmp(arg, "stringb")))
+    {
+        *string_out = STRING_B;
+        return true;
+    }
+
+    return false;
+}
+
+static bool cli_parse_scope_mode(const char *arg, adbms6830_scope_mode_t *mode_out)
+{
+    if((arg == NULL) || (mode_out == NULL))
+    {
+        return false;
+    }
+
+    if(!strcmp(arg, "wake"))
+    {
+        *mode_out = ADBMS6830_SCOPE_WAKE;
+        return true;
+    }
+
+    if(!strcmp(arg, "cmd"))
+    {
+        *mode_out = ADBMS6830_SCOPE_CMD;
+        return true;
+    }
+
+    if(!strcmp(arg, "read"))
+    {
+        *mode_out = ADBMS6830_SCOPE_READ;
+        return true;
+    }
+
+    if(!strcmp(arg, "pattern"))
+    {
+        *mode_out = ADBMS6830_SCOPE_PATTERN;
+        return true;
+    }
+
+    return false;
+}
+
+static const char *cli_scope_mode_str(adbms6830_scope_mode_t mode)
+{
+    switch(mode)
+    {
+    case ADBMS6830_SCOPE_WAKE:    return "wake";
+    case ADBMS6830_SCOPE_CMD:     return "cmd";
+    case ADBMS6830_SCOPE_READ:    return "read";
+    case ADBMS6830_SCOPE_PATTERN: return "pattern";
+    default:                      return "unknown";
+    }
+}
+
+static const char *cli_adbms_string_str(adbms_string string)
+{
+    return (string == STRING_A) ? "CS_A" : "CS_B";
+}
+
+static const char *cli_gpio_state_str(GPIO_PinState state)
+{
+    return (state == GPIO_PIN_SET) ? "HIGH" : "LOW";
+}
+
+static const char *cli_cs_active_str(GPIO_PinState state)
+{
+    return (state == GPIO_PIN_RESET) ? "ACTIVE" : "IDLE";
+}
+
+static bool cli_parse_cs_level(const char *arg, GPIO_PinState *state_out)
+{
+    if((arg == NULL) || (state_out == NULL))
+    {
+        return false;
+    }
+
+    if(!strcmp(arg, "low") || !strcmp(arg, "active") || !strcmp(arg, "assert"))
+    {
+        *state_out = GPIO_PIN_RESET;
+        return true;
+    }
+
+    if(!strcmp(arg, "high") || !strcmp(arg, "idle") ||
+       !strcmp(arg, "inactive") || !strcmp(arg, "deassert"))
+    {
+        *state_out = GPIO_PIN_SET;
+        return true;
+    }
+
+    return false;
+}
+
+static int cli_print_adbms_pin_report(const adbms6830_driver_t *smb)
+{
+    int ret = 0;
+    GPIO_PinState cs_a_state = HAL_GPIO_ReadPin(CS_A_GPIO_Port, CS_A_Pin);
+    GPIO_PinState cs_b_state = HAL_GPIO_ReadPin(CS_B_GPIO_Port, CS_B_Pin);
+
+    ret |= cli_printline(cli, "ADBMS6822/6830 bench pin map from Cube/MCU breakout:");
+    ret |= cli_printline(cli, "SPI6 SCK:PG13 MOSI:PG14 MISO:PG12 mode3 CPOL_HIGH CPHA_2EDGE");
+    ret |= cli_printline(cli, "CS_A:PE2 active_low, CS_B:PE4 active_low");
+
+    snprintf(outline, CLI_LINESZ,
+             "firmware CS_A port:PE pin:2 state:%s %s",
+             cli_gpio_state_str(cs_a_state),
+             cli_cs_active_str(cs_a_state));
+    ret |= cli_printline(cli, outline);
+
+    snprintf(outline, CLI_LINESZ,
+             "firmware CS_B port:PE pin:4 state:%s %s",
+             cli_gpio_state_str(cs_b_state),
+             cli_cs_active_str(cs_b_state));
+    ret |= cli_printline(cli, outline);
+
+    if(smb != NULL)
+    {
+        snprintf(outline, CLI_LINESZ,
+                 "driver cs pointers present A:%d B:%d pins A:0x%04X B:0x%04X",
+                 smb->cs_port[STRING_A] != NULL,
+                 smb->cs_port[STRING_B] != NULL,
+                 (unsigned)smb->cs_pin[STRING_A],
+                 (unsigned)smb->cs_pin[STRING_B]);
+        ret |= cli_printline(cli, outline);
+    }
+
+    ret |= cli_printline(cli, "bench: scope PE4 for CS_B; PF4 is a stale/conflicting schematic note");
+    return ret;
+}
+
+static int cli_set_one_cs(adbms6830_driver_t *smb, adbms_string string, GPIO_PinState state)
+{
+    if((smb == NULL) || (string > STRING_B) || (smb->cs_port[string] == NULL))
+    {
+        return cli_printline(cli, "ERROR: CS target unavailable");
+    }
+
+    HAL_GPIO_WritePin(smb->cs_port[string], smb->cs_pin[string], state);
+    snprintf(outline, CLI_LINESZ,
+             "%s set %s (%s)",
+             cli_adbms_string_str(string),
+             cli_gpio_state_str(state),
+             cli_cs_active_str(state));
+    return cli_printline(cli, outline);
+}
+
+static int cli_pulse_one_cs(adbms6830_driver_t *smb, adbms_string string, uint16_t count)
+{
+    int ret = 0;
+
+    if((smb == NULL) || (string > STRING_B) || (smb->cs_port[string] == NULL))
+    {
+        return cli_printline(cli, "ERROR: CS target unavailable");
+    }
+
+    for(uint16_t i = 0u; i < count; i++)
+    {
+        HAL_GPIO_WritePin(smb->cs_port[string], smb->cs_pin[string], GPIO_PIN_RESET);
+        adbms6830_us_delay(smb, 100u);
+        HAL_GPIO_WritePin(smb->cs_port[string], smb->cs_pin[string], GPIO_PIN_SET);
+        adbms6830_us_delay(smb, 100u);
+    }
+
+    snprintf(outline, CLI_LINESZ,
+             "%s pulsed active-low %u time(s), left IDLE/HIGH",
+             cli_adbms_string_str(string),
+             (unsigned)count);
+    ret |= cli_printline(cli, outline);
+    return ret;
+}
+
+static void cli_config_pf4_as_output(void)
+{
+    GPIO_InitTypeDef gpio = {0};
+
+    gpio.Pin = GPIO_PIN_4;
+    gpio.Mode = GPIO_MODE_OUTPUT_PP;
+    gpio.Pull = GPIO_NOPULL;
+    gpio.Speed = GPIO_SPEED_FREQ_LOW;
+    HAL_GPIO_Init(GPIOF, &gpio);
+}
+
+static void cli_restore_pf4_as_analog(void)
+{
+    GPIO_InitTypeDef gpio = {0};
+
+    gpio.Pin = GPIO_PIN_4;
+    gpio.Mode = GPIO_MODE_ANALOG;
+    gpio.Pull = GPIO_NOPULL;
+    HAL_GPIO_Init(GPIOF, &gpio);
+}
+
+static void cli_pulse_candidate_pin(GPIO_TypeDef *port, uint16_t pin, uint16_t count)
+{
+    for(uint16_t i = 0u; i < count; i++)
+    {
+        HAL_GPIO_WritePin(port, pin, GPIO_PIN_RESET);
+        osDelay(1u);
+        HAL_GPIO_WritePin(port, pin, GPIO_PIN_SET);
+        osDelay(1u);
+    }
+}
+
+static int cli_handle_spi_candidate_pins(int argc, char *argv[])
+{
+    int ret = 0;
+    const char *mode = "alt";
+    uint16_t count = 10u;
+
+    if((argc >= 3) && (argv[2] != NULL))
+    {
+        mode = argv[2];
+    }
+
+    if(argc >= 4)
+    {
+        if(!cli_parse_scope_repeat(argv[3], &count))
+        {
+            ret |= cli_printline(cli, "ERROR: count must be 1-100");
+            return ret;
+        }
+    }
+
+    if(strcmp(mode, "alt") && strcmp(mode, "both") &&
+       strcmp(mode, "pe4") && strcmp(mode, "pf4"))
+    {
+        ret |= cli_printline(cli, "Usage: spi cspins [alt|both|pe4|pf4] [count 1-100]");
+        return ret;
+    }
+
+    HAL_GPIO_WritePin(GPIOE, GPIO_PIN_4, GPIO_PIN_SET);
+    cli_config_pf4_as_output();
+    HAL_GPIO_WritePin(GPIOF, GPIO_PIN_4, GPIO_PIN_SET);
+
+    ret |= cli_printline(cli, "CS candidate pin test: active-low pulses, both pins left HIGH/IDLE");
+    ret |= cli_printline(cli, "Probe PE4 and PF4. This does not change runtime CS_B mapping.");
+
+    if(!strcmp(mode, "pe4"))
+    {
+        ret |= cli_printline(cli, "pulsing PE4 only");
+        cli_pulse_candidate_pin(GPIOE, GPIO_PIN_4, count);
+    }
+    else if(!strcmp(mode, "pf4"))
+    {
+        ret |= cli_printline(cli, "pulsing PF4 only");
+        cli_pulse_candidate_pin(GPIOF, GPIO_PIN_4, count);
+    }
+    else if(!strcmp(mode, "both"))
+    {
+        ret |= cli_printline(cli, "pulsing PE4 block, then PF4 block");
+        cli_pulse_candidate_pin(GPIOE, GPIO_PIN_4, count);
+        osDelay(5u);
+        cli_pulse_candidate_pin(GPIOF, GPIO_PIN_4, count);
+    }
+    else
+    {
+        ret |= cli_printline(cli, "alternating PE4 then PF4");
+        for(uint16_t i = 0u; i < count; i++)
+        {
+            cli_pulse_candidate_pin(GPIOE, GPIO_PIN_4, 1u);
+            cli_pulse_candidate_pin(GPIOF, GPIO_PIN_4, 1u);
+        }
+    }
+
+    HAL_GPIO_WritePin(GPIOE, GPIO_PIN_4, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(GPIOF, GPIO_PIN_4, GPIO_PIN_SET);
+    cli_restore_pf4_as_analog();
+
+    snprintf(outline, CLI_LINESZ,
+             "cspins mode:%s count:%u done; PE4/PF4 left idle high",
+             mode,
+             (unsigned)count);
+    ret |= cli_printline(cli, outline);
+    return ret;
+}
+
+static int cli_handle_spi_cs(int argc, char *argv[], adbms6830_driver_t *smb)
+{
+    int ret = 0;
+    adbms_string string;
+    GPIO_PinState state;
+    uint16_t count = 1u;
+
+    if((argc < 3) || (argv[2] == NULL) || !strcmp(argv[2], "status"))
+    {
+        return cli_print_adbms_pin_report(smb);
+    }
+
+    if((argc >= 4) && (!strcmp(argv[2], "all") || !strcmp(argv[2], "both")))
+    {
+        if(!cli_parse_cs_level(argv[3], &state))
+        {
+            ret |= cli_printline(cli, "Usage: spi cs [a|b|all] [low|high|pulse] [count 1-100]");
+            return ret;
+        }
+
+        ret |= cli_set_one_cs(smb, STRING_A, state);
+        ret |= cli_set_one_cs(smb, STRING_B, state);
+        return ret;
+    }
+
+    if(!cli_parse_adbms_string(argv[2], &string) || (argc < 4) || (argv[3] == NULL))
+    {
+        ret |= cli_printline(cli, "Usage: spi cs [a|b|all] [low|high|pulse] [count 1-100]");
+        return ret;
+    }
+
+    if(!strcmp(argv[3], "pulse"))
+    {
+        if(argc >= 5)
+        {
+            if(!cli_parse_scope_repeat(argv[4], &count))
+            {
+                ret |= cli_printline(cli, "ERROR: count must be 1-100");
+                return ret;
+            }
+        }
+        ret |= cli_pulse_one_cs(smb, string, count);
+        ret |= cli_print_adbms_pin_report(smb);
+        return ret;
+    }
+
+    if(!cli_parse_cs_level(argv[3], &state))
+    {
+        ret |= cli_printline(cli, "Usage: spi cs [a|b|all] [low|high|pulse] [count 1-100]");
+        return ret;
+    }
+
+    ret |= cli_set_one_cs(smb, string, state);
+    ret |= cli_print_adbms_pin_report(smb);
+    return ret;
+}
+
+static bool cli_parse_scope_repeat(const char *arg, uint16_t *repeat_out)
+{
+    int parsed;
+
+    if((arg == NULL) || (repeat_out == NULL))
+    {
+        return false;
+    }
+
+    parsed = atoi(arg);
+    if(parsed <= 0)
+    {
+        return false;
+    }
+
+    *repeat_out = (parsed > 100) ? 100u : (uint16_t)parsed;
+    return true;
+}
+
+static void cli_adbms_scope_apply_preset(uint8_t preset)
+{
+    cli_adbms_scope_preset_index = (uint8_t)(preset % 4u);
+
+    switch(cli_adbms_scope_preset_index)
+    {
+    case 0u:
+        cli_adbms_scope_default_string = STRING_B;
+        cli_adbms_scope_default_mode = ADBMS6830_SCOPE_READ;
+        cli_adbms_scope_default_repeat = 20u;
+        break;
+    case 1u:
+        cli_adbms_scope_default_string = STRING_B;
+        cli_adbms_scope_default_mode = ADBMS6830_SCOPE_CMD;
+        cli_adbms_scope_default_repeat = 50u;
+        break;
+    case 2u:
+        cli_adbms_scope_default_string = STRING_B;
+        cli_adbms_scope_default_mode = ADBMS6830_SCOPE_PATTERN;
+        cli_adbms_scope_default_repeat = 20u;
+        break;
+    default:
+        cli_adbms_scope_default_string = STRING_A;
+        cli_adbms_scope_default_mode = ADBMS6830_SCOPE_READ;
+        cli_adbms_scope_default_repeat = 20u;
+        break;
+    }
+}
+
+static int cli_print_adbms_scope_preset(void)
+{
+    int ret = 0;
+
+    snprintf(outline, CLI_LINESZ,
+             "scope preset string:%s mode:%s repeat:%u",
+             cli_adbms_string_str(cli_adbms_scope_default_string),
+             cli_scope_mode_str(cli_adbms_scope_default_mode),
+             (unsigned)cli_adbms_scope_default_repeat);
+    ret |= cli_printline(cli, outline);
+    ret |= cli_printline(cli, "preset choices: normal|cmd|pattern|a|b|toggle|repeat <1-100>");
+    ret |= cli_printline(cli, "run selected preset with: spi scope");
+    return ret;
+}
+
 int get_spi_debug(int argc, char *argv[])
 {
     int ret = 0;
@@ -822,6 +1240,77 @@ int get_spi_debug(int argc, char *argv[])
         {
             adbms6830_spi_debug_enable(smb, false);
             ret |= cli_printline(cli, "ADBMS SPI debug disabled");
+        }
+        else if(!strcmp(argv[1], "pins"))
+        {
+            ret |= cli_print_adbms_pin_report(smb);
+        }
+        else if(!strcmp(argv[1], "cspins"))
+        {
+            if(cli_adbms_refuse_active_scan("spi cspins"))
+            {
+                return ret;
+            }
+            ret |= cli_handle_spi_candidate_pins(argc, argv);
+        }
+        else if(!strcmp(argv[1], "cs"))
+        {
+            if(cli_adbms_refuse_active_scan("spi cs"))
+            {
+                return ret;
+            }
+            ret |= cli_handle_spi_cs(argc, argv, smb);
+        }
+        else if(!strcmp(argv[1], "preset") || !strcmp(argv[1], "toggle"))
+        {
+            if(!strcmp(argv[1], "toggle"))
+            {
+                cli_adbms_scope_apply_preset((uint8_t)(cli_adbms_scope_preset_index + 1u));
+                ret |= cli_print_adbms_scope_preset();
+            }
+            else if((argc < 3) || !strcmp(argv[2], "status"))
+            {
+                ret |= cli_print_adbms_scope_preset();
+            }
+            else if(!strcmp(argv[2], "normal") || !strcmp(argv[2], "b"))
+            {
+                cli_adbms_scope_apply_preset(0u);
+                ret |= cli_print_adbms_scope_preset();
+            }
+            else if(!strcmp(argv[2], "cmd"))
+            {
+                cli_adbms_scope_apply_preset(1u);
+                ret |= cli_print_adbms_scope_preset();
+            }
+            else if(!strcmp(argv[2], "pattern"))
+            {
+                cli_adbms_scope_apply_preset(2u);
+                ret |= cli_print_adbms_scope_preset();
+            }
+            else if(!strcmp(argv[2], "a"))
+            {
+                cli_adbms_scope_apply_preset(3u);
+                ret |= cli_print_adbms_scope_preset();
+            }
+            else if(!strcmp(argv[2], "toggle"))
+            {
+                cli_adbms_scope_apply_preset((uint8_t)(cli_adbms_scope_preset_index + 1u));
+                ret |= cli_print_adbms_scope_preset();
+            }
+            else if(!strcmp(argv[2], "repeat") || !strcmp(argv[2], "count"))
+            {
+                if((argc < 4) || !cli_parse_scope_repeat(argv[3], &cli_adbms_scope_default_repeat))
+                {
+                    ret |= cli_printline(cli, "ERROR: repeat must be 1-100");
+                    return ret;
+                }
+                ret |= cli_print_adbms_scope_preset();
+            }
+            else
+            {
+                ret |= cli_printline(cli, "Usage: spi preset [status|normal|cmd|pattern|a|b|toggle|repeat <1-100>]");
+                return ret;
+            }
         }
 	        else if(!strcmp(argv[1], "probe"))
 	        {
@@ -852,6 +1341,49 @@ int get_spi_debug(int argc, char *argv[])
 	            probe_status = adbms6830_spi_probe_rdcfga_on_string(smb, STRING_B);
 	            snprintf(outline, CLI_LINESZ, "RDCFGA CS_B/stringB probe status: %s", cli_hal_status_str(probe_status));
 	            ret |= cli_printline(cli, outline);
+	        }
+	        else if(!strcmp(argv[1], "scope"))
+	        {
+	            adbms_string string = cli_adbms_scope_default_string;
+	            adbms6830_scope_mode_t scope_mode = cli_adbms_scope_default_mode;
+	            uint16_t repeat = cli_adbms_scope_default_repeat;
+
+	            if(cli_adbms_refuse_active_scan("spi scope"))
+	            {
+	                return ret;
+	            }
+
+	            if((argc >= 3) && !cli_parse_adbms_string(argv[2], &string))
+	            {
+	                ret |= cli_printline(cli, "Usage: spi scope [a|b] [wake|cmd|read|pattern] [count 1-100]");
+	                return ret;
+	            }
+
+	            if((argc >= 4) && !cli_parse_scope_mode(argv[3], &scope_mode))
+	            {
+	                ret |= cli_printline(cli, "Usage: spi scope [a|b] [wake|cmd|read|pattern] [count 1-100]");
+	                return ret;
+	            }
+
+	            if(argc >= 5)
+	            {
+	                if(!cli_parse_scope_repeat(argv[4], &repeat))
+	                {
+	                    ret |= cli_printline(cli, "ERROR: count must be 1-100");
+	                    return ret;
+	                }
+	            }
+
+	            probe_status = adbms6830_scope_activity(smb, string, scope_mode, repeat);
+	            snprintf(outline, CLI_LINESZ,
+	                     "scope string:%s mode:%s repeat:%u status:%s",
+	                     (string == STRING_A) ? "CS_A" : "CS_B",
+	                     cli_scope_mode_str(scope_mode),
+	                     (unsigned)repeat,
+	                     cli_hal_status_str(probe_status));
+	            ret |= cli_printline(cli, outline);
+	            ret |= cli_printline(cli, "Probe MCU: SCK PG13, MOSI PG14, MISO PG12, CS_A PE2, CS_B PE4");
+	            ret |= cli_printline(cli, "Then probe ADBMS6822 IP/IM and SMB transformer pins for matching activity");
 	        }
 	        else if(!strcmp(argv[1], "sid"))
 	        {
@@ -982,7 +1514,7 @@ int get_spi_debug(int argc, char *argv[])
 	        }
 	        else if(strcmp(argv[1], "status"))
 	        {
-	            ret |= cli_printline(cli, "Usage: spi [status|probe|probea|probeb|sid|stat|staterr|cfgchk|cellst|oweven|owodd|auxdiag|wake|coldwake|clrflag|clear|diagclear|enable|disable]");
+	            ret |= cli_printline(cli, "Usage: spi [status|pins|cspins|cs|preset|toggle|probe|probea|probeb|scope|sid|stat|staterr|cfgchk|cellst|oweven|owodd|auxdiag|wake|coldwake|clrflag|clear|diagclear|enable|disable]");
 	            return ret;
 	        }
 	    }
@@ -1428,6 +1960,7 @@ int get_bringup(int argc, char *argv[])
         ret |= cli_printline(cli, "bringup ready          - BMS_OK release checklist; does not release output");
         ret |= cli_printline(cli, "bringup snapshot       - compact state snapshot");
         ret |= cli_printline(cli, "bringup evidence       - bench evidence to capture before changing phase");
+        ret |= cli_printline(cli, "bench ADBMS start: spi pins -> spi cspins both 10 -> spi cs b pulse 10 -> spi scope b read 20");
         return ret;
     }
 
@@ -1484,6 +2017,9 @@ int get_bringup(int argc, char *argv[])
                  data->heartbeat.stale_mask,
                  data->heartbeat.safety_stale_mask);
         ret |= cli_printline(cli, outline);
+
+        ret |= cli_printline(cli, "pin_check: run spi pins; use spi cspins both 10 to compare PE4 vs PF4");
+        ret |= cli_printline(cli, "scope_check: run spi cs b pulse 10, then spi scope b read 20");
 
         if(!strcmp(mode, "snapshot"))
         {
@@ -1573,7 +2109,8 @@ int get_bringup(int argc, char *argv[])
             ret |= cli_printline(cli, outline);
         }
 
-        ret |= cli_printline(cli, "next: spi coldwake -> spi probea/probeb -> spi sid -> spi stat -> bringup adbms6830");
+        ret |= cli_printline(cli, "next: spi pins -> spi cspins both 10 -> spi cs b pulse 10 -> spi preset normal -> spi scope b read 20");
+        ret |= cli_printline(cli, "then: spi probeb -> spi sid -> spi stat; use probea only to validate string-A wiring");
         return ret;
     }
 
@@ -1738,10 +2275,12 @@ int get_bringup(int argc, char *argv[])
     {
         ret |= cli_printline(cli, "BRINGUP EVIDENCE capture before phase changes:");
         ret |= cli_printline(cli, "1 status; bringup board; bmsok status; fault");
-        ret |= cli_printline(cli, "2 spi clear; spi enable; spi coldwake; spi probea/probeb; spi sid; spi stat; bringup adbms6830");
-        ret |= cli_printline(cli, "3 current; volt; temp; bringup ready");
-        ret |= cli_printline(cli, "4 charger; bringup charger-lv plus CAN sniffer frame screenshots/logs");
-        ret |= cli_printline(cli, "5 for battery/charger only: bringup charger-battery after approved safe setup");
+        ret |= cli_printline(cli, "2 spi pins; spi cspins both 10; scope PE4 and PF4 candidate CS_B pins");
+        ret |= cli_printline(cli, "3 spi clear; spi enable; spi cs b pulse 10; spi preset normal; spi scope b read 20");
+        ret |= cli_printline(cli, "4 spi probeb; spi sid; spi stat; bringup adbms6830");
+        ret |= cli_printline(cli, "5 current; volt; temp; bringup ready");
+        ret |= cli_printline(cli, "6 charger; bringup charger-lv plus CAN sniffer frame screenshots/logs");
+        ret |= cli_printline(cli, "7 for battery/charger only: bringup charger-battery after approved safe setup");
         return ret;
     }
 

@@ -13,6 +13,14 @@
 #include <stdbool.h>
 #include "ext_drivers/adbms6830_data.h"
 
+typedef enum
+{
+    ADBMS6830_SCOPE_WAKE = 0,
+    ADBMS6830_SCOPE_CMD,
+    ADBMS6830_SCOPE_READ,
+    ADBMS6830_SCOPE_PATTERN
+} adbms6830_scope_mode_t;
+
 void adBms6830_init(adbms6830_driver_t* dev,
 				    uint8_t num_ics,
 				    adbms6830_asic* ics,
@@ -52,6 +60,10 @@ const adbms6830_spi_debug_t *adbms6830_spi_debug_get(const adbms6830_driver_t *d
 const char *adbms6830_spi_op_str(adbms6830_spi_op_t op);
 HAL_StatusTypeDef adbms6830_spi_probe_rdcfga(adbms6830_driver_t *dev);
 HAL_StatusTypeDef adbms6830_spi_probe_rdcfga_on_string(adbms6830_driver_t *dev, adbms_string string);
+HAL_StatusTypeDef adbms6830_scope_activity(adbms6830_driver_t *dev,
+                                           adbms_string string,
+                                           adbms6830_scope_mode_t mode,
+                                           uint16_t repeat_count);
 HAL_StatusTypeDef adbms6830_read_sid(adbms6830_driver_t *dev);
 HAL_StatusTypeDef adbms6830_read_status(adbms6830_driver_t *dev, bool inject_spiflt);
 HAL_StatusTypeDef adbms6830_clear_all_flags(adbms6830_driver_t *dev);

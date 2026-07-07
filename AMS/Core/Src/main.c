@@ -804,7 +804,8 @@ static void MX_GPIO_Init(void)
   /*Configure GPIO pin Output Level */
   /* CS lines are active low. Keep both isoSPI chip-selects deselected
      immediately at GPIO init; BMS_OK remains low until safety checks pass. */
-  HAL_GPIO_WritePin(GPIOE, CS_A_Pin|CS_B_Pin, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(CS_A_GPIO_Port, CS_A_Pin, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(CS_B_GPIO_Port, CS_B_Pin, GPIO_PIN_SET);
   HAL_GPIO_WritePin(GPIOE, BMS_OK_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pins : CS_A_Pin CS_B_Pin BMS_OK_Pin */

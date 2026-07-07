@@ -56,6 +56,11 @@ real proof point after flashing the fixes.
 ```text
 spi clear
 spi enable
+spi pins
+spi cspins both 10
+spi cs b pulse 10
+spi preset normal
+spi scope
 spi coldwake
 spi probea
 spi probeb
@@ -63,6 +68,29 @@ spi sid
 spi stat
 spi cfgchk
 bringup adbms6830
+```
+
+Use `spi pins; spi cspins both 10; spi cs b pulse 10` first when the goal is
+pin diagnosis. `spi pins` prints the compiled GPIO mapping. `spi cspins both
+10` pulses PE4 and PF4 as separate candidate CS_B pins so the schematic-note
+conflict can be settled on a scope. `spi cs b pulse 10` then pulses the actual
+runtime CS_B path used by the ADBMS driver. After the CS_B pin is proven, use
+`spi preset normal; spi scope` for hardware diagnosis rather than firmware
+diagnosis. It creates repeatable CS_B/SPI6 traffic using the real RDCFGA command
+and readback clocks, then prints the expected MCU probe pins. If MISO is stuck,
+run `spi preset cmd; spi scope` to prove the
+MCU-to-ADBMS6822 side without depending on a response. Use
+`spi preset pattern; spi scope` only as a signal-path check; it transmits a
+visible `AA 55 FF 00 69 96 12 34` pattern, not a valid ADBMS transaction.
+`spi toggle` cycles normal -> command-only -> pattern -> CS_A readback.
+
+Candidate pin helper:
+
+```text
+spi cspins alt 10   alternates PE4 then PF4
+spi cspins both 10  pulses PE4 block, then PF4 block
+spi cspins pe4 10   pulses PE4 only
+spi cspins pf4 10   pulses PF4 only
 ```
 
 Key interpretations:
