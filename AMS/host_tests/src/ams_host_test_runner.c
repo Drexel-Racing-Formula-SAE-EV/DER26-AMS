@@ -2616,6 +2616,7 @@ static void test_system_sil_cli_can_diagnostic_consistency(void)
     CHECK(get_current(0, NULL) == 0);
     CHECK(strstr(cli_capture, "valid:0") != NULL);
     CHECK(strstr(cli_capture, "reason:adc_read") != NULL || strstr(cli_capture, "sensor_adc_read") != NULL);
+    CHECK(strstr(cli_capture, "ADC map L:PC0 ADC2_IN10 50A H:PA3 ADC1_IN3 800A") != NULL);
 }
 
 static void test_adbms6830_diagnostic_commands_and_cli_health(void)

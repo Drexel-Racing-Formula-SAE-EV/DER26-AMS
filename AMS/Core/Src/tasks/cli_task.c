@@ -1837,6 +1837,8 @@ int get_current(int argc, char *argv[])
              current_fault_reason_str(data->current_fault_latched_reason));
     ret |= cli_printline(cli, outline);
 
+    ret |= cli_printline(cli, "ADC map L:PC0 ADC2_IN10 50A H:PA3 ADC1_IN3 800A");
+
     snprintf(outline, CLI_LINESZ, "ADC raw H:%u L:%u", cs->count_high, cs->count_low);
     ret |= cli_printline(cli, outline);
 

@@ -99,6 +99,17 @@ may correctly report not-ready. If the DHAB current sensor is powered from LV,
 `bringup board` should report `current_zero=PASS` near mid-scale; if the harness
 does not power the DHAB, a current warning is expected and should be recorded.
 
+Run `current` and confirm the printed ADC map matches the bench harness:
+
+| DHAB path | AMS net into MCU board | Connector path | STM32/Cube path |
+|---|---|---|---|
+| 50 A channel | `C_SENSE_L_MCU` / `C_SNS_L` | AMS `J4 pin 6` to MCU breakout `J601 pin 6` / `ADC2` | `PC0`, `ADC2_IN10`, `ADC_CHANNEL_10` |
+| 800 A channel | `C_SENSE_H_MCU` / `C_SNS_H` | AMS `J4 pin 2` to MCU breakout `J601 pin 2` / `ADC1` | `PA3`, `ADC1_IN3`, `ADC_CHANNEL_3` |
+
+This mapping is based on the current-sense nets, connector pin numbers, Cube
+ADC instances, and firmware symbols. Do not swap it based only on stale drawing
+notes.
+
 ## ADBMS6830 / SMB SPI Test Order
 
 Run commands in this order:

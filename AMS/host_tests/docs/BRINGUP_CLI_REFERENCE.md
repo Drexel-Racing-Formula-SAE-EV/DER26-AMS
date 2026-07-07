@@ -48,6 +48,16 @@ warning is acceptable for a board-only harness that omits the current sensor
 excitation; it is not acceptable if the DHAB is powered and should be reporting
 mid-scale zero current.
 
+Current-sense ADC mapping, rechecked from nets/connectors and Cube config:
+
+| Signal | AMS input connector | MCU breakout input connector | STM32 pin | Cube/HAL ADC path | Firmware use |
+|---|---:|---:|---|---|---|
+| `C_SENSE_L_MCU` / `C_SNS_L` | `J4 pin 6` | `J601 pin 6` / `ADC2` | `PC0` | `ADC2_IN10` / `ADC_CHANNEL_10` | DHAB 50 A channel |
+| `C_SENSE_H_MCU` / `C_SNS_H` | `J4 pin 2` | `J601 pin 2` / `ADC1` | `PA3` | `ADC1_IN3` / `ADC_CHANNEL_3` | DHAB 800 A channel |
+
+Use `current` during board bring-up. It prints this map before the raw ADC
+counts so UART logs show which physical ADC path was being interpreted.
+
 ## ADBMS6830 / SMB Flow
 
 The old firmware state was reportedly not communicating, so this is the first
