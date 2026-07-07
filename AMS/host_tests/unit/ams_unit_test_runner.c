@@ -1006,9 +1006,9 @@ static void test_voltage_fault_read_failure_precedence_and_strings(void)
     unit_fill_voltage_acc(&v_acc, 3300u, 4100u, true, true, false);
     v_acc.pec_fail_cell_count = 1u;
     voltage_fault_update(&vf, &v_acc);
-    EXPECT_TRUE(vf.voltage_valid);
-    EXPECT_TRUE(vf.warning);
-    EXPECT_FALSE(vf.confirmed);
+    EXPECT_FALSE(vf.voltage_valid);
+    EXPECT_TRUE(vf.read_fault);
+    EXPECT_TRUE(vf.confirmed);
     EXPECT_TRUE(vf.reason == VOLTAGE_FAULT_REASON_PEC_FAILURE);
 
     EXPECT_TRUE(strcmp(voltage_fault_reason_str(VOLTAGE_FAULT_REASON_CHARGE_STOP), "charge_stop") == 0);

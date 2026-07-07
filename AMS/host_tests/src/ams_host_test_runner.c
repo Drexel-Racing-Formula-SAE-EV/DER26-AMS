@@ -1453,7 +1453,7 @@ static void test_voltage_stats_boundaries_and_fuzz(void){
 }
 
 
-static void test_voltage_fault_policy_and_stale_tolerance(void){
+static void test_voltage_fault_policy_and_strict_scan_freshness(void){
     init_fake_app();
     fake_tick = 0u;
     fill_nominal_pack(&app, 3.700f);
@@ -1462,7 +1462,7 @@ static void test_voltage_fault_policy_and_stale_tolerance(void){
     CHECK(app.voltage_fault_state.read_fault == false);
     CHECK(app.voltage_fault_state.reason == VOLTAGE_FAULT_REASON_NONE);
 
-    /* One noisy/PEC-failed group should be observable but still usable while fresh. */
+    /* One noisy/PEC-failed group remains visible in telemetry but fails closed immediately. */
     fake_tick = 1000u;
     host_mark_updated_cells(&app);
     app.acc.smb.last_cell_updated_mask[0] &= (uint16_t)~0x0001u;
@@ -1471,12 +1471,13 @@ static void test_voltage_fault_policy_and_stale_tolerance(void){
     voltage_fault_update(&app.voltage_fault_state, &app.acc);
     CHECK(app.acc.usable_voltage_count == AMS_EXPECTED_CELL_COUNT);
     CHECK(app.acc.updated_voltage_count == (AMS_EXPECTED_CELL_COUNT - 1u));
-    CHECK(app.voltage_fault_state.voltage_valid == true);
-    CHECK(app.voltage_fault_state.read_fault == false);
-    CHECK(app.voltage_fault_state.warning == true);
+    CHECK(app.voltage_fault_state.voltage_valid == false);
+    CHECK(app.voltage_fault_state.read_fault == true);
+    CHECK(app.voltage_fault_state.warning == false);
+    CHECK(app.voltage_fault_state.confirmed == true);
     CHECK(app.voltage_fault_state.reason == VOLTAGE_FAULT_REASON_PEC_FAILURE);
 
-    /* Persistent missing data must fail closed once the cell becomes stale. */
+    /* Persistent missing data stays fail-closed and eventually ages the stale mask. */
     for(fake_tick = 2000u; fake_tick <= 3000u; fake_tick += 1000u)
     {
         host_mark_updated_cells(&app);
@@ -1487,7 +1488,7 @@ static void test_voltage_fault_policy_and_stale_tolerance(void){
     voltage_fault_update(&app.voltage_fault_state, &app.acc);
     CHECK(app.acc.usable_voltage_count == (AMS_EXPECTED_CELL_COUNT - 1u));
     CHECK(app.voltage_fault_state.read_fault == true);
-    CHECK(app.voltage_fault_state.reason == VOLTAGE_FAULT_REASON_STALE_SCAN);
+    CHECK(app.voltage_fault_state.reason == VOLTAGE_FAULT_REASON_PEC_FAILURE);
 
     init_fake_app(); fill_nominal_pack(&app, 3.700f);
     app.acc.smb_ics[0].cell.c_codes[0] = code_for_volts(4.180f);
@@ -1580,21 +1581,22 @@ static void test_system_sil_boot_ready_and_bms_conjunction(void)
     CHECK(bms_pin_state == GPIO_PIN_RESET);
 }
 
-static void test_system_sil_single_pec_miss_tolerated_then_recovers(void)
+static void test_system_sil_single_pec_miss_drops_bms_then_recovers(void)
 {
     sil_prepare_ready_system(STATE_DISCARGE, 0.0f, 3.700f);
 
     fake_adbms_voltage_masks_one_missing(0u, 0u, true);
     sil_run_voltage_sample(&app);
-    CHECK(app.voltage_valid == true);
-    CHECK(app.voltage_warning == true);
-    CHECK(app.voltage_fault == false);
+    CHECK(app.voltage_valid == false);
+    CHECK(app.voltage_read_fault == true);
+    CHECK(app.voltage_warning == false);
+    CHECK(app.voltage_fault == true);
     CHECK(app.voltage_fault_reason == VOLTAGE_FAULT_REASON_PEC_FAILURE);
     CHECK(app.voltage_usable_cell_count == AMS_EXPECTED_CELL_COUNT);
     CHECK(app.voltage_updated_cell_count == (AMS_EXPECTED_CELL_COUNT - 1u));
     CHECK(app.voltage_stale_cell_count == 0u);
-    CHECK(app.bms_state == true);
-    CHECK(bms_pin_state == GPIO_PIN_SET);
+    CHECK(app.bms_state == false);
+    CHECK(bms_pin_state == GPIO_PIN_RESET);
 
     fake_adbms_voltage_masks_full_update();
     sil_run_voltage_sample(&app);
@@ -1612,20 +1614,22 @@ static void test_system_sil_persistent_voltage_stale_drops_bms_ok(void)
 
     fake_adbms_voltage_masks_one_missing(1u, 2u, true);
     sil_run_voltage_sample(&app);
-    CHECK(app.voltage_valid == true);
-    CHECK(app.voltage_fault == false);
-    CHECK(app.bms_state == true);
+    CHECK(app.voltage_valid == false);
+    CHECK(app.voltage_read_fault == true);
+    CHECK(app.voltage_fault == true);
+    CHECK(app.voltage_fault_reason == VOLTAGE_FAULT_REASON_PEC_FAILURE);
+    CHECK(app.bms_state == false);
 
     sil_run_voltage_sample(&app);
-    CHECK(app.voltage_valid == true);
-    CHECK(app.voltage_fault == false);
-    CHECK(app.bms_state == true);
+    CHECK(app.voltage_valid == false);
+    CHECK(app.voltage_fault == true);
+    CHECK(app.bms_state == false);
 
     sil_run_voltage_sample(&app);
     CHECK(app.voltage_valid == false);
     CHECK(app.voltage_read_fault == true);
     CHECK(app.voltage_fault == true);
-    CHECK(app.voltage_fault_reason == VOLTAGE_FAULT_REASON_STALE_SCAN);
+    CHECK(app.voltage_fault_reason == VOLTAGE_FAULT_REASON_PEC_FAILURE);
     CHECK(app.voltage_usable_cell_count == (AMS_EXPECTED_CELL_COUNT - 1u));
     CHECK(app.voltage_stale_cell_count == 1u);
     CHECK(app.bms_state == false);
@@ -1892,9 +1896,12 @@ static void test_system_sil_harsh_timeline_no_false_enable(void)
 
     fake_adbms_voltage_masks_one_missing(0u, 4u, true);
     sil_run_voltage_sample(&app);
-    CHECK(app.voltage_warning == true);
-    CHECK(app.voltage_fault == false);
-    CHECK(app.bms_state == true);
+    CHECK(app.voltage_valid == false);
+    CHECK(app.voltage_read_fault == true);
+    CHECK(app.voltage_warning == false);
+    CHECK(app.voltage_fault == true);
+    CHECK(app.voltage_fault_reason == VOLTAGE_FAULT_REASON_PEC_FAILURE);
+    CHECK(app.bms_state == false);
 
     sil_run_current_sample(&app, 2.5f);
     sil_run_current_sample(&app, 2.5f);
@@ -1917,11 +1924,12 @@ static void test_system_sil_harsh_timeline_no_false_enable(void)
 
     fake_adbms_voltage_masks_all_missing(true);
     sil_run_voltage_sample(&app);
-    CHECK(app.voltage_valid == true);
-    CHECK(app.bms_state == true);
+    CHECK(app.voltage_valid == false);
+    CHECK(app.voltage_fault == true);
+    CHECK(app.bms_state == false);
     sil_run_voltage_sample(&app);
-    CHECK(app.voltage_valid == true);
-    CHECK(app.bms_state == true);
+    CHECK(app.voltage_valid == false);
+    CHECK(app.bms_state == false);
     sil_run_voltage_sample(&app);
     CHECK(app.voltage_fault == true);
     CHECK(app.bms_state == false);
@@ -2000,9 +2008,10 @@ static void test_system_sil_hard_fault_and_corrupt_smb_config_fail_closed(void)
     fake_adbms_voltage_masks_full_update();
     sil_run_current_sample(&app, 0.0f);
     sil_run_voltage_sample(&app);
-    CHECK(app.voltage_valid == true);
-    CHECK(app.voltage_fault == false);
-    CHECK(app.bms_state == true);
+    CHECK(app.voltage_valid == false);
+    CHECK(app.voltage_fault == true);
+    CHECK(app.voltage_fault_reason == VOLTAGE_FAULT_REASON_PARTIAL_SCAN);
+    CHECK(app.bms_state == false);
 }
 
 static void test_system_sil_voltage_threshold_exact_edges(void)
@@ -2580,19 +2589,19 @@ static void test_system_sil_cli_can_diagnostic_consistency(void)
     sil_run_voltage_sample(&app);
     sil_run_voltage_sample(&app);
     CHECK(app.voltage_fault == true);
-    CHECK(app.voltage_fault_reason == VOLTAGE_FAULT_REASON_STALE_SCAN);
+    CHECK(app.voltage_fault_reason == VOLTAGE_FAULT_REASON_PEC_FAILURE);
     CHECK(app.bms_state == false);
 
     sil_prepare_cli_capture();
     CHECK(get_faults(0, NULL) == 0);
     CHECK(strstr(cli_capture, "voltage: fault:1") != NULL);
     CHECK(strstr(cli_capture, "valid:0") != NULL);
-    CHECK(strstr(cli_capture, "stale_scan") != NULL);
+    CHECK(strstr(cli_capture, "pec_failure") != NULL);
 
     sil_prepare_cli_capture();
     CHECK(get_voltage(0, NULL) == 0);
     CHECK(strstr(cli_capture, "Voltage valid:0 fault:1") != NULL);
-    CHECK(strstr(cli_capture, "reason:stale_scan") != NULL);
+    CHECK(strstr(cli_capture, "reason:pec_failure") != NULL);
     CHECK(strstr(cli_capture, "stale:") != NULL);
 
     app.board.canbus.hcan = &hcan;
@@ -3254,7 +3263,7 @@ static void test_system_sil_long_run_seeded_fuzz_invariants(void)
     uint32_t current_fault_seen = 0u;
     uint32_t voltage_fault_seen = 0u;
     uint32_t invalid_current_seen = 0u;
-    uint32_t stale_voltage_seen = 0u;
+    uint32_t pec_voltage_seen = 0u;
 
     sil_prepare_ready_system(STATE_DISCARGE, 0.0f, 3.700f);
     sil_attach_fans(&app);
@@ -3369,7 +3378,7 @@ static void test_system_sil_long_run_seeded_fuzz_invariants(void)
         current_fault_seen += app.current_fault ? 1u : 0u;
         voltage_fault_seen += app.voltage_fault ? 1u : 0u;
         invalid_current_seen += app.current_valid ? 0u : 1u;
-        stale_voltage_seen += (app.voltage_fault_reason == VOLTAGE_FAULT_REASON_STALE_SCAN) ? 1u : 0u;
+        pec_voltage_seen += (app.voltage_fault_reason == VOLTAGE_FAULT_REASON_PEC_FAILURE) ? 1u : 0u;
     }
 
     CHECK(bms_true_seen > 0u);
@@ -3377,7 +3386,7 @@ static void test_system_sil_long_run_seeded_fuzz_invariants(void)
     CHECK(current_fault_seen > 0u);
     CHECK(voltage_fault_seen > 0u);
     CHECK(invalid_current_seen > 0u);
-    CHECK(stale_voltage_seen > 0u);
+    CHECK(pec_voltage_seen > 0u);
 }
 
 static void test_system_sil_concurrent_heartbeat_starvation_and_recovery(void)
@@ -4489,9 +4498,9 @@ static void test_periods_and_driver_edge_cases(void){
 int main(void){
     test_accumulator_stats_and_balance(); puts("PASS accumulator stats/balance");
     test_voltage_stats_boundaries_and_fuzz(); puts("PASS voltage boundary/fuzz stats");
-    test_voltage_fault_policy_and_stale_tolerance(); puts("PASS voltage fault/stale policy");
+    test_voltage_fault_policy_and_strict_scan_freshness(); puts("PASS voltage fault strict scan freshness policy");
     test_system_sil_boot_ready_and_bms_conjunction(); puts("PASS system SIL boot/readiness/BMS conjunction");
-    test_system_sil_single_pec_miss_tolerated_then_recovers(); puts("PASS system SIL single PEC miss tolerance/recovery");
+    test_system_sil_single_pec_miss_drops_bms_then_recovers(); puts("PASS system SIL single PEC miss fail-closed/recovery");
     test_system_sil_persistent_voltage_stale_drops_bms_ok(); puts("PASS system SIL persistent voltage stale fail-closed");
     test_system_sil_charge_stop_allows_balance_before_hard_ov(); puts("PASS system SIL charge-stop balancing vs hard OV");
     test_system_sil_voltage_uv_ov_severe_diagnostics_and_latch(); puts("PASS system SIL voltage severe diagnostics/latch");

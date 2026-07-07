@@ -6,10 +6,10 @@ Authored by Mahad Faisal, 2026.
 |---|---|
 | `test_accumulator_stats_and_balance` | Verifies voltage min/max/total stats, full-usable scan gating, bounded SMB count, PWM balance selection, DCC stays clear, and balance clear. |
 | `test_voltage_stats_boundaries_and_fuzz` | Fuzzes valid/invalid cell-code combinations and verifies only usable/fresh readings affect pack stats. |
-| `test_voltage_fault_policy_and_stale_tolerance` | Verifies voltage fault staging, charge-stop behavior, hard OV/UV latching, and single-scan PEC/miss tolerance versus persistent stale-cell fail-closed behavior. |
+| `test_voltage_fault_policy_and_strict_scan_freshness` | Verifies voltage fault staging, charge-stop behavior, hard OV/UV latching, and strict full-fresh-scan behavior where any PEC/missed cell update drops BMS_OK immediately. |
 | `test_system_sil_boot_ready_and_bms_conjunction` | System-level SIL: verifies BMS_OK cannot assert before both current and voltage are valid, and that either current-invalid or voltage-not-ready keeps BMS_OK low. |
-| `test_system_sil_single_pec_miss_tolerated_then_recovers` | System-level SIL: verifies one PEC/missed cell update is observable as a warning but tolerated while prior cell data is fresh, then clears on recovery. |
-| `test_system_sil_persistent_voltage_stale_drops_bms_ok` | System-level SIL: verifies repeated missed/PEC-failed voltage scans age into stale data, drop BMS_OK, and recover when a full fresh scan returns. |
+| `test_system_sil_single_pec_miss_drops_bms_then_recovers` | System-level SIL: verifies one PEC/missed cell update immediately marks the voltage scan invalid, drops BMS_OK, and recovers only after a full fresh scan returns. |
+| `test_system_sil_persistent_voltage_stale_drops_bms_ok` | System-level SIL: verifies repeated missed/PEC-failed voltage scans stay fail-closed, track stale data, and recover when a full fresh scan returns. |
 | `test_system_sil_charge_stop_allows_balance_before_hard_ov` | System-level SIL: verifies 4.18 V charge-stop keeps BMS_OK and still allows controlled balancing, while 4.20 V hard OV latches, clears balancing, and drops BMS_OK. |
 | `test_system_sil_voltage_uv_ov_severe_diagnostics_and_latch` | System-level SIL: verifies soft UV warning, hard UV latch, severe OV diagnostic reason, and severe UV diagnostic reason through the ADBMS task/BMS_OK path. |
 | `test_system_sil_current_warning_fast_trip_and_latch_persistence` | System-level SIL: verifies current warning-only behavior, fast discharge trip, BMS_OK drop, and latch persistence after current returns normal. |
@@ -17,7 +17,7 @@ Authored by Mahad Faisal, 2026.
 | `test_system_sil_regen_and_charge_current_placeholders` | System-level SIL: verifies low regen is warning-only while regen/charge overcurrent levels latch and drop BMS_OK. This caught and fixed the regen-warning masking bug. |
 | `test_system_sil_2950_debug_non_safety_until_integrated` | System-level SIL: verifies ADBMS2950/APM debug errors do not affect BMS_OK while the 2950 path remains debug-only and not safety-integrated. |
 | `test_system_sil_combined_fault_precedence_and_reset_path` | System-level SIL: verifies current and voltage latches can coexist, reset independently, and BMS_OK only reasserts after both are cleared and healthy. |
-| `test_system_sil_harsh_timeline_no_false_enable` | System-level SIL: runs a harsh multi-phase timeline through precharge, voltage read loss, PEC miss tolerance, precharge current fault, recovery, and persistent voltage loss without false BMS_OK enable. |
+| `test_system_sil_harsh_timeline_no_false_enable` | System-level SIL: runs a harsh multi-phase timeline through precharge, voltage read loss, PEC miss fail-closed behavior, precharge current fault, recovery, and persistent voltage loss without false BMS_OK enable. |
 | `test_system_sil_current_invalid_immediate_bms_drop_and_recovery` | System-level SIL: verifies a current ADC/status failure immediately drops BMS_OK, holds it low until current recovers, and only reasserts after the next healthy voltage/current conjunction. |
 | `test_system_sil_hard_fault_and_corrupt_smb_config_fail_closed` | System-level SIL: verifies hard_fault cannot be overwritten by the ADBMS task, corrupted/low SMB count cannot reduce the required 75-cell scan, and null SMB driver pointers fall back safely to internal storage instead of crashing. |
 | `test_system_sil_voltage_threshold_exact_edges` | System-level SIL: verifies exact edge behavior at 4.179/4.180/4.199/4.200 V and 2.501/2.500 V through task-level BMS_OK gating. |
@@ -64,7 +64,7 @@ Unit-only additions:
 | `test_current_fault_policy` | Verifies discharge debounce, precharge fast trip, persistent sensor-fault confirmation, and placeholder regen-unexpected warning policy. |
 | `test_current_fault_threshold_edges_and_recovery` | Verifies warning-only recovery, fast-trip debounce/latch timing, latch reset behavior, charge overcurrent, and regen-disabled placeholder behavior. |
 | `test_voltage_fault_thresholds_latch_and_reset` | Verifies voltage threshold boundaries for OV warning, charge stop, hard/severe OV, soft/hard/severe UV, latched reasons, and cell location propagation. |
-| `test_voltage_fault_read_failure_precedence_and_strings` | Verifies not-ready, partial/stale/PEC read-fault precedence, warning-only partial usable scans, and voltage fault reason strings. |
+| `test_voltage_fault_read_failure_precedence_and_strings` | Verifies not-ready, partial/stale/PEC read-fault precedence, strict full-fresh-scan validity, and voltage fault reason strings. |
 | `test_adbms_spi_debug_write_and_full_duplex_paths` | Verifies SPI debug state for write and full-duplex read paths, CS wrapping, dummy-byte TX padding, RX extraction, HAL error propagation, and debug counters/previews. |
 | `test_adbms_spi_debug_rd48_pec_masks_and_clear` | Verifies `rd48` debug command capture, PEC pass/fail masks across multiple ICs, command-counter capture, debug clear/enable behavior, and SPI op strings. |
 | `test_adbms_spi_scope_activity` | Verifies the bench scope traffic helper preserves the selected string, emits the visible MOSI pattern, repeats valid RDCFGA command bursts, and rejects invalid repeat counts. |

@@ -101,22 +101,30 @@ void voltage_fault_update(voltage_fault_state_t *state, const accumulator_t *acc
         return;
     }
 
-    if(!acc->voltage_full_usable)
+    if(!acc->voltage_full_updated)
     {
         state->read_fault = true;
         state->confirmed = true;
-        if(acc->stale_voltage_count > 0u)
-        {
-            state->reason = VOLTAGE_FAULT_REASON_STALE_SCAN;
-        }
-        else if(acc->pec_fail_cell_count > 0u)
+        if(acc->pec_fail_cell_count > 0u)
         {
             state->reason = VOLTAGE_FAULT_REASON_PEC_FAILURE;
+        }
+        else if(acc->stale_voltage_count > 0u)
+        {
+            state->reason = VOLTAGE_FAULT_REASON_STALE_SCAN;
         }
         else
         {
             state->reason = VOLTAGE_FAULT_REASON_PARTIAL_SCAN;
         }
+        return;
+    }
+
+    if(!acc->voltage_full_usable)
+    {
+        state->read_fault = true;
+        state->confirmed = true;
+        state->reason = VOLTAGE_FAULT_REASON_STALE_SCAN;
         return;
     }
 
@@ -179,13 +187,7 @@ void voltage_fault_update(voltage_fault_state_t *state, const accumulator_t *acc
         return;
     }
 
-    if(!acc->voltage_full_updated)
-    {
-        state->warning = true;
-        state->reason = (acc->pec_fail_cell_count > 0u) ?
-                        VOLTAGE_FAULT_REASON_PEC_FAILURE :
-                        VOLTAGE_FAULT_REASON_PARTIAL_SCAN;
-    }
+    state->reason = VOLTAGE_FAULT_REASON_NONE;
 }
 
 const char *voltage_fault_reason_str(voltage_fault_reason_t reason)
