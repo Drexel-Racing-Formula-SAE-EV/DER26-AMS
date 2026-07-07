@@ -2780,9 +2780,9 @@ static void test_adbms_cli_scan_guard_and_cs_probe_commands(void)
     hspi.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_256;
     hspi.Init.FirstBit = SPI_FIRSTBIT_MSB;
     accumulator_init(&app.acc, &hspi, &cs_a, &cs_b, 0x0002u, 0x0004u, NULL);
-    CHECK(app.acc.smb.cs_port[STRING_A] == &cs_a);
+    CHECK(app.acc.smb.cs_port[STRING_A] == &cs_b);
     CHECK(app.acc.smb.cs_port[STRING_B] == &cs_b);
-    CHECK(app.acc.smb.cs_pin[STRING_A] == 0x0002u);
+    CHECK(app.acc.smb.cs_pin[STRING_A] == 0x0004u);
     CHECK(app.acc.smb.cs_pin[STRING_B] == 0x0004u);
     CHECK(app.acc.smb.string == STRING_B);
     app.acc.smb.hspi = &hspi;

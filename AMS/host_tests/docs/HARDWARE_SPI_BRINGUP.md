@@ -199,6 +199,13 @@ spi scope
 spi status
 ```
 
+Emergency breakout eval variant: the J15 emergency breakout connector exposes
+SPI6 plus `STRINGB_CS` only (`J15 pin 6`). In this branch the ADBMS runtime
+therefore maps both logical ADBMS strings to `CS_B` / `PE4` so either string
+selection produces traffic on the eval connector. Use this only for the
+emergency-breakout-to-EVAL setup; the normal AMS-board firmware should keep
+separate `CS_A` and `CS_B` routes.
+
 Expected analyzer setup:
 
 ```text

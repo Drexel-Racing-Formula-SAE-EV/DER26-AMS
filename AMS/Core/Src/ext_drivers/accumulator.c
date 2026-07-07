@@ -140,7 +140,13 @@ void accumulator_init(accumulator_t *dev,
 	memset(dev->apm_ics, 0, sizeof(dev->apm_ics));
 #endif
 
+#if AMS_EMERGENCY_BREAKOUT_EVAL_SINGLE_CSB
+	/* Emergency breakout J15 exposes STRINGB_CS only, so both logical strings
+	 * use the PE4/CS_B chip-select while testing the external eval path. */
+	adBms6830_init(&dev->smb, NSMBS, dev->smb_ics, hspi, cs_port_b, cs_port_b, cs_pin_b, cs_pin_b, htim);
+#else
 	adBms6830_init(&dev->smb, NSMBS, dev->smb_ics, hspi, cs_port_a, cs_port_b, cs_pin_a, cs_pin_b, htim);
+#endif
 }
 
 int accumulator_read_volt(accumulator_t *dev)

@@ -920,6 +920,7 @@ static int cli_print_adbms_pin_report(const adbms6830_driver_t *smb)
     ret |= cli_printline(cli, "ADBMS6822/6830 bench pin map from Cube/MCU breakout:");
     ret |= cli_printline(cli, "SPI6 SCK:PG13 MOSI:PG14 MISO:PG12 mode3 CPOL_HIGH CPHA_2EDGE");
     ret |= cli_printline(cli, "CS_A:PE2 active_low, CS_B:PE4 active_low");
+    ret |= cli_printline(cli, "variant: emergency breakout eval uses CS_B/PE4 for both ADBMS strings");
 
     snprintf(outline, CLI_LINESZ,
              "firmware CS_A port:PE pin:2 state:%s %s",
@@ -944,7 +945,7 @@ static int cli_print_adbms_pin_report(const adbms6830_driver_t *smb)
         ret |= cli_printline(cli, outline);
     }
 
-    ret |= cli_printline(cli, "bench: scope PE4 for CS_B; PF4 is a stale/conflicting schematic note");
+    ret |= cli_printline(cli, "bench: scope PE4/J15 pin 6 STRINGB_CS; PF4 is a stale/conflicting schematic note");
     return ret;
 }
 

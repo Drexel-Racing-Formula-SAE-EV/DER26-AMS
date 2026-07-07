@@ -45,6 +45,13 @@
 #define AMS_ENABLE_APM_2950_DEBUG 0
 #endif
 
+/* Emergency-breakout-to-EVAL branch mode. J15 exposes SPI6 plus STRINGB_CS
+ * only, so route both logical ADBMS strings through CS_B/PE4 for that bench.
+ */
+#ifndef AMS_EMERGENCY_BREAKOUT_EVAL_SINGLE_CSB
+#define AMS_EMERGENCY_BREAKOUT_EVAL_SINGLE_CSB 1
+#endif
+
 #define NAPMS 1
 #define HVEN1 GPO1
 #define HVEN2 GPO2
