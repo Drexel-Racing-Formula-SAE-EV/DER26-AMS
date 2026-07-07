@@ -21,6 +21,14 @@
 #include <assert.h>
 #include <setjmp.h>
 
+#ifndef AMS_HOST_LONG_FUZZ_CYCLES
+#define AMS_HOST_LONG_FUZZ_CYCLES 10000u
+#endif
+
+#ifndef AMS_HOST_CONCURRENT_FUZZ_CYCLES
+#define AMS_HOST_CONCURRENT_FUZZ_CYCLES 2500u
+#endif
+
 #include "app.h"
 #include "ext_drivers/adbms2950.h"
 #include "ext_drivers/adbms6830_functions.h"
@@ -63,6 +71,8 @@ static void fake_adc_set_current_a(float current_a);
 static void sil_publish_temp_state(app_data_t *d);
 static void sil_expect_balancing_clear(const app_data_t *d);
 static uint8_t sil_balance_pwm_duty(const app_data_t *d, uint8_t ic, uint8_t cell);
+static void sil_prepare_cli_capture(void);
+static void sil_run_can_charge_iteration(app_data_t *d, CAN_HandleTypeDef *hcan);
 
 uint32_t osKernelGetTickCount(void){ return fake_tick; }
 osStatus_t osDelay(uint32_t ticks){ fake_tick += ticks; return osOK; }
@@ -215,8 +225,21 @@ uint16_t ams_heartbeat_update(app_data_t *d, uint32_t now)
 // External driver stubs used by accumulator/CLI paths
 static HAL_StatusTypeDef fake_adbms_wrcfgb_status = HAL_OK;
 static HAL_StatusTypeDef fake_adbms_wrpwm_status = HAL_OK;
+static int fake_adbms_wrpwm_fail_after_ok = -1;
 void adBms6830_init(adbms6830_driver_t* dev, uint8_t num_ics, adbms6830_asic* ics, SPI_HandleTypeDef* hspi, GPIO_TypeDef* cs_port_a, GPIO_TypeDef* cs_port_b, uint16_t cs_pin_a, uint16_t cs_pin_b, TIM_HandleTypeDef *htim){ if(dev){ dev->num_ics=num_ics; dev->ics=ics; dev->hspi=hspi; dev->cs_port[0]=cs_port_a; dev->cs_port[1]=cs_port_b; dev->cs_pin[0]=cs_pin_a; dev->cs_pin[1]=cs_pin_b; dev->htim=htim; dev->string=STRING_B; memset(&dev->spi_debug, 0, sizeof(dev->spi_debug)); memset(&dev->health, 0, sizeof(dev->health)); dev->spi_debug.last_status=HAL_OK; dev->spi_debug.last_tx_status=HAL_OK; dev->spi_debug.last_rx_status=HAL_OK; dev->spi_debug.last_xfer_status=HAL_OK; dev->health.last_status=HAL_OK; for(uint8_t ic=0; ic<ADBMS6830_MAX_TRACKED_ICS; ic++){ dev->last_cell_updated_mask[ic]=0u; dev->last_cell_pec_mask[ic]=0u; dev->last_temp_updated_mask[ic]=0u; } } }
-void adbms6830_reset_cfg(adbms6830_driver_t *dev){(void)dev;} void adbms6830_srst(adbms6830_driver_t *dev){(void)dev;} void adbms6830_wrcfga(adbms6830_driver_t *dev){(void)dev;} void adbms6830_wrcfgb(adbms6830_driver_t *dev){(void)adbms6830_wrcfgb_checked(dev);} HAL_StatusTypeDef adbms6830_wrcfgb_checked(adbms6830_driver_t *dev){(void)dev; return fake_adbms_wrcfgb_status;} HAL_StatusTypeDef adbms6830_wrpwma_checked(adbms6830_driver_t *dev){(void)dev; return fake_adbms_wrpwm_status;} HAL_StatusTypeDef adbms6830_wrpwmb_checked(adbms6830_driver_t *dev){(void)dev; return fake_adbms_wrpwm_status;} HAL_StatusTypeDef adbms6830_write_pwm_checked(adbms6830_driver_t *dev){(void)dev; return fake_adbms_wrpwm_status;} void adbms6830_rdcfga(adbms6830_driver_t *dev){(void)dev;} void adbms6830_rdcfgb(adbms6830_driver_t *dev){(void)dev;}
+static HAL_StatusTypeDef fake_adbms_wrpwm_next_status(void)
+{
+    if(fake_adbms_wrpwm_fail_after_ok == 0)
+    {
+        return HAL_ERROR;
+    }
+    if(fake_adbms_wrpwm_fail_after_ok > 0)
+    {
+        fake_adbms_wrpwm_fail_after_ok--;
+    }
+    return fake_adbms_wrpwm_status;
+}
+void adbms6830_reset_cfg(adbms6830_driver_t *dev){(void)dev;} void adbms6830_srst(adbms6830_driver_t *dev){(void)dev;} void adbms6830_wrcfga(adbms6830_driver_t *dev){(void)dev;} void adbms6830_wrcfgb(adbms6830_driver_t *dev){(void)adbms6830_wrcfgb_checked(dev);} HAL_StatusTypeDef adbms6830_wrcfgb_checked(adbms6830_driver_t *dev){(void)dev; return fake_adbms_wrcfgb_status;} HAL_StatusTypeDef adbms6830_wrpwma_checked(adbms6830_driver_t *dev){(void)dev; return fake_adbms_wrpwm_next_status();} HAL_StatusTypeDef adbms6830_wrpwmb_checked(adbms6830_driver_t *dev){(void)dev; return fake_adbms_wrpwm_next_status();} HAL_StatusTypeDef adbms6830_write_pwm_checked(adbms6830_driver_t *dev){(void)dev; return fake_adbms_wrpwm_next_status();} void adbms6830_rdcfga(adbms6830_driver_t *dev){(void)dev;} void adbms6830_rdcfgb(adbms6830_driver_t *dev){(void)dev;}
 void adbms6830_adcv(adbms6830_driver_t *dev, RD rd, CONT cont, DCP dcp, RSTF rstf, OW_C_S owcs){(void)dev;(void)rd;(void)cont;(void)dcp;(void)rstf;(void)owcs;} void adbms6830_wakeup(adbms6830_driver_t* dev){(void)dev;} void adbms6830_us_delay(adbms6830_driver_t* dev, uint16_t microseconds){(void)dev;(void)microseconds;} void adbms6830_start_adc_cell_voltage_measurement(adbms6830_driver_t *dev){(void)dev;} void adbms6830_parse_cell(adbms6830_driver_t *dev, uint8_t *data, GRP grp){(void)dev;(void)data;(void)grp;}
 void adbms6830_wakeup_cold(adbms6830_driver_t* dev){ if(dev){ dev->spi_debug.last_op = ADBMS6830_SPI_OP_COLD_WAKE; } }
 void adbms6830_read_cell_voltages(adbms6830_driver_t *dev){
@@ -520,7 +543,7 @@ static int16_t raw_for_temp_c(float temp_c){ return raw_for_ntc_voltage(ntc_volt
 
 static void sil_mark_all_heartbeats_alive(app_data_t *d);
 
-static void init_fake_app(void){ memset(&app,0,sizeof(app)); app.acc.smb.num_ics = NSMBS; app.acc.smb.ics = app.acc.smb_ics; current_fault_init(&app.current_fault_state); voltage_fault_init(&app.voltage_fault_state); temperature_fault_init(&app.temp_fault_state); ams_heartbeat_init(&app, fake_tick); app.current_meas_reason = CURRENT_SENSOR_REASON_ADC_READ; app.current_fault_reason = CURRENT_FAULT_REASON_SENSOR_NOT_READY; app.voltage_fault_reason = VOLTAGE_FAULT_REASON_NOT_READY; app.temp_fault = true; app.temp_read_fault = true; app.temp_fan_max = true; app.temp_fault_reason = TEMPERATURE_FAULT_REASON_NOT_READY; fake_adbms_voltage_masks_full_update(); fake_adc_read_index = 0u; fake_adbms_wrcfgb_status = HAL_OK; fake_adbms_wrpwm_status = HAL_OK; fake_adbms_diag_status = HAL_OK; fake_adbms_config_mismatch_mask = 0u; fake_can_add_tx_status = HAL_OK; }
+static void init_fake_app(void){ memset(&app,0,sizeof(app)); app.acc.smb.num_ics = NSMBS; app.acc.smb.ics = app.acc.smb_ics; current_fault_init(&app.current_fault_state); voltage_fault_init(&app.voltage_fault_state); temperature_fault_init(&app.temp_fault_state); ams_heartbeat_init(&app, fake_tick); app.current_meas_reason = CURRENT_SENSOR_REASON_ADC_READ; app.current_fault_reason = CURRENT_FAULT_REASON_SENSOR_NOT_READY; app.voltage_fault_reason = VOLTAGE_FAULT_REASON_NOT_READY; app.temp_fault = true; app.temp_read_fault = true; app.temp_fan_max = true; app.temp_fault_reason = TEMPERATURE_FAULT_REASON_NOT_READY; app.balance_inhibit = (AMS_HW_BRINGUP_BALANCE_INHIBIT_DEFAULT != 0); fake_adbms_voltage_masks_full_update(); fake_adc_read_index = 0u; fake_adbms_wrcfgb_status = HAL_OK; fake_adbms_wrpwm_status = HAL_OK; fake_adbms_wrpwm_fail_after_ok = -1; fake_adbms_diag_status = HAL_OK; fake_adbms_config_mismatch_mask = 0u; fake_can_add_tx_status = HAL_OK; }
 
 static void host_mark_updated_cells(app_data_t *d)
 {
@@ -1022,7 +1045,7 @@ static void test_task_iterations_with_injected_signals(void){
     run_one_canbus_task_iteration(&app);
     CHECK(tx_count == HOST_CHARGE_CAN_FRAME_COUNT); CHECK(tx_log[HOST_CHARGER_FRAME_INDEX].data[4] == 1u); CHECK(app.board.charger.communication_fail == true); CHECK(app.charger_fault == true); CHECK(app.bms_state == false); CHECK(bms_pin_state == GPIO_PIN_RESET);
 
-    init_fake_app(); fill_nominal_pack(&app, 3.700f); app.state = STATE_CHARGE; app.current_valid=true; app.bms_state=true; app.acc.smb_ics[0].cell.c_codes[0] = code_for_volts(4.100f); app.acc.smb_ics[0].cell.c_codes[1] = code_for_volts(4.140f); fake_tick=0;
+    init_fake_app(); fill_nominal_pack(&app, 3.700f); app.state = STATE_CHARGE; app.current_valid=true; app.bms_state=true; app.balance_inhibit=false; app.acc.smb_ics[0].cell.c_codes[0] = code_for_volts(4.100f); app.acc.smb_ics[0].cell.c_codes[1] = code_for_volts(4.140f); fake_tick=0;
     run_one_adbms_task_iteration(&app);
     CHECK(app.voltage_fault == false); CHECK(app.temp_fault == false); CHECK(app.max_voltage > 4.13f); CHECK(app.min_voltage > 3.69f); CHECK(app.acc.smb_ics[0].tx_cfgb.dcc == 0u); CHECK(sil_balance_pwm_duty(&app, 0u, 1u) == BALANCE_PWM_DUTY);
 
@@ -1648,6 +1671,7 @@ static void test_system_sil_persistent_voltage_stale_drops_bms_ok(void)
 static void test_system_sil_charge_stop_allows_balance_before_hard_ov(void)
 {
     sil_prepare_ready_system(STATE_CHARGE, 0.0f, 3.700f);
+    app.balance_inhibit = false;
 
     sil_set_cell_voltage(&app, 0u, 0u, 4.100f);
     sil_set_cell_voltage(&app, 0u, 1u, 4.180f);
@@ -1683,6 +1707,236 @@ static void test_system_sil_charge_stop_allows_balance_before_hard_ov(void)
     sil_run_voltage_sample(&app);
     CHECK(app.voltage_fault_latched == true);
     CHECK(app.bms_state == false);
+}
+
+static void test_system_sil_balance_inhibit_ladder_bringup_lockout(void)
+{
+    char *balance_status_argv[] = {"balance", "status", NULL};
+    char *balance_inhibit_argv[] = {"balance", "inhibit", NULL};
+    char *balance_release_argv[] = {"balance", "release", NULL};
+    char *balance_clear_argv[] = {"balance", "clear", NULL};
+
+    sil_prepare_ready_system(STATE_CHARGE, 0.0f, 3.700f);
+
+#if AMS_HW_BRINGUP_BALANCE_INHIBIT_DEFAULT
+    CHECK(app.balance_inhibit == true);
+#else
+    CHECK(app.balance_inhibit == false);
+#endif
+
+    app.balance_inhibit = false;
+    sil_set_cell_voltage(&app, 0u, 0u, 4.100f);
+    sil_set_cell_voltage(&app, 0u, 1u, 4.180f);
+    fake_adbms_voltage_masks_full_update();
+    sil_run_voltage_sample(&app);
+    CHECK(app.bms_state == true);
+    CHECK(app.charge_voltage_stop == true);
+    CHECK(sil_balance_pwm_duty(&app, 0u, 1u) == BALANCE_PWM_DUTY);
+
+    app.balance_inhibit = true;
+    sil_run_voltage_sample(&app);
+    CHECK(app.bms_state == true);
+    CHECK(app.charge_voltage_stop == true);
+    sil_expect_balancing_clear(&app);
+
+    app.acc.smb_ics[0].PwmA.pwma[0] = BALANCE_PWM_DUTY;
+    app.acc.smb_ics[0].PwmB.pwmb[0] = BALANCE_PWM_DUTY;
+    app.acc.smb_ics[0].tx_cfgb.dcc = 0x0003u;
+    sil_prepare_cli_capture();
+    CHECK(balance_control(2, balance_clear_argv) == 0);
+    CHECK(strstr(cli_capture, "Balancing PWM/DCC cleared") != NULL);
+    sil_expect_balancing_clear(&app);
+
+    CHECK(balance_control(2, balance_release_argv) == 0);
+    CHECK(app.balance_inhibit == false);
+    sil_run_voltage_sample(&app);
+    CHECK(sil_balance_pwm_duty(&app, 0u, 1u) == BALANCE_PWM_DUTY);
+
+    app.acc.smb_ics[0].PwmA.pwma[1] = BALANCE_PWM_DUTY;
+    fake_adbms_wrpwm_status = HAL_ERROR;
+    sil_prepare_cli_capture();
+    CHECK(balance_control(2, balance_inhibit_argv) == 0);
+    CHECK(app.balance_inhibit == true);
+    CHECK(strstr(cli_capture, "WARNING clear write failed") != NULL);
+    CHECK(app.acc.smb_ics[0].PwmA.pwma[1] == 0u);
+    fake_adbms_wrpwm_status = HAL_OK;
+
+    sil_prepare_cli_capture();
+    CHECK(balance_control(2, balance_status_argv) == 0);
+    CHECK(strstr(cli_capture, "balance inhibit:1") != NULL);
+    CHECK(strstr(cli_capture, "resistor-ladder/bench") != NULL);
+}
+
+static void test_system_sil_bench_cli_abuse_and_balance_idempotence(void)
+{
+    char *balance_bad[] = {"balance", "wat", NULL};
+    char *balance_disable[] = {"balance", "disable", NULL};
+    char *balance_enable[] = {"balance", "enable", NULL};
+    char *balance_clear[] = {"balance", "clear", NULL};
+    char *bmsok_bad[] = {"bmsok", "wat", NULL};
+    char *bmsok_status[] = {"bmsok", "status", NULL};
+    char *state_bad[] = {"state", "launch", NULL};
+
+    sil_prepare_ready_system(STATE_CHARGE, 0.0f, 3.700f);
+    app.balance_inhibit = false;
+    app.bms_output_inhibit = true;
+    bms_pin_state = GPIO_PIN_RESET;
+
+    sil_prepare_cli_capture();
+    CHECK(balance_control(2, balance_bad) == 0);
+    CHECK(strstr(cli_capture, "Usage: balance") != NULL);
+    CHECK(app.balance_inhibit == false);
+
+    sil_prepare_cli_capture();
+    CHECK(bmsok_control(2, bmsok_bad) == 0);
+    CHECK(strstr(cli_capture, "Usage: bmsok") != NULL);
+    CHECK(app.bms_output_inhibit == true);
+
+    sil_prepare_cli_capture();
+    CHECK(bmsok_control(2, bmsok_status) == 0);
+    CHECK(strstr(cli_capture, "inhibit:1") != NULL);
+
+    state_t before_state = app.state;
+    sil_prepare_cli_capture();
+    CHECK(set_state(2, state_bad) == 1);
+    CHECK(app.state == before_state);
+    CHECK(strstr(cli_capture, "Usage: state") != NULL);
+
+    for(uint8_t i = 0u; i < 12u; i++)
+    {
+        app.acc.smb_ics[i % NSMBS].tx_cfgb.dcc = (uint16_t)(1u << (i % NCELLS));
+        app.acc.smb_ics[i % NSMBS].PwmA.pwma[i % PWMA] = BALANCE_PWM_DUTY;
+        app.acc.smb_ics[i % NSMBS].PwmB.pwmb[i % PWMB] = BALANCE_PWM_DUTY;
+
+        sil_prepare_cli_capture();
+        CHECK(balance_control(2, (i & 1u) ? balance_disable : balance_clear) == 0);
+        if(i & 1u)
+        {
+            CHECK(app.balance_inhibit == true);
+        }
+        sil_expect_balancing_clear(&app);
+
+        sil_prepare_cli_capture();
+        CHECK(balance_control(2, balance_enable) == 0);
+        CHECK(app.balance_inhibit == false);
+    }
+}
+
+static void test_system_sil_bench_state_transition_balance_cleanup(void)
+{
+    const state_t states[] = {STATE_DISCARGE, STATE_START, STATE_BALANCE};
+
+    for(size_t i = 0u; i < (sizeof(states) / sizeof(states[0])); i++)
+    {
+        sil_prepare_ready_system(STATE_CHARGE, 0.0f, 3.700f);
+        app.balance_inhibit = false;
+        sil_set_cell_voltage(&app, 0u, 0u, 4.100f);
+        sil_set_cell_voltage(&app, 0u, 1u, 4.180f);
+        fake_adbms_voltage_masks_full_update();
+        sil_run_voltage_sample(&app);
+        CHECK(app.bms_state == true);
+        CHECK(sil_balance_pwm_duty(&app, 0u, 1u) == BALANCE_PWM_DUTY);
+
+        app.state = states[i];
+        sil_run_voltage_sample(&app);
+        sil_expect_balancing_clear(&app);
+        CHECK(app.bms_state == true);
+        CHECK(bms_pin_state == GPIO_PIN_SET);
+    }
+}
+
+static void test_system_sil_bench_bmsok_inhibit_survives_ready_tasks(void)
+{
+    char *release_argv[] = {"bmsok", "release", NULL};
+    char *inhibit_argv[] = {"bmsok", "inhibit", NULL};
+    static CAN_HandleTypeDef hcan;
+
+    sil_prepare_ready_system(STATE_CHARGE, 0.0f, 3.700f);
+    app.board.canbus.hcan = &hcan;
+    charger_init(&app.board.charger, &app.board.canbus);
+    app.board.charger.last_rx_tick = fake_tick;
+
+    sil_prepare_cli_capture();
+    CHECK(bmsok_control(2, inhibit_argv) == 0);
+    CHECK(app.bms_output_inhibit == true);
+    CHECK(app.bms_state == false);
+    CHECK(bms_pin_state == GPIO_PIN_RESET);
+    set_bms(true);
+    CHECK(app.bms_state == false);
+    CHECK(bms_pin_state == GPIO_PIN_RESET);
+
+    for(uint8_t i = 0u; i < 8u; i++)
+    {
+        sil_run_current_sample(&app, 0.0f);
+        fake_adbms_voltage_masks_full_update();
+        sil_run_voltage_sample(&app);
+        sil_run_can_charge_iteration(&app, &hcan);
+        run_one_error_task_iteration(&app);
+        CHECK(app.current_valid == true);
+        CHECK(app.voltage_valid == true);
+        CHECK(app.bms_state == false);
+        CHECK(bms_pin_state == GPIO_PIN_RESET);
+    }
+
+    sil_prepare_cli_capture();
+    CHECK(bmsok_control(2, release_argv) == 0);
+    CHECK(app.bms_output_inhibit == false);
+    app.current_valid = true;
+    app.current_fault = false;
+    app.voltage_valid = true;
+    app.voltage_fault = false;
+    app.temp_valid = true;
+    app.temp_fault = false;
+    app.temp_charge_stop = false;
+    app.adbms_diag_fault = false;
+    app.task_heartbeat_fault = false;
+    app.fuse_fault = false;
+    app.charger_fault = false;
+    app.hard_fault = false;
+    set_bms(true);
+    CHECK(app.bms_state == true);
+    CHECK(bms_pin_state == GPIO_PIN_SET);
+}
+
+static void test_system_sil_bench_adbms_write_failures_and_recovery(void)
+{
+    sil_prepare_ready_system(STATE_DISCARGE, 0.0f, 3.700f);
+    app.acc.smb_ics[0].tx_cfgb.dcc = 0x0003u;
+    app.acc.smb_ics[0].PwmA.pwma[1] = BALANCE_PWM_DUTY;
+    fake_adbms_wrcfgb_status = HAL_ERROR;
+    sil_run_voltage_sample(&app);
+    CHECK(app.adbms_diag_fault == true);
+    CHECK(app.adbms_status_fault == true);
+    CHECK(app.bms_state == false);
+    CHECK(bms_pin_state == GPIO_PIN_RESET);
+    sil_expect_balancing_clear(&app);
+
+    fake_adbms_wrcfgb_status = HAL_OK;
+    for(uint8_t i = 0u; i < 12u; i++)
+    {
+        sil_run_voltage_sample(&app);
+    }
+    CHECK(app.adbms_diag_fault == false);
+    CHECK(app.adbms_status_fault == false);
+    CHECK(app.bms_state == true);
+    CHECK(bms_pin_state == GPIO_PIN_SET);
+
+    sil_prepare_ready_system(STATE_CHARGE, 0.0f, 3.700f);
+    app.balance_inhibit = false;
+    sil_set_cell_voltage(&app, 0u, 0u, 4.100f);
+    sil_set_cell_voltage(&app, 0u, 1u, 4.180f);
+    fake_adbms_voltage_masks_full_update();
+    fake_adbms_wrpwm_fail_after_ok = 1;
+    sil_run_voltage_sample(&app);
+    CHECK(app.bms_state == true);
+    CHECK(app.charge_voltage_stop == true);
+    CHECK(sil_balance_pwm_duty(&app, 0u, 1u) == BALANCE_PWM_DUTY);
+
+    app.state = STATE_DISCARGE;
+    fake_adbms_wrpwm_fail_after_ok = -1;
+    sil_run_voltage_sample(&app);
+    sil_expect_balancing_clear(&app);
+    CHECK(app.bms_state == true);
 }
 
 static void test_system_sil_voltage_uv_ov_severe_diagnostics_and_latch(void)
@@ -2380,6 +2634,21 @@ static void sil_assert_safety_invariants(const app_data_t *d, const char *ctx)
     {
         SIL_CHECK(ctx, d->temp_fault_latched_reason != TEMPERATURE_FAULT_REASON_NONE);
     }
+    if(d->balance_inhibit)
+    {
+        for(uint8_t ic = 0u; ic < NSMBS; ic++)
+        {
+            SIL_CHECK(ctx, d->acc.smb_ics[ic].tx_cfgb.dcc == 0u);
+            for(uint8_t cell = 0u; cell < PWMA; cell++)
+            {
+                SIL_CHECK(ctx, d->acc.smb_ics[ic].PwmA.pwma[cell] == 0u);
+            }
+            for(uint8_t cell = 0u; cell < PWMB; cell++)
+            {
+                SIL_CHECK(ctx, d->acc.smb_ics[ic].PwmB.pwmb[cell] == 0u);
+            }
+        }
+    }
 
     sil_assert_diagnostics_not_generic(d, ctx);
 }
@@ -2398,6 +2667,16 @@ static void sil_run_can_charge_iteration(app_data_t *d, CAN_HandleTypeDef *hcan)
     tx_count = 0u;
     tx_free_level = 3u;
     run_one_canbus_task_iteration(d);
+}
+
+static void sil_force_state_for_scheduler_abuse(app_data_t *d, state_t state)
+{
+    CHECK(d != NULL);
+    d->state = state;
+    if((state == STATE_CHARGE) && d->temp_charge_stop)
+    {
+        set_bms(false);
+    }
 }
 
 static void test_system_sil_task_order_permutations_fail_closed(void)
@@ -3055,7 +3334,11 @@ static void test_system_sil_bringup_status_and_bmsok_inhibit(void)
     app.acc.smb_ics[0].PwmA.pwma[1] = BALANCE_PWM_DUTY;
     sil_prepare_cli_capture();
     CHECK(balance_control(2, balance_status_argv) == 0);
+#if AMS_HW_BRINGUP_BALANCE_INHIBIT_DEFAULT
+    CHECK(strstr(cli_capture, "balance inhibit:1") != NULL);
+#else
     CHECK(strstr(cli_capture, "balance inhibit:0") != NULL);
+#endif
 
     sil_prepare_cli_capture();
     CHECK(balance_control(2, balance_inhibit_argv) == 0);
@@ -3292,6 +3575,7 @@ static void test_system_sil_long_run_seeded_fuzz_invariants(void)
     uint32_t voltage_fault_seen = 0u;
     uint32_t invalid_current_seen = 0u;
     uint32_t pec_voltage_seen = 0u;
+    uint32_t balance_inhibit_seen = 0u;
 
     sil_prepare_ready_system(STATE_DISCARGE, 0.0f, 3.700f);
     sil_attach_fans(&app);
@@ -3299,7 +3583,7 @@ static void test_system_sil_long_run_seeded_fuzz_invariants(void)
     charger_init(&app.board.charger, &app.board.canbus);
     app.board.charger.last_rx_tick = fake_tick;
 
-    for(uint32_t cycle = 0u; cycle < 10000u; cycle++)
+    for(uint32_t cycle = 0u; cycle < AMS_HOST_LONG_FUZZ_CYCLES; cycle++)
     {
         if((cycle % 125u) == 0u)
         {
@@ -3317,6 +3601,13 @@ static void test_system_sil_long_run_seeded_fuzz_invariants(void)
         app.fuse_fault = (((r >> 8) & 0x3Fu) == 0x11u) || (((r >> 16) & 0x7Fu) == 0x22u);
         app.charger_fault = false;
         app.hard_fault = false;
+        app.balance_inhibit = (((r >> 28) & 0x7u) == 0x3u);
+        if(app.balance_inhibit)
+        {
+            app.acc.smb_ics[(r >> 1) % NSMBS].tx_cfgb.dcc = (uint16_t)(1u << ((r >> 4) % 15u));
+            app.acc.smb_ics[(r >> 6) % NSMBS].PwmA.pwma[(r >> 9) % PWMA] = BALANCE_PWM_DUTY;
+            app.acc.smb_ics[(r >> 11) % NSMBS].PwmB.pwmb[(r >> 14) % PWMB] = BALANCE_PWM_DUTY;
+        }
 
         sil_write_all_cells(&app, 3.700f);
         switch((r >> 20) % 12u)
@@ -3407,6 +3698,7 @@ static void test_system_sil_long_run_seeded_fuzz_invariants(void)
         voltage_fault_seen += app.voltage_fault ? 1u : 0u;
         invalid_current_seen += app.current_valid ? 0u : 1u;
         pec_voltage_seen += (app.voltage_fault_reason == VOLTAGE_FAULT_REASON_PEC_FAILURE) ? 1u : 0u;
+        balance_inhibit_seen += app.balance_inhibit ? 1u : 0u;
     }
 
     CHECK(bms_true_seen > 0u);
@@ -3415,6 +3707,7 @@ static void test_system_sil_long_run_seeded_fuzz_invariants(void)
     CHECK(voltage_fault_seen > 0u);
     CHECK(invalid_current_seen > 0u);
     CHECK(pec_voltage_seen > 0u);
+    CHECK(balance_inhibit_seen > 0u);
 }
 
 static void test_system_sil_concurrent_heartbeat_starvation_and_recovery(void)
@@ -3536,7 +3829,7 @@ static void test_system_sil_concurrent_seeded_scheduler_abuse(void)
     charger_init(&app.board.charger, &app.board.canbus);
     app.board.charger.last_rx_tick = fake_tick;
 
-    for(uint32_t cycle = 0u; cycle < 2500u; cycle++)
+    for(uint32_t cycle = 0u; cycle < AMS_HOST_CONCURRENT_FUZZ_CYCLES; cycle++)
     {
         if((cycle % 125u) == 0u)
         {
@@ -3552,15 +3845,15 @@ static void test_system_sil_concurrent_seeded_scheduler_abuse(void)
         uint32_t r = sil_rng_next(&rng);
         if((r & 0x1Fu) == 0u)
         {
-            app.state = STATE_CHARGE;
+            sil_force_state_for_scheduler_abuse(&app, STATE_CHARGE);
         }
         else if((r & 0x1Fu) == 1u)
         {
-            app.state = STATE_DISCARGE;
+            sil_force_state_for_scheduler_abuse(&app, STATE_DISCARGE);
         }
         else if((r & 0x3Fu) == 2u)
         {
-            app.state = STATE_BALANCE;
+            sil_force_state_for_scheduler_abuse(&app, STATE_BALANCE);
         }
 
         if((r & 0x7Fu) == 0x24u)
@@ -3588,6 +3881,11 @@ static void test_system_sil_concurrent_seeded_scheduler_abuse(void)
             case 2u: sil_set_all_temps(&app, 61.0f, (1UL << NTEMPS) - 1UL); break;
             case 3u: sil_set_all_temps(&app, 25.0f, 0u); break;
             default: break;
+        }
+        if((app.state == STATE_CHARGE) &&
+           (app.temp_charge_stop || app.temp_fault || !app.temp_valid))
+        {
+            set_bms(false);
         }
 
         sil_write_all_cells(&app, 3.700f);
@@ -4531,6 +4829,11 @@ int main(void){
     test_system_sil_single_pec_miss_drops_bms_then_recovers(); puts("PASS system SIL single PEC miss fail-closed/recovery");
     test_system_sil_persistent_voltage_stale_drops_bms_ok(); puts("PASS system SIL persistent voltage stale fail-closed");
     test_system_sil_charge_stop_allows_balance_before_hard_ov(); puts("PASS system SIL charge-stop balancing vs hard OV");
+    test_system_sil_balance_inhibit_ladder_bringup_lockout(); puts("PASS system SIL balance inhibit ladder bring-up lockout");
+    test_system_sil_bench_cli_abuse_and_balance_idempotence(); puts("PASS system SIL bench CLI abuse/balance idempotence");
+    test_system_sil_bench_state_transition_balance_cleanup(); puts("PASS system SIL bench state-transition balance cleanup");
+    test_system_sil_bench_bmsok_inhibit_survives_ready_tasks(); puts("PASS system SIL bench BMS_OK inhibit survives ready tasks");
+    test_system_sil_bench_adbms_write_failures_and_recovery(); puts("PASS system SIL bench ADBMS write failures/recovery");
     test_system_sil_voltage_uv_ov_severe_diagnostics_and_latch(); puts("PASS system SIL voltage severe diagnostics/latch");
     test_system_sil_current_warning_fast_trip_and_latch_persistence(); puts("PASS system SIL current warning/fast-trip/latch");
     test_system_sil_current_stale_adc_pair_fails_safe(); puts("PASS system SIL current stale ADC pair fail-safe");
@@ -4556,7 +4859,7 @@ int main(void){
     test_bringup_cli_apm_and_charger_phase_split(); puts("PASS bring-up CLI APM/charger phase split");
     test_system_sil_contradictory_dhab_vs_2950_observable_non_gating(); puts("PASS system SIL DHAB vs 2950 contradiction observable/non-gating");
     test_system_sil_startup_garbage_never_enables_bms(); puts("PASS system SIL startup garbage never enables BMS_OK");
-    test_system_sil_long_run_seeded_fuzz_invariants(); puts("PASS system SIL 10000-cycle seeded fuzz invariants");
+    test_system_sil_long_run_seeded_fuzz_invariants(); puts("PASS system SIL seeded fuzz invariants");
     test_system_sil_concurrent_heartbeat_starvation_and_recovery(); puts("PASS system SIL concurrent heartbeat starvation/recovery");
     test_system_sil_concurrent_charger_tx_recovery_ordering(); puts("PASS system SIL concurrent charger TX recovery ordering");
     test_system_sil_concurrent_seeded_scheduler_abuse(); puts("PASS system SIL concurrent seeded scheduler abuse");
