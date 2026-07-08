@@ -28,7 +28,8 @@ typedef enum
     CURRENT_SENSOR_REASON_ADC_IMPLAUSIBLE,
     CURRENT_SENSOR_REASON_SENSOR_SATURATION,
     CURRENT_SENSOR_REASON_CHANNEL_MISMATCH,
-    CURRENT_SENSOR_REASON_NOT_MAPPED
+    CURRENT_SENSOR_REASON_NOT_MAPPED,
+    CURRENT_SENSOR_REASON_ZERO_CAL_REJECTED
 } current_sensor_reason_t;
 
 typedef struct
@@ -50,6 +51,26 @@ typedef struct
     /* Explicit range-based values used by new code. */
     float current_50a;
     float current_800a;
+
+    /* Raw range currents before software zero-offset/deadband correction. */
+    float current_50a_raw;
+    float current_800a_raw;
+
+    /* Telemetry-only filtered values. Safety fault logic uses current/current_50a/current_800a, not these. */
+    float current_50a_filtered;
+    float current_800a_filtered;
+    float current_filtered;
+    bool filter_initialized;
+
+    /* Software zero-current offset captured only by an explicit service/bench command. */
+    float zero_offset_50a;
+    float zero_offset_800a;
+    bool zero_calibrated;
+    uint32_t zero_cal_count;
+
+    /* Voltage-reference parameters. Defaults match AMS Rev3.1: STM32 ADC at 3.3 V, DHAB at 5 V. */
+    float adc_vref_v;
+    float sensor_supply_v;
 
     uint16_t count_high;
     uint16_t count_low;
@@ -75,6 +96,11 @@ void current_sensor_init(current_sensor_t *dev,
 float current_sensor_current_read(current_sensor_t *dev);
 float current_sensor_convert(current_sensor_t *dev);
 bool current_sensor_read_adc(current_sensor_t *dev);
+void current_sensor_set_reference_voltages(current_sensor_t *dev,
+                                           float adc_vref_v,
+                                           float sensor_supply_v);
+bool current_sensor_zero_calibrate(current_sensor_t *dev);
+void current_sensor_zero_clear(current_sensor_t *dev);
 const char *current_sensor_reason_str(current_sensor_reason_t reason);
 const char *current_sensor_range_str(current_sensor_range_t range);
 

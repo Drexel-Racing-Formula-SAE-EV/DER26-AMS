@@ -792,6 +792,52 @@ static void test_current_sensor_requires_fresh_pair_and_channel_mapping(void)
     EXPECT_NEAR(sensor.current, 80.0f, 1.50f);
 }
 
+
+static void test_current_sensor_zero_cal_and_hysteresis(void)
+{
+    current_sensor_t sensor = {0};
+
+    sensor.count_high = unit_adc_count_for_sensor_voltage(2.505f);  /* +2 A on 800 A channel */
+    sensor.count_low = unit_adc_count_for_sensor_voltage(2.540f);   /* +1 A on 50 A channel */
+    unit_current_sensor_mark_fresh(&sensor);
+    (void)current_sensor_convert(&sensor);
+    EXPECT_TRUE(sensor.current_valid);
+    EXPECT_TRUE(current_sensor_zero_calibrate(&sensor));
+    EXPECT_TRUE(sensor.zero_calibrated);
+    EXPECT_TRUE(sensor.zero_cal_count == 1u);
+
+    (void)current_sensor_convert(&sensor);
+    EXPECT_TRUE(sensor.current_valid);
+    EXPECT_NEAR(sensor.current_50a, 0.0f, 0.05f);
+    EXPECT_NEAR(sensor.current_800a, 0.0f, 0.20f);
+    EXPECT_NEAR(sensor.current, 0.0f, 0.05f);
+
+    current_sensor_zero_clear(&sensor);
+    EXPECT_FALSE(sensor.zero_calibrated);
+
+    sensor = (current_sensor_t){0};
+    sensor.count_high = unit_adc_count_for_sensor_voltage(2.650f);  /* +60 A on 800 A channel */
+    sensor.count_low = unit_adc_count_for_sensor_voltage(4.750f);   /* 50 A channel at clamp */
+    unit_current_sensor_mark_fresh(&sensor);
+    (void)current_sensor_convert(&sensor);
+    EXPECT_TRUE(sensor.current_valid);
+    EXPECT_TRUE(sensor.selected_range == CURRENT_SENSOR_RANGE_800A);
+
+    sensor.count_high = unit_adc_count_for_sensor_voltage(2.600f);  /* +40 A on 800 A channel */
+    sensor.count_low = unit_adc_count_for_sensor_voltage(4.100f);   /* +40 A on 50 A channel */
+    unit_current_sensor_mark_fresh(&sensor);
+    (void)current_sensor_convert(&sensor);
+    EXPECT_TRUE(sensor.current_valid);
+    EXPECT_TRUE(sensor.selected_range == CURRENT_SENSOR_RANGE_800A);
+
+    sensor.count_high = unit_adc_count_for_sensor_voltage(2.590f);  /* +36 A on 800 A channel */
+    sensor.count_low = unit_adc_count_for_sensor_voltage(3.940f);   /* +36 A on 50 A channel */
+    unit_current_sensor_mark_fresh(&sensor);
+    (void)current_sensor_convert(&sensor);
+    EXPECT_TRUE(sensor.current_valid);
+    EXPECT_TRUE(sensor.selected_range == CURRENT_SENSOR_RANGE_50A);
+}
+
 static void test_current_fault_threshold_edges_and_recovery(void)
 {
     current_fault_state_t fault;
@@ -1539,6 +1585,7 @@ int main(void)
     run_test("current sensor conversion/range", test_current_sensor_conversion_zero_and_range_selection);
     run_test("current sensor invalid conditions", test_current_sensor_invalid_conditions);
     run_test("current sensor fresh pair/channel mapping", test_current_sensor_requires_fresh_pair_and_channel_mapping);
+    run_test("current sensor zero calibration/hysteresis", test_current_sensor_zero_cal_and_hysteresis);
     run_test("current sensor ADC status path", test_current_sensor_read_adc_status_path);
     run_test("current fault policy", test_current_fault_policy);
     run_test("current fault threshold edges/recovery", test_current_fault_threshold_edges_and_recovery);

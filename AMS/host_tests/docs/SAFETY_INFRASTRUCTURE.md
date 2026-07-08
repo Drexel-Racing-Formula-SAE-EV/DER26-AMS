@@ -19,7 +19,7 @@ threshold policy.
 | Watchdog gate | Feeding is blocked during startup grace, panic, hard faults, stale heartbeat, invalid/faulted voltage, invalid/faulted current, invalid/faulted temperature, charger fault, fuse fault, or ADBMS diagnostic fault. |
 | CAN bus-off | CAN HAL errors are polled, bus-off is counted, recovery is delayed, failed recovery is throttled, and CAN is restarted through Stop/ResetError/Start/ActivateNotification. In ADBMS-image HIL mode, bus-off/recovery-pending also holds the ADBMS diagnostic fault so stale injected images cannot briefly reassert BMS_OK. |
 | CAN soft-error hold | Non-bus-off CAN errors remain visible as a soft CAN fault for a short hold window instead of being overwritten immediately by a clean transmit pass. |
-| CAN diagnostics | Logger frame `0x69C` exports last CAN error, bus-off count, error count, recovery count, and recovery flags. |
+| CAN diagnostics | Logger frame `0x69C` exports CAN error/recovery state. Frames `0x69D..0x69F` export safety reset/panic state, watchdog feed-gate state, and ADBMS diagnostic counters/flags. Frames `0x6A6..0x6A7` add current ADC and charger-command detail for bench/dashboard correlation. |
 | Fault log | A 32-entry `.noinit` RAM ring records boot, reset cause, panic, BMS_OK transitions, voltage/temp/current latch transitions, ADBMS diagnostic failures, CAN bus-off/recovery, and watchdog feed-stop events. |
 | Fault injection | Destructive test commands are present only when compiled with `AMS_FAULT_INJECTION_CLI=1`. |
 

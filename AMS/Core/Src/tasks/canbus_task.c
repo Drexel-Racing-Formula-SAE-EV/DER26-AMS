@@ -306,6 +306,16 @@ static uint16_t sat_u16_u32(uint32_t x)
     return (x > 65535u) ? 65535u : (uint16_t)x;
 }
 
+static uint16_t logger_elapsed_deciseconds(uint32_t now, uint32_t then)
+{
+    if(then == 0u)
+    {
+        return 0xFFFFu;
+    }
+
+    return sat_u16_u32((now - then) / 100u);
+}
+
 static uint8_t logger_count_bits16(uint16_t x)
 {
     uint8_t count = 0u;
@@ -341,6 +351,14 @@ static void logger_put_u24(uint8_t payload[8], uint8_t offset, uint32_t value)
     payload[offset] = (uint8_t)((value >> 16u) & 0xFFu);
     payload[(uint8_t)(offset + 1u)] = (uint8_t)((value >> 8u) & 0xFFu);
     payload[(uint8_t)(offset + 2u)] = (uint8_t)(value & 0xFFu);
+}
+
+static void logger_put_u32(uint8_t payload[8], uint8_t offset, uint32_t value)
+{
+    payload[offset] = (uint8_t)((value >> 24u) & 0xFFu);
+    payload[(uint8_t)(offset + 1u)] = (uint8_t)((value >> 16u) & 0xFFu);
+    payload[(uint8_t)(offset + 2u)] = (uint8_t)((value >> 8u) & 0xFFu);
+    payload[(uint8_t)(offset + 3u)] = (uint8_t)(value & 0xFFu);
 }
 
 static HAL_StatusTypeDef send_logger_frame(canbus_device_t *canbus, uint32_t id, const uint8_t payload[8])
@@ -638,6 +656,72 @@ static HAL_StatusTypeDef send_logger_summaries(canbus_device_t *canbus,
     payload[7] = (uint8_t)(logger_bool_bit(data->can_busoff_fault, 0u) |
                            logger_bool_bit(data->can_recover_pending, 1u));
     ret |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_CAN_DIAG, payload);
+
+    memset(payload, 0, sizeof(payload));
+    logger_put_u32(payload, 0u, data->reset_flags);
+    payload[4] = sat_u8_u32(data->last_panic_reason);
+    payload[5] = sat_u8_u32(data->safety_panic_count);
+    payload[6] = sat_u8_u32(data->bms_output_block_count);
+    payload[7] = logger_bool_bit(ams_safety_panic_active(), AMS_LOGGER_SAFETY_FLAG_PANIC_ACTIVE) |
+                 logger_bool_bit(data->bms_output_inhibit, AMS_LOGGER_SAFETY_FLAG_BMS_OUTPUT_INHIBIT) |
+                 logger_bool_bit(data->balance_inhibit, AMS_LOGGER_SAFETY_FLAG_BALANCE_INHIBIT) |
+                 logger_bool_bit(data->bms_state, AMS_LOGGER_SAFETY_FLAG_BMS_STATE) |
+                 logger_bool_bit(data->hard_fault, AMS_LOGGER_SAFETY_FLAG_HARD_FAULT) |
+                 logger_bool_bit(data->task_heartbeat_fault, AMS_LOGGER_SAFETY_FLAG_TASK_HEARTBEAT_FAULT) |
+                 logger_bool_bit(data->logger_heartbeat_fault, AMS_LOGGER_SAFETY_FLAG_LOGGER_HEARTBEAT_FAULT);
+    ret |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_SAFETY_DIAG, payload);
+
+    memset(payload, 0, sizeof(payload));
+    uint32_t now = osKernelGetTickCount();
+    payload[0] = logger_bool_bit(data->watchdog_runtime_enabled, AMS_LOGGER_WATCHDOG_FLAG_RUNTIME_ENABLED) |
+                 logger_bool_bit(data->watchdog_hw_started, AMS_LOGGER_WATCHDOG_FLAG_HW_STARTED) |
+                 logger_bool_bit(ams_safety_watchdog_ok(data), AMS_LOGGER_WATCHDOG_FLAG_FEED_GATE_OK);
+    payload[1] = sat_u8_u32(data->watchdog_last_block_reason);
+    logger_put_u16(payload, 2u, sat_u16_u32(data->watchdog_feed_count));
+    logger_put_u16(payload, 4u, sat_u16_u32(data->watchdog_block_count));
+    logger_put_u16(payload, 6u, logger_elapsed_deciseconds(now, data->watchdog_last_feed_tick));
+    ret |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_WATCHDOG_DIAG, payload);
+
+    memset(payload, 0, sizeof(payload));
+    logger_put_u16(payload, 0u, sat_u16_u32(data->adbms_scan_count));
+    payload[2] = sat_u8_u32(data->adbms_status_diag_count);
+    payload[3] = sat_u8_u32(data->adbms_config_diag_count);
+    payload[4] = sat_u8_u32(data->adbms_open_wire_diag_count);
+    payload[5] = (uint8_t)data->adbms_last_diag_status;
+    payload[6] = logger_bool_bit(data->adbms_diag_fault, AMS_LOGGER_ADBMS_DIAG_FLAG_DIAG_FAULT) |
+                 logger_bool_bit(data->adbms_config_fault, AMS_LOGGER_ADBMS_DIAG_FLAG_CONFIG_FAULT) |
+                 logger_bool_bit(data->adbms_status_fault, AMS_LOGGER_ADBMS_DIAG_FLAG_STATUS_FAULT) |
+                 logger_bool_bit(data->adbms_open_wire_fault, AMS_LOGGER_ADBMS_DIAG_FLAG_OPEN_WIRE_FAULT) |
+                 logger_bool_bit(data->adbms_scan_active, AMS_LOGGER_ADBMS_DIAG_FLAG_SCAN_ACTIVE) |
+                 logger_bool_bit((AMS_HIL_REPLACE_ADBMS != 0), AMS_LOGGER_ADBMS_DIAG_FLAG_HIL_REPLACE);
+    payload[7] = logger_bool_bit(data->hil.meas.fresh != 0u, AMS_LOGGER_HIL_FLAG_MEAS_FRESH) |
+                 logger_bool_bit(data->hil.truth.fresh != 0u, AMS_LOGGER_HIL_FLAG_TRUTH_FRESH) |
+                 logger_bool_bit(data->hil.summary.fresh != 0u, AMS_LOGGER_HIL_FLAG_SUMMARY_FRESH);
+    ret |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_ADBMS_DIAG, payload);
+
+    const current_sensor_t *cur = &data->board.current_sensor;
+    memset(payload, 0, sizeof(payload));
+    logger_put_u16(payload, 0u, cur->count_high);
+    logger_put_u16(payload, 2u, cur->count_low);
+    payload[4] = (uint8_t)data->current_selected_range;
+    payload[5] = (uint8_t)data->current_meas_reason;
+    payload[6] = logger_bool_bit(cur->count_high_fresh, AMS_LOGGER_CURRENT_ADC_FLAG_HIGH_FRESH) |
+                 logger_bool_bit(cur->count_low_fresh, AMS_LOGGER_CURRENT_ADC_FLAG_LOW_FRESH) |
+                 logger_bool_bit(cur->last_read_ok, AMS_LOGGER_CURRENT_ADC_FLAG_LAST_READ_OK) |
+                 logger_bool_bit(cur->current_valid, AMS_LOGGER_CURRENT_ADC_FLAG_CURRENT_VALID) |
+                 logger_bool_bit(data->current_sensor_fault, AMS_LOGGER_CURRENT_ADC_FLAG_SENSOR_FAULT) |
+                 logger_bool_bit(cur->zero_calibrated, AMS_LOGGER_CURRENT_ADC_FLAG_ZERO_CALIBRATED);
+    payload[7] = sat_u8_u32(cur->zero_cal_count);
+    ret |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_CURRENT_ADC, payload);
+
+    memset(payload, 0, sizeof(payload));
+    logger_put_i16(payload, 0u, sat_i16_scaled(ccs->read_current, 10.0f));
+    logger_put_u16(payload, 2u, ccs->disable_reason_mask);
+    payload[4] = (uint8_t)ccs->last_tx_status;
+    payload[5] = sat_u8_u32(ccs->tx_count);
+    payload[6] = sat_u8_u32(ccs->rx_count);
+    payload[7] = sat_u8_u32(ccs->tx_fail_count);
+    ret |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_CHARGER_DETAIL, payload);
 
     return ret;
 }

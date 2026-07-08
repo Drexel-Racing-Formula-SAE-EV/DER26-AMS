@@ -91,10 +91,23 @@ AMS dashboard/logger running
 ```
 
 
-The decoder includes the AMS CAN diagnostics frame `0x69C`, exposing the last
-HAL CAN error code, bus-off counter, recovery counter, and bus-off/recovery
-flags in `/api/state` and the CSV snapshot. This is diagnostic-only telemetry;
-the ESP32 dashboard remains receive-only and never clears AMS faults.
+The decoder includes the expanded AMS diagnostic frames:
+
+| Frame | Data exposed |
+|---:|---|
+| `0x69C` | CAN error code, bus-off counter, recovery counter, bus-off/recovery flags |
+| `0x69D` | reset flags, panic reason/count, BMS_OK block count, safety flags |
+| `0x69E` | watchdog runtime/hardware/feed-gate state, feed/block counts, last-feed age |
+| `0x69F` | ADBMS scan/diagnostic counters, last diagnostic status, ADBMS/HIL flags |
+| `0x6A6` | current ADC high/low counts, selected range, measurement reason, ADC validity flags, zero-cal capture count |
+| `0x6A7` | charger read current, disable reason mask, TX/RX/fail counters |
+| `0x421` | estimator active instance, flags, SoC, innovation, R0 |
+| `0x200..0x202` | optional HIL plant measurement/truth/summary frames when present |
+
+Known non-dashboard frames such as ECU compatibility packet `0x069`, HIL image
+frames `0x210/0x211`, and extended charger frames are counted as ignored rather
+than unknown. This keeps `/api/state.unknown_frames` useful for real CAN contract
+mistakes. The ESP32 dashboard remains receive-only and never clears AMS faults.
 
 ## Host Decoder Test
 
@@ -105,7 +118,8 @@ make -C tests test
 ```
 
 This checks the AMS logger frame layout, stale heartbeat detection, invalid
-temperature sentinel handling, masks, and rejection of non-contract frames.
+temperature sentinel handling, masks, safety/watchdog/ADBMS diagnostics,
+estimator/HIL decode, and clean handling of ignored versus unknown frames.
 
 ## Bring-Up Checklist
 

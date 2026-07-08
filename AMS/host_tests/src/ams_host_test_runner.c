@@ -542,7 +542,7 @@ static float ntc_voltage_for_temp_c(float temp_c){
 }
 static int16_t raw_for_temp_c(float temp_c){ return raw_for_ntc_voltage(ntc_voltage_for_temp_c(temp_c)); }
 #define CHECK(cond) do{ if(!(cond)){ fprintf(stderr,"FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); exit(1);} }while(0)
-#define HOST_LOGGER_FRAME_COUNT 98u
+#define HOST_LOGGER_FRAME_COUNT 103u
 #define HOST_ECU_FRAME_COUNT 62u
 #define HOST_NONCHARGE_CAN_FRAME_COUNT (HOST_ECU_FRAME_COUNT + HOST_LOGGER_FRAME_COUNT)
 #define HOST_CHARGE_CAN_FRAME_COUNT (HOST_LOGGER_FRAME_COUNT + 1u)
@@ -754,6 +754,42 @@ static void test_logger_can_contract_packets(void){
     app.acc.apm.spi_debug.last_read_pec_fail_mask = 0x0001u;
     app.acc.pec_fail_voltage_mask[3] = 0x0101u;
 
+    app.reset_flags = 0xA5A55A5Au;
+    app.last_panic_reason = AMS_PANIC_ERROR_HANDLER;
+    app.safety_panic_count = 2u;
+    app.bms_output_block_count = 9u;
+    app.watchdog_runtime_enabled = true;
+    app.watchdog_hw_started = true;
+    app.watchdog_feed_count = 42u;
+    app.watchdog_block_count = 3u;
+    app.watchdog_last_block_reason = AMS_WATCHDOG_BLOCK_HARD_FAULT;
+    app.watchdog_last_feed_tick = 12000u;
+    app.adbms_scan_count = 0x0123u;
+    app.adbms_status_diag_count = 4u;
+    app.adbms_config_diag_count = 5u;
+    app.adbms_open_wire_diag_count = 6u;
+    app.adbms_last_diag_status = HAL_BUSY;
+    app.adbms_diag_fault = true;
+    app.adbms_config_fault = true;
+    app.adbms_scan_active = true;
+    app.hil.meas.fresh = 1u;
+    app.hil.truth.fresh = 1u;
+    app.hil.summary.fresh = 1u;
+    app.board.current_sensor.count_high = 0x0ABCu;
+    app.board.current_sensor.count_low = 0x0123u;
+    app.board.current_sensor.count_high_fresh = true;
+    app.board.current_sensor.count_low_fresh = true;
+    app.board.current_sensor.last_read_ok = true;
+    app.board.current_sensor.current_valid = true;
+    app.current_selected_range = CURRENT_SENSOR_RANGE_800A;
+    app.current_meas_reason = CURRENT_SENSOR_REASON_SENSOR_SATURATION;
+    app.board.charger.read_current = -4.2f;
+    app.board.charger.disable_reason_mask = CHARGER_DISABLE_REASON_TX_FAIL;
+    app.board.charger.last_tx_status = HAL_TIMEOUT;
+    app.board.charger.tx_count = 9u;
+    app.board.charger.rx_count = 10u;
+    app.board.charger.tx_fail_count = 2u;
+
     tx_count=0; tx_free_level=3; fake_tick=12345u;
     CHECK(send_logger_telemetry(&app.board.canbus, &app) == HAL_OK);
     CHECK(tx_count == HOST_LOGGER_FRAME_COUNT);
@@ -785,7 +821,50 @@ static void test_logger_can_contract_packets(void){
     CHECK(tx_log[12].stdid == AMS_LOGGER_CAN_ID_CAN_DIAG);
     CHECK(((uint32_t)tx_log[12].data[0] << 24 | (uint32_t)tx_log[12].data[1] << 16 | (uint32_t)tx_log[12].data[2] << 8 | tx_log[12].data[3]) == app.can_error_code);
 
-    uint32_t detail_base = 13u;
+    CHECK(tx_log[13].stdid == AMS_LOGGER_CAN_ID_SAFETY_DIAG);
+    CHECK(((uint32_t)tx_log[13].data[0] << 24 | (uint32_t)tx_log[13].data[1] << 16 | (uint32_t)tx_log[13].data[2] << 8 | tx_log[13].data[3]) == app.reset_flags);
+    CHECK(tx_log[13].data[4] == AMS_PANIC_ERROR_HANDLER);
+    CHECK(tx_log[13].data[5] == 2u);
+    CHECK(tx_log[13].data[6] == 9u);
+    CHECK((tx_log[13].data[7] & (1u << AMS_LOGGER_SAFETY_FLAG_BMS_STATE)) != 0u);
+
+    CHECK(tx_log[14].stdid == AMS_LOGGER_CAN_ID_WATCHDOG_DIAG);
+    CHECK((tx_log[14].data[0] & (1u << AMS_LOGGER_WATCHDOG_FLAG_RUNTIME_ENABLED)) != 0u);
+    CHECK((tx_log[14].data[0] & (1u << AMS_LOGGER_WATCHDOG_FLAG_HW_STARTED)) != 0u);
+    CHECK(tx_log[14].data[1] == AMS_WATCHDOG_BLOCK_HARD_FAULT);
+    CHECK(word_at(14,1) == 42u);
+    CHECK(word_at(14,2) == 3u);
+
+    CHECK(tx_log[15].stdid == AMS_LOGGER_CAN_ID_ADBMS_DIAG);
+    CHECK(word_at(15,0) == 0x0123u);
+    CHECK(tx_log[15].data[2] == 4u);
+    CHECK(tx_log[15].data[3] == 5u);
+    CHECK(tx_log[15].data[4] == 6u);
+    CHECK(tx_log[15].data[5] == HAL_BUSY);
+    CHECK((tx_log[15].data[6] & (1u << AMS_LOGGER_ADBMS_DIAG_FLAG_DIAG_FAULT)) != 0u);
+    CHECK((tx_log[15].data[6] & (1u << AMS_LOGGER_ADBMS_DIAG_FLAG_CONFIG_FAULT)) != 0u);
+    CHECK((tx_log[15].data[6] & (1u << AMS_LOGGER_ADBMS_DIAG_FLAG_SCAN_ACTIVE)) != 0u);
+    CHECK(tx_log[15].data[7] == 0x07u);
+
+    CHECK(tx_log[16].stdid == AMS_LOGGER_CAN_ID_CURRENT_ADC);
+    CHECK(word_at(16,0) == 0x0ABCu);
+    CHECK(word_at(16,1) == 0x0123u);
+    CHECK(tx_log[16].data[4] == CURRENT_SENSOR_RANGE_800A);
+    CHECK(tx_log[16].data[5] == CURRENT_SENSOR_REASON_SENSOR_SATURATION);
+    CHECK((tx_log[16].data[6] & (1u << AMS_LOGGER_CURRENT_ADC_FLAG_HIGH_FRESH)) != 0u);
+    CHECK((tx_log[16].data[6] & (1u << AMS_LOGGER_CURRENT_ADC_FLAG_LOW_FRESH)) != 0u);
+    CHECK((tx_log[16].data[6] & (1u << AMS_LOGGER_CURRENT_ADC_FLAG_LAST_READ_OK)) != 0u);
+    CHECK((tx_log[16].data[6] & (1u << AMS_LOGGER_CURRENT_ADC_FLAG_CURRENT_VALID)) != 0u);
+
+    CHECK(tx_log[17].stdid == AMS_LOGGER_CAN_ID_CHARGER_DETAIL);
+    CHECK((int16_t)word_at(17,0) == -42);
+    CHECK(word_at(17,1) == CHARGER_DISABLE_REASON_TX_FAIL);
+    CHECK(tx_log[17].data[4] == HAL_TIMEOUT);
+    CHECK(tx_log[17].data[5] == 9u);
+    CHECK(tx_log[17].data[6] == 10u);
+    CHECK(tx_log[17].data[7] == 2u);
+
+    uint32_t detail_base = 18u;
     uint32_t last_cell_frame = detail_base + (4u * 5u) + 4u;
     CHECK(tx_log[last_cell_frame].stdid == AMS_LOGGER_CAN_ID_CELL_DETAIL);
     CHECK(tx_log[last_cell_frame].data[0] == 4u);

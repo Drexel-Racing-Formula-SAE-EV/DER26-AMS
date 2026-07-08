@@ -52,9 +52,9 @@ The existing ECU stream remains unchanged:
 Packets `0..61` contain status, cell voltage, partial temperature, and fan data.
 That stream is kept for compatibility.
 
-## Logger Summary Frames
+## Logger Summary/Diagnostic Frames
 
-The new dashboard/logger stream uses standard IDs `0x690..0x69C`.
+The dashboard/logger summary and diagnostic stream uses standard IDs `0x690..0x69F`, plus bench-focused diagnostic IDs `0x6A6..0x6A7`.
 Multi-byte values are big-endian.
 
 | ID | Frame | Bytes |
@@ -72,6 +72,24 @@ Multi-byte values are big-endian.
 | `0x69A` | ADBMS2950/APM link | last HAL status, last xfer status, last op, error count, PEC fail mask, debug enabled, IC count |
 | `0x69B` | Task health | stale heartbeat mask, seen heartbeat mask, safety-stale mask, heartbeat fault flags, logger heartbeat count |
 | `0x69C` | CAN diagnostics | error code, bus-off count, error count, recovery count, bus-off/recovery flags |
+| `0x69D` | Safety diagnostics | reset flags, last panic reason, panic count, BMS output block count, safety flags |
+| `0x69E` | Watchdog diagnostics | watchdog flags, last block reason, feed count, block count, last feed age |
+| `0x69F` | ADBMS diagnostics | scan count, diag counters, last diag status, ADBMS/HIL flags |
+| `0x6A6` | Current ADC diagnostics | high/low ADC counts, selected range, measurement reason, current ADC flags, zero-cal capture count |
+| `0x6A7` | Charger detail | read current, disable reason mask, last TX status, TX/RX/fail counters |
+
+
+### `0x6A6` Current ADC Flags
+
+| Byte | Bit | Meaning |
+|---:|---:|---|
+| 6 | 0 | High/800 A ADC sample fresh |
+| 6 | 1 | Low/50 A ADC sample fresh |
+| 6 | 2 | Last ADC read OK |
+| 6 | 3 | Current measurement valid |
+| 6 | 4 | Current sensor fault active |
+| 6 | 5 | Software zero-current calibration active |
+| 7 | all | Zero-current calibration capture count, saturated to 255 |
 
 ### `0x690` Status Flags
 
@@ -155,6 +173,69 @@ Payload:
 The dashboard decodes this frame for diagnostics only. It remains a passive
 listener and must not acknowledge, clear, or mask AMS CAN faults.
 
+### `0x69D` Safety Diagnostics
+
+| Bytes | Meaning |
+|---:|---|
+| 0-3 | RCC reset flags, big-endian uint32 |
+| 4 | Saturated last panic reason |
+| 5 | Saturated retained panic/reset count |
+| 6 | Saturated BMS_OK output block count |
+| 7 bit 0 | safety panic active |
+| 7 bit 1 | BMS_OK output inhibited |
+| 7 bit 2 | balancing inhibited |
+| 7 bit 3 | BMS_OK state |
+| 7 bit 4 | hard fault active |
+| 7 bit 5 | safety task heartbeat fault |
+| 7 bit 6 | logger heartbeat fault |
+
+### `0x69E` Watchdog Diagnostics
+
+| Bytes | Meaning |
+|---:|---|
+| 0 bit 0 | watchdog runtime gate enabled |
+| 0 bit 1 | hardware IWDG started |
+| 0 bit 2 | feed gate currently OK |
+| 1 | last watchdog block reason |
+| 2-3 | saturated watchdog feed count |
+| 4-5 | saturated watchdog block count |
+| 6-7 | last feed age in 0.1 s/bit, `0xFFFF` if never fed |
+
+### `0x69F` ADBMS Diagnostics
+
+| Bytes | Meaning |
+|---:|---|
+| 0-1 | saturated ADBMS scan count |
+| 2 | saturated status diagnostic count |
+| 3 | saturated config diagnostic count |
+| 4 | saturated open-wire diagnostic count |
+| 5 | last ADBMS diagnostic HAL status |
+| 6 bit 0 | ADBMS diagnostic fault |
+| 6 bit 1 | config fault |
+| 6 bit 2 | status fault |
+| 6 bit 3 | open-wire fault |
+| 6 bit 4 | ADBMS scan active |
+| 6 bit 5 | HIL ADBMS-image replacement compiled in |
+| 7 bit 0 | HIL measurement frame fresh |
+| 7 bit 1 | HIL truth frame fresh |
+| 7 bit 2 | HIL summary frame fresh |
+
+## Dashboard-Decoded Non-Logger Frames
+
+The dashboard also decodes these standard IDs when present, but they are not
+required for normal in-car logging:
+
+| ID | Frame | Payload |
+|---:|---|---|
+| `0x200` | HIL measurement | plant pack voltage/current/surface temp and counter |
+| `0x201` | HIL truth | true SoC/core temp/counter/plant step |
+| `0x202` | HIL summary | min/max cell voltage and max/avg temp |
+| `0x421` | estimator status | active instance, flags, SoC, innovation, R0 |
+
+Known non-dashboard frames such as ECU packet `0x069`, HIL image frames
+`0x210/0x211`, and extended charger frames are counted as ignored, not unknown.
+This keeps `unknown_frames` useful for real ID/contract mistakes.
+
 ## Logger Detail Frames
 
 The detail stream exports all 75 cell voltages and all 120 thermistors. It is
@@ -182,11 +263,11 @@ At each non-charge CAN task tick, AMS sends:
 | Stream | Frames |
 |---|---:|
 | Existing ECU `0x069` stream | 62 |
-| Logger summaries | 13 |
+| Logger summaries/diagnostics | 18 |
 | Logger cell details | 25 |
 | Logger temp details | 40 |
 | Logger masks/diagnostics | 20 |
-| Total without estimator frame | 160 |
+| Total without estimator frame | 165 |
 
 In charge mode, AMS still sends the logger stream, then sends the charger command
 frame on extended ID `0x1806E5F4`.
@@ -210,7 +291,7 @@ Recommended ESP32 tasks:
 | Task | Role |
 |---|---|
 | CAN RX | Receive and timestamp frames; no transmit required |
-| Decoder | Maintain latest AMS state from `0x690..0x6A5`, including CAN diagnostics `0x69C` |
+| Decoder | Maintain latest AMS state from `0x690..0x6A7`, safety/CAN/watchdog diagnostics `0x69C..0x69F`, current ADC `0x6A6`, charger detail `0x6A7`, estimator status `0x421`, and optional HIL frames `0x200..0x202` |
 | SD logger | Write raw CAN and decoded CSV |
 | WiFi dashboard | Stream latest decoded state over WebSocket or UDP |
 | Watchdog/status | Show stale logger data if heartbeat sequence stops |

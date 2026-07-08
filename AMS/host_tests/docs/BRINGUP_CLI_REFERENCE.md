@@ -89,7 +89,20 @@ Current-sense ADC mapping, rechecked from nets/connectors and Cube config:
 | `C_SENSE_H_MCU` / `C_SNS_H` | `J4 pin 2` | `J601 pin 2` / `ADC1` | `PA3` | `ADC1_IN3` / `ADC_CHANNEL_3` | DHAB 800 A channel |
 
 Use `current` during board bring-up. It prints this map before the raw ADC
-counts so UART logs show which physical ADC path was being interpreted.
+counts so UART logs show which physical ADC path was being interpreted. After the
+DHAB is powered and the pack current is known to be zero, capture software offset
+with:
+
+```text
+bmsok inhibit
+state start
+current zero
+current zero status
+```
+
+`current zero` is refused unless BMS_OK output is inhibited, BMS_OK is low, and
+the AMS is not in charge or discharge state. Use `current zero clear` to remove
+the software offset.
 
 ## ADBMS6830 / SMB Flow
 

@@ -19,6 +19,14 @@ static void be16(uint8_t *p, uint16_t v)
     p[1] = (uint8_t)(v & 0xFFu);
 }
 
+static void be32(uint8_t *p, uint32_t v)
+{
+    p[0] = (uint8_t)((v >> 24u) & 0xFFu);
+    p[1] = (uint8_t)((v >> 16u) & 0xFFu);
+    p[2] = (uint8_t)((v >> 8u) & 0xFFu);
+    p[3] = (uint8_t)(v & 0xFFu);
+}
+
 static ams_can_frame_t frame(uint32_t id, const uint8_t data[8])
 {
     ams_can_frame_t f;
@@ -164,6 +172,107 @@ static void test_can_diag_frame(void)
     CHECK(s.unknown_frames == 0u);
 }
 
+static void test_extended_diagnostic_frames(void)
+{
+    ams_dash_state_t s;
+    ams_dash_state_init(&s);
+
+    uint8_t safety[8] = { 0u };
+    be32(&safety[0], 0xA5A55A5Au);
+    safety[4] = 6u;
+    safety[5] = 2u;
+    safety[6] = 9u;
+    safety[7] = 0x5Bu;
+    ams_can_frame_t sf = frame(AMS_LOGGER_CAN_ID_SAFETY_DIAG, safety);
+    CHECK(ams_dash_decode_frame(&s, &sf, 80u));
+    CHECK(s.safety_reset_flags == 0xA5A55A5Au);
+    CHECK(s.safety_last_panic_reason == 6u);
+    CHECK(s.safety_panic_count == 2u);
+    CHECK(s.safety_bms_block_count == 9u);
+    CHECK(s.safety_flags == 0x5Bu);
+
+    uint8_t wdg[8] = { 0x07u, 0x08u, 0x00u, 0x2Au, 0x00u, 0x03u, 0x01u, 0xF4u };
+    ams_can_frame_t wf = frame(AMS_LOGGER_CAN_ID_WATCHDOG_DIAG, wdg);
+    CHECK(ams_dash_decode_frame(&s, &wf, 90u));
+    CHECK(s.watchdog_flags == 0x07u);
+    CHECK(s.watchdog_last_block_reason == 8u);
+    CHECK(s.watchdog_feed_count == 42u);
+    CHECK(s.watchdog_block_count == 3u);
+    CHECK(s.watchdog_last_feed_age_ds == 500u);
+
+    uint8_t adbms[8] = { 0x01u, 0x23u, 0x04u, 0x05u, 0x06u, 0x03u, 0x3Fu, 0x07u };
+    ams_can_frame_t af = frame(AMS_LOGGER_CAN_ID_ADBMS_DIAG, adbms);
+    CHECK(ams_dash_decode_frame(&s, &af, 100u));
+    CHECK(s.adbms_scan_count == 0x0123u);
+    CHECK(s.adbms_status_diag_count == 4u);
+    CHECK(s.adbms_config_diag_count == 5u);
+    CHECK(s.adbms_open_wire_diag_count == 6u);
+    CHECK(s.adbms_last_diag_status == 3u);
+    CHECK(s.adbms_diag_flags == 0x3Fu);
+    CHECK(s.adbms_hil_flags == 0x07u);
+
+    uint8_t adc[8] = { 0x0Au, 0xBCu, 0x01u, 0x23u, 0x02u, 0x06u, 0x3Fu, 0x02u };
+    ams_can_frame_t adcf = frame(AMS_LOGGER_CAN_ID_CURRENT_ADC, adc);
+    CHECK(ams_dash_decode_frame(&s, &adcf, 105u));
+    CHECK(s.current_adc_high_count == 0x0ABCu);
+    CHECK(s.current_adc_low_count == 0x0123u);
+    CHECK(s.current_selected_range == 2u);
+    CHECK(s.current_meas_reason == 6u);
+    CHECK(s.current_adc_flags == 0x3Fu);
+    CHECK(s.current_zero_cal_count == 2u);
+
+    uint8_t charger[8] = { 0xFFu, 0x9Cu, 0x04u, 0x00u, 0x03u, 0x09u, 0x0Au, 0x02u };
+    ams_can_frame_t chf = frame(AMS_LOGGER_CAN_ID_CHARGER_DETAIL, charger);
+    CHECK(ams_dash_decode_frame(&s, &chf, 106u));
+    CHECK(s.charger_read_current_dA == -100);
+    CHECK(s.charger_disable_reason_mask == 0x0400u);
+    CHECK(s.charger_last_tx_status == 3u);
+    CHECK(s.charger_tx_count == 9u);
+    CHECK(s.charger_rx_count == 10u);
+    CHECK(s.charger_tx_fail_count == 2u);
+}
+
+static void test_estimator_and_hil_frames(void)
+{
+    ams_dash_state_t s;
+    ams_dash_state_init(&s);
+
+    uint8_t est[8] = { 2u, 0xA5u, 0x26u, 0xF2u, 0xFFu, 0x9Cu, 0x04u, 0xD2u };
+    ams_can_frame_t ef = frame(AMS_DASH_CAN_ID_ESTIMATOR_STATUS, est);
+    CHECK(ams_dash_decode_frame(&s, &ef, 110u));
+    CHECK(s.estimator_active_index == 2u);
+    CHECK(s.estimator_flags == 0xA5u);
+    CHECK(s.estimator_soc_centi_pct == 9970u);
+    CHECK(s.estimator_innovation_mV == -100);
+    CHECK(s.estimator_r0_0p01_mohm == 1234u);
+    CHECK(s.estimator_last_rx_ms == 110u);
+
+    uint8_t meas[8] = { 0x79u, 0x18u, 0xFBu, 0x2Eu, 0x09u, 0xC4u, 0x11u, 0x00u };
+    ams_can_frame_t mf = frame(AMS_DASH_CAN_ID_HIL_MEAS, meas);
+    CHECK(ams_dash_decode_frame(&s, &mf, 120u));
+    CHECK(s.hil_pack_voltage_cV == 31000u);
+    CHECK(s.hil_current_cA == -1234);
+    CHECK(s.hil_surface_temp_cC == 2500);
+    CHECK((s.hil_flags & 0x01u) != 0u);
+
+    uint8_t truth[8] = { 0x22u, 0xB8u, 0x0Au, 0x28u, 0x12u, 0x00u, 0x10u, 0x20u };
+    ams_can_frame_t tf = frame(AMS_DASH_CAN_ID_HIL_TRUTH, truth);
+    CHECK(ams_dash_decode_frame(&s, &tf, 130u));
+    CHECK(s.hil_soc_centi_pct == 8888u);
+    CHECK(s.hil_core_temp_cC == 2600);
+    CHECK(s.hil_plant_step == 0x001020u);
+    CHECK((s.hil_flags & 0x02u) != 0u);
+
+    uint8_t summary[8] = { 0x0Cu, 0x81u, 0x0Fu, 0xA0u, 0x11u, 0x94u, 0x0Bu, 0xB8u };
+    ams_can_frame_t hf = frame(AMS_DASH_CAN_ID_HIL_SUMMARY, summary);
+    CHECK(ams_dash_decode_frame(&s, &hf, 140u));
+    CHECK(s.hil_min_cell_mv == 3201u);
+    CHECK(s.hil_max_cell_mv == 4000u);
+    CHECK(s.hil_max_temp_cC == 4500);
+    CHECK(s.hil_avg_temp_cC == 3000);
+    CHECK((s.hil_flags & 0x04u) != 0u);
+}
+
 static void test_rejects_non_contract_frames(void)
 {
     ams_dash_state_t s;
@@ -173,17 +282,22 @@ static void test_rejects_non_contract_frames(void)
     ams_can_frame_t ext = frame(AMS_LOGGER_CAN_ID_HEARTBEAT, data);
     ext.extended = true;
     CHECK(!ams_dash_decode_frame(&s, &ext, 10u));
-    CHECK(s.unknown_frames == 1u);
+    CHECK(s.ignored_frames == 1u);
+    CHECK(s.unknown_frames == 0u);
 
     ams_can_frame_t short_frame = frame(AMS_LOGGER_CAN_ID_HEARTBEAT, data);
     short_frame.dlc = 7u;
     CHECK(!ams_dash_decode_frame(&s, &short_frame, 20u));
-    CHECK(s.unknown_frames == 2u);
+    CHECK(s.malformed_frames == 1u);
+
+    ams_can_frame_t ignored = frame(AMS_DASH_CAN_ID_ECU_AMS, data);
+    CHECK(!ams_dash_decode_frame(&s, &ignored, 25u));
+    CHECK(s.ignored_frames == 2u);
 
     ams_can_frame_t unknown = frame(0x123u, data);
     CHECK(!ams_dash_decode_frame(&s, &unknown, 30u));
-    CHECK(s.rx_frames == 1u);
-    CHECK(s.unknown_frames == 3u);
+    CHECK(s.rx_frames == 4u);
+    CHECK(s.unknown_frames == 1u);
     CHECK(s.logger_frames == 0u);
 }
 
@@ -193,6 +307,8 @@ int main(void)
     test_detail_and_masks();
     test_task_health_frame();
     test_can_diag_frame();
+    test_extended_diagnostic_frames();
+    test_estimator_and_hil_frames();
     test_rejects_non_contract_frames();
     puts("decoder_smoke_test PASS");
     return 0;

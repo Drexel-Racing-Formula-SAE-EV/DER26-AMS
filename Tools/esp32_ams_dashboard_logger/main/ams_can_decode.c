@@ -98,24 +98,78 @@ static void decode_temp_detail(ams_dash_state_t *state, const uint8_t data[8])
     }
 }
 
+static bool is_known_non_dashboard_std_id(uint32_t id)
+{
+    switch(id)
+    {
+        case AMS_DASH_CAN_ID_ECU_AMS:
+        case AMS_DASH_CAN_ID_HIL_CELL_SAMPLE:
+        case AMS_DASH_CAN_ID_HIL_TEMP_SAMPLE:
+        case AMS_DASH_CAN_ID_HIL_CTRL:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static void decode_hil_meas(ams_dash_state_t *state, const uint8_t data[8], uint32_t now_ms)
+{
+    state->hil_pack_voltage_cV = be_u16(&data[0]);
+    state->hil_current_cA = be_i16(&data[2]);
+    state->hil_surface_temp_cC = be_i16(&data[4]);
+    state->hil_meas_counter = data[6];
+    state->hil_flags |= 0x01u;
+    state->hil_last_rx_ms = now_ms;
+}
+
+static void decode_hil_truth(ams_dash_state_t *state, const uint8_t data[8], uint32_t now_ms)
+{
+    state->hil_soc_centi_pct = be_u16(&data[0]);
+    state->hil_core_temp_cC = be_i16(&data[2]);
+    state->hil_truth_counter = data[4];
+    state->hil_plant_step = (((uint32_t)data[5] << 16u) |
+                             ((uint32_t)data[6] << 8u) |
+                             (uint32_t)data[7]);
+    state->hil_flags |= 0x02u;
+    state->hil_last_rx_ms = now_ms;
+}
+
+static void decode_hil_summary(ams_dash_state_t *state, const uint8_t data[8], uint32_t now_ms)
+{
+    state->hil_min_cell_mv = be_u16(&data[0]);
+    state->hil_max_cell_mv = be_u16(&data[2]);
+    state->hil_max_temp_cC = be_i16(&data[4]);
+    state->hil_avg_temp_cC = be_i16(&data[6]);
+    state->hil_flags |= 0x04u;
+    state->hil_last_rx_ms = now_ms;
+}
+
 bool ams_dash_decode_frame(ams_dash_state_t *state,
                            const ams_can_frame_t *frame,
                            uint32_t now_ms)
 {
-    if((state == NULL) || (frame == NULL) || (frame->dlc < 8u) || frame->extended)
+    if((state == NULL) || (frame == NULL))
     {
-        if(state != NULL)
-        {
-            state->unknown_frames++;
-        }
+        return false;
+    }
+
+    state->rx_frames++;
+    state->last_rx_ms = now_ms;
+
+    if(frame->extended)
+    {
+        state->ignored_frames++;
+        return false;
+    }
+
+    if(frame->dlc < 8u)
+    {
+        state->malformed_frames++;
         return false;
     }
 
     const uint8_t *d = frame->data;
     bool decoded = true;
-
-    state->rx_frames++;
-    state->last_rx_ms = now_ms;
 
     switch(frame->id)
     {
@@ -241,6 +295,74 @@ bool ams_dash_decode_frame(ams_dash_state_t *state,
             state->can_diag_flags = d[7];
             break;
 
+        case AMS_LOGGER_CAN_ID_SAFETY_DIAG:
+            state->safety_reset_flags = ((uint32_t)d[0] << 24) |
+                                        ((uint32_t)d[1] << 16) |
+                                        ((uint32_t)d[2] << 8)  |
+                                        ((uint32_t)d[3]);
+            state->safety_last_panic_reason = d[4];
+            state->safety_panic_count = d[5];
+            state->safety_bms_block_count = d[6];
+            state->safety_flags = d[7];
+            break;
+
+        case AMS_LOGGER_CAN_ID_WATCHDOG_DIAG:
+            state->watchdog_flags = d[0];
+            state->watchdog_last_block_reason = d[1];
+            state->watchdog_feed_count = be_u16(&d[2]);
+            state->watchdog_block_count = be_u16(&d[4]);
+            state->watchdog_last_feed_age_ds = be_u16(&d[6]);
+            break;
+
+        case AMS_LOGGER_CAN_ID_ADBMS_DIAG:
+            state->adbms_scan_count = be_u16(&d[0]);
+            state->adbms_status_diag_count = d[2];
+            state->adbms_config_diag_count = d[3];
+            state->adbms_open_wire_diag_count = d[4];
+            state->adbms_last_diag_status = d[5];
+            state->adbms_diag_flags = d[6];
+            state->adbms_hil_flags = d[7];
+            break;
+
+        case AMS_LOGGER_CAN_ID_CURRENT_ADC:
+            state->current_adc_high_count = be_u16(&d[0]);
+            state->current_adc_low_count = be_u16(&d[2]);
+            state->current_selected_range = d[4];
+            state->current_meas_reason = d[5];
+            state->current_adc_flags = d[6];
+            state->current_zero_cal_count = d[7];
+            break;
+
+        case AMS_LOGGER_CAN_ID_CHARGER_DETAIL:
+            state->charger_read_current_dA = be_i16(&d[0]);
+            state->charger_disable_reason_mask = be_u16(&d[2]);
+            state->charger_last_tx_status = d[4];
+            state->charger_tx_count = d[5];
+            state->charger_rx_count = d[6];
+            state->charger_tx_fail_count = d[7];
+            break;
+
+        case AMS_DASH_CAN_ID_ESTIMATOR_STATUS:
+            state->estimator_active_index = d[0];
+            state->estimator_flags = d[1];
+            state->estimator_soc_centi_pct = be_u16(&d[2]);
+            state->estimator_innovation_mV = be_i16(&d[4]);
+            state->estimator_r0_0p01_mohm = be_u16(&d[6]);
+            state->estimator_last_rx_ms = now_ms;
+            break;
+
+        case AMS_DASH_CAN_ID_HIL_MEAS:
+            decode_hil_meas(state, d, now_ms);
+            break;
+
+        case AMS_DASH_CAN_ID_HIL_TRUTH:
+            decode_hil_truth(state, d, now_ms);
+            break;
+
+        case AMS_DASH_CAN_ID_HIL_SUMMARY:
+            decode_hil_summary(state, d, now_ms);
+            break;
+
         case AMS_LOGGER_CAN_ID_CELL_DETAIL:
             decode_cell_detail(state, d);
             break;
@@ -283,7 +405,14 @@ bool ams_dash_decode_frame(ams_dash_state_t *state,
 
         default:
             decoded = false;
-            state->unknown_frames++;
+            if(is_known_non_dashboard_std_id(frame->id))
+            {
+                state->ignored_frames++;
+            }
+            else
+            {
+                state->unknown_frames++;
+            }
             break;
     }
 

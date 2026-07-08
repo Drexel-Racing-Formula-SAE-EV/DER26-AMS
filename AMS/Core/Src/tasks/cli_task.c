@@ -1907,8 +1907,65 @@ int get_current(int argc, char *argv[])
     int decimal = 0;
     current_sensor_t *cs = &data->board.current_sensor;
 
-    (void)argc;
-    (void)argv;
+    if((argc >= 2) && (argv[1] != NULL) && !strcmp(argv[1], "zero"))
+    {
+        if((argc >= 3) && (argv[2] != NULL) && !strcmp(argv[2], "clear"))
+        {
+            current_sensor_zero_clear(cs);
+            ret |= cli_printline(cli, "current zero: cleared");
+            return ret;
+        }
+
+        if((argc >= 3) && (argv[2] != NULL) && !strcmp(argv[2], "status"))
+        {
+            cli_fixed1(cs->zero_offset_50a, &whole, &decimal);
+            snprintf(outline, CLI_LINESZ,
+                     "current zero: calibrated:%d captures:%lu offset50:%d.%01d A",
+                     cs->zero_calibrated,
+                     (unsigned long)cs->zero_cal_count,
+                     whole,
+                     decimal);
+            ret |= cli_printline(cli, outline);
+
+            cli_fixed1(cs->zero_offset_800a, &whole, &decimal);
+            snprintf(outline, CLI_LINESZ, "current zero: offset800:%d.%01d A", whole, decimal);
+            ret |= cli_printline(cli, outline);
+            return ret;
+        }
+
+        if((!data->bms_output_inhibit) || data->bms_state ||
+           (data->state == STATE_CHARGE) || (data->state == STATE_DISCARGE))
+        {
+            ret |= cli_printline(cli, "current zero refused: require BMS_OK inhibited, BMS low, and non-charge/non-drive state");
+            return ret;
+        }
+
+        if(!current_sensor_read_adc(cs))
+        {
+            ret |= cli_printline(cli, "current zero refused: ADC read failed");
+            return ret;
+        }
+
+        (void)current_sensor_convert(cs);
+        if(current_sensor_zero_calibrate(cs))
+        {
+            (void)current_sensor_convert(cs);
+            cli_fixed1(cs->zero_offset_50a, &whole, &decimal);
+            snprintf(outline, CLI_LINESZ, "current zero captured: offset50:%d.%01d A", whole, decimal);
+            ret |= cli_printline(cli, outline);
+            cli_fixed1(cs->zero_offset_800a, &whole, &decimal);
+            snprintf(outline, CLI_LINESZ, "current zero captured: offset800:%d.%01d A", whole, decimal);
+            ret |= cli_printline(cli, outline);
+        }
+        else
+        {
+            snprintf(outline, CLI_LINESZ,
+                     "current zero refused: raw50/800 not near zero or sensor invalid reason:%s",
+                     current_sensor_reason_str(cs->reason));
+            ret |= cli_printline(cli, outline);
+        }
+        return ret;
+    }
 
     snprintf(outline, CLI_LINESZ, "Current valid:%d fault:%d sensor:%d oc:%d latch:%d",
              data->current_valid,
@@ -1953,6 +2010,14 @@ int get_current(int argc, char *argv[])
     snprintf(outline, CLI_LINESZ, "DHAB L: %d.%03d V", whole, decimal);
     ret |= cli_printline(cli, outline);
 
+    cli_fixed1(cs->current_50a_raw, &whole, &decimal);
+    snprintf(outline, CLI_LINESZ, "I_50A_raw: %d.%01d A", whole, decimal);
+    ret |= cli_printline(cli, outline);
+
+    cli_fixed1(cs->current_800a_raw, &whole, &decimal);
+    snprintf(outline, CLI_LINESZ, "I_800A_raw: %d.%01d A", whole, decimal);
+    ret |= cli_printline(cli, outline);
+
     cli_fixed1(cs->current_50a, &whole, &decimal);
     snprintf(outline, CLI_LINESZ, "I_50A: %d.%01d A", whole, decimal);
     ret |= cli_printline(cli, outline);
@@ -1965,9 +2030,33 @@ int get_current(int argc, char *argv[])
     snprintf(outline, CLI_LINESZ, "I_selected: %d.%01d A", whole, decimal);
     ret |= cli_printline(cli, outline);
 
+    cli_fixed1(cs->current_filtered, &whole, &decimal);
+    snprintf(outline, CLI_LINESZ, "I_filtered_telemetry: %d.%01d A", whole, decimal);
+    ret |= cli_printline(cli, outline);
+
+    cli_fixed1(cs->zero_offset_50a, &whole, &decimal);
+    snprintf(outline, CLI_LINESZ,
+             "Zero calibrated:%d captures:%lu offset50:%d.%01d A",
+             cs->zero_calibrated,
+             (unsigned long)cs->zero_cal_count,
+             whole,
+             decimal);
+    ret |= cli_printline(cli, outline);
+
+    cli_fixed1(cs->zero_offset_800a, &whole, &decimal);
+    snprintf(outline, CLI_LINESZ, "Zero offset800:%d.%01d A", whole, decimal);
+    ret |= cli_printline(cli, outline);
+
+    cli_fixed3(cs->adc_vref_v, &whole, &decimal);
+    snprintf(outline, CLI_LINESZ, "Ref adc:%d.%03d V", whole, decimal);
+    ret |= cli_printline(cli, outline);
+
+    cli_fixed3(cs->sensor_supply_v, &whole, &decimal);
+    snprintf(outline, CLI_LINESZ, "Ref dhab_supply:%d.%03d V", whole, decimal);
+    ret |= cli_printline(cli, outline);
+
     return ret;
 }
-
 
 int get_can_diag(int argc, char *argv[])
 {
