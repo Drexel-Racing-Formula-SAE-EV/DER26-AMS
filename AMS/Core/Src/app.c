@@ -199,6 +199,15 @@ void app_create()
 	app.temp_updated_sensor_count = 0u;
 	app.temp_stale_sensor_count = 0u;
 	app.temp_invalid_sensor_count = 0u;
+	app.temp_open_sensor_count = 0u;
+	app.temp_short_sensor_count = 0u;
+	app.temp_jump_sensor_count = 0u;
+	app.temp_rate_rise_sensor_count = 0u;
+	app.temp_filtered_max = 0.0f;
+	app.temp_filtered_avg = 0.0f;
+	app.temp_max_rate_c_per_s = 0.0f;
+	app.temp_max_rate_seg = 0u;
+	app.temp_max_rate_sensor = 0u;
 	app.max_temp_seg = 0u;
 	app.max_temp_sensor = 0u;
 	app.min_temp_seg = 0u;
@@ -217,6 +226,12 @@ void app_create()
 	app.voltage_usable_cell_count = 0u;
 	app.voltage_updated_cell_count = 0u;
 	app.voltage_stale_cell_count = 0u;
+	app.voltage_pec_fail_cell_count = 0u;
+	app.voltage_jump_cell_count = 0u;
+	app.voltage_stuck_cell_count = 0u;
+	app.voltage_max_delta_mv = 0u;
+	app.voltage_max_delta_seg = 0u;
+	app.voltage_max_delta_cell = 0u;
 	app.max_voltage_seg = 0u;
 	app.max_voltage_cell = 0u;
 	app.min_voltage_seg = 0u;
@@ -257,6 +272,10 @@ void app_create()
 	app.imd_status = IMD_NORMAL;
 
 	app.fan_state = false;
+	app.fan_command_percent = 0.0f;
+	app.fan_control_reason = 0u;
+	app.fan_set_fail_count = 0u;
+	app.fan_last_update_tick = 0u;
 
 	app.state = STATE_START;
 

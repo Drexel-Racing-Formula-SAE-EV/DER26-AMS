@@ -54,7 +54,7 @@ That stream is kept for compatibility.
 
 ## Logger Summary/Diagnostic Frames
 
-The dashboard/logger summary and diagnostic stream uses standard IDs `0x690..0x69F`, plus bench-focused diagnostic IDs `0x6A6..0x6A7`.
+The dashboard/logger summary and diagnostic stream uses standard IDs `0x690..0x69F`, plus bench-focused diagnostic IDs `0x6A6..0x6AB`.
 Multi-byte values are big-endian.
 
 | ID | Frame | Bytes |
@@ -77,7 +77,30 @@ Multi-byte values are big-endian.
 | `0x69F` | ADBMS diagnostics | scan count, diag counters, last diag status, ADBMS/HIL flags |
 | `0x6A6` | Current ADC diagnostics | high/low ADC counts, selected range, measurement reason, current ADC flags, zero-cal capture count |
 | `0x6A7` | Charger detail | read current, disable reason mask, last TX status, TX/RX/fail counters |
+| `0x6A8` | Temperature/fan diagnostics | filtered max temp, max temp rate, temp diagnostic flags, fan reason, commanded fan %, fan diagnostic flags |
+| `0x6A9` | Temperature open/short masks | segment index, 24-bit open-sensor mask, 24-bit short-sensor mask, packed counts |
+| `0x6AA` | Temperature jump/rate masks | segment index, 24-bit implausible-jump mask, 24-bit rate-rise mask, packed counts |
+| `0x6AB` | Voltage diagnostic masks | segment index, cell voltage jump mask, stuck-cell mask, jump/stuck counts and flags |
 
+
+
+### Sensor/Fan Diagnostic Frames
+
+`0x6A8..0x6AB` are diagnostic-only. They do not change BMS_OK gating or the
+existing voltage/temperature/current threshold policy. Raw validated cell voltage
+and temperature values remain the safety source; filtered temperature is exported
+for operator readability and trend logging.
+
+| ID | Encoding | Purpose |
+|---:|---|---|
+| `0x6A8` | bytes 0-1 filtered max temp in 0.1 C signed; bytes 2-3 max temp rate in 0.1 C/s signed; byte 4 temp diagnostic flags; byte 5 fan reason; byte 6 fan command %; byte 7 fan flags | Bench-visible temperature/filter/fan state |
+| `0x6A9` | byte 0 segment; bytes 1-3 open mask; bytes 4-6 short mask; byte 7 packed counts | Open/short thermistor classification |
+| `0x6AA` | byte 0 segment; bytes 1-3 jump mask; bytes 4-6 rate-rise mask; byte 7 packed counts | Implausible jump/rate diagnostics |
+| `0x6AB` | byte 0 segment; bytes 1-2 voltage jump mask; bytes 3-4 stuck mask; bytes 5-6 counts; byte 7 flags | Cell-voltage plausibility diagnostics |
+
+Fan control remains open-loop because the AMS schematic shows low-side fan PWM
+drivers and fan-zone connectors, not tach feedback. The dashboard can report
+commanded fan duty and driver-set failures, not actual RPM.
 
 ### `0x6A6` Current ADC Flags
 
@@ -291,7 +314,7 @@ Recommended ESP32 tasks:
 | Task | Role |
 |---|---|
 | CAN RX | Receive and timestamp frames; no transmit required |
-| Decoder | Maintain latest AMS state from `0x690..0x6A7`, safety/CAN/watchdog diagnostics `0x69C..0x69F`, current ADC `0x6A6`, charger detail `0x6A7`, estimator status `0x421`, and optional HIL frames `0x200..0x202` |
+| Decoder | Maintain latest AMS state from `0x690..0x6AB`, safety/CAN/watchdog diagnostics `0x69C..0x69F`, current ADC `0x6A6`, charger detail `0x6A7`, sensor/fan diagnostics `0x6A8..0x6AB`, estimator status `0x421`, and optional HIL frames `0x200..0x202` |
 | SD logger | Write raw CAN and decoded CSV |
 | WiFi dashboard | Stream latest decoded state over WebSocket or UDP |
 | Watchdog/status | Show stale logger data if heartbeat sequence stops |

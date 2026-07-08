@@ -8,6 +8,23 @@
 #include "ext_drivers/fans.h"
 #include <math.h>
 
+
+const char *fan_control_reason_str(uint8_t reason)
+{
+    switch((fan_control_reason_t)reason)
+    {
+    case FAN_CONTROL_REASON_OFF_COOL:       return "off_cool";
+    case FAN_CONTROL_REASON_RAMP:           return "ramp";
+    case FAN_CONTROL_REASON_MIN_HYSTERESIS: return "min_hysteresis";
+    case FAN_CONTROL_REASON_CHARGE_WARM:    return "charge_warm";
+    case FAN_CONTROL_REASON_MAX_TEMP:       return "max_temp";
+    case FAN_CONTROL_REASON_TEMP_INVALID:   return "temp_invalid";
+    case FAN_CONTROL_REASON_TEMP_FAULT:     return "temp_fault";
+    case FAN_CONTROL_REASON_DRIVER_FAULT:   return "driver_fault";
+    default:                                return "unknown";
+    }
+}
+
 static uint32_t fan_channel_to_hal(int channel)
 {
     switch(channel)

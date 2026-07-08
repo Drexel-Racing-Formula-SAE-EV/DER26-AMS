@@ -329,6 +329,19 @@ static uint8_t logger_count_bits16(uint16_t x)
     return count;
 }
 
+static uint8_t logger_count_bits32(uint32_t x)
+{
+    uint8_t count = 0u;
+
+    while(x != 0u)
+    {
+        count = (uint8_t)(count + (uint8_t)(x & 1u));
+        x >>= 1u;
+    }
+
+    return count;
+}
+
 static uint8_t logger_bool_bit(bool value, uint8_t bit)
 {
     return value ? (uint8_t)(1u << bit) : 0u;
@@ -562,7 +575,7 @@ static HAL_StatusTypeDef send_logger_summaries(canbus_device_t *canbus,
     payload[4] = sat_u8_u32(data->voltage_usable_cell_count);
     payload[5] = sat_u8_u32(data->voltage_updated_cell_count);
     payload[6] = sat_u8_u32(data->voltage_stale_cell_count);
-    payload[7] = sat_u8_u32(data->voltage_fault_state.pec_fail_cell_count);
+    payload[7] = sat_u8_u32(data->voltage_pec_fail_cell_count);
     ret |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_VOLTAGE_HEALTH, payload);
 
     memset(payload, 0, sizeof(payload));
@@ -799,6 +812,60 @@ static HAL_StatusTypeDef send_logger_details(canbus_device_t *canbus, const app_
         logger_put_u24(payload, 4u, temp_invalid);
         payload[7] = 0u;
         ret |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_TEMP_MASKS_B, payload);
+    }
+
+    memset(payload, 0, sizeof(payload));
+    logger_put_i16(payload, 0u, sat_i16_scaled(data->temp_filtered_max, 10.0f));
+    logger_put_i16(payload, 2u, sat_i16_scaled(data->temp_max_rate_c_per_s, 10.0f));
+    payload[4] = logger_bool_bit(data->temp_open_sensor_count > 0u, AMS_LOGGER_TEMP_DIAG_FLAG_OPEN) |
+                 logger_bool_bit(data->temp_short_sensor_count > 0u, AMS_LOGGER_TEMP_DIAG_FLAG_SHORT) |
+                 logger_bool_bit(data->temp_jump_sensor_count > 0u, AMS_LOGGER_TEMP_DIAG_FLAG_JUMP) |
+                 logger_bool_bit(data->temp_rate_rise_sensor_count > 0u, AMS_LOGGER_TEMP_DIAG_FLAG_RATE_RISE) |
+                 logger_bool_bit(data->temp_usable_sensor_count > 0u, AMS_LOGGER_TEMP_DIAG_FLAG_FILTER_VALID);
+    payload[5] = data->fan_control_reason;
+    payload[6] = sat_u8_u32((uint32_t)((isfinite(data->fan_command_percent) && (data->fan_command_percent > 0.0f)) ?
+                                      (data->fan_command_percent + 0.5f) : 0.0f));
+    payload[7] = logger_bool_bit(data->fan_state, AMS_LOGGER_FAN_DIAG_FLAG_FAN_ON) |
+                 logger_bool_bit(data->fan_fault, AMS_LOGGER_FAN_DIAG_FLAG_DRIVER_FAULT) |
+                 logger_bool_bit(!data->temp_valid || data->temp_read_fault, AMS_LOGGER_FAN_DIAG_FLAG_TEMP_INVALID) |
+                 logger_bool_bit(data->temp_fault, AMS_LOGGER_FAN_DIAG_FLAG_TEMP_FAULT) |
+                 logger_bool_bit(data->temp_fan_max, AMS_LOGGER_FAN_DIAG_FLAG_TEMP_FAN_MAX);
+    ret |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_TEMP_DIAG, payload);
+
+    for(uint8_t seg = 0u; seg < NSMBS; seg++)
+    {
+        uint32_t temp_open = (seg < accumulator_configured_smb_count(acc)) ? acc->temp_open_mask[seg] : 0u;
+        uint32_t temp_short = (seg < accumulator_configured_smb_count(acc)) ? acc->temp_short_mask[seg] : 0u;
+        uint32_t temp_jump = (seg < accumulator_configured_smb_count(acc)) ? acc->temp_jump_mask[seg] : 0u;
+        uint32_t temp_rate = (seg < accumulator_configured_smb_count(acc)) ? acc->temp_rate_rise_mask[seg] : 0u;
+        uint16_t voltage_jump = (seg < accumulator_configured_smb_count(acc)) ? acc->voltage_jump_mask[seg] : 0u;
+        uint16_t voltage_stuck = (seg < accumulator_configured_smb_count(acc)) ? acc->voltage_stuck_mask[seg] : 0u;
+
+        memset(payload, 0, sizeof(payload));
+        payload[0] = seg;
+        logger_put_u24(payload, 1u, temp_open);
+        logger_put_u24(payload, 4u, temp_short);
+        payload[7] = (uint8_t)((logger_count_bits32(temp_open) & 0x0Fu) |
+                               ((logger_count_bits32(temp_short) & 0x0Fu) << 4u));
+        ret |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_TEMP_DIAG_A, payload);
+
+        memset(payload, 0, sizeof(payload));
+        payload[0] = seg;
+        logger_put_u24(payload, 1u, temp_jump);
+        logger_put_u24(payload, 4u, temp_rate);
+        payload[7] = (uint8_t)((logger_count_bits32(temp_jump) & 0x0Fu) |
+                               ((logger_count_bits32(temp_rate) & 0x0Fu) << 4u));
+        ret |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_TEMP_DIAG_B, payload);
+
+        memset(payload, 0, sizeof(payload));
+        payload[0] = seg;
+        logger_put_u16(payload, 1u, voltage_jump);
+        logger_put_u16(payload, 3u, voltage_stuck);
+        payload[5] = logger_count_bits16(voltage_jump);
+        payload[6] = logger_count_bits16(voltage_stuck);
+        payload[7] = logger_bool_bit(voltage_jump != 0u, AMS_LOGGER_VOLTAGE_DIAG_FLAG_JUMP) |
+                     logger_bool_bit(voltage_stuck != 0u, AMS_LOGGER_VOLTAGE_DIAG_FLAG_STUCK);
+        ret |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_VOLTAGE_DIAG, payload);
     }
 
     return ret;

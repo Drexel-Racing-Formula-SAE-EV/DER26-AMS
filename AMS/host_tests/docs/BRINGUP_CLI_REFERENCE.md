@@ -3,7 +3,7 @@
 Authored by Mahad Faisal, 2026.
 
 The `bringup` command is a staged bench-debug layer on top of the lower-level
-`status`, `spi`, `apm`, `charger`, `current`, `volt`, `temp`, `fault`, `can`, `wdg`, and
+`status`, `spi`, `apm`, `charger`, `current`, `volt`, `temp`, `fan`, `fault`, `can`, `wdg`, and
 `bmsok` commands. It summarizes whether the next hardware step is sensible; it
 does not release BMS_OK, clear safety latches, send extra charger commands, or
 override normal safety gating.
@@ -103,6 +103,33 @@ current zero status
 `current zero` is refused unless BMS_OK output is inhibited, BMS_OK is low, and
 the AMS is not in charge or discharge state. Use `current zero clear` to remove
 the software offset.
+
+
+## Temperature / Fan Diagnostics
+
+Use these after ADBMS temperature reads are moving:
+
+```text
+temp
+tempsns 0 0
+fan
+```
+
+`temp` now prints usable/updated/stale/invalid counts plus open, short,
+implausible-jump, and rate-rise diagnostic counts. The open/short/stale/invalid
+conditions are safety-relevant because they make the temperature set unusable.
+The jump/rate masks are diagnostic telemetry only and do not change the existing
+over-temperature threshold policy.
+
+`fan` prints commanded duty, reason, state, driver-set failure count, and each
+fan-zone PWM duty. There is no tach/RPM feedback in the current AMS hardware, so
+this command proves only what firmware commanded, not actual blade rotation.
+
+```text
+fan command 0%     -> cool/off
+fan command 25%+   -> ramp/minimum cooling
+fan command 100%   -> temp invalid, temp fault, or fan-max condition
+```
 
 ## ADBMS6830 / SMB Flow
 
@@ -230,6 +257,7 @@ bringup adbms6830
 current
 volt
 temp
+fan
 bringup ready
 charger
 bringup charger-lv

@@ -43,6 +43,10 @@
 #define AMS_LOGGER_CAN_ID_VOLTAGE_PEC     0x6A5u
 #define AMS_LOGGER_CAN_ID_CURRENT_ADC     0x6A6u
 #define AMS_LOGGER_CAN_ID_CHARGER_DETAIL  0x6A7u
+#define AMS_LOGGER_CAN_ID_TEMP_DIAG       0x6A8u
+#define AMS_LOGGER_CAN_ID_TEMP_DIAG_A     0x6A9u
+#define AMS_LOGGER_CAN_ID_TEMP_DIAG_B     0x6AAu
+#define AMS_LOGGER_CAN_ID_VOLTAGE_DIAG    0x6ABu
 
 #define AMS_DASH_CAN_ID_ECU_AMS           0x069u
 #define AMS_DASH_CAN_ID_HIL_MEAS          0x200u
@@ -116,6 +120,12 @@ typedef struct
     uint8_t temp_updated_count;
     uint8_t temp_stale_count;
     uint8_t temp_invalid_count;
+    int16_t temp_filtered_max_dC;
+    int16_t temp_max_rate_dC_per_s;
+    uint8_t temp_diag_flags;
+    uint8_t fan_control_reason;
+    uint8_t fan_command_percent;
+    uint8_t fan_diag_flags;
 
     uint16_t charger_target_voltage_dV;
     uint16_t charger_target_current_dA;
@@ -218,10 +228,16 @@ typedef struct
     uint16_t voltage_usable_mask[AMS_DASH_SEGMENTS];
     uint16_t voltage_stale_mask[AMS_DASH_SEGMENTS];
     uint16_t voltage_pec_mask[AMS_DASH_SEGMENTS];
+    uint16_t voltage_jump_mask[AMS_DASH_SEGMENTS];
+    uint16_t voltage_stuck_mask[AMS_DASH_SEGMENTS];
     uint32_t temp_updated_mask[AMS_DASH_SEGMENTS];
     uint32_t temp_usable_mask[AMS_DASH_SEGMENTS];
     uint32_t temp_stale_mask[AMS_DASH_SEGMENTS];
     uint32_t temp_invalid_mask[AMS_DASH_SEGMENTS];
+    uint32_t temp_open_mask[AMS_DASH_SEGMENTS];
+    uint32_t temp_short_mask[AMS_DASH_SEGMENTS];
+    uint32_t temp_jump_mask[AMS_DASH_SEGMENTS];
+    uint32_t temp_rate_rise_mask[AMS_DASH_SEGMENTS];
 } ams_dash_state_t;
 
 void ams_dash_state_init(ams_dash_state_t *state);

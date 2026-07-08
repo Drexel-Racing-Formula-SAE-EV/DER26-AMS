@@ -542,7 +542,7 @@ static float ntc_voltage_for_temp_c(float temp_c){
 }
 static int16_t raw_for_temp_c(float temp_c){ return raw_for_ntc_voltage(ntc_voltage_for_temp_c(temp_c)); }
 #define CHECK(cond) do{ if(!(cond)){ fprintf(stderr,"FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); exit(1);} }while(0)
-#define HOST_LOGGER_FRAME_COUNT 103u
+#define HOST_LOGGER_FRAME_COUNT 119u
 #define HOST_ECU_FRAME_COUNT 62u
 #define HOST_NONCHARGE_CAN_FRAME_COUNT (HOST_ECU_FRAME_COUNT + HOST_LOGGER_FRAME_COUNT)
 #define HOST_CHARGE_CAN_FRAME_COUNT (HOST_LOGGER_FRAME_COUNT + 1u)
@@ -1079,6 +1079,15 @@ static void sil_publish_temp_state(app_data_t *d)
     d->temp_updated_sensor_count = d->temp_fault_state.updated_sensor_count;
     d->temp_stale_sensor_count = d->temp_fault_state.stale_sensor_count;
     d->temp_invalid_sensor_count = d->temp_fault_state.invalid_sensor_count;
+    d->temp_open_sensor_count = d->temp_fault_state.open_sensor_count;
+    d->temp_short_sensor_count = d->temp_fault_state.short_sensor_count;
+    d->temp_jump_sensor_count = d->temp_fault_state.jump_sensor_count;
+    d->temp_rate_rise_sensor_count = d->temp_fault_state.rate_rise_sensor_count;
+    d->temp_filtered_max = (float)d->temp_fault_state.filtered_max_temp_deci_c / 10.0f;
+    d->temp_filtered_avg = (float)d->temp_fault_state.filtered_avg_temp_deci_c / 10.0f;
+    d->temp_max_rate_c_per_s = (float)d->temp_fault_state.max_rate_deci_c_per_s / 10.0f;
+    d->temp_max_rate_seg = d->temp_fault_state.max_rate_segment;
+    d->temp_max_rate_sensor = d->temp_fault_state.max_rate_sensor;
     d->max_temp_seg = d->temp_fault_state.max_temp_segment;
     d->max_temp_sensor = d->temp_fault_state.max_temp_sensor;
     d->min_temp_seg = d->temp_fault_state.min_temp_segment;

@@ -34,6 +34,7 @@ int get_version(int argc, char *argv[]);
 int get_voltage(int argc, char *argv[]);
 int get_temperature(int argc, char *argv[]);
 int get_temperature_sensor(int argc, char *argv[]);
+int get_fan_diag(int argc, char *argv[]);
 
 
 int get_current(int argc, char *argv[]);
@@ -65,6 +66,7 @@ command_t cmds[] =
 	{"volt", &get_voltage, "gets cell voltages for all SMBs"},
 	{"temp", &get_temperature, "gets sensor temperatures for all SMBs"},
 	{"tempsns", &get_temperature_sensor, "gets one sensor: tempsns <ic> <sensor 0-23>"},
+	{"fan", &get_fan_diag, "fan control telemetry: fan"},
 	{"current", &get_current, "gets current sensor raw counts/voltages/status"},
 	{"charger", &get_charger, "gets charger CAN command/status/debug state"},
 	{"can", &get_can_diag, "CAN diagnostics: can [diag|recover]"},
@@ -581,6 +583,15 @@ int get_voltage(int argc, char *argv[])
     ret |= cli_printline(cli, outline);
 
     snprintf(outline, CLI_LINESZ,
+             "Voltage diag jump:%u stuck:%u max_delta:%umV at S%u/C%u",
+             (unsigned)data->voltage_jump_cell_count,
+             (unsigned)data->voltage_stuck_cell_count,
+             (unsigned)data->voltage_max_delta_mv,
+             (unsigned)(data->voltage_max_delta_seg + 1u),
+             (unsigned)(data->voltage_max_delta_cell + 1u));
+    ret |= cli_printline(cli, outline);
+
+    snprintf(outline, CLI_LINESZ,
              "Max S%u C%u:%umV Min S%u C%u:%umV",
              (unsigned)(data->acc.max_voltage_seg + 1u),
              (unsigned)(data->acc.max_voltage_cell + 1u),
@@ -592,12 +603,14 @@ int get_voltage(int argc, char *argv[])
 
     for (uint8_t ic = 0; ic < smb_ic_count(smb); ic++)
     {
-        snprintf(outline, CLI_LINESZ, "--- SMB %d usable:0x%04x updated:0x%04x stale:0x%04x pec:0x%04x ---",
+        snprintf(outline, CLI_LINESZ, "--- SMB %d usable:0x%04x updated:0x%04x stale:0x%04x pec:0x%04x jump:0x%04x stuck:0x%04x ---",
                  ic,
                  data->acc.usable_voltage_mask[ic],
                  data->acc.updated_voltage_mask[ic],
                  data->acc.stale_voltage_mask[ic],
-                 data->acc.pec_fail_voltage_mask[ic]);
+                 data->acc.pec_fail_voltage_mask[ic],
+                 data->acc.voltage_jump_mask[ic],
+                 data->acc.voltage_stuck_mask[ic]);
         ret |= cli_printline(cli, outline);
 
         for (int cell = 0; cell < NCELLS; cell++)
@@ -639,11 +652,24 @@ int get_temperature(int argc, char *argv[])
     ret |= cli_printline(cli, outline);
 
     snprintf(outline, CLI_LINESZ,
-             "Temp counts usable:%u updated:%u stale:%u invalid:%u",
+             "Temp counts usable:%u updated:%u stale:%u invalid:%u open:%u short:%u jump:%u rate:%u",
              (unsigned)data->temp_usable_sensor_count,
              (unsigned)data->temp_updated_sensor_count,
              (unsigned)data->temp_stale_sensor_count,
-             (unsigned)data->temp_invalid_sensor_count);
+             (unsigned)data->temp_invalid_sensor_count,
+             (unsigned)data->temp_open_sensor_count,
+             (unsigned)data->temp_short_sensor_count,
+             (unsigned)data->temp_jump_sensor_count,
+             (unsigned)data->temp_rate_rise_sensor_count);
+    ret |= cli_printline(cli, outline);
+
+    snprintf(outline, CLI_LINESZ,
+             "Temp filtered max:%.1f avg:%.1f max_rate:%.1fC/s at SMB%u/S%u",
+             (double)data->temp_filtered_max,
+             (double)data->temp_filtered_avg,
+             (double)data->temp_max_rate_c_per_s,
+             (unsigned)data->temp_max_rate_seg,
+             (unsigned)data->temp_max_rate_sensor);
     ret |= cli_printline(cli, outline);
 
     snprintf(outline, CLI_LINESZ,
@@ -657,7 +683,17 @@ int get_temperature(int argc, char *argv[])
     for (uint8_t ic = 0; ic < smb_ic_count(smb); ic++)
     {
 
-        snprintf(outline, CLI_LINESZ, "--- SMB %d ---", ic);
+        snprintf(outline, CLI_LINESZ, "--- SMB %d upd:0x%06lx usable:0x%06lx invalid:0x%06lx ---",
+                 ic,
+                 (unsigned long)data->acc.updated_temp_mask[ic],
+                 (unsigned long)data->acc.usable_temp_mask[ic],
+                 (unsigned long)data->acc.invalid_temp_mask[ic]);
+        ret |= cli_printline(cli, outline);
+        snprintf(outline, CLI_LINESZ, "    diag open:0x%06lx short:0x%06lx jump:0x%06lx rate:0x%06lx",
+                 (unsigned long)data->acc.temp_open_mask[ic],
+                 (unsigned long)data->acc.temp_short_mask[ic],
+                 (unsigned long)data->acc.temp_jump_mask[ic],
+                 (unsigned long)data->acc.temp_rate_rise_mask[ic]);
         ret |= cli_printline(cli, outline);
 
         for (int sensor = 0; sensor < NTEMPS; sensor++)
@@ -684,6 +720,40 @@ int get_temperature(int argc, char *argv[])
             ret |= cli_printline(cli, outline);
         }
     }
+    return ret;
+}
+
+int get_fan_diag(int argc, char *argv[])
+{
+    (void)argc;
+    (void)argv;
+
+    int ret = 0;
+    snprintf(outline, CLI_LINESZ,
+             "Fan cmd:%.1f%% reason:%s state:%d fault:%d set_fail:%lu last_tick:%lu",
+             (double)data->fan_command_percent,
+             fan_control_reason_str(data->fan_control_reason),
+             data->fan_state,
+             data->fan_fault,
+             (unsigned long)data->fan_set_fail_count,
+             (unsigned long)data->fan_last_update_tick);
+    ret |= cli_printline(cli, outline);
+
+    snprintf(outline, CLI_LINESZ,
+             "Fan temp raw_max:%.1fC filt_max:%.1fC fanmax:%d temp_fault:%d valid:%d",
+             (double)data->max_temp,
+             (double)data->temp_filtered_max,
+             data->temp_fan_max,
+             data->temp_fault,
+             data->temp_valid);
+    ret |= cli_printline(cli, outline);
+
+    for(int i = 0; i < NFANS; i++)
+    {
+        snprintf(outline, CLI_LINESZ, "  fan%-2d duty:%.1f%%", i, (double)data->board.fans[i].duty_cycle);
+        ret |= cli_printline(cli, outline);
+    }
+
     return ret;
 }
 

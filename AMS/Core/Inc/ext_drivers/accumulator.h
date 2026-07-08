@@ -35,6 +35,15 @@
 #define ACCUMULATOR_TEMP_MAX_CONSEC_MISSES     10u
 #define ACCUMULATOR_TEMP_VALID_MIN_DECI_C      (-400)
 #define ACCUMULATOR_TEMP_VALID_MAX_DECI_C      1500
+#define ACCUMULATOR_TEMP_OPEN_LOW_MV          100u
+#define ACCUMULATOR_TEMP_SHORT_HIGH_MV        4900u
+#define ACCUMULATOR_TEMP_IMPLAUSIBLE_JUMP_DECI_C 250
+#define ACCUMULATOR_TEMP_RATE_WARN_DECI_C_PER_S 50
+#define ACCUMULATOR_TEMP_FILTER_ALPHA_NUM     1
+#define ACCUMULATOR_TEMP_FILTER_ALPHA_DEN     8
+
+#define ACCUMULATOR_CELL_IMPLAUSIBLE_JUMP_MV  250u
+#define ACCUMULATOR_CELL_STUCK_SAME_COUNT     120u
 
 
 /* APM Macros */
@@ -62,7 +71,10 @@ typedef struct
 	uint16_t valid_temp_count;
 
 	int16_t temp_deci_c[NSMBS][NTEMPS];
+	int16_t temp_raw_code[NSMBS][NTEMPS];
+	int16_t temp_filtered_deci_c[NSMBS][NTEMPS];
 	bool temp_sensor_valid[NSMBS][NTEMPS];
+	uint32_t temp_filter_valid_mask[NSMBS];
 	uint32_t temp_last_update_ms[NSMBS][NTEMPS];
 	uint8_t temp_consecutive_misses[NSMBS][NTEMPS];
 
@@ -70,17 +82,31 @@ typedef struct
 	uint32_t usable_temp_mask[NSMBS];
 	uint32_t stale_temp_mask[NSMBS];
 	uint32_t invalid_temp_mask[NSMBS];
+	uint32_t temp_open_mask[NSMBS];
+	uint32_t temp_short_mask[NSMBS];
+	uint32_t temp_jump_mask[NSMBS];
+	uint32_t temp_rate_rise_mask[NSMBS];
 
 	uint16_t updated_temp_count;
 	uint16_t usable_temp_count;
 	uint16_t stale_temp_count;
 	uint16_t invalid_temp_count;
+	uint16_t temp_open_count;
+	uint16_t temp_short_count;
+	uint16_t temp_jump_count;
+	uint16_t temp_rate_rise_count;
 	int16_t max_temp_deci_c;
 	int16_t min_temp_deci_c;
+	int16_t filtered_max_temp_deci_c;
+	int16_t filtered_min_temp_deci_c;
+	int16_t filtered_avg_temp_deci_c;
+	int16_t temp_max_rate_deci_c_per_s;
 	uint8_t max_temp_seg;
 	uint8_t max_temp_sensor;
 	uint8_t min_temp_seg;
 	uint8_t min_temp_sensor;
+	uint8_t temp_max_rate_seg;
+	uint8_t temp_max_rate_sensor;
 	bool temp_full_updated;
 	bool temp_full_usable;
 	bool temp_startup_scan_complete;
@@ -89,6 +115,7 @@ typedef struct
 	bool cell_voltage_valid[NSMBS][NCELLS];
 	uint32_t cell_voltage_last_update_ms[NSMBS][NCELLS];
 	uint8_t cell_voltage_consecutive_misses[NSMBS][NCELLS];
+	uint8_t cell_voltage_same_count[NSMBS][NCELLS];
 	uint32_t hil_cell_last_update_ms[NSMBS][NCELLS];
 	uint32_t hil_temp_last_update_ms[NSMBS][NTEMPS];
 	uint16_t hil_cell_seen_mask[NSMBS];
@@ -98,17 +125,24 @@ typedef struct
 	uint16_t usable_voltage_mask[NSMBS];
 	uint16_t pec_fail_voltage_mask[NSMBS];
 	uint16_t stale_voltage_mask[NSMBS];
+	uint16_t voltage_jump_mask[NSMBS];
+	uint16_t voltage_stuck_mask[NSMBS];
 
 	uint16_t updated_voltage_count;
 	uint16_t usable_voltage_count;
 	uint16_t stale_voltage_count;
 	uint16_t pec_fail_cell_count;
+	uint16_t voltage_jump_cell_count;
+	uint16_t voltage_stuck_cell_count;
+	uint16_t voltage_max_delta_mv;
 	uint16_t max_voltage_mv;
 	uint16_t min_voltage_mv;
 	uint8_t max_voltage_seg;
 	uint8_t max_voltage_cell;
 	uint8_t min_voltage_seg;
 	uint8_t min_voltage_cell;
+	uint8_t voltage_max_delta_seg;
+	uint8_t voltage_max_delta_cell;
 	bool voltage_full_updated;
 	bool voltage_full_usable;
 	bool voltage_startup_scan_complete;

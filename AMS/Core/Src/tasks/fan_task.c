@@ -7,45 +7,127 @@
  */
 #include "tasks/fan_task.h"
 
+#include "ext_drivers/fans.h"
+
 #include <math.h>
 
 void fan_task_fn(void *argument);
 
-static float fan_percent_from_temp(const app_data_t *data)
+#define FAN_MIN_COMMAND_PERCENT        25.0f
+#define FAN_CHARGE_WARM_PERCENT       35.0f
+#define FAN_OFF_HYSTERESIS_C           3.0f
+
+static float fan_temp_for_control(const app_data_t *data)
+{
+    if(data == NULL)
+    {
+        return NAN;
+    }
+
+    /* Use the live validated max for fan actuation. Filtered temperature is
+     * exported for display/logging, not for delaying cooling response. */
+    return data->max_temp;
+}
+
+static float fan_percent_from_temp(const app_data_t *data, uint8_t *reason_out)
 {
     float span;
     float max_temp;
+    float percent;
+    bool was_on;
 
-    if((data == NULL) ||
-       !data->temp_valid ||
-       data->temp_read_fault ||
-       data->temp_fault ||
-       data->temp_fan_max ||
-       (data->temp_usable_sensor_count == 0u) ||
-       !isfinite(data->max_temp))
+    if(reason_out != NULL)
     {
+        *reason_out = FAN_CONTROL_REASON_OFF_COOL;
+    }
+
+    if(data == NULL)
+    {
+        if(reason_out != NULL) *reason_out = FAN_CONTROL_REASON_TEMP_INVALID;
         return 100.0f;
     }
 
-    max_temp = data->max_temp;
-
-    if(max_temp <= TEMP_FAN_RAMP_START_C)
+    if(!data->temp_valid ||
+       data->temp_read_fault ||
+       (data->temp_usable_sensor_count == 0u) ||
+       !isfinite(data->max_temp))
     {
-        return 0.0f;
+        if(reason_out != NULL) *reason_out = FAN_CONTROL_REASON_TEMP_INVALID;
+        return 100.0f;
     }
 
-    if(max_temp >= TEMP_FAN_MAX_C)
+    if(data->temp_fault)
     {
+        if(reason_out != NULL) *reason_out = FAN_CONTROL_REASON_TEMP_FAULT;
+        return 100.0f;
+    }
+
+    max_temp = fan_temp_for_control(data);
+    if(!isfinite(max_temp))
+    {
+        if(reason_out != NULL) *reason_out = FAN_CONTROL_REASON_TEMP_INVALID;
+        return 100.0f;
+    }
+
+    if(data->temp_fan_max || (max_temp >= TEMP_FAN_MAX_C))
+    {
+        if(reason_out != NULL) *reason_out = FAN_CONTROL_REASON_MAX_TEMP;
         return 100.0f;
     }
 
     span = (float)(TEMP_FAN_MAX_C - TEMP_FAN_RAMP_START_C);
     if(span <= 0.0f)
     {
+        if(reason_out != NULL) *reason_out = FAN_CONTROL_REASON_MAX_TEMP;
         return 100.0f;
     }
 
-    return ((max_temp - (float)TEMP_FAN_RAMP_START_C) * 100.0f) / span;
+    was_on = isfinite(data->fan_command_percent) &&
+             (data->fan_command_percent > 0.5f) &&
+             (data->fan_control_reason != FAN_CONTROL_REASON_MAX_TEMP) &&
+             (data->fan_control_reason != FAN_CONTROL_REASON_TEMP_INVALID) &&
+             (data->fan_control_reason != FAN_CONTROL_REASON_TEMP_FAULT) &&
+             (data->fan_control_reason != FAN_CONTROL_REASON_DRIVER_FAULT);
+
+    if(max_temp <= (TEMP_FAN_RAMP_START_C - FAN_OFF_HYSTERESIS_C))
+    {
+        if(reason_out != NULL) *reason_out = FAN_CONTROL_REASON_OFF_COOL;
+        return 0.0f;
+    }
+
+    if(max_temp <= TEMP_FAN_RAMP_START_C)
+    {
+        if(was_on)
+        {
+            if(reason_out != NULL) *reason_out = FAN_CONTROL_REASON_MIN_HYSTERESIS;
+            return FAN_MIN_COMMAND_PERCENT;
+        }
+
+        if((data->state == STATE_CHARGE) && (max_temp >= (TEMP_FAN_RAMP_START_C - FAN_OFF_HYSTERESIS_C)))
+        {
+            if(reason_out != NULL) *reason_out = FAN_CONTROL_REASON_CHARGE_WARM;
+            return FAN_CHARGE_WARM_PERCENT;
+        }
+
+        if(reason_out != NULL) *reason_out = FAN_CONTROL_REASON_OFF_COOL;
+        return 0.0f;
+    }
+
+    percent = ((max_temp - (float)TEMP_FAN_RAMP_START_C) * 100.0f) / span;
+    if(percent < FAN_MIN_COMMAND_PERCENT)
+    {
+        percent = FAN_MIN_COMMAND_PERCENT;
+    }
+
+    if((data->state == STATE_CHARGE) && (percent < FAN_CHARGE_WARM_PERCENT))
+    {
+        percent = FAN_CHARGE_WARM_PERCENT;
+        if(reason_out != NULL) *reason_out = FAN_CONTROL_REASON_CHARGE_WARM;
+        return percent;
+    }
+
+    if(reason_out != NULL) *reason_out = FAN_CONTROL_REASON_RAMP;
+    return percent;
 }
 
 TaskHandle_t fan_task_start(app_data_t *data)
@@ -72,13 +154,17 @@ void fan_task_fn(void *argument)
 
     uint32_t entry;
     float percent = 0.0f;
+    uint8_t reason = FAN_CONTROL_REASON_OFF_COOL;
 
     for(;;)
     {
         entry = osKernelGetTickCount();
 
-        percent = fan_percent_from_temp(data);
-        data->fan_state = (percent > 0.0f);
+        percent = fan_percent_from_temp(data, &reason);
+        data->fan_state = (percent > 0.5f);
+        data->fan_command_percent = percent;
+        data->fan_control_reason = reason;
+        data->fan_last_update_tick = entry;
 
         data->fan_fault = false;
         for(int i = 0; i < NFANS; i++)
@@ -86,7 +172,13 @@ void fan_task_fn(void *argument)
             if(set_fan_percent(&data->board.fans[i], percent) != 0)
             {
                 data->fan_fault = true;
+                data->fan_set_fail_count++;
             }
+        }
+
+        if(data->fan_fault)
+        {
+            data->fan_control_reason = FAN_CONTROL_REASON_DRIVER_FAULT;
         }
 
         osDelayUntil(entry + (1000 / FAN_FREQ));

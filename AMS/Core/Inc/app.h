@@ -189,10 +189,19 @@ struct app_data_t
 	uint16_t temp_updated_sensor_count;
 	uint16_t temp_stale_sensor_count;
 	uint16_t temp_invalid_sensor_count;
+	uint16_t temp_open_sensor_count;
+	uint16_t temp_short_sensor_count;
+	uint16_t temp_jump_sensor_count;
+	uint16_t temp_rate_rise_sensor_count;
+	float temp_filtered_max;
+	float temp_filtered_avg;
+	float temp_max_rate_c_per_s;
 	uint8_t max_temp_seg;
 	uint8_t max_temp_sensor;
 	uint8_t min_temp_seg;
 	uint8_t min_temp_sensor;
+	uint8_t temp_max_rate_seg;
+	uint8_t temp_max_rate_sensor;
 	bool voltage_fault;
 	bool voltage_valid;
 	bool voltage_read_fault;
@@ -207,16 +216,26 @@ struct app_data_t
 	uint16_t voltage_usable_cell_count;
 	uint16_t voltage_updated_cell_count;
 	uint16_t voltage_stale_cell_count;
+	uint16_t voltage_pec_fail_cell_count;
+	uint16_t voltage_jump_cell_count;
+	uint16_t voltage_stuck_cell_count;
+	uint16_t voltage_max_delta_mv;
 	uint8_t max_voltage_seg;
 	uint8_t max_voltage_cell;
 	uint8_t min_voltage_seg;
 	uint8_t min_voltage_cell;
+	uint8_t voltage_max_delta_seg;
+	uint8_t voltage_max_delta_cell;
 	bool estimator_fault;
 
 	bool air_state;
 	bool imd_ok;
 	imd_status_t imd_status;
     bool fan_state;
+    float fan_command_percent;
+    uint8_t fan_control_reason;
+    uint32_t fan_set_fail_count;
+    uint32_t fan_last_update_tick;
 
 	bool charger_fault;
 	bool adbms_diag_fault;

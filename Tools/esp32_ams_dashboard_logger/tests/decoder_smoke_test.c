@@ -19,6 +19,13 @@ static void be16(uint8_t *p, uint16_t v)
     p[1] = (uint8_t)(v & 0xFFu);
 }
 
+static void be24(uint8_t *p, uint32_t v)
+{
+    p[0] = (uint8_t)((v >> 16u) & 0xFFu);
+    p[1] = (uint8_t)((v >> 8u) & 0xFFu);
+    p[2] = (uint8_t)(v & 0xFFu);
+}
+
 static void be32(uint8_t *p, uint32_t v)
 {
     p[0] = (uint8_t)((v >> 24u) & 0xFFu);
@@ -232,6 +239,53 @@ static void test_extended_diagnostic_frames(void)
     CHECK(s.charger_tx_fail_count == 2u);
 }
 
+
+static void test_sensor_diagnostic_frames(void)
+{
+    ams_dash_state_t s;
+    ams_dash_state_init(&s);
+
+    uint8_t td[8] = { 0u };
+    be16(&td[0], 456u);
+    be16(&td[2], 78u);
+    td[4] = 0x1Fu;
+    td[5] = 3u;
+    td[6] = 42u;
+    td[7] = 0x13u;
+    ams_can_frame_t tdf = frame(AMS_LOGGER_CAN_ID_TEMP_DIAG, td);
+    CHECK(ams_dash_decode_frame(&s, &tdf, 55u));
+    CHECK(s.temp_filtered_max_dC == 456);
+    CHECK(s.temp_max_rate_dC_per_s == 78);
+    CHECK(s.temp_diag_flags == 0x1Fu);
+    CHECK(s.fan_control_reason == 3u);
+    CHECK(s.fan_command_percent == 42u);
+    CHECK(s.fan_diag_flags == 0x13u);
+
+    uint8_t ta[8] = { 2u };
+    be24(&ta[1], 0x000123u);
+    be24(&ta[4], 0x000456u);
+    ta[7] = 0x21u;
+    ams_can_frame_t taf = frame(AMS_LOGGER_CAN_ID_TEMP_DIAG_A, ta);
+    CHECK(ams_dash_decode_frame(&s, &taf, 56u));
+    CHECK(s.temp_open_mask[2] == 0x000123u);
+    CHECK(s.temp_short_mask[2] == 0x000456u);
+
+    uint8_t tb[8] = { 2u };
+    be24(&tb[1], 0x000789u);
+    be24(&tb[4], 0x000ABCu);
+    tb[7] = 0x43u;
+    ams_can_frame_t tbf = frame(AMS_LOGGER_CAN_ID_TEMP_DIAG_B, tb);
+    CHECK(ams_dash_decode_frame(&s, &tbf, 57u));
+    CHECK(s.temp_jump_mask[2] == 0x000789u);
+    CHECK(s.temp_rate_rise_mask[2] == 0x000ABCu);
+
+    uint8_t vd[8] = { 4u, 0x12u, 0x34u, 0xABu, 0xCDu, 2u, 4u, 3u };
+    ams_can_frame_t vdf = frame(AMS_LOGGER_CAN_ID_VOLTAGE_DIAG, vd);
+    CHECK(ams_dash_decode_frame(&s, &vdf, 58u));
+    CHECK(s.voltage_jump_mask[4] == 0x1234u);
+    CHECK(s.voltage_stuck_mask[4] == 0xABCDu);
+}
+
 static void test_estimator_and_hil_frames(void)
 {
     ams_dash_state_t s;
@@ -308,6 +362,7 @@ int main(void)
     test_task_health_frame();
     test_can_diag_frame();
     test_extended_diagnostic_frames();
+    test_sensor_diagnostic_frames();
     test_estimator_and_hil_frames();
     test_rejects_non_contract_frames();
     puts("decoder_smoke_test PASS");

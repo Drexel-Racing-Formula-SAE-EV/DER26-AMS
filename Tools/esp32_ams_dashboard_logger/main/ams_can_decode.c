@@ -232,6 +232,15 @@ bool ams_dash_decode_frame(ams_dash_state_t *state,
             state->temp_invalid_count = d[7];
             break;
 
+        case AMS_LOGGER_CAN_ID_TEMP_DIAG:
+            state->temp_filtered_max_dC = be_i16(&d[0]);
+            state->temp_max_rate_dC_per_s = be_i16(&d[2]);
+            state->temp_diag_flags = d[4];
+            state->fan_control_reason = d[5];
+            state->fan_command_percent = d[6];
+            state->fan_diag_flags = d[7];
+            break;
+
         case AMS_LOGGER_CAN_ID_CHARGER:
             state->charger_target_voltage_dV = be_u16(&d[0]);
             state->charger_target_current_dA = be_u16(&d[2]);
@@ -400,6 +409,30 @@ bool ams_dash_decode_frame(ams_dash_state_t *state,
             if(d[0] < AMS_DASH_SEGMENTS)
             {
                 state->voltage_pec_mask[d[0]] = be_u16(&d[1]);
+            }
+            break;
+
+        case AMS_LOGGER_CAN_ID_TEMP_DIAG_A:
+            if(d[0] < AMS_DASH_SEGMENTS)
+            {
+                state->temp_open_mask[d[0]] = be_u24(&d[1]);
+                state->temp_short_mask[d[0]] = be_u24(&d[4]);
+            }
+            break;
+
+        case AMS_LOGGER_CAN_ID_TEMP_DIAG_B:
+            if(d[0] < AMS_DASH_SEGMENTS)
+            {
+                state->temp_jump_mask[d[0]] = be_u24(&d[1]);
+                state->temp_rate_rise_mask[d[0]] = be_u24(&d[4]);
+            }
+            break;
+
+        case AMS_LOGGER_CAN_ID_VOLTAGE_DIAG:
+            if(d[0] < AMS_DASH_SEGMENTS)
+            {
+                state->voltage_jump_mask[d[0]] = be_u16(&d[1]);
+                state->voltage_stuck_mask[d[0]] = be_u16(&d[3]);
             }
             break;
 

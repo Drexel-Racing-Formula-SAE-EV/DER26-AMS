@@ -150,12 +150,21 @@ void temperature_fault_update_with_period(temperature_fault_state_t *state,
     state->updated_sensor_count = acc->updated_temp_count;
     state->stale_sensor_count = acc->stale_temp_count;
     state->invalid_sensor_count = acc->invalid_temp_count;
+    state->open_sensor_count = acc->temp_open_count;
+    state->short_sensor_count = acc->temp_short_count;
+    state->jump_sensor_count = acc->temp_jump_count;
+    state->rate_rise_sensor_count = acc->temp_rate_rise_count;
     state->max_temp_deci_c = acc->max_temp_deci_c;
     state->min_temp_deci_c = acc->min_temp_deci_c;
+    state->filtered_max_temp_deci_c = acc->filtered_max_temp_deci_c;
+    state->filtered_avg_temp_deci_c = acc->filtered_avg_temp_deci_c;
+    state->max_rate_deci_c_per_s = acc->temp_max_rate_deci_c_per_s;
     state->max_temp_segment = acc->max_temp_seg;
     state->max_temp_sensor = acc->max_temp_sensor;
     state->min_temp_segment = acc->min_temp_seg;
     state->min_temp_sensor = acc->min_temp_sensor;
+    state->max_rate_segment = acc->temp_max_rate_seg;
+    state->max_rate_sensor = acc->temp_max_rate_sensor;
 
     if(!acc->temp_startup_scan_complete)
     {
@@ -173,7 +182,15 @@ void temperature_fault_update_with_period(temperature_fault_state_t *state,
         state->confirmed = true;
         state->fan_max = true;
         clear_pending(state);
-        if(acc->invalid_temp_count > 0u)
+        if(acc->temp_open_count > 0u)
+        {
+            state->reason = TEMPERATURE_FAULT_REASON_OPEN_SENSOR;
+        }
+        else if(acc->temp_short_count > 0u)
+        {
+            state->reason = TEMPERATURE_FAULT_REASON_SHORT_SENSOR;
+        }
+        else if(acc->invalid_temp_count > 0u)
         {
             state->reason = TEMPERATURE_FAULT_REASON_INVALID_SENSOR;
         }
@@ -237,6 +254,8 @@ void temperature_fault_update_with_period(temperature_fault_state_t *state,
         return;
     }
 
+    /* Jump/rate masks are diagnostic telemetry only. Do not let display/filter
+     * diagnostics change the established temp warning/fault policy. */
     /* The SMB mux intentionally updates three of twenty-four temperature
      * sensors per ADBMS cycle. Once the full sensor set is fresh and usable,
      * a partial update in this cycle is normal cadence, not a warning.
@@ -252,6 +271,10 @@ const char *temperature_fault_reason_str(temperature_fault_reason_t reason)
         case TEMPERATURE_FAULT_REASON_PARTIAL_SCAN:   return "partial_scan";
         case TEMPERATURE_FAULT_REASON_STALE_SCAN:     return "stale_scan";
         case TEMPERATURE_FAULT_REASON_INVALID_SENSOR: return "invalid_sensor";
+        case TEMPERATURE_FAULT_REASON_OPEN_SENSOR:    return "open_sensor";
+        case TEMPERATURE_FAULT_REASON_SHORT_SENSOR:   return "short_sensor";
+        case TEMPERATURE_FAULT_REASON_IMPLAUSIBLE_JUMP: return "implausible_jump";
+        case TEMPERATURE_FAULT_REASON_RATE_RISE_WARNING: return "rate_rise_warning";
         case TEMPERATURE_FAULT_REASON_COLD_CHARGE_STOP: return "cold_charge_stop";
         case TEMPERATURE_FAULT_REASON_HOT_CHARGE_STOP:  return "hot_charge_stop";
         case TEMPERATURE_FAULT_REASON_HOT_WARNING:    return "hot_warning";

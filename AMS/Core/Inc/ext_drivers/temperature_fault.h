@@ -32,6 +32,10 @@ typedef enum
     TEMPERATURE_FAULT_REASON_PARTIAL_SCAN,
     TEMPERATURE_FAULT_REASON_STALE_SCAN,
     TEMPERATURE_FAULT_REASON_INVALID_SENSOR,
+    TEMPERATURE_FAULT_REASON_OPEN_SENSOR,
+    TEMPERATURE_FAULT_REASON_SHORT_SENSOR,
+    TEMPERATURE_FAULT_REASON_IMPLAUSIBLE_JUMP,
+    TEMPERATURE_FAULT_REASON_RATE_RISE_WARNING,
     TEMPERATURE_FAULT_REASON_COLD_CHARGE_STOP,
     TEMPERATURE_FAULT_REASON_HOT_CHARGE_STOP,
     TEMPERATURE_FAULT_REASON_HOT_WARNING,
@@ -64,13 +68,22 @@ typedef struct
     uint16_t updated_sensor_count;
     uint16_t stale_sensor_count;
     uint16_t invalid_sensor_count;
+    uint16_t open_sensor_count;
+    uint16_t short_sensor_count;
+    uint16_t jump_sensor_count;
+    uint16_t rate_rise_sensor_count;
 
     int16_t max_temp_deci_c;
     int16_t min_temp_deci_c;
+    int16_t filtered_max_temp_deci_c;
+    int16_t filtered_avg_temp_deci_c;
+    int16_t max_rate_deci_c_per_s;
     uint8_t max_temp_segment;
     uint8_t max_temp_sensor;
     uint8_t min_temp_segment;
     uint8_t min_temp_sensor;
+    uint8_t max_rate_segment;
+    uint8_t max_rate_sensor;
 } temperature_fault_state_t;
 
 void temperature_fault_init(temperature_fault_state_t *state);
