@@ -1006,9 +1006,9 @@ static void test_voltage_fault_read_failure_precedence_and_strings(void)
     unit_fill_voltage_acc(&v_acc, 3300u, 4100u, true, true, false);
     v_acc.pec_fail_cell_count = 1u;
     voltage_fault_update(&vf, &v_acc);
-    EXPECT_TRUE(vf.voltage_valid);
-    EXPECT_TRUE(vf.warning);
-    EXPECT_FALSE(vf.confirmed);
+    EXPECT_FALSE(vf.voltage_valid);
+    EXPECT_TRUE(vf.read_fault);
+    EXPECT_TRUE(vf.confirmed);
     EXPECT_TRUE(vf.reason == VOLTAGE_FAULT_REASON_PEC_FAILURE);
 
     EXPECT_TRUE(strcmp(voltage_fault_reason_str(VOLTAGE_FAULT_REASON_CHARGE_STOP), "charge_stop") == 0);
@@ -1179,6 +1179,50 @@ static void test_adbms_spi_debug_rd48_pec_masks_and_clear(void)
     adbms6830_spi_debug_enable(&dev, true);
     EXPECT_TRUE(dev.spi_debug.enabled);
     EXPECT_TRUE(strcmp(adbms6830_spi_op_str(ADBMS6830_SPI_OP_PROBE), "probe") == 0);
+}
+
+static void test_adbms_spi_scope_activity(void)
+{
+    adbms6830_driver_t dev;
+    adbms6830_asic ics[1];
+    SPI_HandleTypeDef spi;
+    GPIO_TypeDef gpio_a;
+    GPIO_TypeDef gpio_b;
+    const uint8_t expected_pattern[8] =
+    {
+        0xAAu, 0x55u, 0xFFu, 0x00u, 0x69u, 0x96u, 0x12u, 0x34u
+    };
+
+    memset(&dev, 0, sizeof(dev));
+    memset(ics, 0, sizeof(ics));
+    memset(&spi, 0, sizeof(spi));
+    memset(&gpio_a, 0, sizeof(gpio_a));
+    memset(&gpio_b, 0, sizeof(gpio_b));
+    unit_adbms_init_driver(&dev, ics, &spi, &gpio_a, &gpio_b, 1u);
+
+    dev.string = STRING_A;
+    EXPECT_TRUE(adbms6830_scope_activity(&dev, STRING_B, ADBMS6830_SCOPE_PATTERN, 3u) == HAL_OK);
+    EXPECT_TRUE(dev.string == STRING_A);
+    EXPECT_TRUE(dev.spi_debug.enabled);
+    EXPECT_TRUE(dev.spi_debug.last_op == ADBMS6830_SPI_OP_SCOPE);
+    EXPECT_TRUE(dev.spi_debug.last_string == STRING_B);
+    EXPECT_TRUE(dev.spi_debug.tx_count == 3u);
+    EXPECT_TRUE(unit_spi_tx_calls == 3u);
+    EXPECT_TRUE(unit_spi_last_tx_len == sizeof(expected_pattern));
+    EXPECT_TRUE(memcmp(unit_spi_last_tx, expected_pattern, sizeof(expected_pattern)) == 0);
+    EXPECT_TRUE(memcmp(dev.spi_debug.last_tx_preview, expected_pattern, sizeof(expected_pattern)) == 0);
+
+    unit_spi_reset();
+    adbms6830_spi_debug_clear(&dev);
+    EXPECT_TRUE(adbms6830_scope_activity(&dev, STRING_B, ADBMS6830_SCOPE_CMD, 2u) == HAL_OK);
+    EXPECT_TRUE(dev.string == STRING_A);
+    EXPECT_TRUE(unit_spi_tx_calls == 2u);
+    EXPECT_TRUE(dev.spi_debug.tx_count == 2u);
+    EXPECT_TRUE(dev.spi_debug.last_op == ADBMS6830_SPI_OP_SCOPE);
+    EXPECT_TRUE(dev.spi_debug.last_cmd[0] == RDCFGA[0]);
+    EXPECT_TRUE(dev.spi_debug.last_cmd[1] == RDCFGA[1]);
+
+    EXPECT_TRUE(adbms6830_scope_activity(&dev, STRING_B, ADBMS6830_SCOPE_READ, 0u) == HAL_ERROR);
 }
 
 static void test_adbms_spi_sid_status_and_counter_mismatch(void)
@@ -1486,6 +1530,7 @@ int main(void)
     run_test("voltage fault read failure/strings", test_voltage_fault_read_failure_precedence_and_strings);
     run_test("ADBMS SPI debug write/full-duplex", test_adbms_spi_debug_write_and_full_duplex_paths);
     run_test("ADBMS SPI rd48 PEC masks", test_adbms_spi_debug_rd48_pec_masks_and_clear);
+    run_test("ADBMS SPI scope activity", test_adbms_spi_scope_activity);
     run_test("ADBMS SPI SID/status/counter diagnostics", test_adbms_spi_sid_status_and_counter_mismatch);
     run_test("ADBMS SPI cold wake and clear flags", test_adbms_spi_coldwake_and_clear_flags);
     run_test("ADBMS PWM write packing", test_adbms_pwm_write_packing);

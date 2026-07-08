@@ -20,6 +20,7 @@ override normal safety gating.
 | `bringup ready` | BMS_OK release review | Would the normal safety gates allow release? This command does not run `bmsok release`. |
 | `bringup snapshot` | Any phase | Compact state/fault snapshot for logs. |
 | `bringup evidence` | Any phase | List of CLI outputs and bench artifacts to capture before changing phase. |
+| `balance inhibit` | Resistor-ladder/bench | Clears balance PWM/DCC and blocks automatic balancing until `balance release`. |
 
 ## First Board-Only Flow
 
@@ -30,6 +31,8 @@ an accumulator.
 status
 bringup board
 bmsok status
+balance status
+balance inhibit
 fault
 ```
 
@@ -38,6 +41,7 @@ Expected:
 ```text
 BMS_OK remains 0
 output_inhibit remains 1 in AMS_HW_BRINGUP builds
+balance_inhibit remains 1 in AMS_HW_BRINGUP builds
 spi6=PASS
 voltage/temp may be not_ready without cells
 current_zero=PASS if the DHAB sensor is LV-powered and sitting at mid-scale
@@ -48,6 +52,16 @@ warning is acceptable for a board-only harness that omits the current sensor
 excitation; it is not acceptable if the DHAB is powered and should be reporting
 mid-scale zero current.
 
+Current-sense ADC mapping, rechecked from nets/connectors and Cube config:
+
+| Signal | AMS input connector | MCU breakout input connector | STM32 pin | Cube/HAL ADC path | Firmware use |
+|---|---:|---:|---|---|---|
+| `C_SENSE_L_MCU` / `C_SNS_L` | `J4 pin 6` | `J601 pin 6` / `ADC2` | `PC0` | `ADC2_IN10` / `ADC_CHANNEL_10` | DHAB 50 A channel |
+| `C_SENSE_H_MCU` / `C_SNS_H` | `J4 pin 2` | `J601 pin 2` / `ADC1` | `PA3` | `ADC1_IN3` / `ADC_CHANNEL_3` | DHAB 800 A channel |
+
+Use `current` during board bring-up. It prints this map before the raw ADC
+counts so UART logs show which physical ADC path was being interpreted.
+
 ## ADBMS6830 / SMB Flow
 
 The old firmware state was reportedly not communicating, so this is the first
@@ -56,6 +70,12 @@ real proof point after flashing the fixes.
 ```text
 spi clear
 spi enable
+balance inhibit
+spi pins
+spi cspins both 10
+spi cs b pulse 10
+spi preset normal
+spi scope
 spi coldwake
 spi probea
 spi probeb
@@ -63,6 +83,29 @@ spi sid
 spi stat
 spi cfgchk
 bringup adbms6830
+```
+
+Use `spi pins; spi cspins both 10; spi cs b pulse 10` first when the goal is
+pin diagnosis. `spi pins` prints the compiled GPIO mapping. `spi cspins both
+10` pulses PE4 and PF4 as separate candidate CS_B pins so the schematic-note
+conflict can be settled on a scope. `spi cs b pulse 10` then pulses the actual
+runtime CS_B path used by the ADBMS driver. After the CS_B pin is proven, use
+`spi preset normal; spi scope` for hardware diagnosis rather than firmware
+diagnosis. It creates repeatable CS_B/SPI6 traffic using the real RDCFGA command
+and readback clocks, then prints the expected MCU probe pins. If MISO is stuck,
+run `spi preset cmd; spi scope` to prove the
+MCU-to-ADBMS6822 side without depending on a response. Use
+`spi preset pattern; spi scope` only as a signal-path check; it transmits a
+visible `AA 55 FF 00 69 96 12 34` pattern, not a valid ADBMS transaction.
+`spi toggle` cycles normal -> command-only -> pattern -> CS_A readback.
+
+Candidate pin helper:
+
+```text
+spi cspins alt 10   alternates PE4 then PF4
+spi cspins both 10  pulses PE4 block, then PF4 block
+spi cspins pe4 10   pulses PE4 only
+spi cspins pf4 10   pulses PF4 only
 ```
 
 Key interpretations:

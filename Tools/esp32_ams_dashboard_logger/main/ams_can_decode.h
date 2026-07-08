@@ -29,6 +29,7 @@
 #define AMS_LOGGER_CAN_ID_6830_LINK       0x698u
 #define AMS_LOGGER_CAN_ID_6830_COUNTERS   0x699u
 #define AMS_LOGGER_CAN_ID_2950_LINK       0x69Au
+#define AMS_LOGGER_CAN_ID_TASK_HEALTH     0x69Bu
 
 #define AMS_LOGGER_CAN_ID_CELL_DETAIL     0x6A0u
 #define AMS_LOGGER_CAN_ID_TEMP_DETAIL     0x6A1u
@@ -128,6 +129,12 @@ typedef struct
     uint16_t adbms2950_pec_fail_mask;
     uint8_t adbms2950_debug_enabled;
     uint8_t adbms2950_ic_count;
+
+    uint16_t heartbeat_stale_mask;
+    uint16_t heartbeat_seen_mask;
+    uint16_t heartbeat_safety_stale_mask;
+    uint8_t task_health_flags;
+    uint8_t logger_heartbeat_count;
 
     uint16_t cell_mv[AMS_DASH_SEGMENTS][AMS_DASH_CELLS_PER_SEG];
     int16_t temp_dC[AMS_DASH_SEGMENTS][AMS_DASH_TEMPS_PER_SEG];

@@ -57,7 +57,7 @@ WARN := \
 CFLAGS_COMMON := -std=c11 -g -O0 $(WARN) $(COMMON_DEFS) $(INC)
 LDLIBS := -lm
 
-.PHONY: help check-root compile unit test system-sil bringup-test ci asan ubsan analyze clang-analyze clean list make-build-dir
+.PHONY: help check-root compile unit test system-sil bringup-test hil-adbms-test stress ci asan ubsan analyze clang-analyze clean list make-build-dir
 
 help:
 	@echo "DER26 AMS host test harness"
@@ -67,6 +67,8 @@ help:
 	@echo "  make test          Build and run comprehensive host tests"
 	@echo "  make system-sil    Alias for comprehensive system-level SIL/injection tests"
 	@echo "  make bringup-test  Run comprehensive tests with AMS_HW_BRINGUP=1"
+	@echo "  make hil-adbms-test Run focused CAN-fed ADBMS replacement tests"
+	@echo "  make stress        Run comprehensive SIL with extended seeded fuzz cycles"
 	@echo "  make ci            Run unit, comprehensive, and analyzer targets"
 	@echo "  make asan          Build and run with AddressSanitizer + UBSan"
 	@echo "  make ubsan         Build and run with UBSan only"
@@ -108,6 +110,12 @@ system-sil: test
 
 bringup-test: CFLAGS_COMMON += -DAMS_HW_BRINGUP=1
 bringup-test: test
+
+hil-adbms-test: CFLAGS_COMMON += -DAMS_HIL_REPLACE_ADBMS=1 -DAMS_HOST_ONLY_HIL_ADBMS_TEST=1
+hil-adbms-test: test
+
+stress: CFLAGS_COMMON += -DAMS_HOST_LONG_FUZZ_CYCLES=50000u -DAMS_HOST_CONCURRENT_FUZZ_CYCLES=12000u
+stress: test
 
 # Strongest local run: catches many memory and undefined-behavior bugs in host-exercised paths.
 asan: check-root $(BUILD_DIR)

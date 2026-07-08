@@ -78,6 +78,40 @@ static void canbus_parse_hil_frame(const CAN_RxHeaderTypeDef *rx_header, const u
             }
             break;
 
+        case AMS_HIL_CAN_ID_CELL_SAMPLE:
+            if (rx_header->DLC >= 8U)
+            {
+                uint16_t cell_mv[3] = {
+                    be_u16(&rx_data[2]),
+                    be_u16(&rx_data[4]),
+                    be_u16(&rx_data[6])
+                };
+
+                (void)accumulator_hil_ingest_cell_triplet(&app.acc,
+                                                          rx_data[0],
+                                                          rx_data[1],
+                                                          cell_mv,
+                                                          now);
+            }
+            break;
+
+        case AMS_HIL_CAN_ID_TEMP_SAMPLE:
+            if (rx_header->DLC >= 8U)
+            {
+                int16_t temp_deci_c[3] = {
+                    be_i16(&rx_data[2]),
+                    be_i16(&rx_data[4]),
+                    be_i16(&rx_data[6])
+                };
+
+                (void)accumulator_hil_ingest_temp_triplet(&app.acc,
+                                                          rx_data[0],
+                                                          rx_data[1],
+                                                          temp_deci_c,
+                                                          now);
+            }
+            break;
+
         default:
             break;
     }

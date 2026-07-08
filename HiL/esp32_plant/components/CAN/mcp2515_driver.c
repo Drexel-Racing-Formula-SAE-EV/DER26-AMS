@@ -2,7 +2,7 @@
  * mcp2515_driver.c
  *
  * Minimal MCP2515 Classic CAN driver for ESP-IDF.
- * Configured for 500 kbps with an 8 MHz MCP2515 crystal.
+ * Configured for 250 kbit/s with an 8 MHz MCP2515 crystal to match AMS CAN1.
  *
  * Uses standard 11-bit identifiers only. TX uses TXB0. RX polls RXB0/RXB1.
  */
@@ -218,12 +218,13 @@ esp_err_t mcp2515_init(void)
         return err;
     }
 
-    /* 500 kbps with 8 MHz crystal, 8 TQ/bit:
-     * Sync(1) + PRSEG(1) + PHSEG1(3) + PHSEG2(3).
+    /* 250 kbit/s with an 8 MHz crystal:
+     * BRP=0 => TQ=250 ns, 16 TQ/bit.
+     * Sync=1, PropSeg=5, PHSEG1=8, PHSEG2=2, sample point 87.5%.
      */
     MCP_RETURN_ON_ERROR(spi_write_byte(REG_CNF1, 0x00U), TAG, "CNF1 write failed");
-    MCP_RETURN_ON_ERROR(spi_write_byte(REG_CNF2, 0x90U), TAG, "CNF2 write failed");
-    MCP_RETURN_ON_ERROR(spi_write_byte(REG_CNF3, 0x02U), TAG, "CNF3 write failed");
+    MCP_RETURN_ON_ERROR(spi_write_byte(REG_CNF2, 0xBCU), TAG, "CNF2 write failed");
+    MCP_RETURN_ON_ERROR(spi_write_byte(REG_CNF3, 0x01U), TAG, "CNF3 write failed");
 
     /* Polling driver: no MCP2515 interrupt pin required. */
     MCP_RETURN_ON_ERROR(spi_write_byte(REG_CANINTE, 0x00U), TAG, "CANINTE write failed");
@@ -251,7 +252,7 @@ esp_err_t mcp2515_init(void)
         return err;
     }
 
-    ESP_LOGI(TAG, "MCP2515 ready: 500 kbps @ 8 MHz");
+    ESP_LOGI(TAG, "MCP2515 ready: 250 kbit/s @ 8 MHz");
     return ESP_OK;
 }
 

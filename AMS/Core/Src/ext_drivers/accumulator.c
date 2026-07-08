@@ -10,30 +10,7 @@
 #include <math.h>
 #include <string.h>
 
-#ifndef AMS_RENODE
-#define AMS_RENODE 0
-#endif
-
-#ifndef AMS_RENODE_FAKE_TEMP
-#define AMS_RENODE_FAKE_TEMP AMS_RENODE
-#endif
-
 static uint8_t sensor_num = 0;
-
-#if AMS_RENODE_FAKE_TEMP
-typedef struct
-{
-    bool initialized;
-    bool enabled;
-    bool hold_missing;
-    float temp_c[NSMBS][NTEMPS];
-    uint32_t missing_mask[NSMBS];
-    uint32_t invalid_mask[NSMBS];
-    uint32_t apply_count;
-} accumulator_temp_fake_model_t;
-
-static accumulator_temp_fake_model_t accumulator_temp_fake;
-#endif
 
 uint8_t accumulator_configured_smb_count(const accumulator_t *dev)
 {
@@ -44,294 +21,6 @@ uint8_t accumulator_configured_smb_count(const accumulator_t *dev)
 
     return (dev->smb.num_ics > NSMBS) ? (uint8_t)NSMBS : (uint8_t)dev->smb.num_ics;
 }
-
-#if AMS_RENODE_FAKE_TEMP
-static int16_t accumulator_temp_c_to_raw(float temp_c)
-{
-    const float a = 3.354016435e-3f;
-    const float b = 2.565235509e-4f;
-    float kelvin;
-    float ratio;
-    float resistance;
-    float voltage;
-    float raw;
-
-    if(!isfinite(temp_c) ||
-       (temp_c < ((float)ACCUMULATOR_TEMP_VALID_MIN_DECI_C / 10.0f)) ||
-       (temp_c > ((float)ACCUMULATOR_TEMP_VALID_MAX_DECI_C / 10.0f)))
-    {
-        return 0;
-    }
-
-    kelvin = temp_c + 273.15f;
-    if(kelvin <= 0.0f)
-    {
-        return 0;
-    }
-
-    ratio = (1.0f / kelvin) - a;
-    resistance = 10000.0f * expf(ratio / b);
-    if(!isfinite(resistance) || (resistance <= 0.0f))
-    {
-        return 0;
-    }
-
-    voltage = (5.0f * 10000.0f) / (resistance + 10000.0f);
-    raw = (voltage / 0.000150f) - 10000.0f;
-
-    if(!isfinite(raw) || (raw <= (float)INT16_MIN) || (raw >= (float)INT16_MAX))
-    {
-        return 0;
-    }
-
-    return (int16_t)lroundf(raw);
-}
-
-static void accumulator_temp_fake_ensure(void)
-{
-    if(accumulator_temp_fake.initialized)
-    {
-        return;
-    }
-
-    accumulator_temp_fake.initialized = true;
-    accumulator_temp_fake.enabled = true;
-    accumulator_temp_fake.hold_missing = false;
-    accumulator_temp_fake.apply_count = 0u;
-    memset(accumulator_temp_fake.missing_mask, 0, sizeof(accumulator_temp_fake.missing_mask));
-    memset(accumulator_temp_fake.invalid_mask, 0, sizeof(accumulator_temp_fake.invalid_mask));
-
-    for(uint8_t seg = 0u; seg < NSMBS; seg++)
-    {
-        for(uint8_t sensor = 0u; sensor < NTEMPS; sensor++)
-        {
-            accumulator_temp_fake.temp_c[seg][sensor] = 25.0f;
-        }
-    }
-}
-
-static void accumulator_temp_fake_apply(accumulator_t *dev)
-{
-    adbms6830_asic *smb_ics;
-    uint8_t ic_count;
-
-    accumulator_temp_fake_ensure();
-    if((dev == NULL) || !accumulator_temp_fake.enabled)
-    {
-        return;
-    }
-
-    smb_ics = (dev->smb.ics != NULL) ? dev->smb.ics : dev->smb_ics;
-    ic_count = accumulator_configured_smb_count(dev);
-    accumulator_temp_fake.apply_count++;
-
-    for(uint8_t seg = 0u; seg < NSMBS; seg++)
-    {
-        uint32_t updated_mask = 0u;
-
-        if((seg >= ic_count) || (seg >= ADBMS6830_MAX_TRACKED_ICS))
-        {
-            if(seg < ADBMS6830_MAX_TRACKED_ICS)
-            {
-                dev->smb.last_temp_updated_mask[seg] = 0u;
-            }
-            continue;
-        }
-
-        for(uint8_t sensor = 0u; sensor < NTEMPS; sensor++)
-        {
-            uint32_t bit = (uint32_t)(1UL << sensor);
-            bool missing = ((accumulator_temp_fake.missing_mask[seg] & bit) != 0u);
-            bool invalid = ((accumulator_temp_fake.invalid_mask[seg] & bit) != 0u);
-
-            if(missing)
-            {
-                continue;
-            }
-
-            smb_ics[seg].temp.raw[sensor] = invalid ? 0 : accumulator_temp_c_to_raw(accumulator_temp_fake.temp_c[seg][sensor]);
-            updated_mask |= bit;
-        }
-
-        dev->smb.last_temp_updated_mask[seg] = updated_mask;
-        if(!accumulator_temp_fake.hold_missing)
-        {
-            accumulator_temp_fake.missing_mask[seg] = 0u;
-        }
-    }
-}
-
-bool accumulator_temp_fake_enabled(void)
-{
-    accumulator_temp_fake_ensure();
-    return accumulator_temp_fake.enabled;
-}
-
-void accumulator_temp_fake_reset(accumulator_t *dev)
-{
-    accumulator_temp_fake.initialized = false;
-    accumulator_temp_fake_ensure();
-    accumulator_temp_fake_apply(dev);
-}
-
-int accumulator_temp_fake_set_all(accumulator_t *dev, float temp_c)
-{
-    accumulator_temp_fake_ensure();
-    if(accumulator_temp_c_to_raw(temp_c) == 0)
-    {
-        return -1;
-    }
-
-    for(uint8_t seg = 0u; seg < NSMBS; seg++)
-    {
-        for(uint8_t sensor = 0u; sensor < NTEMPS; sensor++)
-        {
-            accumulator_temp_fake.temp_c[seg][sensor] = temp_c;
-        }
-    }
-    accumulator_temp_fake.enabled = true;
-    accumulator_temp_fake_apply(dev);
-    return 0;
-}
-
-int accumulator_temp_fake_set_sensor(accumulator_t *dev, uint8_t seg, uint8_t sensor, float temp_c)
-{
-    accumulator_temp_fake_ensure();
-    if((seg >= NSMBS) || (sensor >= NTEMPS) || (accumulator_temp_c_to_raw(temp_c) == 0))
-    {
-        return -1;
-    }
-
-    accumulator_temp_fake.enabled = true;
-    accumulator_temp_fake.temp_c[seg][sensor] = temp_c;
-    accumulator_temp_fake.missing_mask[seg] &= ~((uint32_t)(1UL << sensor));
-    accumulator_temp_fake.invalid_mask[seg] &= ~((uint32_t)(1UL << sensor));
-    accumulator_temp_fake_apply(dev);
-    return 0;
-}
-
-void accumulator_temp_fake_set_missing_mask(accumulator_t *dev, uint8_t seg, uint32_t mask)
-{
-    accumulator_temp_fake_ensure();
-    if(seg < NSMBS)
-    {
-        accumulator_temp_fake.enabled = true;
-        accumulator_temp_fake.missing_mask[seg] = mask & ((1UL << NTEMPS) - 1UL);
-        accumulator_temp_fake_apply(dev);
-    }
-}
-
-void accumulator_temp_fake_set_invalid_mask(accumulator_t *dev, uint8_t seg, uint32_t mask)
-{
-    accumulator_temp_fake_ensure();
-    if(seg < NSMBS)
-    {
-        accumulator_temp_fake.enabled = true;
-        accumulator_temp_fake.invalid_mask[seg] = mask & ((1UL << NTEMPS) - 1UL);
-        accumulator_temp_fake_apply(dev);
-    }
-}
-
-void accumulator_temp_fake_set_hold_missing(accumulator_t *dev, bool hold_missing)
-{
-    accumulator_temp_fake_ensure();
-    accumulator_temp_fake.enabled = true;
-    accumulator_temp_fake.hold_missing = hold_missing;
-    accumulator_temp_fake_apply(dev);
-}
-
-accumulator_temp_fake_status_t accumulator_temp_fake_get_status(const accumulator_t *dev)
-{
-    accumulator_temp_fake_status_t status = {0};
-    float min_temp = 1000.0f;
-    float max_temp = -1000.0f;
-
-    (void)dev;
-    accumulator_temp_fake_ensure();
-    status.enabled = accumulator_temp_fake.enabled;
-    status.initialized = accumulator_temp_fake.initialized;
-    status.hold_missing = accumulator_temp_fake.hold_missing;
-    status.apply_count = accumulator_temp_fake.apply_count;
-
-    for(uint8_t seg = 0u; seg < NSMBS; seg++)
-    {
-        status.missing_mask[seg] = accumulator_temp_fake.missing_mask[seg];
-        status.invalid_mask[seg] = accumulator_temp_fake.invalid_mask[seg];
-        for(uint8_t sensor = 0u; sensor < NTEMPS; sensor++)
-        {
-            float temp = accumulator_temp_fake.temp_c[seg][sensor];
-            if(temp < min_temp)
-            {
-                min_temp = temp;
-                status.min_seg = seg;
-                status.min_sensor = sensor;
-            }
-            if(temp > max_temp)
-            {
-                max_temp = temp;
-                status.max_seg = seg;
-                status.max_sensor = sensor;
-            }
-        }
-    }
-
-    status.min_temp_c = min_temp;
-    status.max_temp_c = max_temp;
-    return status;
-}
-#else
-bool accumulator_temp_fake_enabled(void)
-{
-    return false;
-}
-
-void accumulator_temp_fake_reset(accumulator_t *dev)
-{
-    (void)dev;
-}
-
-int accumulator_temp_fake_set_all(accumulator_t *dev, float temp_c)
-{
-    (void)dev;
-    (void)temp_c;
-    return -1;
-}
-
-int accumulator_temp_fake_set_sensor(accumulator_t *dev, uint8_t seg, uint8_t sensor, float temp_c)
-{
-    (void)dev;
-    (void)seg;
-    (void)sensor;
-    (void)temp_c;
-    return -1;
-}
-
-void accumulator_temp_fake_set_missing_mask(accumulator_t *dev, uint8_t seg, uint32_t mask)
-{
-    (void)dev;
-    (void)seg;
-    (void)mask;
-}
-
-void accumulator_temp_fake_set_invalid_mask(accumulator_t *dev, uint8_t seg, uint32_t mask)
-{
-    (void)dev;
-    (void)seg;
-    (void)mask;
-}
-
-void accumulator_temp_fake_set_hold_missing(accumulator_t *dev, bool hold_missing)
-{
-    (void)dev;
-    (void)hold_missing;
-}
-
-accumulator_temp_fake_status_t accumulator_temp_fake_get_status(const accumulator_t *dev)
-{
-    (void)dev;
-    return (accumulator_temp_fake_status_t){0};
-}
-#endif
 
 void smb_read_voltage(adbms6830_driver_t* dev);
 void smb_read_temp(adbms6830_driver_t* dev);
@@ -432,6 +121,10 @@ void accumulator_init(accumulator_t *dev,
 	memset(dev->cell_voltage_valid, 0, sizeof(dev->cell_voltage_valid));
 	memset(dev->cell_voltage_last_update_ms, 0, sizeof(dev->cell_voltage_last_update_ms));
 	memset(dev->cell_voltage_consecutive_misses, 0, sizeof(dev->cell_voltage_consecutive_misses));
+	memset(dev->hil_cell_last_update_ms, 0, sizeof(dev->hil_cell_last_update_ms));
+	memset(dev->hil_temp_last_update_ms, 0, sizeof(dev->hil_temp_last_update_ms));
+	memset(dev->hil_cell_seen_mask, 0, sizeof(dev->hil_cell_seen_mask));
+	memset(dev->hil_temp_seen_mask, 0, sizeof(dev->hil_temp_seen_mask));
 	memset(dev->updated_voltage_mask, 0, sizeof(dev->updated_voltage_mask));
 	memset(dev->usable_voltage_mask, 0, sizeof(dev->usable_voltage_mask));
 	memset(dev->pec_fail_voltage_mask, 0, sizeof(dev->pec_fail_voltage_mask));
@@ -452,9 +145,6 @@ void accumulator_init(accumulator_t *dev,
 #endif
 
 	adBms6830_init(&dev->smb, NSMBS, dev->smb_ics, hspi, cs_port_a, cs_port_b, cs_pin_a, cs_pin_b, htim);
-#if AMS_RENODE
-	dev->smb.spi_debug.enabled = true;
-#endif
 }
 
 int accumulator_read_volt(accumulator_t *dev)
@@ -699,6 +389,176 @@ static uint16_t accumulator_code_to_mv(int16_t code)
     }
 
     return (uint16_t)((volts * 1000.0f) + 0.5f);
+}
+
+static int16_t accumulator_mv_to_code(uint16_t mv)
+{
+    float volts = (float)mv / 1000.0f;
+    float code = (volts / 0.000150f) - 10000.0f;
+
+    if(!isfinite(code))
+    {
+        return 0;
+    }
+    if(code >= (float)INT16_MAX)
+    {
+        return INT16_MAX;
+    }
+    if(code <= (float)INT16_MIN)
+    {
+        return INT16_MIN;
+    }
+
+    return (int16_t)lroundf(code);
+}
+
+static int16_t accumulator_temp_deci_c_to_raw(int16_t deci_c)
+{
+    float temp_c = (float)deci_c / 10.0f;
+    float temp_k = temp_c + 273.15f;
+
+    if((temp_k <= 0.0f) || !isfinite(temp_k))
+    {
+        return 0;
+    }
+
+    const float a = 3.354016435e-3f;
+    const float b = 2.565235509e-4f;
+    float r = 10000.0f * expf(((1.0f / temp_k) - a) / b);
+
+    if((r <= 0.0f) || !isfinite(r))
+    {
+        return 0;
+    }
+
+    float voltage = 5.0f * 10000.0f / (r + 10000.0f);
+    float raw = (voltage / 0.000150f) - 10000.0f;
+
+    if(!isfinite(raw))
+    {
+        return 0;
+    }
+    if(raw >= (float)INT16_MAX)
+    {
+        return INT16_MAX;
+    }
+    if(raw <= (float)INT16_MIN)
+    {
+        return INT16_MIN;
+    }
+
+    return (int16_t)lroundf(raw);
+}
+
+int accumulator_hil_ingest_cell_triplet(accumulator_t *dev,
+                                        uint8_t seg,
+                                        uint8_t first_cell,
+                                        const uint16_t cell_mv[3],
+                                        uint32_t now_ms)
+{
+    if((dev == NULL) || (cell_mv == NULL) || (seg >= NSMBS) || (first_cell >= NCELLS))
+    {
+        return -1;
+    }
+
+    adbms6830_asic *smb_ics = (dev->smb.ics != NULL) ? dev->smb.ics : dev->smb_ics;
+
+    for(uint8_t n = 0u; n < 3u; n++)
+    {
+        uint8_t cell = (uint8_t)(first_cell + n);
+        if(cell >= NCELLS)
+        {
+            break;
+        }
+
+        uint16_t bit = (uint16_t)(1u << cell);
+        smb_ics[seg].cell.c_codes[cell] = accumulator_mv_to_code(cell_mv[n]);
+        dev->hil_cell_last_update_ms[seg][cell] = now_ms;
+        dev->hil_cell_seen_mask[seg] |= bit;
+        dev->smb.last_cell_updated_mask[seg] |= bit;
+        dev->smb.last_cell_pec_mask[seg] &= (uint16_t)~bit;
+    }
+
+    return 0;
+}
+
+int accumulator_hil_ingest_temp_triplet(accumulator_t *dev,
+                                        uint8_t seg,
+                                        uint8_t first_sensor,
+                                        const int16_t temp_deci_c[3],
+                                        uint32_t now_ms)
+{
+    if((dev == NULL) || (temp_deci_c == NULL) || (seg >= NSMBS) || (first_sensor >= NTEMPS))
+    {
+        return -1;
+    }
+
+    adbms6830_asic *smb_ics = (dev->smb.ics != NULL) ? dev->smb.ics : dev->smb_ics;
+
+    for(uint8_t n = 0u; n < 3u; n++)
+    {
+        uint8_t sensor = (uint8_t)(first_sensor + n);
+        if(sensor >= NTEMPS)
+        {
+            break;
+        }
+
+        uint32_t bit = (uint32_t)(1UL << sensor);
+        smb_ics[seg].temp.raw[sensor] = accumulator_temp_deci_c_to_raw(temp_deci_c[n]);
+        dev->hil_temp_last_update_ms[seg][sensor] = now_ms;
+        dev->hil_temp_seen_mask[seg] |= bit;
+        dev->smb.last_temp_updated_mask[seg] |= bit;
+    }
+
+    return 0;
+}
+
+void accumulator_hil_refresh_update_masks(accumulator_t *dev,
+                                          uint32_t now_ms,
+                                          uint32_t timeout_ms)
+{
+    if(dev == NULL)
+    {
+        return;
+    }
+
+    for(uint8_t seg = 0u; seg < NSMBS; seg++)
+    {
+        uint16_t cell_mask = 0u;
+        uint32_t temp_mask = 0u;
+
+        for(uint8_t cell = 0u; cell < NCELLS; cell++)
+        {
+            uint16_t bit = (uint16_t)(1u << cell);
+            if((dev->hil_cell_seen_mask[seg] & bit) != 0u)
+            {
+                uint32_t age_ms = (now_ms >= dev->hil_cell_last_update_ms[seg][cell]) ?
+                                  (now_ms - dev->hil_cell_last_update_ms[seg][cell]) : 0u;
+                if(age_ms <= timeout_ms)
+                {
+                    cell_mask |= bit;
+                }
+            }
+        }
+
+        for(uint8_t sensor = 0u; sensor < NTEMPS; sensor++)
+        {
+            uint32_t bit = (uint32_t)(1UL << sensor);
+            if((dev->hil_temp_seen_mask[seg] & bit) != 0u)
+            {
+                uint32_t age_ms = (now_ms >= dev->hil_temp_last_update_ms[seg][sensor]) ?
+                                  (now_ms - dev->hil_temp_last_update_ms[seg][sensor]) : 0u;
+                if(age_ms <= timeout_ms)
+                {
+                    temp_mask |= bit;
+                }
+            }
+        }
+
+        dev->smb.last_cell_updated_mask[seg] = cell_mask;
+        dev->smb.last_cell_pec_mask[seg] = 0u;
+        dev->smb.last_temp_updated_mask[seg] = temp_mask;
+    }
 }
 
 static uint16_t accumulator_expected_cell_count(const accumulator_t *dev)
@@ -979,10 +839,6 @@ void accumulator_update_temp_stats_at(accumulator_t *dev, uint32_t now_ms)
     {
         return;
     }
-
-#if AMS_RENODE_FAKE_TEMP
-    accumulator_temp_fake_apply(dev);
-#endif
 
 	uint32_t now = now_ms;
 	uint16_t expected_count = (uint16_t)(NSMBS * NTEMPS);

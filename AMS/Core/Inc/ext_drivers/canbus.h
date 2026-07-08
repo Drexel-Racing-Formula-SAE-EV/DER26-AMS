@@ -13,7 +13,6 @@
 #ifndef __CANBUS_H_
 #define __CANBUS_H_
 
-#include <stdbool.h>
 #include "cmsis_os.h"
 #include "stm32f7xx_hal.h"
 
@@ -33,25 +32,6 @@ typedef struct {
     canbus_packet_t rx_packet;
 } canbus_device_t;
 
-typedef struct {
-    bool enabled;
-    uint32_t total_tx;
-    uint32_t std_tx;
-    uint32_t ext_tx;
-    uint32_t ecu_tx;
-    uint32_t estimator_tx;
-    uint32_t logger_tx;
-    uint32_t charger_tx;
-    uint32_t other_tx;
-    uint32_t last_id;
-    uint32_t last_ide;
-    uint8_t last_payload[DATALEN];
-    uint32_t logger_id_count[24];
-} canbus_capture_status_t;
-
 void canbus_device_init(canbus_device_t *dev, CAN_HandleTypeDef *hcan);
-bool canbus_capture_enabled(void);
-void canbus_capture_clear(void);
-canbus_capture_status_t canbus_capture_get_status(void);
 
 #endif

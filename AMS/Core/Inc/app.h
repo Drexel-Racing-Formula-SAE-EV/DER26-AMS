@@ -33,29 +33,15 @@
 #define AMS_HW_BRINGUP_BMS_OK_RELEASED_DEFAULT 0
 #endif
 
-#ifndef AMS_RENODE
-#define AMS_RENODE 0
+#ifndef AMS_HW_BRINGUP_BALANCE_INHIBIT_DEFAULT
+#define AMS_HW_BRINGUP_BALANCE_INHIBIT_DEFAULT AMS_HW_BRINGUP
 #endif
 
-#ifndef AMS_RENODE_FAKE_ADBMS
-#define AMS_RENODE_FAKE_ADBMS AMS_RENODE
+#ifndef AMS_HIL_REPLACE_ADBMS
+#define AMS_HIL_REPLACE_ADBMS 0
 #endif
 
-#ifndef AMS_RENODE_FAKE_CURRENT
-#define AMS_RENODE_FAKE_CURRENT AMS_RENODE
-#endif
-
-#ifndef AMS_RENODE_FAKE_CHARGER
-#define AMS_RENODE_FAKE_CHARGER AMS_RENODE
-#endif
-
-#ifndef AMS_RENODE_FAKE_TEMP
-#define AMS_RENODE_FAKE_TEMP AMS_RENODE
-#endif
-
-#ifndef AMS_RENODE_CAN_CAPTURE
-#define AMS_RENODE_CAN_CAPTURE AMS_RENODE
-#endif
+#define AMS_HIL_ADBMS_IMAGE_TIMEOUT_MS 500u
 
 #define ERR_FREQ 20
 #define CLI_FREQ 20
@@ -116,14 +102,10 @@ typedef enum
 } ams_heartbeat_id_t;
 
 #define AMS_HEARTBEAT_BIT(id) ((uint16_t)(1u << (uint16_t)(id)))
-#if AMS_RENODE
-#define AMS_HEARTBEAT_SAFETY_MASK 0u
-#else
 #define AMS_HEARTBEAT_SAFETY_MASK (AMS_HEARTBEAT_BIT(AMS_HEARTBEAT_ADBMS) | \
                                    AMS_HEARTBEAT_BIT(AMS_HEARTBEAT_CURRENT) | \
                                    AMS_HEARTBEAT_BIT(AMS_HEARTBEAT_TEMP) | \
                                    AMS_HEARTBEAT_BIT(AMS_HEARTBEAT_CAN))
-#endif
 #define AMS_HEARTBEAT_LOGGER_MASK AMS_HEARTBEAT_BIT(AMS_HEARTBEAT_LOGGER)
 
 typedef struct
@@ -232,6 +214,7 @@ typedef struct
     bool bms_state;
     bool bms_output_inhibit;
     uint32_t bms_output_block_count;
+    bool balance_inhibit;
 
 	state_t state;
 

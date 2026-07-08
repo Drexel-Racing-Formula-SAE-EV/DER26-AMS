@@ -12,14 +12,6 @@
 
 #include "ext_drivers/adbms6830_functions.h"
 
-#ifndef AMS_RENODE
-#define AMS_RENODE 0
-#endif
-
-#ifndef AMS_RENODE_FAKE_ADBMS
-#define AMS_RENODE_FAKE_ADBMS AMS_RENODE
-#endif
-
 unsigned char shared_buf[BUFSZ] = {0};
 uint8_t write_buf[BUFSZ] = {0};
 static uint8_t spi_txrx_tx_buf[BUFSZ] = {0};
@@ -204,9 +196,6 @@ static HAL_StatusTypeDef adbms6830_wr48_checked(adbms6830_driver_t* dev, uint8_t
 static HAL_StatusTypeDef adbms6830_rd48_checked(adbms6830_driver_t* dev, uint8_t cmd[CMDSZ], uint8_t* rx_data);
 static void adbms6830_spi_debug_note_tx(adbms6830_driver_t *dev, adbms6830_spi_op_t op, const uint8_t *cmd, const uint8_t *tx, uint16_t tx_len, uint16_t rx_len);
 static void adbms6830_spi_debug_note_rx(adbms6830_driver_t *dev, const uint8_t *rx, uint16_t rx_len, HAL_StatusTypeDef status);
-#if AMS_RENODE_FAKE_ADBMS
-static HAL_StatusTypeDef adbms6830_fake_rd48(adbms6830_driver_t *dev, const uint8_t cmd[CMDSZ], uint8_t *rx_data, uint16_t rx_len);
-#endif
 static void adbms6830_note_counter_reset(adbms6830_driver_t *dev);
 static void adbms6830_note_counter_increment(adbms6830_driver_t *dev);
 static void adbms6830_note_observed_counter(adbms6830_driver_t *dev, uint8_t current_ic, uint8_t observed_counter, bool pec_ok);
@@ -233,454 +222,6 @@ static uint16_t adbms6830_min_u16(uint16_t a, uint16_t b)
 {
     return (a < b) ? a : b;
 }
-
-#if AMS_RENODE_FAKE_ADBMS
-typedef struct
-{
-    bool initialized;
-    uint8_t last_ic_count;
-    uint16_t cell_mv[ADBMS6830_MAX_TRACKED_ICS][15u];
-    int16_t aux_raw[ADBMS6830_MAX_TRACKED_ICS][3u];
-    uint16_t pec_fail_mask;
-    uint16_t missing_mask;
-    uint16_t counter_fault_mask;
-} adbms6830_fake_model_t;
-
-static adbms6830_fake_model_t adbms6830_fake_model;
-
-static uint8_t adbms6830_fake_clamp_ic_count(int num_ics)
-{
-    if(num_ics <= 0)
-    {
-        return 0u;
-    }
-    if(num_ics > (int)ADBMS6830_MAX_TRACKED_ICS)
-    {
-        return ADBMS6830_MAX_TRACKED_ICS;
-    }
-    return (uint8_t)num_ics;
-}
-
-static void adbms6830_fake_init_defaults(void)
-{
-    if(adbms6830_fake_model.initialized)
-    {
-        return;
-    }
-
-    for(uint8_t ic = 0u; ic < ADBMS6830_MAX_TRACKED_ICS; ic++)
-    {
-        for(uint8_t cell = 0u; cell < 15u; cell++)
-        {
-            adbms6830_fake_model.cell_mv[ic][cell] =
-                (uint16_t)(3700u + ((uint16_t)ic * 3u) + ((uint16_t)cell % 5u));
-        }
-        for(uint8_t ch = 0u; ch < 3u; ch++)
-        {
-            adbms6830_fake_model.aux_raw[ic][ch] =
-                (int16_t)(7000 + ((int16_t)ic * 20) + ((int16_t)ch * 50));
-        }
-    }
-
-    adbms6830_fake_model.pec_fail_mask = 0u;
-    adbms6830_fake_model.missing_mask = 0u;
-    adbms6830_fake_model.counter_fault_mask = 0u;
-    adbms6830_fake_model.initialized = true;
-}
-
-static bool adbms6830_fake_cmd_eq(const uint8_t cmd[CMDSZ], const uint8_t ref[CMDSZ])
-{
-    return (cmd != NULL) && (ref != NULL) && (cmd[0] == ref[0]) && (cmd[1] == ref[1]);
-}
-
-static int16_t adbms6830_fake_cell_code_mv(uint16_t mv)
-{
-    int32_t code = (((int32_t)mv * 1000L) + 75L) / 150L;
-    code -= 10000L;
-
-    if(code > INT16_MAX)
-    {
-        return INT16_MAX;
-    }
-    if(code < INT16_MIN)
-    {
-        return INT16_MIN;
-    }
-    return (int16_t)code;
-}
-
-static uint16_t adbms6830_fake_cell_mv(uint8_t ic, uint8_t cell)
-{
-    adbms6830_fake_init_defaults();
-
-    if((ic >= ADBMS6830_MAX_TRACKED_ICS) || (cell >= 15u))
-    {
-        return 0u;
-    }
-
-    return adbms6830_fake_model.cell_mv[ic][cell];
-}
-
-static int16_t adbms6830_fake_aux_raw(uint8_t ic, uint8_t channel)
-{
-    adbms6830_fake_init_defaults();
-
-    if((ic >= ADBMS6830_MAX_TRACKED_ICS) || (channel >= 3u))
-    {
-        return INT16_MIN;
-    }
-
-    return adbms6830_fake_model.aux_raw[ic][channel];
-}
-
-static uint8_t adbms6830_fake_cmd_counter(const adbms6830_driver_t *dev, uint8_t ic)
-{
-    uint16_t bit = (uint16_t)(1u << ic);
-
-    if((dev != NULL) &&
-       (ic < ADBMS6830_MAX_TRACKED_ICS) &&
-       ((dev->spi_debug.cmd_counter_expected_mask & bit) != 0u))
-    {
-        return dev->spi_debug.expected_cmd_counter[ic] & 0x3Fu;
-    }
-
-    return 0u;
-}
-
-static void adbms6830_fake_finish_packet(uint8_t *packet, uint8_t cmd_counter)
-{
-    uint16_t pec;
-
-    packet[RX_DATA - 2u] = (uint8_t)((cmd_counter & 0x3Fu) << 2u);
-    pec = pec10_calc(1u, RX_DATA - 2u, packet);
-    packet[RX_DATA - 2u] |= (uint8_t)((pec >> 8u) & 0x03u);
-    packet[RX_DATA - 1u] = (uint8_t)pec;
-}
-
-static void adbms6830_fake_pack_cell_group(uint8_t *payload,
-                                           uint8_t ic,
-                                           uint8_t first_cell)
-{
-    for(uint8_t i = 0u; i < 3u; i++)
-    {
-        uint8_t cell = (uint8_t)(first_cell + i);
-        int16_t code = (cell < 15u) ?
-                       adbms6830_fake_cell_code_mv(adbms6830_fake_cell_mv(ic, cell)) :
-                       INT16_MIN;
-
-        payload[(uint8_t)(i * 2u)] = (uint8_t)((uint16_t)code & 0xFFu);
-        payload[(uint8_t)(i * 2u + 1u)] = (uint8_t)(((uint16_t)code >> 8u) & 0xFFu);
-    }
-}
-
-static void adbms6830_fake_fill_payload(adbms6830_driver_t *dev,
-                                        const uint8_t cmd[CMDSZ],
-                                        uint8_t ic,
-                                        uint8_t *payload)
-{
-    memset(payload, 0, TX_DATA);
-
-    if(adbms6830_fake_cmd_eq(cmd, RDCFGA))
-    {
-        if((dev != NULL) && (dev->ics != NULL))
-        {
-            memcpy(payload, dev->ics[ic].configa.tx_data, TX_DATA);
-        }
-    }
-    else if(adbms6830_fake_cmd_eq(cmd, RDCFGB))
-    {
-        if((dev != NULL) && (dev->ics != NULL))
-        {
-            memcpy(payload, dev->ics[ic].configb.tx_data, TX_DATA);
-        }
-    }
-    else if(adbms6830_fake_cmd_eq(cmd, RDPWM1))
-    {
-        if((dev != NULL) && (dev->ics != NULL))
-        {
-            memcpy(payload, dev->ics[ic].pwma.tx_data, TX_DATA);
-        }
-    }
-    else if(adbms6830_fake_cmd_eq(cmd, RDPWM2))
-    {
-        if((dev != NULL) && (dev->ics != NULL))
-        {
-            memcpy(payload, dev->ics[ic].pwmb.tx_data, TX_DATA);
-        }
-    }
-    else if(adbms6830_fake_cmd_eq(cmd, RDCVA) || adbms6830_fake_cmd_eq(cmd, RDACA) ||
-            adbms6830_fake_cmd_eq(cmd, RDFCA) || adbms6830_fake_cmd_eq(cmd, RDSVA))
-    {
-        adbms6830_fake_pack_cell_group(payload, ic, 0u);
-    }
-    else if(adbms6830_fake_cmd_eq(cmd, RDCVB) || adbms6830_fake_cmd_eq(cmd, RDACB) ||
-            adbms6830_fake_cmd_eq(cmd, RDFCB) || adbms6830_fake_cmd_eq(cmd, RDSVB))
-    {
-        adbms6830_fake_pack_cell_group(payload, ic, 3u);
-    }
-    else if(adbms6830_fake_cmd_eq(cmd, RDCVC) || adbms6830_fake_cmd_eq(cmd, RDACC) ||
-            adbms6830_fake_cmd_eq(cmd, RDFCC) || adbms6830_fake_cmd_eq(cmd, RDSVC))
-    {
-        adbms6830_fake_pack_cell_group(payload, ic, 6u);
-    }
-    else if(adbms6830_fake_cmd_eq(cmd, RDCVD) || adbms6830_fake_cmd_eq(cmd, RDACD) ||
-            adbms6830_fake_cmd_eq(cmd, RDFCD) || adbms6830_fake_cmd_eq(cmd, RDSVD))
-    {
-        adbms6830_fake_pack_cell_group(payload, ic, 9u);
-    }
-    else if(adbms6830_fake_cmd_eq(cmd, RDCVE) || adbms6830_fake_cmd_eq(cmd, RDACE) ||
-            adbms6830_fake_cmd_eq(cmd, RDFCE) || adbms6830_fake_cmd_eq(cmd, RDSVE))
-    {
-        adbms6830_fake_pack_cell_group(payload, ic, 12u);
-    }
-    else if(adbms6830_fake_cmd_eq(cmd, RDCVF) || adbms6830_fake_cmd_eq(cmd, RDACF) ||
-            adbms6830_fake_cmd_eq(cmd, RDFCF) || adbms6830_fake_cmd_eq(cmd, RDSVF))
-    {
-        adbms6830_fake_pack_cell_group(payload, ic, 15u);
-    }
-    else if(adbms6830_fake_cmd_eq(cmd, RDAUXA))
-    {
-        for(uint8_t ch = 0u; ch < 3u; ch++)
-        {
-            int16_t raw = adbms6830_fake_aux_raw(ic, ch);
-            payload[(uint8_t)(ch * 2u)] = (uint8_t)((uint16_t)raw & 0xFFu);
-            payload[(uint8_t)(ch * 2u + 1u)] = (uint8_t)(((uint16_t)raw >> 8u) & 0xFFu);
-        }
-    }
-    else if(adbms6830_fake_cmd_eq(cmd, RDSID))
-    {
-        payload[0] = 0x68u;
-        payload[1] = 0x30u;
-        payload[2] = (uint8_t)(0x10u + ic);
-        payload[3] = 0x26u;
-        payload[4] = 0x00u;
-        payload[5] = 0x01u;
-    }
-    else if(adbms6830_fake_cmd_eq(cmd, RDSTATC) || adbms6830_fake_cmd_eq(cmd, RDSTATCERR))
-    {
-        payload[2] = (uint8_t)(ic & 0x1Fu);
-    }
-    else if(adbms6830_fake_cmd_eq(cmd, RDSTATE))
-    {
-        payload[4] = 0xFFu;
-        payload[5] = 0x13u;
-    }
-}
-
-static HAL_StatusTypeDef adbms6830_fake_rd48(adbms6830_driver_t *dev,
-                                             const uint8_t cmd[CMDSZ],
-                                             uint8_t *rx_data,
-                                             uint16_t rx_len)
-{
-    uint8_t ic_count;
-
-    if((dev == NULL) || (cmd == NULL) || (rx_data == NULL) || (dev->num_ics <= 0))
-    {
-        return HAL_ERROR;
-    }
-
-    ic_count = (uint8_t)dev->num_ics;
-    adbms6830_fake_init_defaults();
-    adbms6830_fake_model.last_ic_count = adbms6830_fake_clamp_ic_count(dev->num_ics);
-
-    if(rx_len < ((uint16_t)ic_count * RX_DATA))
-    {
-        return HAL_ERROR;
-    }
-
-    memset(rx_data, 0, rx_len);
-
-    for(uint8_t ic = 0u; ic < ic_count; ic++)
-    {
-        uint8_t *packet = &rx_data[(uint16_t)ic * RX_DATA];
-        uint8_t counter = adbms6830_fake_cmd_counter(dev, ic);
-        uint16_t ic_bit = (uint16_t)(1u << ic);
-
-        if((adbms6830_fake_model.missing_mask & ic_bit) != 0u)
-        {
-            memset(packet, 0xFF, RX_DATA);
-            continue;
-        }
-
-        adbms6830_fake_fill_payload(dev, cmd, ic, packet);
-        if((adbms6830_fake_model.counter_fault_mask & ic_bit) != 0u)
-        {
-            counter = (uint8_t)((counter + 1u) & 0x3Fu);
-        }
-        adbms6830_fake_finish_packet(packet, counter);
-
-        if((adbms6830_fake_model.pec_fail_mask & ic_bit) != 0u)
-        {
-            packet[RX_DATA - 1u] ^= 0x01u;
-        }
-    }
-
-    return HAL_OK;
-}
-
-bool adbms6830_fake_enabled(void)
-{
-    return true;
-}
-
-void adbms6830_fake_reset(void)
-{
-    memset(&adbms6830_fake_model, 0, sizeof(adbms6830_fake_model));
-    adbms6830_fake_init_defaults();
-}
-
-int adbms6830_fake_set_all_cells_mv(uint16_t mv)
-{
-    if((mv < 1000u) || (mv > 5000u))
-    {
-        return -1;
-    }
-
-    adbms6830_fake_init_defaults();
-    for(uint8_t ic = 0u; ic < ADBMS6830_MAX_TRACKED_ICS; ic++)
-    {
-        for(uint8_t cell = 0u; cell < 15u; cell++)
-        {
-            adbms6830_fake_model.cell_mv[ic][cell] = mv;
-        }
-    }
-    return 0;
-}
-
-int adbms6830_fake_set_cell_mv(uint8_t ic, uint8_t cell, uint16_t mv)
-{
-    if((ic >= ADBMS6830_MAX_TRACKED_ICS) || (cell >= 15u) ||
-       (mv < 1000u) || (mv > 5000u))
-    {
-        return -1;
-    }
-
-    adbms6830_fake_init_defaults();
-    adbms6830_fake_model.cell_mv[ic][cell] = mv;
-    return 0;
-}
-
-int adbms6830_fake_set_aux_raw(uint8_t ic, uint8_t channel, int16_t raw)
-{
-    if((ic >= ADBMS6830_MAX_TRACKED_ICS) || (channel >= 3u))
-    {
-        return -1;
-    }
-
-    adbms6830_fake_init_defaults();
-    adbms6830_fake_model.aux_raw[ic][channel] = raw;
-    return 0;
-}
-
-void adbms6830_fake_set_pec_fail_mask(uint16_t mask)
-{
-    adbms6830_fake_init_defaults();
-    adbms6830_fake_model.pec_fail_mask = mask;
-}
-
-void adbms6830_fake_set_missing_mask(uint16_t mask)
-{
-    adbms6830_fake_init_defaults();
-    adbms6830_fake_model.missing_mask = mask;
-}
-
-void adbms6830_fake_set_counter_fault_mask(uint16_t mask)
-{
-    adbms6830_fake_init_defaults();
-    adbms6830_fake_model.counter_fault_mask = mask;
-}
-
-adbms6830_fake_status_t adbms6830_fake_get_status(void)
-{
-    adbms6830_fake_status_t status = {0};
-
-    adbms6830_fake_init_defaults();
-    status.enabled = true;
-    status.initialized = adbms6830_fake_model.initialized;
-    status.ic_count = (adbms6830_fake_model.last_ic_count != 0u) ?
-                      adbms6830_fake_model.last_ic_count :
-                      ADBMS6830_MAX_TRACKED_ICS;
-    status.pec_fail_mask = adbms6830_fake_model.pec_fail_mask;
-    status.missing_mask = adbms6830_fake_model.missing_mask;
-    status.counter_fault_mask = adbms6830_fake_model.counter_fault_mask;
-    status.min_cell_mv = UINT16_MAX;
-    status.max_cell_mv = 0u;
-
-    for(uint8_t ic = 0u; ic < status.ic_count; ic++)
-    {
-        for(uint8_t cell = 0u; cell < 15u; cell++)
-        {
-            uint16_t mv = adbms6830_fake_model.cell_mv[ic][cell];
-            if(mv < status.min_cell_mv)
-            {
-                status.min_cell_mv = mv;
-                status.min_cell_ic = ic;
-                status.min_cell_index = cell;
-            }
-            if(mv > status.max_cell_mv)
-            {
-                status.max_cell_mv = mv;
-                status.max_cell_ic = ic;
-                status.max_cell_index = cell;
-            }
-        }
-    }
-
-    return status;
-}
-#else
-bool adbms6830_fake_enabled(void)
-{
-    return false;
-}
-
-void adbms6830_fake_reset(void)
-{
-}
-
-int adbms6830_fake_set_all_cells_mv(uint16_t mv)
-{
-    (void)mv;
-    return -1;
-}
-
-int adbms6830_fake_set_cell_mv(uint8_t ic, uint8_t cell, uint16_t mv)
-{
-    (void)ic;
-    (void)cell;
-    (void)mv;
-    return -1;
-}
-
-int adbms6830_fake_set_aux_raw(uint8_t ic, uint8_t channel, int16_t raw)
-{
-    (void)ic;
-    (void)channel;
-    (void)raw;
-    return -1;
-}
-
-void adbms6830_fake_set_pec_fail_mask(uint16_t mask)
-{
-    (void)mask;
-}
-
-void adbms6830_fake_set_missing_mask(uint16_t mask)
-{
-    (void)mask;
-}
-
-void adbms6830_fake_set_counter_fault_mask(uint16_t mask)
-{
-    (void)mask;
-}
-
-adbms6830_fake_status_t adbms6830_fake_get_status(void)
-{
-    adbms6830_fake_status_t status = {0};
-    return status;
-}
-#endif
 
 static void adbms6830_diag_note_status(adbms6830_driver_t *dev,
                                        adbms6830_spi_op_t op,
@@ -1103,6 +644,7 @@ const char *adbms6830_spi_op_str(adbms6830_spi_op_t op)
     case ADBMS6830_SPI_OP_OPEN_WIRE_EVEN: return "open_wire_even";
     case ADBMS6830_SPI_OP_OPEN_WIRE_ODD: return "open_wire_odd";
     case ADBMS6830_SPI_OP_AUX_GPIO_DIAG: return "aux_gpio_diag";
+    case ADBMS6830_SPI_OP_SCOPE: return "scope";
     default:                      return "unknown";
     }
 }
@@ -1213,6 +755,80 @@ HAL_StatusTypeDef adbms6830_spi_probe_rdcfga_on_string(adbms6830_driver_t *dev, 
     status = adbms6830_spi_probe_rdcfga(dev);
     dev->string = previous;
 
+    return status;
+}
+
+HAL_StatusTypeDef adbms6830_scope_activity(adbms6830_driver_t *dev,
+                                           adbms_string string,
+                                           adbms6830_scope_mode_t mode,
+                                           uint16_t repeat_count)
+{
+    static uint8_t scope_pattern[] =
+    {
+        0xAAu, 0x55u, 0xFFu, 0x00u, 0x69u, 0x96u, 0x12u, 0x34u
+    };
+    HAL_StatusTypeDef status = HAL_OK;
+    adbms_string previous;
+    uint16_t repeat;
+
+    if((dev == NULL) || (string > STRING_B) || (repeat_count == 0u))
+    {
+        return HAL_ERROR;
+    }
+
+    repeat = (repeat_count > 100u) ? 100u : repeat_count;
+    previous = dev->string;
+    dev->string = string;
+    adbms6830_spi_debug_enable(dev, true);
+
+    for(uint16_t i = 0u; i < repeat; i++)
+    {
+        if(dev->spi_debug.enabled)
+        {
+            dev->spi_debug.last_op = ADBMS6830_SPI_OP_SCOPE;
+        }
+
+        switch(mode)
+        {
+        case ADBMS6830_SCOPE_WAKE:
+            adbms6830_wakeup(dev);
+            status = HAL_OK;
+            break;
+        case ADBMS6830_SCOPE_CMD:
+            adbms6830_wakeup(dev);
+            status = adbms6830_cmd_checked(dev, RDCFGA);
+            if(dev->spi_debug.enabled)
+            {
+                dev->spi_debug.last_op = ADBMS6830_SPI_OP_SCOPE;
+            }
+            break;
+        case ADBMS6830_SCOPE_READ:
+            status = adbms6830_rd48_checked(dev, RDCFGA, shared_buf);
+            if(dev->spi_debug.enabled)
+            {
+                dev->spi_debug.last_op = ADBMS6830_SPI_OP_SCOPE;
+            }
+            break;
+        case ADBMS6830_SCOPE_PATTERN:
+            status = adbms6830_spi_write(dev,
+                                         scope_pattern,
+                                         (uint16_t)sizeof(scope_pattern),
+                                         1u);
+            break;
+        default:
+            status = HAL_ERROR;
+            break;
+        }
+
+        if(status != HAL_OK)
+        {
+            break;
+        }
+
+        adbms6830_us_delay(dev, 2000u);
+    }
+
+    dev->string = previous;
     return status;
 }
 
@@ -1633,7 +1249,6 @@ void adBms6830_init(adbms6830_driver_t* dev,
 	adbms6830_set_cs(dev, 1);
 	dev->string = STRING_B;
 
-#if !AMS_RENODE
 	adbms6830_srst(dev);
 	adbms6830_us_delay(dev, 300);
 
@@ -1642,11 +1257,6 @@ void adBms6830_init(adbms6830_driver_t* dev,
 	adbms6830_wakeup(dev);
 	adbms6830_wrcfga(dev);
 	adbms6830_wrcfgb(dev);
-#elif AMS_RENODE_FAKE_ADBMS
-	adbms6830_reset_cfg(dev);
-	adbms6830_pack_cfga(dev);
-	adbms6830_pack_cfgb(dev);
-#endif
 
 	// Testing Code
 
@@ -2047,9 +1657,6 @@ HAL_StatusTypeDef adbms6830_spi_write(adbms6830_driver_t* dev,
 
     adbms6830_spi_debug_note_tx(dev, dev->spi_debug.last_op, data, data, len, 0u);
 
-#if AMS_RENODE_FAKE_ADBMS
-    status = HAL_OK;
-#else
     adbms_spi_lock();
     if(use_cs)
     {
@@ -2063,7 +1670,6 @@ HAL_StatusTypeDef adbms6830_spi_write(adbms6830_driver_t* dev,
         adbms6830_set_cs(dev, 1);
     }
     adbms_spi_unlock();
-#endif
 
     if(dev->spi_debug.enabled)
     {
@@ -2338,17 +1944,6 @@ HAL_StatusTypeDef adbms6830_spi_write_read(adbms6830_driver_t *dev,
 
     adbms6830_spi_debug_note_tx(dev, dev->spi_debug.last_op, tx_Data, spi_txrx_tx_buf, tx_len, rx_len);
 
-#if AMS_RENODE_FAKE_ADBMS
-    if(tx_len >= (CMDSZ + PEC15SZ))
-    {
-        status = adbms6830_fake_rd48(dev, tx_Data, rx_data, rx_len);
-    }
-    else
-    {
-        memset(rx_data, 0, rx_len);
-        status = HAL_OK;
-    }
-#else
     adbms_spi_lock();
     if(use_cs)
     {
@@ -2375,7 +1970,6 @@ HAL_StatusTypeDef adbms6830_spi_write_read(adbms6830_driver_t *dev,
     {
         memset(rx_data, 0, rx_len);
     }
-#endif
 
     if(dev->spi_debug.enabled)
     {
@@ -2398,11 +1992,6 @@ HAL_StatusTypeDef adbms6830_spi_write_read(adbms6830_driver_t *dev,
 
 void adbms6830_us_delay(adbms6830_driver_t* dev, uint16_t microseconds)
 {
-#if AMS_RENODE
-	(void)dev;
-	(void)microseconds;
-	return;
-#else
 	if((dev == NULL) || (dev->htim == NULL))
 	{
 		return;
@@ -2411,7 +2000,6 @@ void adbms6830_us_delay(adbms6830_driver_t* dev, uint16_t microseconds)
 	__HAL_TIM_SET_COUNTER(dev->htim, 0);
 	while (__HAL_TIM_GET_COUNTER(dev->htim) < microseconds);
 	return;
-#endif
 }
 
 void adbms6830_adcv(adbms6830_driver_t *dev, RD rd, CONT cont, DCP dcp, RSTF rstf, OW_C_S owcs)
