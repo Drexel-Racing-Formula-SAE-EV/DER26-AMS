@@ -103,6 +103,57 @@ static void adbms_task_run_periodic_diagnostics(app_data_t *data)
                               data->adbms_open_wire_fault);
 }
 
+static uint32_t adbms_task_pack_cell_extremes(const app_data_t *data)
+{
+    if(data == NULL)
+    {
+        return 0u;
+    }
+
+    return (((uint32_t)data->max_voltage_seg & 0xFFu) << 24) |
+           (((uint32_t)data->max_voltage_cell & 0xFFu) << 16) |
+           (((uint32_t)data->min_voltage_seg & 0xFFu) << 8) |
+           ((uint32_t)data->min_voltage_cell & 0xFFu);
+}
+
+static uint32_t adbms_task_pack_temp_extremes(const app_data_t *data)
+{
+    if(data == NULL)
+    {
+        return 0u;
+    }
+
+    return (((uint32_t)data->max_temp_seg & 0xFFu) << 24) |
+           (((uint32_t)data->max_temp_sensor & 0xFFu) << 16) |
+           (((uint32_t)data->min_temp_seg & 0xFFu) << 8) |
+           ((uint32_t)data->min_temp_sensor & 0xFFu);
+}
+
+static uint16_t adbms_task_diag_reason_bits(const app_data_t *data)
+{
+    uint16_t reason = 0u;
+
+    if(data == NULL)
+    {
+        return reason;
+    }
+
+    if(data->adbms_config_fault)
+    {
+        reason |= 0x0001u;
+    }
+    if(data->adbms_status_fault)
+    {
+        reason |= 0x0002u;
+    }
+    if(data->adbms_open_wire_fault)
+    {
+        reason |= 0x0004u;
+    }
+
+    return reason;
+}
+
 static void adbms_task_publish_voltage_state(app_data_t *data)
 {
     voltage_fault_state_t *fault = &data->voltage_fault_state;
@@ -192,13 +243,30 @@ void adbms_task_fn(void *argument)
 	    data->adbms_scan_active = true;
 	    data->adbms_scan_count++;
 
+        bool voltage_was_latched = data->voltage_fault_latched;
+        voltage_fault_reason_t voltage_prev_latched_reason = data->voltage_fault_latched_reason;
+        bool temp_was_latched = data->temp_fault_latched;
+        temperature_fault_reason_t temp_prev_latched_reason = data->temp_fault_latched_reason;
+#if !AMS_HIL_REPLACE_ADBMS
+        bool adbms_diag_was_faulted = data->adbms_diag_fault;
+#endif
+
 	    /* Turn off balancing before reading so cell voltages recover from load. */
 #if !AMS_HIL_REPLACE_ADBMS
 	    if(accumulator_clear_balance(acc) != 0)
 	    {
+            bool was_adbms_diag_fault = data->adbms_diag_fault;
 	        data->adbms_last_diag_status = HAL_ERROR;
 	        data->adbms_status_fault = true;
 	        data->adbms_diag_fault = true;
+            if(!was_adbms_diag_fault)
+            {
+                ams_fault_log_event(AMS_FAULT_LOG_ADBMS_DIAG_FAIL,
+                                    adbms_task_diag_reason_bits(data),
+                                    (uint32_t)data->adbms_last_diag_status,
+                                    data->adbms_scan_count);
+                adbms_diag_was_faulted = true;
+            }
 	        set_bms(0);
 	    }
 #endif
@@ -219,6 +287,17 @@ void adbms_task_fn(void *argument)
 
         voltage_fault_update(&data->voltage_fault_state, acc);
         adbms_task_publish_voltage_state(data);
+
+        if(data->voltage_fault_latched &&
+           (!voltage_was_latched ||
+            (voltage_prev_latched_reason != data->voltage_fault_latched_reason)))
+        {
+            ams_fault_log_event(AMS_FAULT_LOG_VOLTAGE_LATCH,
+                                (uint16_t)data->voltage_fault_latched_reason,
+                                (((uint32_t)data->acc.max_voltage_mv) << 16) |
+                                    (uint32_t)data->acc.min_voltage_mv,
+                                adbms_task_pack_cell_extremes(data));
+        }
 
         if(data->voltage_fault)
         {
@@ -242,6 +321,17 @@ void adbms_task_fn(void *argument)
                                              (1000u / ADBMS_FREQ));
         adbms_task_publish_temperature_state(data);
 
+        if(data->temp_fault_latched &&
+           (!temp_was_latched ||
+            (temp_prev_latched_reason != data->temp_fault_latched_reason)))
+        {
+            ams_fault_log_event(AMS_FAULT_LOG_TEMP_LATCH,
+                                (uint16_t)data->temp_fault_latched_reason,
+                                (((uint32_t)(uint16_t)data->acc.max_temp_deci_c) << 16) |
+                                    (uint32_t)(uint16_t)data->acc.min_temp_deci_c,
+                                adbms_task_pack_temp_extremes(data));
+        }
+
 	    if(data->temp_fault)
 	    {
 	        set_bms(0);
@@ -252,10 +342,20 @@ void adbms_task_fn(void *argument)
 	    data->adbms_config_fault = false;
 	    data->adbms_status_fault = false;
 	    data->adbms_open_wire_fault = false;
-	    data->adbms_diag_fault = false;
-	    data->adbms_last_diag_status = HAL_OK;
+        /* In ADBMS-image HIL mode, CAN is the measurement transport. Do not
+         * clear a CAN bus-off/recovery-pending condition inside the ADBMS task
+         * just because the last injected image has not aged out yet. */
+	    data->adbms_diag_fault = (data->can_busoff_fault || data->can_recover_pending);
+	    data->adbms_last_diag_status = data->adbms_diag_fault ? HAL_ERROR : HAL_OK;
 #else
 	    adbms_task_run_periodic_diagnostics(data);
+        if(data->adbms_diag_fault && !adbms_diag_was_faulted)
+        {
+            ams_fault_log_event(AMS_FAULT_LOG_ADBMS_DIAG_FAIL,
+                                adbms_task_diag_reason_bits(data),
+                                (uint32_t)data->adbms_last_diag_status,
+                                data->adbms_scan_count);
+        }
 	    if(data->adbms_diag_fault)
 	    {
 	        set_bms(0);

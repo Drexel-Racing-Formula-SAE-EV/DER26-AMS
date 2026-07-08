@@ -54,7 +54,7 @@ That stream is kept for compatibility.
 
 ## Logger Summary Frames
 
-The new dashboard/logger stream uses standard IDs `0x690..0x69B`.
+The new dashboard/logger stream uses standard IDs `0x690..0x69C`.
 Multi-byte values are big-endian.
 
 | ID | Frame | Bytes |
@@ -71,6 +71,7 @@ Multi-byte values are big-endian.
 | `0x699` | ADBMS6830 counters | error count, command-counter error count, PEC pass mask, last command bytes |
 | `0x69A` | ADBMS2950/APM link | last HAL status, last xfer status, last op, error count, PEC fail mask, debug enabled, IC count |
 | `0x69B` | Task health | stale heartbeat mask, seen heartbeat mask, safety-stale mask, heartbeat fault flags, logger heartbeat count |
+| `0x69C` | CAN diagnostics | error code, bus-off count, error count, recovery count, bus-off/recovery flags |
 
 ### `0x690` Status Flags
 
@@ -137,6 +138,23 @@ Payload:
 | 6 bit 1 | logger/dashboard heartbeat fault |
 | 7 | saturated logger heartbeat counter |
 
+
+### `0x69C` CAN Diagnostics
+
+Payload:
+
+| Bytes | Meaning |
+|---:|---|
+| 0-3 | Last HAL CAN error code, big-endian uint32 |
+| 4 | Saturated bus-off counter |
+| 5 | Saturated CAN error counter |
+| 6 | Saturated CAN recovery counter |
+| 7 bit 0 | bus-off fault active |
+| 7 bit 1 | recovery pending |
+
+The dashboard decodes this frame for diagnostics only. It remains a passive
+listener and must not acknowledge, clear, or mask AMS CAN faults.
+
 ## Logger Detail Frames
 
 The detail stream exports all 75 cell voltages and all 120 thermistors. It is
@@ -164,11 +182,11 @@ At each non-charge CAN task tick, AMS sends:
 | Stream | Frames |
 |---|---:|
 | Existing ECU `0x069` stream | 62 |
-| Logger summaries | 12 |
+| Logger summaries | 13 |
 | Logger cell details | 25 |
 | Logger temp details | 40 |
 | Logger masks/diagnostics | 20 |
-| Total without estimator frame | 159 |
+| Total without estimator frame | 160 |
 
 In charge mode, AMS still sends the logger stream, then sends the charger command
 frame on extended ID `0x1806E5F4`.
@@ -192,7 +210,7 @@ Recommended ESP32 tasks:
 | Task | Role |
 |---|---|
 | CAN RX | Receive and timestamp frames; no transmit required |
-| Decoder | Maintain latest AMS state from `0x690..0x6A5` |
+| Decoder | Maintain latest AMS state from `0x690..0x6A5`, including CAN diagnostics `0x69C` |
 | SD logger | Write raw CAN and decoded CSV |
 | WiFi dashboard | Stream latest decoded state over WebSocket or UDP |
 | Watchdog/status | Show stale logger data if heartbeat sequence stops |

@@ -31,6 +31,7 @@
 
 .global  g_pfnVectors
 .global  Default_Handler
+.extern  ams_safety_unexpected_irq_panic_loop
 
 /* start address for the initialization values of the .data section. 
 defined in linker script */
@@ -110,6 +111,7 @@ LoopFillZerobss:
 */
     .section  .text.Default_Handler,"ax",%progbits
 Default_Handler:
+  bl  ams_safety_unexpected_irq_panic_loop
 Infinite_Loop:
   b  Infinite_Loop
   .size  Default_Handler, .-Default_Handler

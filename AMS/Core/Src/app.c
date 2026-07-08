@@ -8,8 +8,6 @@
 
 #include "app.h"
 
-#include <assert.h>
-
 #include "cmsis_os.h"
 #include "tasks/fan_task.h"
 #include "tasks/cli_task.h"
@@ -156,6 +154,19 @@ void app_create()
 {
 	app.hard_fault = false;
 	app.soft_fault = false;
+	ams_safety_sync_app(&app);
+	app.watchdog_feed_count = 0u;
+	app.watchdog_block_count = 0u;
+	app.watchdog_last_feed_tick = 0u;
+	app.watchdog_last_block_reason = AMS_WATCHDOG_BLOCK_NONE;
+	app.watchdog_last_logged_block_reason = AMS_WATCHDOG_BLOCK_NONE;
+	app.can_error_code = HAL_CAN_ERROR_NONE;
+	app.can_busoff_count = 0u;
+	app.can_error_count = 0u;
+	app.can_recover_count = 0u;
+	app.can_last_error_tick = 0u;
+	app.can_busoff_fault = false;
+	app.can_recover_pending = false;
 	app.fan_fault = false;
 	app.cli_fault = false;
 	app.canbus_fault = false;
@@ -260,6 +271,8 @@ void app_create()
 
 	board_init(&app.board);
 	ams_heartbeat_init(&app, osKernelGetTickCount());
+	ams_safety_sync_app(&app);
+	ams_fault_log_event(AMS_FAULT_LOG_BOOT, 0u, app.reset_flags, app.last_panic_reason);
 	set_bms(0);
 	adbms_spi_mutex = osMutexNew(NULL);
 
@@ -282,14 +295,6 @@ void app_create()
 	app.adbms_task = adbms_task_start(&app);
 	app.estimator_task = estimator_task_start(&app);
 
-	assert(app.cli_task != NULL);
-	assert(app.fan_task != NULL);
-	assert(app.error_task != NULL);
-	assert(app.canbus_task != NULL);
-	assert(app.current_task != NULL);
-	assert(app.adbms_task != NULL);
-	assert(app.estimator_task != NULL);
-
 	if((app.cli_task == NULL) ||
 	   (app.fan_task == NULL) ||
 	   (app.error_task == NULL) ||
@@ -298,8 +303,10 @@ void app_create()
 	   (app.adbms_task == NULL) ||
 	   (app.estimator_task == NULL))
 	{
-		set_bms(0);
-		return;
+		ams_safety_panic(AMS_PANIC_TASK_CREATE_FAILED);
+		for(;;)
+		{
+		}
 	}
 
 	/* BMS_OK is asserted by adbms_task after the first clean measurement pass. */
@@ -307,14 +314,29 @@ void app_create()
 
 void set_bms(bool state)
 {
-	if(state && app.bms_output_inhibit)
+	bool previous = app.bms_state;
+
+	if(state && (app.bms_output_inhibit || ams_safety_panic_active()))
 	{
 		app.bms_output_block_count++;
 		app.bms_state = false;
 		HAL_GPIO_WritePin(BMS_OK_GPIO_Port, BMS_OK_Pin, GPIO_PIN_RESET);
+		if(previous)
+		{
+			ams_fault_log_event(AMS_FAULT_LOG_BMS_OK_DROPPED, 0u, app.hard_fault, app.soft_fault);
+		}
 		return;
 	}
 
 	app.bms_state = state;
 	HAL_GPIO_WritePin(BMS_OK_GPIO_Port, BMS_OK_Pin, state ? GPIO_PIN_SET : GPIO_PIN_RESET);
+
+	if(state && !previous)
+	{
+		ams_fault_log_event(AMS_FAULT_LOG_BMS_OK_ASSERTED, 0u, app.hard_fault, app.soft_fault);
+	}
+	else if(!state && previous)
+	{
+		ams_fault_log_event(AMS_FAULT_LOG_BMS_OK_DROPPED, 0u, app.hard_fault, app.soft_fault);
+	}
 }

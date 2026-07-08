@@ -91,6 +91,9 @@ void current_task_fn(void *argument)
             app_data->current = current_sensor->current;
         }
 
+        bool current_was_latched = app_data->current_fault_latched;
+        current_fault_reason_t current_prev_latched_reason = app_data->current_fault_latched_reason;
+
         current_fault_update(&app_data->current_fault_state,
                              current_task_fault_mode_from_state(app_data->state),
                              app_data->current,
@@ -98,6 +101,16 @@ void current_task_fn(void *argument)
                              current_sensor->reason,
                              CURRENT_TASK_PERIOD_MS);
         current_task_publish_fault_state(app_data);
+
+        if(app_data->current_fault_latched &&
+           (!current_was_latched ||
+            (current_prev_latched_reason != app_data->current_fault_latched_reason)))
+        {
+            ams_fault_log_event(AMS_FAULT_LOG_CURRENT_LATCH,
+                                (uint16_t)app_data->current_fault_latched_reason,
+                                (uint32_t)(app_data->current_fault_state.abs_current_a * 10.0f),
+                                (uint32_t)app_data->current_fault_mode);
+        }
 
         if((!app_data->current_valid) || app_data->current_fault)
         {

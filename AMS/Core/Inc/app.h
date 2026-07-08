@@ -20,6 +20,7 @@
 #include "ext_drivers/current_fault.h"
 #include "ext_drivers/voltage_fault.h"
 #include "ext_drivers/temperature_fault.h"
+#include "ext_drivers/ams_safety.h"
 
 #define VER_MAJOR 0
 #define VER_MINOR 1
@@ -119,7 +120,7 @@ typedef struct
 	uint16_t logger_stale_mask;
 } ams_heartbeat_monitor_t;
 
-typedef struct
+struct app_data_t
 {
 	float total_voltage;
 	float max_voltage;
@@ -133,6 +134,27 @@ typedef struct
 
 	bool hard_fault;
 	bool soft_fault;
+
+	uint32_t reset_flags;
+	uint32_t last_panic_reason;
+	uint32_t safety_panic_count;
+
+	bool watchdog_runtime_enabled;
+	bool watchdog_hw_started;
+	uint32_t watchdog_feed_count;
+	uint32_t watchdog_block_count;
+	uint32_t watchdog_last_feed_tick;
+	uint32_t watchdog_last_block_reason;
+	uint32_t watchdog_last_logged_block_reason;
+
+	uint32_t can_error_code;
+	uint32_t can_busoff_count;
+	uint32_t can_error_count;
+	uint32_t can_recover_count;
+	uint32_t can_last_error_tick;
+	bool can_busoff_fault;
+	bool can_recover_pending;
+
 
 	bool fan_fault;
 	bool cli_fault;
@@ -233,7 +255,7 @@ typedef struct
 	TaskHandle_t current_task;
 	TaskHandle_t adbms_task;
 	TaskHandle_t estimator_task;
-} app_data_t;
+};
 
 void app_create();
 void set_bms(bool state);

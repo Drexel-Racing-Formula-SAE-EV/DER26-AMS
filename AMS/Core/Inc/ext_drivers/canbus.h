@@ -18,6 +18,8 @@
 
 #define DATALEN 8
 
+typedef struct app_data_t app_data_t;
+
 typedef struct {
     uint32_t id;
     uint32_t ide;
@@ -33,5 +35,8 @@ typedef struct {
 } canbus_device_t;
 
 void canbus_device_init(canbus_device_t *dev, CAN_HandleTypeDef *hcan);
+void canbus_poll_errors(canbus_device_t *dev, app_data_t *data);
+HAL_StatusTypeDef canbus_recover(canbus_device_t *dev);
+const char *canbus_error_str(uint32_t err);
 
 #endif

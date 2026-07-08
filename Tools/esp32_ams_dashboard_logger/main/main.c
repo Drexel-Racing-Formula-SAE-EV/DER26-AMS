@@ -251,6 +251,17 @@ static void build_json_state(char *buf, size_t cap, const ams_dash_state_t *s)
                 flag_set(s->task_health_flags, 1u) ? "true" : "false",
                 s->logger_heartbeat_count);
 
+    json_append(buf, cap, &off,
+                "\"can\":{\"error_code\":%lu,\"busoff_count\":%u,"
+                "\"error_count\":%u,\"recover_count\":%u,"
+                "\"busoff_fault\":%s,\"recover_pending\":%s},",
+                (unsigned long)s->can_error_code,
+                s->can_busoff_count,
+                s->can_error_count,
+                s->can_recover_count,
+                flag_set(s->can_diag_flags, 0u) ? "true" : "false",
+                flag_set(s->can_diag_flags, 1u) ? "true" : "false");
+
     append_cell_array(buf, cap, &off, s);
     json_append(buf, cap, &off, ",");
     append_temp_array(buf, cap, &off, s);
@@ -297,8 +308,8 @@ static esp_err_t csv_handler(httpd_req_t *req)
     char line[512];
     int n = snprintf(line,
                      sizeof(line),
-                     "rx_frames,stale,bms_ok,state,pack_V,current_A,min_cell_mV,max_cell_mV,max_temp_C,min_temp_C,temp_valid,voltage_valid,current_valid,smb_errors,smb_pec_fail_mask,heartbeat_stale_mask,heartbeat_safety_stale_mask,task_flags\n"
-                     "%lu,%d,%d,%u,%.1f,%.1f,%u,%u,%.1f,%.1f,%d,%d,%d,%u,%u,%u,%u,%u\n",
+                     "rx_frames,stale,bms_ok,state,pack_V,current_A,min_cell_mV,max_cell_mV,max_temp_C,min_temp_C,temp_valid,voltage_valid,current_valid,smb_errors,smb_pec_fail_mask,heartbeat_stale_mask,heartbeat_safety_stale_mask,task_flags,can_error_code,can_busoff_count,can_recover_count\n"
+                     "%lu,%d,%d,%u,%.1f,%.1f,%u,%u,%.1f,%.1f,%d,%d,%d,%u,%u,%u,%u,%u,%lu,%u,%u\n",
                      (unsigned long)s.rx_frames,
                      ams_dash_data_stale(&s, (uint32_t)esp_log_timestamp(), DASH_STALE_TIMEOUT_MS) ? 1 : 0,
                      flag_set(s.status_flags, 0u) ? 1 : 0,
@@ -316,7 +327,10 @@ static esp_err_t csv_handler(httpd_req_t *req)
                      s.adbms6830_pec_fail_mask,
                      s.heartbeat_stale_mask,
                      s.heartbeat_safety_stale_mask,
-                     s.task_health_flags);
+                     s.task_health_flags,
+                     (unsigned long)s.can_error_code,
+                     s.can_busoff_count,
+                     s.can_recover_count);
 
     if(n < 0)
     {

@@ -144,6 +144,26 @@ static void test_task_health_frame(void)
     CHECK(s.unknown_frames == 0u);
 }
 
+
+static void test_can_diag_frame(void)
+{
+    ams_dash_state_t s;
+    ams_dash_state_init(&s);
+
+    const uint8_t can_diag[8] = {
+        0x00u, 0x00u, 0x00u, 0x04u, 0x02u, 0x09u, 0x01u, 0x03u
+    };
+    ams_can_frame_t cf = frame(AMS_LOGGER_CAN_ID_CAN_DIAG, can_diag);
+    CHECK(ams_dash_decode_frame(&s, &cf, 70u));
+    CHECK(s.can_error_code == 0x00000004u);
+    CHECK(s.can_busoff_count == 2u);
+    CHECK(s.can_error_count == 9u);
+    CHECK(s.can_recover_count == 1u);
+    CHECK(s.can_diag_flags == 0x03u);
+    CHECK(s.logger_frames == 1u);
+    CHECK(s.unknown_frames == 0u);
+}
+
 static void test_rejects_non_contract_frames(void)
 {
     ams_dash_state_t s;
@@ -172,6 +192,7 @@ int main(void)
     test_summary_frames();
     test_detail_and_masks();
     test_task_health_frame();
+    test_can_diag_frame();
     test_rejects_non_contract_frames();
     puts("decoder_smoke_test PASS");
     return 0;

@@ -52,6 +52,9 @@ Authored by Mahad Faisal, 2026.
 | `test_periods_and_driver_edge_cases` | Verifies task timing period increments, NaN/Inf fan input handling, CAN send guard behavior. |
 | `test_task_iterations_with_injected_signals` | Runs one fake iteration of CAN, ADBMS, error, fan, and current tasks. |
 | `test_fault_matrix_extra` | Verifies hard/soft fault aggregation, confirmed current sensor soft fault behavior, and BMS_OK safety behavior. |
+| `test_safety_panic_reset_watchdog_and_log` | Verifies panic handling forces BMS_OK low without HAL/RTOS dependency, preserves reset/panic cause state, and records fault-log entries. |
+| `test_watchdog_feed_gate` | Verifies watchdog feeding is blocked during startup/stale/fault states and only allowed after voltage, current, temp, and heartbeat health are all valid. |
+| `test_can_busoff_sets_fault_and_recovers` | Verifies CAN bus-off sets AMS CAN fault state, schedules recovery, records bus-off/recovery counters, and clears recovery-pending state after successful CAN restart. |
 
 Unit-only additions:
 
@@ -89,4 +92,8 @@ Hardware bring-up notes:
 | Shared ADBMS SPI lock | ADBMS6830 and ADBMS2950 low-level SPI transfers call shared `adbms_spi_lock()` / `adbms_spi_unlock()` hooks so CLI probing cannot collide with periodic reads on SPI6. |
 | Fan fail-safe/ramp | Fan task drives max PWM when temperature data is invalid/stale/unavailable, and ramps PWM between low/high temperature thresholds when temperature data is valid. |
 | Software heartbeat monitor | Error task checks ADBMS, current, temperature, CAN, and logger/dashboard heartbeats. ADBMS/current/temp/CAN stale is safety-critical and drops BMS_OK; logger/dashboard stale is diagnostic-only. |
+| CPU panic safety path | HardFault, MemManage, BusFault, UsageFault, NMI, and Error_Handler force BMS_OK low through a direct GPIO reset path before entering the fault loop. |
+| Reset/panic record | `.noinit` RAM keeps the last panic reason, ARM fault status registers, reset flags, and a small diagnostic event ring across software/watchdog resets. |
+| Watchdog gate | Optional IWDG support is disabled by default and, when compiled in, is fed only by the error task after safety heartbeat and sensor freshness gates pass. |
+| CAN bus-off recovery | CAN error polling tracks HAL error code, bus-off count, recovery count, and attempts a delayed peripheral restart after bus-off. |
 | Hardware SPI bring-up guide | `docs/HARDWARE_SPI_BRINGUP.md` documents first-flash setup, logic-analyzer channels, expected SPI mode 3 behavior, CLI command order, fault isolation, APM probing, and BMS_OK release criteria. |

@@ -12,6 +12,7 @@
 
 #include "main.h"
 #include "tasks/error_task.h"
+#include "ext_drivers/ams_safety.h"
 
 /**
  * @brief Actual ERROR task function
@@ -76,6 +77,8 @@ void error_task_fn(void *arg)
         {
             set_bms(0);
         }
+
+        ams_safety_watchdog_task_update(data);
 //        data->cascadia_error = HAL_GPIO_ReadPin(MTR_Fault_GPIO_Port, MTR_Fault_Pin);
 //		data->imd_fail = HAL_GPIO_ReadPin(IMD_Fail_GPIO_Port, IMD_Fail_Pin);
 //		data->bms_fail = HAL_GPIO_ReadPin(BMS_Fail_GPIO_Port, BMS_Fail_Pin);

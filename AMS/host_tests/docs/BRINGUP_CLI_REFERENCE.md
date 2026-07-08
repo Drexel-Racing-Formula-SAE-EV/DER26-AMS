@@ -3,7 +3,7 @@
 Authored by Mahad Faisal, 2026.
 
 The `bringup` command is a staged bench-debug layer on top of the lower-level
-`status`, `spi`, `apm`, `charger`, `current`, `volt`, `temp`, `fault`, and
+`status`, `spi`, `apm`, `charger`, `current`, `volt`, `temp`, `fault`, `can`, `wdg`, and
 `bmsok` commands. It summarizes whether the next hardware step is sensible; it
 does not release BMS_OK, clear safety latches, send extra charger commands, or
 override normal safety gating.
@@ -21,6 +21,35 @@ override normal safety gating.
 | `bringup snapshot` | Any phase | Compact state/fault snapshot for logs. |
 | `bringup evidence` | Any phase | List of CLI outputs and bench artifacts to capture before changing phase. |
 | `balance inhibit` | Resistor-ladder/bench | Clears balance PWM/DCC and blocks automatic balancing until `balance release`. |
+
+
+## Safety/Fault Infrastructure CLI
+
+Use these commands during bench evidence capture and after abnormal resets:
+
+```text
+fault resetcause
+fault panic
+fault log
+can diag
+wdg status
+```
+
+`fault resetcause` prints decoded RCC reset flags. `fault panic` prints the
+last `.noinit` panic record, including CFSR/HFSR/MMFAR/BFAR. `fault log` prints
+the small RAM fault-event ring. `can diag` reports the last HAL CAN error,
+bus-off counter, recovery counter, and pending recovery state. `wdg status`
+reports whether the optional IWDG build flag is compiled in and whether runtime
+feeding is enabled.
+
+`wdg enable` only has effect in builds compiled with `AMS_ENABLE_IWDG=1`. Do not
+enable the watchdog during first ADBMS bench probing unless the UART, ADBMS,
+current, temp, and heartbeat paths are already stable.
+
+Optional destructive test commands such as `fault inject hardfault`,
+`fault inject busfault`, `fault inject canbusoff`, and `wdg stopfeed` are compiled
+only when `AMS_FAULT_INJECTION_CLI=1`. Keep that flag disabled for normal bench
+and competition firmware.
 
 ## First Board-Only Flow
 
@@ -178,6 +207,11 @@ Before moving from one bench phase to the next, save:
 status
 bringup board
 fault
+fault resetcause
+fault panic
+fault log
+can diag
+wdg status
 spi status
 bringup adbms6830
 current

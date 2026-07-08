@@ -38,6 +38,8 @@ int get_temperature_sensor(int argc, char *argv[]);
 
 int get_current(int argc, char *argv[]);
 int get_charger(int argc, char *argv[]);
+int get_can_diag(int argc, char *argv[]);
+int watchdog_control(int argc, char *argv[]);
 int get_spi_debug(int argc, char *argv[]);
 int get_apm_debug(int argc, char *argv[]);
 int get_bringup(int argc, char *argv[]);
@@ -65,6 +67,8 @@ command_t cmds[] =
 	{"tempsns", &get_temperature_sensor, "gets one sensor: tempsns <ic> <sensor 0-23>"},
 	{"current", &get_current, "gets current sensor raw counts/voltages/status"},
 	{"charger", &get_charger, "gets charger CAN command/status/debug state"},
+	{"can", &get_can_diag, "CAN diagnostics: can [diag|recover]"},
+	{"wdg", &watchdog_control, "watchdog diagnostics/control: wdg [status|enable]"},
 	{"spi", &get_spi_debug, "ADBMS6830 SPI debug: spi [status|pins|cspins|cs|preset|toggle|probe|probea|probeb|scope|sid|stat|staterr|cfgchk|cellst|oweven|owodd|auxdiag|wake|coldwake|clrflag|clear|diagclear|enable|disable]"},
 	{"apm", &get_apm_debug, "ADBMS2950/APM debug: apm [status|probe|clear|enable|disable]"},
 	{"bringup", &get_bringup, "bench bring-up summaries: bringup [help|board|adbms6830|apm2950|charger-lv|charger-battery|ready|snapshot|evidence]"},
@@ -424,6 +428,94 @@ int get_status(int argc, char *argv[])
 int get_faults(int argc, char *argv[])
 {
 	int ret = 0;
+
+    if((argc >= 2) && (argv[1] != NULL))
+    {
+        if(!strcmp(argv[1], "resetcause"))
+        {
+            char flags[96];
+            ams_safety_format_reset_flags(data->reset_flags, flags, sizeof(flags));
+            snprintf(outline, CLI_LINESZ, "reset: %s", flags);
+            return cli_printline(cli, outline);
+        }
+
+        if(!strcmp(argv[1], "panic"))
+        {
+            const ams_panic_record_t *panic = ams_safety_panic_record();
+            snprintf(outline, CLI_LINESZ,
+                     "panic: reason:%s(%lu) count:%lu cfsr:0x%08lX hfsr:0x%08lX mmfar:0x%08lX bfar:0x%08lX",
+                     ams_safety_panic_reason_str(panic->panic_reason),
+                     (unsigned long)panic->panic_reason,
+                     (unsigned long)panic->reset_count,
+                     (unsigned long)panic->cfsr,
+                     (unsigned long)panic->hfsr,
+                     (unsigned long)panic->mmfar,
+                     (unsigned long)panic->bfar);
+            return cli_printline(cli, outline);
+        }
+
+        if(!strcmp(argv[1], "log"))
+        {
+            if((argc >= 3) && (argv[2] != NULL) && !strcmp(argv[2], "clear"))
+            {
+                ams_fault_log_clear();
+                return cli_printline(cli, "fault log cleared");
+            }
+
+            const ams_fault_log_t *log = ams_fault_log_get();
+            snprintf(outline, CLI_LINESZ, "fault log count:%lu write:%lu",
+                     (unsigned long)log->count,
+                     (unsigned long)log->write_index);
+            ret |= cli_printline(cli, outline);
+
+            for(uint32_t i = 0u; i < log->count; i++)
+            {
+                uint32_t idx = (log->write_index + AMS_FAULT_LOG_DEPTH - log->count + i) % AMS_FAULT_LOG_DEPTH;
+                const ams_fault_log_entry_t *e = &log->entry[idx];
+                snprintf(outline, CLI_LINESZ,
+                         "%02lu tick:%lu event:%s reason:%u arg0:0x%08lX arg1:0x%08lX",
+                         (unsigned long)i,
+                         (unsigned long)e->tick,
+                         ams_fault_log_event_str(e->event),
+                         (unsigned)e->reason,
+                         (unsigned long)e->arg0,
+                         (unsigned long)e->arg1);
+                ret |= cli_printline(cli, outline);
+            }
+            return ret;
+        }
+
+#if AMS_FAULT_INJECTION_CLI
+        if(!strcmp(argv[1], "inject") && (argc >= 3) && (argv[2] != NULL))
+        {
+            if(!strcmp(argv[2], "hardfault"))
+            {
+                ams_safety_fault_inject_hardfault();
+                return cli_printline(cli, "fault injection hardfault panic recorded; BMS_OK forced low");
+            }
+            if(!strcmp(argv[2], "busfault"))
+            {
+                ams_safety_fault_inject_busfault();
+                return cli_printline(cli, "fault injection busfault panic recorded; BMS_OK forced low");
+            }
+            if(!strcmp(argv[2], "canbusoff"))
+            {
+                data->can_error_code = HAL_CAN_ERROR_BOF;
+                data->can_busoff_fault = true;
+                data->can_recover_pending = true;
+                data->canbus_fault = true;
+                data->can_last_error_tick = osKernelGetTickCount();
+                data->can_busoff_count++;
+                ams_fault_log_event(AMS_FAULT_LOG_CAN_BUS_OFF, 0u, HAL_CAN_ERROR_BOF, data->can_busoff_count);
+                return cli_printline(cli, "fault injection CAN bus-off recorded");
+            }
+        }
+#endif
+
+        ret |= cli_printline(cli, "Usage: fault [resetcause|panic|log|log clear]");
+        return ret;
+    }
+
 	ret |= cli_printline(cli, "System faults:");
 	snprintf(outline, CLI_LINESZ, "hard:   %d", data->hard_fault);
 	ret |= cli_printline(cli, outline);
@@ -1871,6 +1963,105 @@ int get_current(int argc, char *argv[])
 
     cli_fixed1(cs->current, &whole, &decimal);
     snprintf(outline, CLI_LINESZ, "I_selected: %d.%01d A", whole, decimal);
+    ret |= cli_printline(cli, outline);
+
+    return ret;
+}
+
+
+int get_can_diag(int argc, char *argv[])
+{
+    int ret = 0;
+
+    if((argc >= 2) && (argv[1] != NULL) && !strcmp(argv[1], "recover"))
+    {
+        HAL_StatusTypeDef status = canbus_recover(&data->board.canbus);
+        if(status == HAL_OK)
+        {
+            data->can_recover_count++;
+            data->can_busoff_fault = false;
+            data->can_recover_pending = false;
+            data->can_error_code = HAL_CAN_ERROR_NONE;
+            data->canbus_fault = false;
+            ams_fault_log_event(AMS_FAULT_LOG_CAN_RECOVERED, 0u, data->can_recover_count, 0u);
+        }
+        snprintf(outline, CLI_LINESZ, "CAN recover: %s", cli_hal_status_str(status));
+        ret |= cli_printline(cli, outline);
+    }
+    else if((argc >= 2) && (argv[1] != NULL) && strcmp(argv[1], "diag"))
+    {
+        ret |= cli_printline(cli, "Usage: can [diag|recover]");
+        return ret;
+    }
+
+    snprintf(outline, CLI_LINESZ,
+             "CAN err:0x%08lX %s busoff:%d pending:%d counts err:%lu busoff:%lu recover:%lu last_tick:%lu",
+             (unsigned long)data->can_error_code,
+             canbus_error_str(data->can_error_code),
+             data->can_busoff_fault,
+             data->can_recover_pending,
+             (unsigned long)data->can_error_count,
+             (unsigned long)data->can_busoff_count,
+             (unsigned long)data->can_recover_count,
+             (unsigned long)data->can_last_error_tick);
+    ret |= cli_printline(cli, outline);
+
+    snprintf(outline, CLI_LINESZ,
+             "CAN fault:%d charger_fault:%d HIL_ADBMS:%d cooldown_ms:%u",
+             data->canbus_fault,
+             data->charger_fault,
+             AMS_HIL_REPLACE_ADBMS,
+             AMS_CAN_BUSOFF_RECOVERY_COOLDOWN_MS);
+    ret |= cli_printline(cli, outline);
+
+    return ret;
+}
+
+int watchdog_control(int argc, char *argv[])
+{
+    int ret = 0;
+
+    if((argc >= 2) && (argv[1] != NULL))
+    {
+        if(!strcmp(argv[1], "enable"))
+        {
+#if AMS_ENABLE_IWDG
+            ams_safety_watchdog_enable_runtime(data, true);
+            ret |= cli_printline(cli, "watchdog runtime feed gate enabled");
+#else
+            ret |= cli_printline(cli, "watchdog compile flag disabled; rebuild with AMS_ENABLE_IWDG=1");
+#endif
+        }
+#if AMS_FAULT_INJECTION_CLI
+        else if(!strcmp(argv[1], "stopfeed"))
+        {
+            ams_safety_watchdog_stop_feed_for_test(true);
+            ret |= cli_printline(cli, "watchdog feed intentionally stopped for fault injection");
+        }
+        else if(!strcmp(argv[1], "feedok"))
+        {
+            ams_safety_watchdog_stop_feed_for_test(false);
+            ret |= cli_printline(cli, "watchdog feed stop injection cleared");
+        }
+#endif
+        else if(strcmp(argv[1], "status"))
+        {
+            ret |= cli_printline(cli, "Usage: wdg [status|enable]");
+            return ret;
+        }
+    }
+
+    snprintf(outline, CLI_LINESZ,
+             "WDG compile:%d runtime:%d hw:%d ok_now:%d feeds:%lu blocks:%lu last_feed:%lu last_block:%s(%lu)",
+             AMS_ENABLE_IWDG,
+             data->watchdog_runtime_enabled,
+             data->watchdog_hw_started,
+             ams_safety_watchdog_ok(data),
+             (unsigned long)data->watchdog_feed_count,
+             (unsigned long)data->watchdog_block_count,
+             (unsigned long)data->watchdog_last_feed_tick,
+             ams_safety_watchdog_block_reason_str(data->watchdog_last_block_reason),
+             (unsigned long)data->watchdog_last_block_reason);
     ret |= cli_printline(cli, outline);
 
     return ret;

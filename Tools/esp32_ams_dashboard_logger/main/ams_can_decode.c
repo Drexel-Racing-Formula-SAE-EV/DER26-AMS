@@ -230,6 +230,17 @@ bool ams_dash_decode_frame(ams_dash_state_t *state,
             state->logger_heartbeat_count = d[7];
             break;
 
+        case AMS_LOGGER_CAN_ID_CAN_DIAG:
+            state->can_error_code = ((uint32_t)d[0] << 24) |
+                                    ((uint32_t)d[1] << 16) |
+                                    ((uint32_t)d[2] << 8)  |
+                                    ((uint32_t)d[3]);
+            state->can_busoff_count = d[4];
+            state->can_error_count = d[5];
+            state->can_recover_count = d[6];
+            state->can_diag_flags = d[7];
+            break;
+
         case AMS_LOGGER_CAN_ID_CELL_DETAIL:
             decode_cell_detail(state, d);
             break;

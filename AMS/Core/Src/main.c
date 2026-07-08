@@ -23,6 +23,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "app.h"
+#include "ext_drivers/ams_safety.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -108,7 +109,9 @@ int main(void)
   HAL_Init();
 
   /* USER CODE BEGIN Init */
-
+  ams_safety_force_bms_low();
+  ams_safety_record_reset_cause();
+  ams_safety_enable_cpu_faults();
   /* USER CODE END Init */
 
   /* Configure the system clock */
@@ -170,6 +173,10 @@ int main(void)
 
   /* Start scheduler */
   osKernelStart();
+
+  /* Reaching this point means the scheduler failed to start or returned. */
+  __disable_irq();
+  ams_safety_panic(AMS_PANIC_SCHEDULER_RETURNED);
 
   /* We should never get here as control is now taken by the scheduler */
 
@@ -963,8 +970,8 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
-  /* User can add his own implementation to report the HAL error return state */
   __disable_irq();
+  ams_safety_panic(AMS_PANIC_ERROR_HANDLER);
   while (1)
   {
   }
@@ -982,8 +989,13 @@ void Error_Handler(void)
 void assert_failed(uint8_t *file, uint32_t line)
 {
   /* USER CODE BEGIN 6 */
-  /* User can add his own implementation to report the file name and line number,
-     ex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
+  (void)file;
+  (void)line;
+  __disable_irq();
+  ams_safety_panic(AMS_PANIC_ASSERT_FAILED);
+  while (1)
+  {
+  }
   /* USER CODE END 6 */
 }
 #endif /* USE_FULL_ASSERT */

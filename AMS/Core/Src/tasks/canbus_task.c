@@ -147,6 +147,36 @@ static uint16_t fan_percent_for_ecu(const app_data_t *data, uint8_t fan)
     return (uint16_t)(data->board.fans[fan].duty_cycle * 10.0f);
 }
 
+
+static void canbus_record_task_tx_status(app_data_t *data, HAL_StatusTypeDef ret)
+{
+    if(data == NULL)
+    {
+        return;
+    }
+
+    uint32_t now = osKernelGetTickCount();
+
+    if(ret != HAL_OK)
+    {
+        data->canbus_fault = true;
+        data->can_error_count++;
+        data->can_last_error_tick = now;
+        if(data->can_error_code == HAL_CAN_ERROR_NONE)
+        {
+            data->can_error_code = HAL_CAN_ERROR_TIMEOUT;
+        }
+    }
+    else if(!data->can_busoff_fault &&
+            !data->can_recover_pending &&
+            data->canbus_fault &&
+            (data->can_error_code != HAL_CAN_ERROR_NONE) &&
+            ((now - data->can_last_error_tick) > AMS_CAN_ERROR_SOFT_HOLD_MS))
+    {
+        data->canbus_fault = false;
+    }
+}
+
 static HAL_StatusTypeDef send_ecu_ams_status(canbus_device_t *canbus, const app_data_t *data)
 {
     HAL_StatusTypeDef ret = HAL_OK;
@@ -597,6 +627,18 @@ static HAL_StatusTypeDef send_logger_summaries(canbus_device_t *canbus,
     payload[7] = sat_u8_u32(data->heartbeat.count[AMS_HEARTBEAT_LOGGER]);
     ret |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_TASK_HEALTH, payload);
 
+    memset(payload, 0, sizeof(payload));
+    payload[0] = (uint8_t)((data->can_error_code >> 24u) & 0xFFu);
+    payload[1] = (uint8_t)((data->can_error_code >> 16u) & 0xFFu);
+    payload[2] = (uint8_t)((data->can_error_code >> 8u) & 0xFFu);
+    payload[3] = (uint8_t)(data->can_error_code & 0xFFu);
+    payload[4] = sat_u8_u32(data->can_busoff_count);
+    payload[5] = sat_u8_u32(data->can_error_count);
+    payload[6] = sat_u8_u32(data->can_recover_count);
+    payload[7] = (uint8_t)(logger_bool_bit(data->can_busoff_fault, 0u) |
+                           logger_bool_bit(data->can_recover_pending, 1u));
+    ret |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_CAN_DIAG, payload);
+
     return ret;
 }
 
@@ -792,6 +834,17 @@ void canbus_task_fn(void *arg)
     {
         entry = osKernelGetTickCount();
         ret = HAL_OK;
+        canbus_poll_errors(canbus, data);
+
+        if(data->can_busoff_fault || data->can_recover_pending)
+        {
+            data->canbus_fault = true;
+            ams_heartbeat_kick(data, AMS_HEARTBEAT_CAN, osKernelGetTickCount());
+            osDelayUntil(entry + ((data->state == STATE_CHARGE) ?
+                                  CHARGER_COMMAND_PERIOD_MS :
+                                  (1000 / CAN_FREQ)));
+            continue;
+        }
 
         if(data->state != STATE_CHARGE)
         {
@@ -809,8 +862,10 @@ void canbus_task_fn(void *arg)
             ret |= send_logger_telemetry(canbus, data);
             ams_heartbeat_kick(data, AMS_HEARTBEAT_LOGGER, osKernelGetTickCount());
             ret |= send_estimator_status(canbus, data);
+            canbus_poll_errors(canbus, data);
 
-            data->canbus_fault = (ret != HAL_OK);
+            canbus_record_task_tx_status(data, ret);
+            data->canbus_fault = data->canbus_fault || data->can_busoff_fault;
             ams_heartbeat_kick(data, AMS_HEARTBEAT_CAN, osKernelGetTickCount());
             osDelayUntil(entry + (1000 / CAN_FREQ));
         }
@@ -871,7 +926,9 @@ void canbus_task_fn(void *arg)
 
             ret |= send_logger_telemetry(canbus, data);
             ams_heartbeat_kick(data, AMS_HEARTBEAT_LOGGER, osKernelGetTickCount());
-            data->canbus_fault = (ret != HAL_OK);
+            canbus_poll_errors(canbus, data);
+            canbus_record_task_tx_status(data, ret);
+            data->canbus_fault = data->canbus_fault || data->can_busoff_fault;
 
             ams_heartbeat_kick(data, AMS_HEARTBEAT_CAN, osKernelGetTickCount());
             osDelayUntil(entry + CHARGER_COMMAND_PERIOD_MS);

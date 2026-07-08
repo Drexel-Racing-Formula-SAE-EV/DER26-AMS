@@ -90,6 +90,12 @@ Open http://192.168.4.1/
 AMS dashboard/logger running
 ```
 
+
+The decoder includes the AMS CAN diagnostics frame `0x69C`, exposing the last
+HAL CAN error code, bus-off counter, recovery counter, and bus-off/recovery
+flags in `/api/state` and the CSV snapshot. This is diagnostic-only telemetry;
+the ESP32 dashboard remains receive-only and never clears AMS faults.
+
 ## Host Decoder Test
 
 The CAN decoder is pure C and can be tested without ESP-IDF:

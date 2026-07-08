@@ -142,6 +142,124 @@ void canbus_device_init(canbus_device_t *dev, CAN_HandleTypeDef *hcan)
     }
 }
 
+
+const char *canbus_error_str(uint32_t err)
+{
+    if(err == HAL_CAN_ERROR_NONE) return "none";
+    if((err & HAL_CAN_ERROR_BOF) != 0u) return "bus_off";
+    if((err & HAL_CAN_ERROR_EPV) != 0u) return "error_passive";
+    if((err & HAL_CAN_ERROR_EWG) != 0u) return "error_warning";
+    if((err & HAL_CAN_ERROR_ACK) != 0u) return "ack";
+    if((err & HAL_CAN_ERROR_CRC) != 0u) return "crc";
+    if((err & HAL_CAN_ERROR_TIMEOUT) != 0u) return "timeout";
+    if((err & HAL_CAN_ERROR_NOT_STARTED) != 0u) return "not_started";
+    if((err & HAL_CAN_ERROR_NOT_READY) != 0u) return "not_ready";
+    return "other";
+}
+
+HAL_StatusTypeDef canbus_recover(canbus_device_t *dev)
+{
+    HAL_StatusTypeDef ret = HAL_OK;
+
+    if((dev == NULL) || (dev->hcan == NULL))
+    {
+        return HAL_ERROR;
+    }
+
+    ret |= HAL_CAN_Stop(dev->hcan);
+    ret |= HAL_CAN_ResetError(dev->hcan);
+    ret |= HAL_CAN_Start(dev->hcan);
+    ret |= HAL_CAN_ActivateNotification(dev->hcan, CAN_IT_RX_FIFO0_MSG_PENDING);
+
+    return ret;
+}
+
+void canbus_poll_errors(canbus_device_t *dev, app_data_t *data)
+{
+    uint32_t err;
+    uint32_t now;
+
+    if((dev == NULL) || (dev->hcan == NULL) || (data == NULL))
+    {
+        return;
+    }
+
+    now = osKernelGetTickCount();
+    err = HAL_CAN_GetError(dev->hcan);
+
+    if(err != HAL_CAN_ERROR_NONE)
+    {
+        bool new_error = (err != data->can_error_code) ||
+                         (((err & HAL_CAN_ERROR_BOF) != 0u) && !data->can_busoff_fault);
+
+        if(new_error)
+        {
+            data->can_error_count++;
+            data->can_last_error_tick = now;
+        }
+        data->can_error_code = err;
+        data->canbus_fault = true;
+
+        if((err & HAL_CAN_ERROR_BOF) != 0u)
+        {
+            if(!data->can_busoff_fault)
+            {
+                data->can_busoff_count++;
+                ams_fault_log_event(AMS_FAULT_LOG_CAN_BUS_OFF, 0u, err, data->can_busoff_count);
+            }
+
+            data->can_busoff_fault = true;
+            data->can_recover_pending = true;
+            data->canbus_fault = true;
+
+            if(data->state == STATE_CHARGE)
+            {
+                data->charger_fault = true;
+                data->board.charger.communication_fail = true;
+                set_bms(false);
+            }
+
+#if AMS_HIL_REPLACE_ADBMS
+            data->adbms_diag_fault = true;
+            set_bms(false);
+#endif
+        }
+        else
+        {
+            (void)HAL_CAN_ResetError(dev->hcan);
+        }
+    }
+    else if(!data->can_busoff_fault &&
+            !data->can_recover_pending &&
+            data->canbus_fault &&
+            (data->can_error_code != HAL_CAN_ERROR_NONE) &&
+            ((now - data->can_last_error_tick) > AMS_CAN_ERROR_SOFT_HOLD_MS))
+    {
+        data->canbus_fault = false;
+    }
+
+    if(data->can_recover_pending &&
+       ((now - data->can_last_error_tick) >= AMS_CAN_BUSOFF_RECOVERY_COOLDOWN_MS))
+    {
+        HAL_StatusTypeDef rec = canbus_recover(dev);
+        if(rec == HAL_OK)
+        {
+            data->can_recover_count++;
+            data->can_busoff_fault = false;
+            data->can_recover_pending = false;
+            data->can_error_code = HAL_CAN_ERROR_NONE;
+            data->canbus_fault = false;
+            ams_fault_log_event(AMS_FAULT_LOG_CAN_RECOVERED, 0u, data->can_recover_count, 0u);
+        }
+        else
+        {
+            data->can_error_count++;
+            data->can_last_error_tick = now;
+            data->canbus_fault = true;
+        }
+    }
+}
+
 void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
 {
     CAN_RxHeaderTypeDef rx_header;
