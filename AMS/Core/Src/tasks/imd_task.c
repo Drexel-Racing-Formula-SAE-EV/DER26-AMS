@@ -31,7 +31,7 @@ TaskHandle_t imd_task_start(app_data_t *data)
     }
 
     // todo: appropriate task priority
-    xTaskCreate(imd_task_fn, "imd task", 128, (void *) data, IMD_PRIO, &handle);
+    xTaskCreate(imd_task_fn, "imd task", AMS_STACK_IMD_WORDS, (void *) data, IMD_PRIO, &handle);
     return handle;
 }
 

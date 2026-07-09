@@ -337,6 +337,19 @@ static void build_json_state(char *buf, size_t cap, const ams_dash_state_t *s)
                 (s->watchdog_last_feed_age_ds == 0xFFFFu) ? -1.0 : ((double)s->watchdog_last_feed_age_ds / 10.0));
 
     json_append(buf, cap, &off,
+                "\"rtos\":{\"heap_free_B\":%lu,\"heap_min_B\":%lu,"
+                "\"stack_warn_mask\":%u,\"min_stack_highwater_words\":%u,"
+                "\"flags\":%u,\"fault\":%s,\"stack_warn\":%s,\"heap_warn\":%s},",
+                (unsigned long)s->rtos_heap_free_div16 * 16UL,
+                (unsigned long)s->rtos_heap_min_div16 * 16UL,
+                s->rtos_stack_warn_mask,
+                s->rtos_min_stack_high_water_words,
+                s->rtos_flags,
+                flag_set(s->rtos_flags, 0u) ? "true" : "false",
+                flag_set(s->rtos_flags, 1u) ? "true" : "false",
+                flag_set(s->rtos_flags, 2u) ? "true" : "false");
+
+    json_append(buf, cap, &off,
                 "\"estimator\":{\"last_rx_ms\":%lu,\"active_index\":%u,"
                 "\"flags\":%u,\"soc_pct\":%.2f,"
                 "\"innovation_mV\":%d,\"r0_mOhm\":%.2f},",
@@ -428,8 +441,8 @@ static esp_err_t csv_handler(httpd_req_t *req)
     char line[1400];
     int n = snprintf(line,
                      sizeof(line),
-                     "rx_frames,stale,bms_ok,state,pack_V,current_A,min_cell_mV,max_cell_mV,max_temp_C,min_temp_C,temp_filtered_max_C,temp_max_rate_C_s,fan_command_percent,fan_reason,temp_diag_flags,fan_diag_flags,temp_valid,voltage_valid,current_valid,smb_errors,smb_pec_fail_mask,heartbeat_stale_mask,heartbeat_safety_stale_mask,task_flags,can_error_code,can_busoff_count,can_recover_count,panic_reason,wdg_block_reason,estimator_soc_pct,hil_flags,current_adc_high,current_adc_low,current_adc_flags,current_zero_cal_count,charger_read_current_A,charger_disable_mask,charger_tx_fail_count\n"
-                     "%lu,%d,%d,%u,%.1f,%.1f,%u,%u,%.1f,%.1f,%.1f,%.1f,%u,%u,%u,%u,%d,%d,%d,%u,%u,%u,%u,%u,%lu,%u,%u,%u,%u,%.2f,%u,%u,%u,%u,%u,%.1f,%u,%u\n",
+                     "rx_frames,stale,bms_ok,state,pack_V,current_A,min_cell_mV,max_cell_mV,max_temp_C,min_temp_C,temp_filtered_max_C,temp_max_rate_C_s,fan_command_percent,fan_reason,temp_diag_flags,fan_diag_flags,temp_valid,voltage_valid,current_valid,smb_errors,smb_pec_fail_mask,heartbeat_stale_mask,heartbeat_safety_stale_mask,task_flags,can_error_code,can_busoff_count,can_recover_count,panic_reason,wdg_block_reason,estimator_soc_pct,hil_flags,current_adc_high,current_adc_low,current_adc_flags,current_zero_cal_count,charger_read_current_A,charger_disable_mask,charger_tx_fail_count,rtos_heap_free_B,rtos_heap_min_B,rtos_stack_warn_mask,rtos_flags\n"
+                     "%lu,%d,%d,%u,%.1f,%.1f,%u,%u,%.1f,%.1f,%.1f,%.1f,%u,%u,%u,%u,%d,%d,%d,%u,%u,%u,%u,%u,%lu,%u,%u,%u,%u,%.2f,%u,%u,%u,%u,%u,%.1f,%u,%u,%lu,%lu,%u,%u\n",
                      (unsigned long)s.rx_frames,
                      ams_dash_data_stale(&s, (uint32_t)esp_log_timestamp(), DASH_STALE_TIMEOUT_MS) ? 1 : 0,
                      flag_set(s.status_flags, 0u) ? 1 : 0,
@@ -467,7 +480,11 @@ static esp_err_t csv_handler(httpd_req_t *req)
                      s.current_zero_cal_count,
                      (double)s.charger_read_current_dA / 10.0,
                      s.charger_disable_reason_mask,
-                     s.charger_tx_fail_count);
+                     s.charger_tx_fail_count,
+                     (unsigned long)s.rtos_heap_free_div16 * 16UL,
+                     (unsigned long)s.rtos_heap_min_div16 * 16UL,
+                     s.rtos_stack_warn_mask,
+                     s.rtos_flags);
 
     if(n < 0)
     {
@@ -506,7 +523,8 @@ static const char INDEX_HTML[] =
 "<div class='card'><div class='label'>Tasks</div><pre id='tasks'></pre></div>"
 "<div class='card'><div class='label'>CAN</div><pre id='can'></pre></div>"
 "<div class='card'><div class='label'>Safety</div><pre id='safety'></pre></div>"
-"<div class='card'><div class='label'>Watchdog</div><pre id='watchdog'></pre></div>"
+"<div class='card'><div class='label'>Watchdog</div><pre id='watchdog'></pre></div>
+<div class='card'><div class='label'>RTOS</div><pre id='rtos'></pre></div>"
 "<div class='card'><div class='label'>Estimator</div><pre id='estimator'></pre></div>"
 "<div class='card'><div class='label'>HIL</div><pre id='hil'></pre></div>"
 "</div><div class='card'><div class='label'>Browser Log</div><div id='logcount'>0 samples</div>"
@@ -516,8 +534,8 @@ static const char INDEX_HTML[] =
 "let rows=[];"
 "function drawLogCount(){document.getElementById('logcount').textContent=rows.length+' samples'}"
 "function csvCell(x){return String(x).replace(/\"/g,'\"\"')}"
-"function addRow(s){rows.push([Date.now(),s.stale,s.heartbeat.bms_ok,s.heartbeat.state,s.pack.voltage_V,s.pack.current_A,s.pack.min_cell_mV,s.pack.max_cell_mV,s.temp.min_C,s.temp.max_C,s.temp.fan_command_percent,s.health.voltage_usable,s.health.temp_usable,s.faults.voltage_latched,s.faults.temp_latched,s.faults.current_latched,s.can.busoff_count,s.can.recover_count,s.safety.last_panic_reason,s.watchdog.last_block_reason,s.estimator.soc_pct,s.hil.flags].map(csvCell));if(rows.length>7200)rows.shift();drawLogCount()}"
-"function downloadLog(){let h='epoch_ms,stale,bms_ok,state,pack_V,current_A,min_cell_mV,max_cell_mV,min_temp_C,max_temp_C,fan_percent,voltage_usable,temp_usable,voltage_latched,temp_latched,current_latched,can_busoff_count,can_recover_count,panic_reason,wdg_block_reason,estimator_soc_pct,hil_flags\\n';let blob=new Blob([h+rows.map(r=>r.join(',')).join('\\n')+'\\n'],{type:'text/csv'});let a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='der26_ams_dashboard_log.csv';a.click();URL.revokeObjectURL(a.href)}"
+"function addRow(s){rows.push([Date.now(),s.stale,s.heartbeat.bms_ok,s.heartbeat.state,s.pack.voltage_V,s.pack.current_A,s.pack.min_cell_mV,s.pack.max_cell_mV,s.temp.min_C,s.temp.max_C,s.temp.fan_command_percent,s.health.voltage_usable,s.health.temp_usable,s.faults.voltage_latched,s.faults.temp_latched,s.faults.current_latched,s.can.busoff_count,s.can.recover_count,s.safety.last_panic_reason,s.watchdog.last_block_reason,s.rtos.heap_free_B,s.rtos.heap_min_B,s.rtos.stack_warn_mask,s.rtos.flags,s.estimator.soc_pct,s.hil.flags].map(csvCell));if(rows.length>7200)rows.shift();drawLogCount()}"
+"function downloadLog(){let h='epoch_ms,stale,bms_ok,state,pack_V,current_A,min_cell_mV,max_cell_mV,min_temp_C,max_temp_C,fan_percent,voltage_usable,temp_usable,voltage_latched,temp_latched,current_latched,can_busoff_count,can_recover_count,panic_reason,wdg_block_reason,rtos_heap_free_B,rtos_heap_min_B,rtos_stack_warn_mask,rtos_flags,estimator_soc_pct,hil_flags\\n';let blob=new Blob([h+rows.map(r=>r.join(',')).join('\\n')+'\\n'],{type:'text/csv'});let a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='der26_ams_dashboard_log.csv';a.click();URL.revokeObjectURL(a.href)}"
 "function f(x,d=1){return Number(x).toFixed(d)}"
 "async function tick(){try{let r=await fetch('/api/state');let s=await r.json();"
 "let stale=document.getElementById('stale');stale.textContent=s.stale?'STALE':'LIVE';stale.className='pill '+(s.stale?'bad':'ok');"
@@ -535,7 +553,8 @@ static const char INDEX_HTML[] =
 "document.getElementById('tasks').textContent=JSON.stringify(s.tasks,null,2);"
 "document.getElementById('can').textContent=JSON.stringify(s.can,null,2);"
 "document.getElementById('safety').textContent=JSON.stringify(s.safety,null,2);"
-"document.getElementById('watchdog').textContent=JSON.stringify(s.watchdog,null,2);"
+"document.getElementById('watchdog').textContent=JSON.stringify(s.watchdog,null,2);
+document.getElementById('rtos').textContent=JSON.stringify(s.rtos,null,2);"
 "document.getElementById('estimator').textContent=JSON.stringify(s.estimator,null,2);"
 "document.getElementById('hil').textContent=JSON.stringify(s.hil,null,2);"
 "addRow(s);"

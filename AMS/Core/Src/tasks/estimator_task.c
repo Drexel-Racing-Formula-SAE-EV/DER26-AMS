@@ -17,7 +17,7 @@
 
 void estimator_task_fn(void *argument);
 
-#define ESTIMATOR_STACK_WORDS       1024U
+#define ESTIMATOR_STACK_WORDS       AMS_STACK_ESTIMATOR_WORDS
 #define ESTIMATOR_HIL_TIMEOUT_TICKS 500U
 #define ESTIMATOR_HW_MIN_TEMP_C     (-40.0f)
 #define ESTIMATOR_HW_MAX_TEMP_C     120.0f

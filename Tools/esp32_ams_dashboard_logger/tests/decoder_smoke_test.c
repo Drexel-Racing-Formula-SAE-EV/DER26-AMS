@@ -207,6 +207,15 @@ static void test_extended_diagnostic_frames(void)
     CHECK(s.watchdog_block_count == 3u);
     CHECK(s.watchdog_last_feed_age_ds == 500u);
 
+    uint8_t rtos[8] = { 0x04u, 0x00u, 0x02u, 0x00u, 0x01u, 0x02u, 0x55u, 0x07u };
+    ams_can_frame_t rf = frame(AMS_LOGGER_CAN_ID_RTOS_DIAG, rtos);
+    CHECK(ams_dash_decode_frame(&s, &rf, 95u));
+    CHECK(s.rtos_heap_free_div16 == 0x0400u);
+    CHECK(s.rtos_heap_min_div16 == 0x0200u);
+    CHECK(s.rtos_stack_warn_mask == 0x0102u);
+    CHECK(s.rtos_min_stack_high_water_words == 0x55u);
+    CHECK(s.rtos_flags == 0x07u);
+
     uint8_t adbms[8] = { 0x01u, 0x23u, 0x04u, 0x05u, 0x06u, 0x03u, 0x3Fu, 0x07u };
     ams_can_frame_t af = frame(AMS_LOGGER_CAN_ID_ADBMS_DIAG, adbms);
     CHECK(ams_dash_decode_frame(&s, &af, 100u));

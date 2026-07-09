@@ -323,6 +323,14 @@ bool ams_dash_decode_frame(ams_dash_state_t *state,
             state->watchdog_last_feed_age_ds = be_u16(&d[6]);
             break;
 
+        case AMS_LOGGER_CAN_ID_RTOS_DIAG:
+            state->rtos_heap_free_div16 = be_u16(&d[0]);
+            state->rtos_heap_min_div16 = be_u16(&d[2]);
+            state->rtos_stack_warn_mask = be_u16(&d[4]);
+            state->rtos_min_stack_high_water_words = d[6];
+            state->rtos_flags = d[7];
+            break;
+
         case AMS_LOGGER_CAN_ID_ADBMS_DIAG:
             state->adbms_scan_count = be_u16(&d[0]);
             state->adbms_status_diag_count = d[2];

@@ -139,7 +139,7 @@ TaskHandle_t fan_task_start(app_data_t *data)
         return NULL;
     }
 
-    xTaskCreate(fan_task_fn, "fan task", 128, (void *)data, FAN_PRIO, &handle);
+    xTaskCreate(fan_task_fn, "fan task", AMS_STACK_FAN_WORDS, (void *)data, FAN_PRIO, &handle);
     return handle;
 }
 

@@ -204,6 +204,11 @@ const char *ams_fault_log_event_str(uint16_t event)
     case AMS_FAULT_LOG_CAN_BUS_OFF: return "CAN_BUS_OFF";
     case AMS_FAULT_LOG_CAN_RECOVERED: return "CAN_RECOVERED";
     case AMS_FAULT_LOG_WATCHDOG_FEED_STOPPED: return "WATCHDOG_FEED_STOPPED";
+    case AMS_FAULT_LOG_RTOS_STACK_OVERFLOW: return "RTOS_STACK_OVERFLOW";
+    case AMS_FAULT_LOG_RTOS_MALLOC_FAILED: return "RTOS_MALLOC_FAILED";
+    case AMS_FAULT_LOG_RTOS_ASSERT_FAILED: return "RTOS_ASSERT_FAILED";
+    case AMS_FAULT_LOG_RTOS_LOW_STACK_WARN: return "RTOS_LOW_STACK_WARN";
+    case AMS_FAULT_LOG_RTOS_LOW_HEAP_WARN: return "RTOS_LOW_HEAP_WARN";
     case AMS_FAULT_LOG_FAULT_CLEAR_ACCEPTED: return "FAULT_CLEAR_ACCEPTED";
     case AMS_FAULT_LOG_FAULT_CLEAR_REJECTED: return "FAULT_CLEAR_REJECTED";
     default: return "UNKNOWN";
@@ -348,6 +353,9 @@ const char *ams_safety_panic_reason_str(uint32_t reason)
     case AMS_PANIC_SCHEDULER_RETURNED: return "scheduler_returned";
     case AMS_PANIC_TASK_CREATE_FAILED: return "task_create_failed";
     case AMS_PANIC_LIBC_EXIT: return "libc_exit";
+    case AMS_PANIC_RTOS_STACK_OVERFLOW: return "rtos_stack_overflow";
+    case AMS_PANIC_RTOS_MALLOC_FAILED: return "rtos_malloc_failed";
+    case AMS_PANIC_RTOS_ASSERT_FAILED: return "rtos_assert_failed";
     case AMS_PANIC_FAULT_INJECTION_HARDFAULT: return "inject_hardfault";
     case AMS_PANIC_FAULT_INJECTION_BUSFAULT: return "inject_busfault";
     default: return "unknown";

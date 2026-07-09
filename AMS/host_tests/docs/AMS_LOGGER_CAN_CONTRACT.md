@@ -54,7 +54,7 @@ That stream is kept for compatibility.
 
 ## Logger Summary/Diagnostic Frames
 
-The dashboard/logger summary and diagnostic stream uses standard IDs `0x690..0x69F`, plus bench-focused diagnostic IDs `0x6A6..0x6AB`.
+The dashboard/logger summary and diagnostic stream uses standard IDs `0x690..0x69F`, plus bench-focused diagnostic IDs `0x6A6..0x6AC`.
 Multi-byte values are big-endian.
 
 | ID | Frame | Bytes |
@@ -81,8 +81,17 @@ Multi-byte values are big-endian.
 | `0x6A9` | Temperature open/short masks | segment index, 24-bit open-sensor mask, 24-bit short-sensor mask, packed counts |
 | `0x6AA` | Temperature jump/rate masks | segment index, 24-bit implausible-jump mask, 24-bit rate-rise mask, packed counts |
 | `0x6AB` | Voltage diagnostic masks | segment index, cell voltage jump mask, stuck-cell mask, jump/stuck counts and flags |
+| `0x6AC` | RTOS diagnostics | heap free/min-free, stack warning mask, minimum stack high-water mark, RTOS flags |
 
 
+
+### RTOS Diagnostic Frame
+
+`0x6AC` reports FreeRTOS health. Stack overflow, malloc failure, and RTOS assert are fatal and force BMS_OK low through the AMS panic path. Low stack/heap watermark conditions are warning diagnostics first; they do not directly change voltage/current/temp threshold policy.
+
+| ID | Encoding | Purpose |
+|---:|---|---|
+| `0x6AC` | bytes 0-1 heap free in 16-byte units; bytes 2-3 heap minimum-ever-free in 16-byte units; bytes 4-5 stack warning mask; byte 6 saturated minimum stack high-water mark in words; byte 7 RTOS flags | Runtime stack/heap margin monitoring |
 
 ### Sensor/Fan Diagnostic Frames
 
@@ -314,7 +323,7 @@ Recommended ESP32 tasks:
 | Task | Role |
 |---|---|
 | CAN RX | Receive and timestamp frames; no transmit required |
-| Decoder | Maintain latest AMS state from `0x690..0x6AB`, safety/CAN/watchdog diagnostics `0x69C..0x69F`, current ADC `0x6A6`, charger detail `0x6A7`, sensor/fan diagnostics `0x6A8..0x6AB`, estimator status `0x421`, and optional HIL frames `0x200..0x202` |
+| Decoder | Maintain latest AMS state from `0x690..0x6AC`, safety/CAN/watchdog diagnostics `0x69C..0x69F`, current ADC `0x6A6`, charger detail `0x6A7`, sensor/fan diagnostics `0x6A8..0x6AB`, RTOS diagnostics `0x6AC`, estimator status `0x421`, and optional HIL frames `0x200..0x202` |
 | SD logger | Write raw CAN and decoded CSV |
 | WiFi dashboard | Stream latest decoded state over WebSocket or UDP |
 | Watchdog/status | Show stale logger data if heartbeat sequence stops |

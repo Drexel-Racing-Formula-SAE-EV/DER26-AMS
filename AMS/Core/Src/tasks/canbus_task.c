@@ -736,6 +736,19 @@ static HAL_StatusTypeDef send_logger_summaries(canbus_device_t *canbus,
     payload[7] = sat_u8_u32(ccs->tx_fail_count);
     ret |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_CHARGER_DETAIL, payload);
 
+    memset(payload, 0, sizeof(payload));
+    logger_put_u16(payload, 0u, sat_u16_u32(data->rtos_heap_free_bytes / 16u));
+    logger_put_u16(payload, 2u, sat_u16_u32(data->rtos_heap_min_ever_free_bytes / 16u));
+    logger_put_u16(payload, 4u, data->rtos_stack_warn_mask);
+    payload[6] = sat_u8_u32(data->rtos_min_stack_high_water_words);
+    payload[7] = logger_bool_bit(data->rtos_fault, AMS_LOGGER_RTOS_FLAG_FAULT) |
+                 logger_bool_bit(data->rtos_stack_warning, AMS_LOGGER_RTOS_FLAG_STACK_WARN) |
+                 logger_bool_bit(data->rtos_heap_warning, AMS_LOGGER_RTOS_FLAG_HEAP_WARN) |
+                 logger_bool_bit((data->rtos_fault_flags & AMS_RTOS_FAULT_FLAG_STACK_OVERFLOW) != 0u, AMS_LOGGER_RTOS_FLAG_STACK_OVERFLOW) |
+                 logger_bool_bit((data->rtos_fault_flags & AMS_RTOS_FAULT_FLAG_MALLOC_FAILED) != 0u, AMS_LOGGER_RTOS_FLAG_MALLOC_FAILED) |
+                 logger_bool_bit((data->rtos_fault_flags & AMS_RTOS_FAULT_FLAG_ASSERT_FAILED) != 0u, AMS_LOGGER_RTOS_FLAG_ASSERT_FAILED);
+    ret |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_RTOS_DIAG, payload);
+
     return ret;
 }
 
@@ -959,7 +972,7 @@ TaskHandle_t canbus_task_start(app_data_t *data)
         return NULL;
     }
 
-    xTaskCreate(canbus_task_fn, "CANBus Task", 256, (void *)data, CAN_PRIO, &handle);
+    xTaskCreate(canbus_task_fn, "CANBus Task", AMS_STACK_CAN_WORDS, (void *)data, CAN_PRIO, &handle);
     return handle;
 }
 

@@ -13,6 +13,7 @@
 #include "main.h"
 #include "tasks/error_task.h"
 #include "ext_drivers/ams_safety.h"
+#include "ext_drivers/ams_rtos_diag.h"
 
 /**
  * @brief Actual ERROR task function
@@ -30,7 +31,7 @@ TaskHandle_t error_task_start(app_data_t *data)
         return NULL;
     }
 
-    xTaskCreate(error_task_fn, "ERROR task", 128, (void *)data, ERR_PRIO, &handle);
+    xTaskCreate(error_task_fn, "ERROR task", AMS_STACK_ERROR_WORDS, (void *)data, ERR_PRIO, &handle);
     return handle;
 }
 
@@ -52,6 +53,7 @@ void error_task_fn(void *arg)
 
         data->air_state = HAL_GPIO_ReadPin(AIR_CTRL_GPIO_Port, AIR_CTRL_Pin);
         (void)ams_heartbeat_update(data, entry);
+        ams_rtos_diag_update(data);
 
 
 	        data->hard_fault = (data->fuse_fault ||
@@ -61,7 +63,8 @@ void error_task_fn(void *arg)
 	                            data->adbms_diag_fault ||
 	                            data->task_heartbeat_fault ||
 	                            data->current_overcurrent_fault ||
-	                            data->current_fault_latched);
+	                            data->current_fault_latched ||
+                                data->rtos_fault);
 
         data->soft_fault = (data->cli_fault ||
                             data->canbus_fault ||
@@ -71,7 +74,9 @@ void error_task_fn(void *arg)
                             data->current_overcurrent_pending ||
                             data->temp_warning ||
                             data->temp_overtemp_pending ||
-                            data->fan_fault);
+                            data->fan_fault ||
+                            data->rtos_stack_warning ||
+                            data->rtos_heap_warning);
 
         if(data->hard_fault)
         {

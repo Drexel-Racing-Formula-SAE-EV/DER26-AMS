@@ -61,16 +61,35 @@
 #define AMS_HEARTBEAT_CAN_TIMEOUT_MS 2000u
 #define AMS_HEARTBEAT_LOGGER_TIMEOUT_MS 2000u
 
-// prios taken from DER24 defaults
-#define ERR_PRIO 17
-#define AIR_PRIO  7
-#define CAN_PRIO  8
-#define CLI_PRIO 14
-#define CUR_PRIO  7
-#define FAN_PRIO  7
-#define IMD_PRIO  6
-#define ADBMS_PRIO  9
-#define EST_PRIO 8
+/* FreeRTOS priority policy: larger number means higher priority.
+ * Safety supervisor stays highest. Blocking bench/service CLI stays below all
+ * measurement/control tasks so long UART prints cannot starve ADBMS/current/CAN.
+ */
+#define ERR_PRIO    17
+#define CUR_PRIO    12
+#define ADBMS_PRIO  11
+#define CAN_PRIO    10
+#define EST_PRIO     8
+#define FAN_PRIO     7
+#define AIR_PRIO     7
+#define IMD_PRIO     6
+#define CLI_PRIO     4
+
+/* xTaskCreate stack sizes are in StackType_t words, not bytes. Cortex-M7 uses
+ * 32-bit StackType_t, so multiply by 4 for bytes.
+ */
+#define AMS_STACK_ERROR_WORDS       256u
+#define AMS_STACK_CURRENT_WORDS     256u
+#define AMS_STACK_ADBMS_WORDS      1536u
+#define AMS_STACK_CAN_WORDS         512u
+#define AMS_STACK_ESTIMATOR_WORDS  1024u
+#define AMS_STACK_FAN_WORDS         192u
+#define AMS_STACK_AIR_WORDS         192u
+#define AMS_STACK_IMD_WORDS         192u
+#define AMS_STACK_CLI_WORDS         512u
+
+#define AMS_RTOS_STACK_WARN_WORDS    96u
+#define AMS_RTOS_HEAP_WARN_BYTES   2048u
 
 #define ECU_CANBUS_ID 0x69u
 
@@ -101,6 +120,37 @@ typedef enum
 	AMS_HEARTBEAT_LOGGER,
 	AMS_HEARTBEAT_COUNT
 } ams_heartbeat_id_t;
+
+
+typedef enum
+{
+    AMS_RTOS_TASK_ERROR = 0,
+    AMS_RTOS_TASK_CURRENT,
+    AMS_RTOS_TASK_ADBMS,
+    AMS_RTOS_TASK_CAN,
+    AMS_RTOS_TASK_ESTIMATOR,
+    AMS_RTOS_TASK_FAN,
+    AMS_RTOS_TASK_AIR,
+    AMS_RTOS_TASK_IMD,
+    AMS_RTOS_TASK_CLI,
+    AMS_RTOS_TASK_COUNT
+} ams_rtos_task_id_t;
+
+#define AMS_RTOS_TASK_BIT(id) ((uint16_t)(1u << (uint16_t)(id)))
+
+typedef enum
+{
+    AMS_RTOS_FAULT_NONE = 0,
+    AMS_RTOS_FAULT_STACK_OVERFLOW,
+    AMS_RTOS_FAULT_MALLOC_FAILED,
+    AMS_RTOS_FAULT_ASSERT_FAILED
+} ams_rtos_fault_reason_t;
+
+#define AMS_RTOS_FAULT_FLAG_STACK_OVERFLOW (1u << 0u)
+#define AMS_RTOS_FAULT_FLAG_MALLOC_FAILED  (1u << 1u)
+#define AMS_RTOS_FAULT_FLAG_ASSERT_FAILED  (1u << 2u)
+#define AMS_RTOS_FAULT_FLAG_LOW_STACK_WARN (1u << 3u)
+#define AMS_RTOS_FAULT_FLAG_LOW_HEAP_WARN  (1u << 4u)
 
 #define AMS_HEARTBEAT_BIT(id) ((uint16_t)(1u << (uint16_t)(id)))
 #define AMS_HEARTBEAT_SAFETY_MASK (AMS_HEARTBEAT_BIT(AMS_HEARTBEAT_ADBMS) | \
@@ -155,6 +205,23 @@ struct app_data_t
 	bool can_busoff_fault;
 	bool can_recover_pending;
 
+    uint32_t rtos_heap_free_bytes;
+    uint32_t rtos_heap_min_ever_free_bytes;
+    uint32_t rtos_malloc_fail_count;
+    uint32_t rtos_stack_overflow_count;
+    uint32_t rtos_assert_fail_count;
+    uint32_t rtos_last_assert_line;
+    uint32_t rtos_last_fault_tick;
+    uint16_t rtos_stack_high_water_words[AMS_RTOS_TASK_COUNT];
+    uint16_t rtos_stack_config_words[AMS_RTOS_TASK_COUNT];
+    uint16_t rtos_min_stack_high_water_words;
+    uint16_t rtos_stack_warn_mask;
+    uint16_t rtos_fault_flags;
+    uint8_t rtos_last_fault_reason;
+    uint8_t rtos_last_fault_task;
+    bool rtos_fault;
+    bool rtos_stack_warning;
+    bool rtos_heap_warning;
 
 	bool fan_fault;
 	bool cli_fault;

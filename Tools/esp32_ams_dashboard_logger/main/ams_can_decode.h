@@ -47,6 +47,7 @@
 #define AMS_LOGGER_CAN_ID_TEMP_DIAG_A     0x6A9u
 #define AMS_LOGGER_CAN_ID_TEMP_DIAG_B     0x6AAu
 #define AMS_LOGGER_CAN_ID_VOLTAGE_DIAG    0x6ABu
+#define AMS_LOGGER_CAN_ID_RTOS_DIAG       0x6ACu
 
 #define AMS_DASH_CAN_ID_ECU_AMS           0x069u
 #define AMS_DASH_CAN_ID_HIL_MEAS          0x200u
@@ -190,6 +191,12 @@ typedef struct
     uint16_t watchdog_feed_count;
     uint16_t watchdog_block_count;
     uint16_t watchdog_last_feed_age_ds;
+
+    uint16_t rtos_heap_free_div16;
+    uint16_t rtos_heap_min_div16;
+    uint16_t rtos_stack_warn_mask;
+    uint8_t rtos_min_stack_high_water_words;
+    uint8_t rtos_flags;
 
     uint16_t adbms_scan_count;
     uint8_t adbms_status_diag_count;

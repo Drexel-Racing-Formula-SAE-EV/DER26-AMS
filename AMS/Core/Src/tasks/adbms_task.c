@@ -236,7 +236,7 @@ TaskHandle_t adbms_task_start(app_data_t *data)
         return NULL;
     }
 
-    xTaskCreate(adbms_task_fn, "adbms task", 1024, (void *)data, ADBMS_PRIO, &handle);
+    xTaskCreate(adbms_task_fn, "adbms task", AMS_STACK_ADBMS_WORDS, (void *)data, ADBMS_PRIO, &handle);
     return handle;
 }
 

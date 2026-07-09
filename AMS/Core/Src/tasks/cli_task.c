@@ -17,6 +17,7 @@
 #include <string.h>
 #include <stdio.h>
 #include "ext_drivers/cli.h"
+#include "ext_drivers/ams_rtos_diag.h"
 
 /**
 * @brief Actual CLI task function
@@ -41,6 +42,7 @@ int get_current(int argc, char *argv[]);
 int get_charger(int argc, char *argv[]);
 int get_can_diag(int argc, char *argv[]);
 int watchdog_control(int argc, char *argv[]);
+int get_rtos_diag(int argc, char *argv[]);
 int get_spi_debug(int argc, char *argv[]);
 int get_apm_debug(int argc, char *argv[]);
 int get_bringup(int argc, char *argv[]);
@@ -71,6 +73,7 @@ command_t cmds[] =
 	{"charger", &get_charger, "gets charger CAN command/status/debug state"},
 	{"can", &get_can_diag, "CAN diagnostics: can [diag|recover]"},
 	{"wdg", &watchdog_control, "watchdog diagnostics/control: wdg [status|enable]"},
+	{"rtos", &get_rtos_diag, "RTOS stack/heap diagnostics: rtos"},
 	{"spi", &get_spi_debug, "ADBMS6830 SPI debug: spi [status|pins|cspins|cs|preset|toggle|probe|probea|probeb|scope|sid|stat|staterr|cfgchk|cellst|oweven|owodd|auxdiag|wake|coldwake|clrflag|clear|diagclear|enable|disable]"},
 	{"apm", &get_apm_debug, "ADBMS2950/APM debug: apm [status|probe|clear|enable|disable]"},
 	{"bringup", &get_bringup, "bench bring-up summaries: bringup [help|board|adbms6830|apm2950|charger-lv|charger-battery|ready|snapshot|evidence]"},
@@ -236,7 +239,7 @@ TaskHandle_t cli_task_start(app_data_t *data)
         return NULL;
     }
 
-    xTaskCreate(cli_task_fn, "CLI task", 256, (void *)data, CLI_PRIO, &handle);
+    xTaskCreate(cli_task_fn, "CLI task", AMS_STACK_CLI_WORDS, (void *)data, CLI_PRIO, &handle);
     return handle;
 }
 
@@ -2222,6 +2225,63 @@ int watchdog_control(int argc, char *argv[])
              ams_safety_watchdog_block_reason_str(data->watchdog_last_block_reason),
              (unsigned long)data->watchdog_last_block_reason);
     ret |= cli_printline(cli, outline);
+
+    return ret;
+}
+
+int get_rtos_diag(int argc, char *argv[])
+{
+    int ret = 0;
+    (void)argc;
+    (void)argv;
+
+    ams_rtos_diag_update(data);
+
+    snprintf(outline, CLI_LINESZ,
+             "RTOS heap free:%lu min:%lu warn<%u fault:%d stack_warn:%d heap_warn:%d",
+             (unsigned long)data->rtos_heap_free_bytes,
+             (unsigned long)data->rtos_heap_min_ever_free_bytes,
+             AMS_RTOS_HEAP_WARN_BYTES,
+             data->rtos_fault,
+             data->rtos_stack_warning,
+             data->rtos_heap_warning);
+    ret |= cli_printline(cli, outline);
+
+    snprintf(outline, CLI_LINESZ,
+             "RTOS flags:0x%04X last:%s task:%u tick:%lu",
+             data->rtos_fault_flags,
+             ams_rtos_fault_reason_str(data->rtos_last_fault_reason),
+             data->rtos_last_fault_task,
+             (unsigned long)data->rtos_last_fault_tick);
+    ret |= cli_printline(cli, outline);
+
+    snprintf(outline, CLI_LINESZ,
+             "RTOS counts malloc:%lu stack_ovf:%lu assert:%lu assert_line:%lu",
+             (unsigned long)data->rtos_malloc_fail_count,
+             (unsigned long)data->rtos_stack_overflow_count,
+             (unsigned long)data->rtos_assert_fail_count,
+             (unsigned long)data->rtos_last_assert_line);
+    ret |= cli_printline(cli, outline);
+
+    snprintf(outline, CLI_LINESZ,
+             "RTOS min stack high-water:%u words warn_mask:0x%04X warn<%u words",
+             data->rtos_min_stack_high_water_words,
+             data->rtos_stack_warn_mask,
+             AMS_RTOS_STACK_WARN_WORDS);
+    ret |= cli_printline(cli, outline);
+
+    for(uint8_t i = 0u; i < (uint8_t)AMS_RTOS_TASK_COUNT; i++)
+    {
+        ams_rtos_task_id_t id = (ams_rtos_task_id_t)i;
+        snprintf(outline, CLI_LINESZ,
+                 "  %u %-9s prio:%u stack:%u words highwater:%u words",
+                 (unsigned)i,
+                 ams_rtos_task_name(id),
+                 ams_rtos_task_priority(id),
+                 data->rtos_stack_config_words[i],
+                 data->rtos_stack_high_water_words[i]);
+        ret |= cli_printline(cli, outline);
+    }
 
     return ret;
 }

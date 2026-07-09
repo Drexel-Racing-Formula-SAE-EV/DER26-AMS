@@ -57,7 +57,7 @@ TaskHandle_t current_task_start(app_data_t *data)
         return NULL;
     }
 
-    xTaskCreate(current_task_fn, "current task", 160, (void *)data, CUR_PRIO, &handle);
+    xTaskCreate(current_task_fn, "current task", AMS_STACK_CURRENT_WORDS, (void *)data, CUR_PRIO, &handle);
     return handle;
 }
 

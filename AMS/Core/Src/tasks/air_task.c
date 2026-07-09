@@ -18,7 +18,7 @@ TaskHandle_t air_task_start(app_data_t *data)
         return NULL;
     }
 
-    xTaskCreate(air_task_fn, "air task", 128, (void *)data, AIR_PRIO, &handle);
+    xTaskCreate(air_task_fn, "air task", AMS_STACK_AIR_WORDS, (void *)data, AIR_PRIO, &handle);
     return handle;
 }
 

@@ -101,13 +101,15 @@ The decoder includes the expanded AMS diagnostic frames:
 | `0x69F` | ADBMS scan/diagnostic counters, last diagnostic status, ADBMS/HIL flags |
 | `0x6A6` | current ADC high/low counts, selected range, measurement reason, ADC validity flags, zero-cal capture count |
 | `0x6A7` | charger read current, disable reason mask, TX/RX/fail counters |
+| `0x6A8..0x6AB` | temperature/fan and voltage plausibility diagnostics |
+| `0x6AC` | RTOS heap free/min-free, stack warning mask, minimum stack high-water mark, RTOS flags |
 | `0x421` | estimator active instance, flags, SoC, innovation, R0 |
 | `0x200..0x202` | optional HIL plant measurement/truth/summary frames when present |
 
 Known non-dashboard frames such as ECU compatibility packet `0x069`, HIL image
 frames `0x210/0x211`, and extended charger frames are counted as ignored rather
 than unknown. This keeps `/api/state.unknown_frames` useful for real CAN contract
-mistakes. The ESP32 dashboard remains receive-only and never clears AMS faults.
+mistakes. The ESP32 dashboard remains receive-only and never clears AMS faults. Stack overflow, malloc failure, and RTOS assert are fatal on the AMS side; low stack/heap watermark is displayed as warning telemetry.
 
 ## Host Decoder Test
 

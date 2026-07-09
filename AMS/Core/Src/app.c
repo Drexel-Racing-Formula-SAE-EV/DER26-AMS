@@ -18,6 +18,7 @@
 #include "tasks/current_task.h"
 #include <tasks/adbms_task.h>
 #include "tasks/estimator_task.h"
+#include "ext_drivers/ams_rtos_diag.h"
 
 app_data_t app = {0};
 static osMutexId_t adbms_spi_mutex;
@@ -167,6 +168,7 @@ void app_create()
 	app.can_last_error_tick = 0u;
 	app.can_busoff_fault = false;
 	app.can_recover_pending = false;
+    ams_rtos_diag_init(&app);
 	app.fan_fault = false;
 	app.cli_fault = false;
 	app.canbus_fault = false;

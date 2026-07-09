@@ -480,6 +480,7 @@ uint16_t stm32f767z_adc_read(ADC_HandleTypeDef *hadc){ return stm32f767z_adc_rea
 #include "Core/Src/ext_drivers/imd.c"
 #include "Core/Src/ext_drivers/accumulator.c"
 #include "Core/Src/ext_drivers/ams_safety.c"
+#include "Core/Src/ext_drivers/ams_rtos_diag.c"
 #include "Core/Src/ext_drivers/canbus.c"
 #include "Core/Src/estimator/ams_estimator_lut.c"
 #include "Core/Src/estimator/ams_soc_ekf.c"
@@ -542,7 +543,7 @@ static float ntc_voltage_for_temp_c(float temp_c){
 }
 static int16_t raw_for_temp_c(float temp_c){ return raw_for_ntc_voltage(ntc_voltage_for_temp_c(temp_c)); }
 #define CHECK(cond) do{ if(!(cond)){ fprintf(stderr,"FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); exit(1);} }while(0)
-#define HOST_LOGGER_FRAME_COUNT 119u
+#define HOST_LOGGER_FRAME_COUNT 120u
 #define HOST_ECU_FRAME_COUNT 62u
 #define HOST_NONCHARGE_CAN_FRAME_COUNT (HOST_ECU_FRAME_COUNT + HOST_LOGGER_FRAME_COUNT)
 #define HOST_CHARGE_CAN_FRAME_COUNT (HOST_LOGGER_FRAME_COUNT + 1u)
@@ -550,7 +551,7 @@ static int16_t raw_for_temp_c(float temp_c){ return raw_for_ntc_voltage(ntc_volt
 
 static void sil_mark_all_heartbeats_alive(app_data_t *d);
 
-static void init_fake_app(void){ memset(&app,0,sizeof(app)); ams_safety_host_reset_state(); app.acc.smb.num_ics = NSMBS; app.acc.smb.ics = app.acc.smb_ics; current_fault_init(&app.current_fault_state); voltage_fault_init(&app.voltage_fault_state); temperature_fault_init(&app.temp_fault_state); ams_heartbeat_init(&app, fake_tick); app.current_meas_reason = CURRENT_SENSOR_REASON_ADC_READ; app.current_fault_reason = CURRENT_FAULT_REASON_SENSOR_NOT_READY; app.voltage_fault_reason = VOLTAGE_FAULT_REASON_NOT_READY; app.temp_fault = true; app.temp_read_fault = true; app.temp_fan_max = true; app.temp_fault_reason = TEMPERATURE_FAULT_REASON_NOT_READY; app.balance_inhibit = (AMS_HW_BRINGUP_BALANCE_INHIBIT_DEFAULT != 0); fake_adbms_voltage_masks_full_update(); fake_adc_read_index = 0u; fake_adbms_wrcfgb_status = HAL_OK; fake_adbms_wrpwm_status = HAL_OK; fake_adbms_wrpwm_fail_after_ok = -1; fake_adbms_diag_status = HAL_OK; fake_adbms_config_mismatch_mask = 0u; fake_can_add_tx_status = HAL_OK; fake_can_error = HAL_CAN_ERROR_NONE; fake_can_recover_status = HAL_OK; bms_pin_state = GPIO_PIN_RESET; }
+static void init_fake_app(void){ memset(&app,0,sizeof(app)); ams_safety_host_reset_state(); ams_rtos_host_reset_state(); ams_rtos_diag_init(&app); app.acc.smb.num_ics = NSMBS; app.acc.smb.ics = app.acc.smb_ics; current_fault_init(&app.current_fault_state); voltage_fault_init(&app.voltage_fault_state); temperature_fault_init(&app.temp_fault_state); ams_heartbeat_init(&app, fake_tick); app.current_meas_reason = CURRENT_SENSOR_REASON_ADC_READ; app.current_fault_reason = CURRENT_FAULT_REASON_SENSOR_NOT_READY; app.voltage_fault_reason = VOLTAGE_FAULT_REASON_NOT_READY; app.temp_fault = true; app.temp_read_fault = true; app.temp_fan_max = true; app.temp_fault_reason = TEMPERATURE_FAULT_REASON_NOT_READY; app.balance_inhibit = (AMS_HW_BRINGUP_BALANCE_INHIBIT_DEFAULT != 0); fake_adbms_voltage_masks_full_update(); fake_adc_read_index = 0u; fake_adbms_wrcfgb_status = HAL_OK; fake_adbms_wrpwm_status = HAL_OK; fake_adbms_wrpwm_fail_after_ok = -1; fake_adbms_diag_status = HAL_OK; fake_adbms_config_mismatch_mask = 0u; fake_can_add_tx_status = HAL_OK; fake_can_error = HAL_CAN_ERROR_NONE; fake_can_recover_status = HAL_OK; bms_pin_state = GPIO_PIN_RESET; }
 
 static void host_mark_updated_cells(app_data_t *d)
 {
@@ -864,7 +865,12 @@ static void test_logger_can_contract_packets(void){
     CHECK(tx_log[17].data[6] == 10u);
     CHECK(tx_log[17].data[7] == 2u);
 
-    uint32_t detail_base = 18u;
+    CHECK(tx_log[18].stdid == AMS_LOGGER_CAN_ID_RTOS_DIAG);
+    CHECK(word_at(18,0) == (app.rtos_heap_free_bytes / 16u));
+    CHECK(word_at(18,1) == (app.rtos_heap_min_ever_free_bytes / 16u));
+    CHECK(word_at(18,2) == app.rtos_stack_warn_mask);
+
+    uint32_t detail_base = 19u;
     uint32_t last_cell_frame = detail_base + (4u * 5u) + 4u;
     CHECK(tx_log[last_cell_frame].stdid == AMS_LOGGER_CAN_ID_CELL_DETAIL);
     CHECK(tx_log[last_cell_frame].data[0] == 4u);
@@ -1573,6 +1579,70 @@ static void test_watchdog_feed_gate(void)
     CHECK(app.watchdog_feed_count == 0u);
     CHECK(app.watchdog_last_block_reason == AMS_WATCHDOG_BLOCK_NOT_ENABLED);
 #endif
+}
+
+static void test_rtos_stack_heap_diag_and_faults(void)
+{
+    init_fake_app();
+    app.error_task = (TaskHandle_t)0x1000u;
+    app.current_task = (TaskHandle_t)0x1001u;
+    app.adbms_task = (TaskHandle_t)0x1002u;
+    app.canbus_task = (TaskHandle_t)0x1003u;
+    app.estimator_task = (TaskHandle_t)0x1004u;
+    app.fan_task = (TaskHandle_t)0x1005u;
+    app.cli_task = (TaskHandle_t)0x1006u;
+
+    ams_rtos_host_set_heap(1024u, 1024u);
+    ams_rtos_host_set_stack_high_water(AMS_RTOS_TASK_ERROR, 160u);
+    ams_rtos_host_set_stack_high_water(AMS_RTOS_TASK_CURRENT, 140u);
+    ams_rtos_host_set_stack_high_water(AMS_RTOS_TASK_ADBMS, 64u);
+    ams_rtos_host_set_stack_high_water(AMS_RTOS_TASK_CAN, 180u);
+    ams_rtos_host_set_stack_high_water(AMS_RTOS_TASK_ESTIMATOR, 220u);
+    ams_rtos_host_set_stack_high_water(AMS_RTOS_TASK_FAN, 120u);
+    ams_rtos_host_set_stack_high_water(AMS_RTOS_TASK_CLI, 200u);
+
+    ams_rtos_diag_update(&app);
+    CHECK(app.rtos_heap_warning == true);
+    CHECK(app.rtos_stack_warning == true);
+    CHECK(app.rtos_fault == false);
+    CHECK(app.rtos_min_stack_high_water_words == 64u);
+    CHECK((app.rtos_stack_warn_mask & AMS_RTOS_TASK_BIT(AMS_RTOS_TASK_ADBMS)) != 0u);
+    CHECK((app.rtos_fault_flags & AMS_RTOS_FAULT_FLAG_LOW_HEAP_WARN) != 0u);
+    CHECK((app.rtos_fault_flags & AMS_RTOS_FAULT_FLAG_LOW_STACK_WARN) != 0u);
+
+    sil_make_watchdog_ready(&app);
+    app.bms_state = true;
+    bms_pin_state = GPIO_PIN_SET;
+    run_one_error_task_iteration(&app);
+    CHECK(app.soft_fault == true);
+    CHECK(app.hard_fault == false);
+    CHECK(app.bms_state == true);
+
+    init_fake_app();
+    app.bms_state = true;
+    bms_pin_state = GPIO_PIN_SET;
+    fake_tick = 77u;
+    ams_rtos_set_fault(&app, AMS_RTOS_FAULT_STACK_OVERFLOW, AMS_RTOS_TASK_CLI, 0u);
+    CHECK(app.rtos_fault == true);
+    CHECK(app.rtos_stack_overflow_count == 1u);
+    CHECK(app.rtos_last_fault_reason == AMS_RTOS_FAULT_STACK_OVERFLOW);
+    CHECK(app.rtos_last_fault_task == AMS_RTOS_TASK_CLI);
+    run_one_error_task_iteration(&app);
+    CHECK(app.hard_fault == true);
+    CHECK(app.bms_state == false);
+    CHECK(bms_pin_state == GPIO_PIN_RESET);
+
+    init_fake_app();
+    app.bms_state = true;
+    bms_pin_state = GPIO_PIN_SET;
+    ams_rtos_assert_failed("host", 1234);
+    CHECK(app.rtos_fault == true);
+    CHECK(app.rtos_assert_fail_count == 1u);
+    CHECK(app.rtos_last_assert_line == 1234u);
+    CHECK(app.rtos_last_fault_reason == AMS_RTOS_FAULT_ASSERT_FAILED);
+    CHECK(app.bms_state == false);
+    CHECK(bms_pin_state == GPIO_PIN_RESET);
+    CHECK(ams_safety_panic_active() == true);
 }
 
 static void test_can_busoff_sets_fault_and_recovers(void)
@@ -5357,6 +5427,7 @@ int main(void){
     test_task_iterations_with_injected_signals(); puts("PASS one-iteration task injection tests");
     test_safety_panic_reset_watchdog_and_log(); puts("PASS safety panic/reset/log path");
     test_watchdog_feed_gate(); puts("PASS watchdog feed gate");
+    test_rtos_stack_heap_diag_and_faults(); puts("PASS RTOS stack/heap diagnostics");
     test_can_busoff_sets_fault_and_recovers(); puts("PASS CAN bus-off fault/recovery");
     test_fault_matrix_extra(); puts("PASS fault matrix extra");
     puts("ALL COMPREHENSIVE HOST INJECTION TESTS PASSED");
