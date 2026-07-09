@@ -32,7 +32,7 @@ void canbus_task_fn(void *arg);
 #define ECU_SEG_TEMPS 17u
 #define ECU_FANS      10u
 #define ECU_TEMP_INVALID_DECI_C ((uint16_t)0x8000u)
-#define CAN_TX_TIMEOUT_TICKS 10u
+#define CAN_TX_TIMEOUT_TICKS 1u
 #define CAN_ECU_COMPACT_PROTOCOL_VERSION 1u
 #define CAN_ECU_FAST_FREQ 10u
 #define CAN_ECU_FAST_PERIOD_MS (1000u / CAN_ECU_FAST_FREQ)
@@ -265,7 +265,13 @@ static HAL_StatusTypeDef send_ecu_compact_status(canbus_device_t *canbus,
     payload[4] = ecu_bool_bit(data->voltage_fault, 0u) |
                  ecu_bool_bit(data->temp_fault, 1u) |
                  ecu_bool_bit(data->current_fault, 2u) |
-                 ecu_bool_bit(data->imd_ok, 3u) |
+                 /*
+                  * Bit 3 is reserved until AMS firmware actually decodes the
+                  * IMD input. During staged bench testing, IMD supervision is
+                  * offloaded to the hardwired shutdown path, so do not report
+                  * a firmware-validated IMD_OK bit to the ECU.
+                  */
+                 0u |
                  ecu_bool_bit(data->charger_fault, 4u) |
                  ecu_bool_bit(data->adbms_diag_fault, 5u) |
                  ecu_bool_bit(data->task_heartbeat_fault, 6u) |
@@ -1190,6 +1196,26 @@ void canbus_task_fn(void *arg)
         }
 
         ret |= send_ecu_compact_telemetry(canbus, data, ecu_sequence++);
+        bool compact_tx_ok = (ret == HAL_OK);
+        if(!compact_tx_ok && (data->state != STATE_CHARGE))
+        {
+            /*
+             * The compact ECU frames are the high-priority AMS heartbeat. If
+             * they cannot be queued, do not spend this cycle trying to dump
+             * slower full-cell/logger telemetry onto a congested or broken bus.
+             *
+             * Charge mode is the exception: still attempt the charger command
+             * path so a TX failure can be latched as a charger fault and force
+             * BMS low.
+             */
+            canbus_poll_errors(canbus, data);
+            canbus_record_task_tx_status(data, ret);
+            data->canbus_fault = data->canbus_fault || data->can_busoff_fault;
+            ams_heartbeat_kick(data, AMS_HEARTBEAT_CAN, osKernelGetTickCount());
+            osDelayUntil(entry + CAN_ECU_FAST_PERIOD_MS);
+            continue;
+        }
+
         bool slow_due = false;
         slow_div++;
         if(slow_div >= CAN_ECU_SLOW_DIV)
@@ -1213,8 +1239,11 @@ void canbus_task_fn(void *arg)
                 ret |= send_ecu_ams_voltages(canbus, data);
                 ret |= send_ecu_ams_temps(canbus, data);
                 ret |= send_ecu_ams_fans(canbus, data);
-                ret |= send_logger_telemetry(canbus, data);
-                ams_heartbeat_kick(data, AMS_HEARTBEAT_LOGGER, osKernelGetTickCount());
+                if(compact_tx_ok)
+                {
+                    ret |= send_logger_telemetry(canbus, data);
+                    ams_heartbeat_kick(data, AMS_HEARTBEAT_LOGGER, osKernelGetTickCount());
+                }
                 ret |= send_estimator_status(canbus, data);
             }
             canbus_poll_errors(canbus, data);
@@ -1284,8 +1313,11 @@ void canbus_task_fn(void *arg)
                     set_bms(0);
                 }
 
-                ret |= send_logger_telemetry(canbus, data);
-                ams_heartbeat_kick(data, AMS_HEARTBEAT_LOGGER, osKernelGetTickCount());
+                if(compact_tx_ok)
+                {
+                    ret |= send_logger_telemetry(canbus, data);
+                    ams_heartbeat_kick(data, AMS_HEARTBEAT_LOGGER, osKernelGetTickCount());
+                }
             }
 
             canbus_poll_errors(canbus, data);
