@@ -93,6 +93,15 @@
 
 #define ECU_CANBUS_ID 0x69u
 
+/* Compact AMS -> ECU safety/status contract. These frames are intentionally
+ * separate from the legacy paged 0x069 telemetry stream and the passive logger
+ * 0x690+ stream. ECU should use these for runtime gating; full cell/temp data
+ * can stay slow/logger-side during staged bench bring-up. */
+#define AMS_ECU_CAN_ID_STATUS      0x680u
+#define AMS_ECU_CAN_ID_ELECTRICAL  0x681u
+#define AMS_ECU_CAN_ID_THERMAL     0x682u
+#define AMS_ECU_CAN_ID_HEALTH      0x683u
+
 #define TO_LSB16(x) ((uint16_t)x & 0xff)
 #define TO_MSB16(x) ((((uint16_t)x & 0xff00) >> 8) & 0xff)
 

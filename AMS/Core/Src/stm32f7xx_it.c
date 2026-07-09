@@ -234,7 +234,8 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 
     if(cli->msg_pending)
     {
-        /* Drop new input until the task copies the completed line. */
+        /* Drop new input until the task copies the completed line. Do not
+         * transmit from this ISR; blocking UART TX here adds IRQ latency. */
         cli->index = 0;
         (void)HAL_UART_Receive_IT(&huart3, &cli->c, 1);
         return;
@@ -244,7 +245,6 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
     {
         if(cli->index > 0)
         {
-            (void)HAL_UART_Transmit(&huart3, (uint8_t *)"\r\n", 2, 10);
             cli->line[cli->index] = '\0';
             cli->index = 0;
             cli->msg_count++;
@@ -256,16 +256,15 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
         if(cli->index > 0)
         {
             cli->index--;
-            (void)HAL_UART_Transmit(&huart3, (uint8_t *)"\b \b", 3, 10);
         }
     }
     else if(cli->index < CLI_LINESZ - 1)
     {
         cli->line[cli->index++] = c;
-        (void)HAL_UART_Transmit(&huart3, &c, 1, 10);
     }
 
-    // Re-arm on the global
+    /* RX ISR only receives bytes and re-arms RX. All CLI output happens from
+     * the CLI task through cli_printline(). */
     (void)HAL_UART_Receive_IT(&huart3, &cli->c, 1);
 }
 /* USER CODE END 1 */

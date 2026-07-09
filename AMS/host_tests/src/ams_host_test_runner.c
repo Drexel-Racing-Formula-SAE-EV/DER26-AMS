@@ -545,9 +545,11 @@ static int16_t raw_for_temp_c(float temp_c){ return raw_for_ntc_voltage(ntc_volt
 #define CHECK(cond) do{ if(!(cond)){ fprintf(stderr,"FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); exit(1);} }while(0)
 #define HOST_LOGGER_FRAME_COUNT 120u
 #define HOST_ECU_FRAME_COUNT 62u
-#define HOST_NONCHARGE_CAN_FRAME_COUNT (HOST_ECU_FRAME_COUNT + HOST_LOGGER_FRAME_COUNT)
-#define HOST_CHARGE_CAN_FRAME_COUNT (HOST_LOGGER_FRAME_COUNT + 1u)
-#define HOST_CHARGER_FRAME_INDEX 0u
+#define HOST_ECU_COMPACT_FRAME_COUNT 4u
+#define HOST_LEGACY_ECU_FRAME_OFFSET HOST_ECU_COMPACT_FRAME_COUNT
+#define HOST_NONCHARGE_CAN_FRAME_COUNT (HOST_ECU_COMPACT_FRAME_COUNT + HOST_ECU_FRAME_COUNT + HOST_LOGGER_FRAME_COUNT)
+#define HOST_CHARGE_CAN_FRAME_COUNT (HOST_ECU_COMPACT_FRAME_COUNT + HOST_LOGGER_FRAME_COUNT + 1u)
+#define HOST_CHARGER_FRAME_INDEX HOST_ECU_COMPACT_FRAME_COUNT
 
 static void sil_mark_all_heartbeats_alive(app_data_t *d);
 
@@ -5247,11 +5249,11 @@ static void test_charger_command_priority_tx_failure_and_cli(void)
 
     run_one_canbus_task_iteration(&app);
     CHECK(tx_count == HOST_CHARGE_CAN_FRAME_COUNT);
-    CHECK(tx_log[0].ide == CAN_ID_EXT);
-    CHECK(tx_log[0].extid == CCS_CANBUS_ID);
-    CHECK(word_at(0u, 0u) == (uint16_t)(CHARGE_MAX_VOLTAGE * 10.0f));
-    CHECK(word_at(0u, 1u) == (uint16_t)(CHARGE_MAX_CURRENT * 10.0f));
-    CHECK(tx_log[0].data[4] == CHARGER_CMD_ENABLE);
+    CHECK(tx_log[HOST_CHARGER_FRAME_INDEX].ide == CAN_ID_EXT);
+    CHECK(tx_log[HOST_CHARGER_FRAME_INDEX].extid == CCS_CANBUS_ID);
+    CHECK(word_at(HOST_CHARGER_FRAME_INDEX, 0u) == (uint16_t)(CHARGE_MAX_VOLTAGE * 10.0f));
+    CHECK(word_at(HOST_CHARGER_FRAME_INDEX, 1u) == (uint16_t)(CHARGE_MAX_CURRENT * 10.0f));
+    CHECK(tx_log[HOST_CHARGER_FRAME_INDEX].data[4] == CHARGER_CMD_ENABLE);
     CHECK(app.board.charger.tx_count == 1u);
     CHECK(app.board.charger.tx_fail == false);
 
@@ -5315,13 +5317,13 @@ static void test_telemetry_absent_segments_and_invalid_channels(void){
     tx_count = 0; tx_free_level = 3;
     run_one_canbus_task_iteration(&app);
     CHECK(tx_count == HOST_NONCHARGE_CAN_FRAME_COUNT);
-    CHECK(word_at(3,1) > 3500u && word_at(3,2) == 0u && word_at(3,3) > 3500u);
-    CHECK(word_at(28 + 6 + 1,1) == ECU_TEMP_INVALID_DECI_C); // segment 1, temp sensor 3 invalid => packet 35 word0
+    CHECK(word_at(HOST_LEGACY_ECU_FRAME_OFFSET + 3u,1) > 3500u && word_at(HOST_LEGACY_ECU_FRAME_OFFSET + 3u,2) == 0u && word_at(HOST_LEGACY_ECU_FRAME_OFFSET + 3u,3) > 3500u);
+    CHECK(word_at(HOST_LEGACY_ECU_FRAME_OFFSET + 28u + 6u + 1u,1) == ECU_TEMP_INVALID_DECI_C); // segment 1, temp sensor 3 invalid => packet 35 word0
     // Segments 2..4 are absent because num_ics=2; their voltage and temp packets must be zero-filled.
-    for(uint32_t frame=13u; frame<=27u; frame++) CHECK(word_at(frame,1)==0u && word_at(frame,2)==0u && word_at(frame,3)==0u);
+    for(uint32_t frame=HOST_LEGACY_ECU_FRAME_OFFSET + 13u; frame<=HOST_LEGACY_ECU_FRAME_OFFSET + 27u; frame++) CHECK(word_at(frame,1)==0u && word_at(frame,2)==0u && word_at(frame,3)==0u);
     for(uint8_t seg=2u; seg<NSMBS; seg++){
         for(uint8_t packet=0u; packet<6u; packet++){
-            uint32_t frame = 28u + ((uint32_t)seg * 6u) + packet;
+            uint32_t frame = HOST_LEGACY_ECU_FRAME_OFFSET + 28u + ((uint32_t)seg * 6u) + packet;
             uint8_t sensor = (uint8_t)(packet * 3u);
             CHECK(word_at(frame,1) == ECU_TEMP_INVALID_DECI_C);
             CHECK(word_at(frame,2) == ECU_TEMP_INVALID_DECI_C);
@@ -5333,7 +5335,7 @@ static void test_telemetry_absent_segments_and_invalid_channels(void){
 static void test_periods_and_driver_edge_cases(void){
     static CAN_HandleTypeDef hcan;
     init_fake_app(); fill_nominal_pack(&app, 3.7f); app.board.canbus.hcan=&hcan; app.state=STATE_DISCARGE; fake_tick=123; tx_count=0; tx_free_level=3;
-    run_one_canbus_task_iteration(&app); CHECK(fake_tick == 123u + (1000u / CAN_FREQ));
+    run_one_canbus_task_iteration(&app); CHECK(fake_tick == 123u + CAN_ECU_FAST_PERIOD_MS);
 
     init_fake_app(); app.bms_state=true; fake_tick=100; run_one_error_task_iteration(&app); CHECK(fake_tick == 100u + (1000u / ERR_FREQ));
 

@@ -33,6 +33,15 @@ void canbus_task_fn(void *arg);
 #define ECU_FANS      10u
 #define ECU_TEMP_INVALID_DECI_C ((uint16_t)0x8000u)
 #define CAN_TX_TIMEOUT_TICKS 10u
+#define CAN_ECU_COMPACT_PROTOCOL_VERSION 1u
+#define CAN_ECU_FAST_FREQ 10u
+#define CAN_ECU_FAST_PERIOD_MS (1000u / CAN_ECU_FAST_FREQ)
+#define CAN_ECU_SLOW_DIV ((CAN_ECU_FAST_FREQ + CAN_FREQ - 1u) / CAN_FREQ)
+#define CAN_CHARGER_DIV ((CHARGER_COMMAND_PERIOD_MS + CAN_ECU_FAST_PERIOD_MS - 1u) / CAN_ECU_FAST_PERIOD_MS)
+
+static uint16_t sat_u16_scaled(float x, float scale);
+static int16_t sat_i16_scaled(float x, float scale);
+static uint8_t sat_u8_u32(uint32_t x);
 
 static HAL_StatusTypeDef canbus_wait_tx_mailbox(canbus_device_t *canbus)
 {
@@ -176,6 +185,175 @@ static void canbus_record_task_tx_status(app_data_t *data, HAL_StatusTypeDef ret
         data->canbus_fault = false;
     }
 }
+
+static uint8_t ecu_bool_bit(bool value, uint8_t bit)
+{
+    return value ? (uint8_t)(1u << bit) : 0u;
+}
+
+static void ecu_put_u16(uint8_t payload[8], uint8_t offset, uint16_t value)
+{
+    payload[offset] = TO_MSB16(value);
+    payload[(uint8_t)(offset + 1u)] = TO_LSB16(value);
+}
+
+static void ecu_put_i16(uint8_t payload[8], uint8_t offset, int16_t value)
+{
+    ecu_put_u16(payload, offset, (uint16_t)value);
+}
+
+static uint16_t ecu_pack_voltage_deci_v(const app_data_t *data)
+{
+    float pack_v = 0.0f;
+
+    if(data == NULL)
+    {
+        return 0u;
+    }
+
+    pack_v = (data->total_voltage > 0.0f) ? data->total_voltage : data->acc.total_volt;
+    return sat_u16_scaled(pack_v, 10.0f);
+}
+
+static uint8_t ecu_max_fan_percent(const app_data_t *data)
+{
+    float max_duty = 0.0f;
+
+    if(data == NULL)
+    {
+        return 0u;
+    }
+
+    for(uint8_t fan = 0u; fan < NFANS; fan++)
+    {
+        if(isfinite(data->board.fans[fan].duty_cycle) &&
+           (data->board.fans[fan].duty_cycle > max_duty))
+        {
+            max_duty = data->board.fans[fan].duty_cycle;
+        }
+    }
+
+    if(max_duty >= 100.0f)
+    {
+        return 100u;
+    }
+
+    return (uint8_t)(max_duty + 0.5f);
+}
+
+static HAL_StatusTypeDef send_ecu_compact_status(canbus_device_t *canbus,
+                                                  const app_data_t *data,
+                                                  uint8_t sequence)
+{
+    if((canbus == NULL) || (data == NULL))
+    {
+        return HAL_ERROR;
+    }
+
+    uint8_t payload[8] = {0};
+    payload[0] = CAN_ECU_COMPACT_PROTOCOL_VERSION;
+    payload[1] = sequence;
+    payload[2] = (uint8_t)data->state;
+    payload[3] = ecu_bool_bit(data->bms_state, 0u) |
+                 ecu_bool_bit(data->bms_output_inhibit, 1u) |
+                 ecu_bool_bit(data->hard_fault, 2u) |
+                 ecu_bool_bit(data->soft_fault, 3u) |
+                 ecu_bool_bit(data->voltage_valid, 4u) |
+                 ecu_bool_bit(data->current_valid, 5u) |
+                 ecu_bool_bit(data->temp_valid, 6u) |
+                 ecu_bool_bit(data->canbus_fault, 7u);
+    payload[4] = ecu_bool_bit(data->voltage_fault, 0u) |
+                 ecu_bool_bit(data->temp_fault, 1u) |
+                 ecu_bool_bit(data->current_fault, 2u) |
+                 ecu_bool_bit(data->imd_ok, 3u) |
+                 ecu_bool_bit(data->charger_fault, 4u) |
+                 ecu_bool_bit(data->adbms_diag_fault, 5u) |
+                 ecu_bool_bit(data->task_heartbeat_fault, 6u) |
+                 ecu_bool_bit(data->logger_heartbeat_fault, 7u);
+    payload[5] = (uint8_t)data->voltage_fault_reason;
+    payload[6] = (uint8_t)data->temp_fault_reason;
+    payload[7] = (uint8_t)data->current_fault_reason;
+
+    return canbus_send(canbus, CAN_ID_STD, AMS_ECU_CAN_ID_STATUS, payload);
+}
+
+static HAL_StatusTypeDef send_ecu_compact_electrical(canbus_device_t *canbus,
+                                                      const app_data_t *data)
+{
+    if((canbus == NULL) || (data == NULL))
+    {
+        return HAL_ERROR;
+    }
+
+    uint8_t payload[8] = {0};
+    ecu_put_u16(payload, 0u, ecu_pack_voltage_deci_v(data));
+    ecu_put_i16(payload, 2u, sat_i16_scaled(data->current, 10.0f));
+    ecu_put_u16(payload, 4u, data->acc.min_voltage_mv);
+    ecu_put_u16(payload, 6u, data->acc.max_voltage_mv);
+
+    return canbus_send(canbus, CAN_ID_STD, AMS_ECU_CAN_ID_ELECTRICAL, payload);
+}
+
+static HAL_StatusTypeDef send_ecu_compact_thermal(canbus_device_t *canbus,
+                                                   const app_data_t *data)
+{
+    if((canbus == NULL) || (data == NULL))
+    {
+        return HAL_ERROR;
+    }
+
+    uint8_t payload[8] = {0};
+    ecu_put_i16(payload, 0u, data->temp_valid ? data->acc.max_temp_deci_c : (int16_t)ECU_TEMP_INVALID_DECI_C);
+    ecu_put_i16(payload, 2u, data->temp_valid ? data->acc.min_temp_deci_c : (int16_t)ECU_TEMP_INVALID_DECI_C);
+    ecu_put_i16(payload, 4u, data->temp_valid ? data->acc.filtered_avg_temp_deci_c : (int16_t)ECU_TEMP_INVALID_DECI_C);
+    payload[6] = ecu_max_fan_percent(data);
+    payload[7] = ecu_bool_bit(data->temp_warning, 0u) |
+                 ecu_bool_bit(data->temp_fan_max, 1u) |
+                 ecu_bool_bit(data->temp_charge_stop, 2u) |
+                 ecu_bool_bit(data->temp_overtemp_pending, 3u) |
+                 ecu_bool_bit(data->overtemp_fault, 4u) |
+                 ecu_bool_bit(data->severe_overtemp_fault, 5u) |
+                 ecu_bool_bit(data->fan_fault, 6u) |
+                 ecu_bool_bit(!data->temp_valid || data->temp_read_fault, 7u);
+
+    return canbus_send(canbus, CAN_ID_STD, AMS_ECU_CAN_ID_THERMAL, payload);
+}
+
+static HAL_StatusTypeDef send_ecu_compact_health(canbus_device_t *canbus,
+                                                  const app_data_t *data)
+{
+    if((canbus == NULL) || (data == NULL))
+    {
+        return HAL_ERROR;
+    }
+
+    uint8_t payload[8] = {0};
+    payload[0] = data->max_voltage_seg;
+    payload[1] = data->max_voltage_cell;
+    payload[2] = data->min_voltage_seg;
+    payload[3] = data->min_voltage_cell;
+    payload[4] = data->max_temp_seg;
+    payload[5] = data->max_temp_sensor;
+    payload[6] = sat_u8_u32(data->voltage_usable_cell_count);
+    payload[7] = sat_u8_u32(data->temp_usable_sensor_count);
+
+    return canbus_send(canbus, CAN_ID_STD, AMS_ECU_CAN_ID_HEALTH, payload);
+}
+
+static HAL_StatusTypeDef send_ecu_compact_telemetry(canbus_device_t *canbus,
+                                                     const app_data_t *data,
+                                                     uint8_t sequence)
+{
+    HAL_StatusTypeDef ret = HAL_OK;
+
+    ret |= send_ecu_compact_status(canbus, data, sequence);
+    ret |= send_ecu_compact_electrical(canbus, data);
+    ret |= send_ecu_compact_thermal(canbus, data);
+    ret |= send_ecu_compact_health(canbus, data);
+
+    return ret;
+}
+
 
 static HAL_StatusTypeDef send_ecu_ams_status(canbus_device_t *canbus, const app_data_t *data)
 {
@@ -990,6 +1168,9 @@ void canbus_task_fn(void *arg)
     charger_t *ccs = &data->board.charger;
     HAL_StatusTypeDef ret;
     uint32_t entry;
+    uint8_t ecu_sequence = 0u;
+    uint8_t slow_div = CAN_ECU_SLOW_DIV;
+    uint16_t charger_div = CAN_CHARGER_DIV;
 
     const uint16_t voltage10x = (uint16_t)(CHARGE_MAX_VOLTAGE * 10.0f);
     const uint16_t current10x = (uint16_t)(CHARGE_MAX_CURRENT * 10.0f);
@@ -1004,10 +1185,17 @@ void canbus_task_fn(void *arg)
         {
             data->canbus_fault = true;
             ams_heartbeat_kick(data, AMS_HEARTBEAT_CAN, osKernelGetTickCount());
-            osDelayUntil(entry + ((data->state == STATE_CHARGE) ?
-                                  CHARGER_COMMAND_PERIOD_MS :
-                                  (1000 / CAN_FREQ)));
+            osDelayUntil(entry + CAN_ECU_FAST_PERIOD_MS);
             continue;
+        }
+
+        ret |= send_ecu_compact_telemetry(canbus, data, ecu_sequence++);
+        bool slow_due = false;
+        slow_div++;
+        if(slow_div >= CAN_ECU_SLOW_DIV)
+        {
+            slow_div = 0u;
+            slow_due = true;
         }
 
         if(data->state != STATE_CHARGE)
@@ -1019,88 +1207,98 @@ void canbus_task_fn(void *arg)
             ccs->communication_fail = false;
             data->charger_fault = false;
 
-            ret |= send_ecu_ams_status(canbus, data);
-            ret |= send_ecu_ams_voltages(canbus, data);
-            ret |= send_ecu_ams_temps(canbus, data);
-            ret |= send_ecu_ams_fans(canbus, data);
-            ret |= send_logger_telemetry(canbus, data);
-            ams_heartbeat_kick(data, AMS_HEARTBEAT_LOGGER, osKernelGetTickCount());
-            ret |= send_estimator_status(canbus, data);
+            if(slow_due)
+            {
+                ret |= send_ecu_ams_status(canbus, data);
+                ret |= send_ecu_ams_voltages(canbus, data);
+                ret |= send_ecu_ams_temps(canbus, data);
+                ret |= send_ecu_ams_fans(canbus, data);
+                ret |= send_logger_telemetry(canbus, data);
+                ams_heartbeat_kick(data, AMS_HEARTBEAT_LOGGER, osKernelGetTickCount());
+                ret |= send_estimator_status(canbus, data);
+            }
             canbus_poll_errors(canbus, data);
 
             canbus_record_task_tx_status(data, ret);
             data->canbus_fault = data->canbus_fault || data->can_busoff_fault;
             ams_heartbeat_kick(data, AMS_HEARTBEAT_CAN, osKernelGetTickCount());
-            osDelayUntil(entry + (1000 / CAN_FREQ));
+            osDelayUntil(entry + CAN_ECU_FAST_PERIOD_MS);
         }
         else if(data->state == STATE_CHARGE)
         {
             ccs->target_voltage = CHARGE_MAX_VOLTAGE;
             ccs->target_current = CHARGE_MAX_CURRENT;
 
-            if((osKernelGetTickCount() - ccs->last_rx_tick) > CHARGER_RX_TIMEOUT_MS)
+            charger_div++;
+            if(charger_div >= CAN_CHARGER_DIV)
             {
-                ccs->communication_fail = true;
+                charger_div = 0u;
+
+                if((osKernelGetTickCount() - ccs->last_rx_tick) > CHARGER_RX_TIMEOUT_MS)
+                {
+                    ccs->communication_fail = true;
+                }
+
+                bool charger_hw_fault = (ccs->hardware_fail      ||
+                                         ccs->overtemp_fail      ||
+                                         ccs->input_volt_fail    ||
+                                         ccs->voltage_sense_fail ||
+                                         ccs->communication_fail ||
+                                         ccs->tx_fail);
+
+                uint16_t disable_reasons = charger_disable_reasons(data, charger_hw_fault);
+                bool disable_charge = (disable_reasons != CHARGER_DISABLE_REASON_NONE);
+
+                ccs->disable_reason_mask = disable_reasons;
+                data->charger_fault = charger_hw_fault;
+                if(charger_disable_reasons_force_bms_low(disable_reasons))
+                {
+                    set_bms(0);
+                }
+
+                uint8_t can_data[8] = {0};
+                can_data[0] = TO_MSB16(voltage10x);
+                can_data[1] = TO_LSB16(voltage10x);
+                can_data[2] = TO_MSB16(current10x);
+                can_data[3] = TO_LSB16(current10x);
+                can_data[4] = disable_charge ? CHARGER_CMD_DISABLE : CHARGER_CMD_ENABLE;
+                can_data[5] = 0u;
+                can_data[6] = 0u;
+                can_data[7] = 0u;
+
+                HAL_StatusTypeDef charger_tx_status = canbus_send(canbus, CAN_ID_EXT, CCS_CANBUS_ID, can_data);
+                ret |= charger_tx_status;
+                if(charger_tx_status == HAL_OK)
+                {
+                    ccs->tx_fail = false;
+                    ccs->last_tx_status = HAL_OK;
+                    ccs->tx_count++;
+                }
+                else
+                {
+                    ccs->tx_fail = true;
+                    ccs->last_tx_status = charger_tx_status;
+                    ccs->disable_reason_mask |= CHARGER_DISABLE_REASON_TX_FAIL;
+                    ccs->tx_fail_count++;
+                    data->charger_fault = true;
+                    set_bms(0);
+                }
+
+                ret |= send_logger_telemetry(canbus, data);
+                ams_heartbeat_kick(data, AMS_HEARTBEAT_LOGGER, osKernelGetTickCount());
             }
 
-            bool charger_hw_fault = (ccs->hardware_fail      ||
-                                     ccs->overtemp_fail      ||
-                                     ccs->input_volt_fail    ||
-                                     ccs->voltage_sense_fail ||
-                                     ccs->communication_fail ||
-                                     ccs->tx_fail);
-
-            uint16_t disable_reasons = charger_disable_reasons(data, charger_hw_fault);
-            bool disable_charge = (disable_reasons != CHARGER_DISABLE_REASON_NONE);
-
-            ccs->disable_reason_mask = disable_reasons;
-            data->charger_fault = charger_hw_fault;
-            if(charger_disable_reasons_force_bms_low(disable_reasons))
-            {
-                set_bms(0);
-            }
-
-            uint8_t can_data[8] = {0};
-            can_data[0] = TO_MSB16(voltage10x);
-            can_data[1] = TO_LSB16(voltage10x);
-            can_data[2] = TO_MSB16(current10x);
-            can_data[3] = TO_LSB16(current10x);
-            can_data[4] = disable_charge ? CHARGER_CMD_DISABLE : CHARGER_CMD_ENABLE;
-            can_data[5] = 0u;
-            can_data[6] = 0u;
-            can_data[7] = 0u;
-
-            HAL_StatusTypeDef charger_tx_status = canbus_send(canbus, CAN_ID_EXT, CCS_CANBUS_ID, can_data);
-            ret |= charger_tx_status;
-            if(charger_tx_status == HAL_OK)
-            {
-                ccs->tx_fail = false;
-                ccs->last_tx_status = HAL_OK;
-                ccs->tx_count++;
-            }
-            else
-            {
-                ccs->tx_fail = true;
-                ccs->last_tx_status = charger_tx_status;
-                ccs->disable_reason_mask |= CHARGER_DISABLE_REASON_TX_FAIL;
-                ccs->tx_fail_count++;
-                data->charger_fault = true;
-                set_bms(0);
-            }
-
-            ret |= send_logger_telemetry(canbus, data);
-            ams_heartbeat_kick(data, AMS_HEARTBEAT_LOGGER, osKernelGetTickCount());
             canbus_poll_errors(canbus, data);
             canbus_record_task_tx_status(data, ret);
             data->canbus_fault = data->canbus_fault || data->can_busoff_fault;
 
             ams_heartbeat_kick(data, AMS_HEARTBEAT_CAN, osKernelGetTickCount());
-            osDelayUntil(entry + CHARGER_COMMAND_PERIOD_MS);
+            osDelayUntil(entry + CAN_ECU_FAST_PERIOD_MS);
         }
         else
         {
             ams_heartbeat_kick(data, AMS_HEARTBEAT_CAN, osKernelGetTickCount());
-            osDelayUntil(entry + (1000 / CAN_FREQ));
+            osDelayUntil(entry + CAN_ECU_FAST_PERIOD_MS);
         }
     }
 }

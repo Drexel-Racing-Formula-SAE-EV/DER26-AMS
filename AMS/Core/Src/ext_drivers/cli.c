@@ -47,8 +47,9 @@ int cli_printline(cli_device_t *dev, char *line)
 
 	if(xPortIsInsideInterrupt())
 	{
-		ret |= HAL_UART_Transmit_IT(dev->huart, (uint8_t *)line, (uint16_t)line_len);
-		ret |= HAL_UART_Transmit_IT(dev->huart, (uint8_t*)nl, 2u);
+		/* Do not use UART TX from ISR context. HAL_UART_Transmit_IT() is not a
+		 * print queue, and blocking UART TX from an IRQ is forbidden for timing. */
+		return HAL_BUSY;
 	}
 	else
 	{
