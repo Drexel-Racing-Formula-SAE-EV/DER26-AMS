@@ -136,6 +136,7 @@ static void cli_capture_clear(void)
 HAL_StatusTypeDef HAL_UART_Transmit(UART_HandleTypeDef *huart, const uint8_t *pData, uint16_t Size, uint32_t Timeout){ (void)huart;(void)Timeout; cli_capture_append(pData, Size); return HAL_OK; }
 HAL_StatusTypeDef HAL_UART_Transmit_IT(UART_HandleTypeDef *huart, const uint8_t *pData, uint16_t Size){ (void)huart; cli_capture_append(pData, Size); return HAL_OK; }
 HAL_StatusTypeDef HAL_UART_Receive_IT(UART_HandleTypeDef *huart, uint8_t *pData, uint16_t Size){ (void)huart;(void)pData;(void)Size; return HAL_OK; }
+uint32_t HAL_UART_GetError(const UART_HandleTypeDef *huart){ return huart ? huart->ErrorCode : HAL_UART_ERROR_NONE; }
 void adbms_spi_lock(void){}
 void adbms_spi_unlock(void){}
 
@@ -504,6 +505,45 @@ void cli_device_init(cli_device_t *dev, UART_HandleTypeDef *huart)
     }
     memset(dev, 0, sizeof(*dev));
     dev->huart = huart;
+}
+
+HAL_StatusTypeDef cli_uart_start_rx(cli_device_t *dev)
+{
+    return (dev != NULL) ? HAL_OK : HAL_ERROR;
+}
+
+HAL_StatusTypeDef cli_uart_service_rx(cli_device_t *dev)
+{
+    return (dev != NULL) ? HAL_OK : HAL_ERROR;
+}
+
+HAL_StatusTypeDef cli_uart_force_recover(cli_device_t *dev)
+{
+    if(dev == NULL)
+    {
+        return HAL_ERROR;
+    }
+    dev->rx_recovery_count++;
+    return HAL_OK;
+}
+
+void cli_uart_note_error(cli_device_t *dev, uint32_t error_code)
+{
+    if((dev != NULL) && (error_code != HAL_UART_ERROR_NONE))
+    {
+        dev->uart_error_count++;
+        dev->uart_last_error = error_code;
+    }
+}
+
+void cli_uart_diag_clear(cli_device_t *dev)
+{
+    if(dev != NULL)
+    {
+        dev->uart_error_count = 0u;
+        dev->uart_last_error = HAL_UART_ERROR_NONE;
+        dev->rx_recovery_count = 0u;
+    }
 }
 
 int tokenize(char *s, char *toks[], int maxtoks, char *delim)

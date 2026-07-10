@@ -304,7 +304,7 @@ void app_create()
 					 CS_A_Pin,
 					 CS_B_Pin,
 					 app.board.stm32f767z.htim1);
-	HAL_UART_Receive_IT(app.board.stm32f767z.huart3, &app.board.cli.c, 1);
+	(void)cli_uart_start_rx(&app.board.cli);
 
 	app.cli_task = cli_task_start(&app);
 	app.fan_task = fan_task_start(&app);

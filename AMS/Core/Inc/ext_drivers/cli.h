@@ -42,14 +42,31 @@ static inline size_t cli_bounded_strlen(const char *s, size_t max_len)
 
 typedef struct {
     uint8_t c;
-    unsigned int index;
+    volatile unsigned int index;
 	UART_HandleTypeDef *huart;
-    bool msg_pending;
-    unsigned int msg_count;
-    unsigned int msg_proc;
-    unsigned int msg_valid;
+    volatile bool msg_pending;
+    volatile unsigned int msg_count;
+    volatile unsigned int msg_proc;
+    volatile unsigned int msg_valid;
     char line[CLI_LINESZ];
     HAL_StatusTypeDef ret;
+
+    /* USART3 RX health and recovery diagnostics. These fields are shared
+     * between interrupt and task context, so keep them volatile. */
+    volatile uint32_t uart_error_count;
+    volatile uint32_t uart_ore_count;
+    volatile uint32_t uart_fe_count;
+    volatile uint32_t uart_ne_count;
+    volatile uint32_t uart_pe_count;
+    volatile uint32_t uart_rto_count;
+    volatile uint32_t uart_dma_count;
+    volatile uint32_t uart_last_error;
+    volatile uint32_t rx_arm_count;
+    volatile uint32_t rx_recovery_count;
+    volatile uint32_t rx_rearm_fail_count;
+    volatile uint32_t rx_busy_count;
+    volatile uint32_t rx_drop_count;
+    volatile HAL_StatusTypeDef rx_last_status;
 } cli_device_t;
 
 typedef struct {
@@ -59,6 +76,11 @@ typedef struct {
 } command_t;
 
 void cli_device_init(cli_device_t *dev, UART_HandleTypeDef *huart);
+HAL_StatusTypeDef cli_uart_start_rx(cli_device_t *dev);
+HAL_StatusTypeDef cli_uart_service_rx(cli_device_t *dev);
+HAL_StatusTypeDef cli_uart_force_recover(cli_device_t *dev);
+void cli_uart_note_error(cli_device_t *dev, uint32_t error_code);
+void cli_uart_diag_clear(cli_device_t *dev);
 int cli_printline(cli_device_t *dev, char *line);
 int tokenize(char *s, char *toks[], int maktoks, char *delim);
 

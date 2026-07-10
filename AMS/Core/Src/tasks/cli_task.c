@@ -43,6 +43,7 @@ int get_charger(int argc, char *argv[]);
 int get_can_diag(int argc, char *argv[]);
 int watchdog_control(int argc, char *argv[]);
 int get_rtos_diag(int argc, char *argv[]);
+int get_uart_diag(int argc, char *argv[]);
 int get_spi_debug(int argc, char *argv[]);
 int get_apm_debug(int argc, char *argv[]);
 int get_bringup(int argc, char *argv[]);
@@ -74,6 +75,7 @@ command_t cmds[] =
 	{"can", &get_can_diag, "CAN diagnostics: can [diag|recover]"},
 	{"wdg", &watchdog_control, "watchdog diagnostics/control: wdg [status|enable]"},
 	{"rtos", &get_rtos_diag, "RTOS stack/heap diagnostics: rtos"},
+	{"uart", &get_uart_diag, "CLI UART diagnostics/recovery: uart [status|recover|clear]"},
 	{"spi", &get_spi_debug, "ADBMS6830 SPI debug: spi [status|pins|cspins|cs|preset|toggle|probe|probea|probeb|scope|sid|stat|staterr|cfgchk|cellst|oweven|owodd|auxdiag|wake|coldwake|clrflag|clear|diagclear|enable|disable]"},
 	{"apm", &get_apm_debug, "ADBMS2950/APM debug: apm [status|probe|clear|enable|disable]"},
 	{"bringup", &get_bringup, "bench bring-up summaries: bringup [help|board|adbms6830|apm2950|charger-lv|charger-battery|ready|snapshot|evidence]"},
@@ -275,6 +277,11 @@ void cli_task_fn(void *arg)
 	for(;;)
 	{
 		entry = osKernelGetTickCount();
+
+        /* Self-heal USART3 RX if an overrun, debugger halt, transient power
+         * disturbance, or failed HAL re-arm left reception disabled. */
+        (void)cli_uart_service_rx(local_cli);
+
 		if(local_cli->msg_pending == true)
 		{
 			size_t len;
@@ -2224,6 +2231,83 @@ int watchdog_control(int argc, char *argv[])
              (unsigned long)data->watchdog_last_feed_tick,
              ams_safety_watchdog_block_reason_str(data->watchdog_last_block_reason),
              (unsigned long)data->watchdog_last_block_reason);
+    ret |= cli_printline(cli, outline);
+
+    return ret;
+}
+
+int get_uart_diag(int argc, char *argv[])
+{
+    int ret = 0;
+    UART_HandleTypeDef *huart = cli->huart;
+
+    if((argc >= 2) && (argv[1] != NULL))
+    {
+        if(!strcmp(argv[1], "recover"))
+        {
+            HAL_StatusTypeDef status = cli_uart_force_recover(cli);
+            snprintf(outline, CLI_LINESZ, "UART RX recovery: %s", cli_hal_status_str(status));
+            ret |= cli_printline(cli, outline);
+        }
+        else if(!strcmp(argv[1], "clear"))
+        {
+            cli_uart_diag_clear(cli);
+            ret |= cli_printline(cli, "UART diagnostics cleared");
+        }
+        else if(strcmp(argv[1], "status"))
+        {
+            return cli_printline(cli, "Usage: uart [status|recover|clear]");
+        }
+    }
+
+    if((huart == NULL) || (huart->Instance == NULL))
+    {
+        return ret | cli_printline(cli, "UART3 handle unavailable");
+    }
+
+    snprintf(outline, CLI_LINESZ,
+             "UART3 gstate:0x%02lX rxstate:0x%02lX error:0x%08lX last:0x%08lX",
+             (unsigned long)huart->gState,
+             (unsigned long)huart->RxState,
+             (unsigned long)HAL_UART_GetError(huart),
+             (unsigned long)cli->uart_last_error);
+    ret |= cli_printline(cli, outline);
+
+    snprintf(outline, CLI_LINESZ,
+             "UART3 ISR:0x%08lX CR1:0x%08lX CR3:0x%08lX last_rx:%s",
+             (unsigned long)huart->Instance->ISR,
+             (unsigned long)huart->Instance->CR1,
+             (unsigned long)huart->Instance->CR3,
+             cli_hal_status_str(cli->rx_last_status));
+    ret |= cli_printline(cli, outline);
+
+    snprintf(outline, CLI_LINESZ,
+             "UART errors total:%lu ORE:%lu FE:%lu NE:%lu PE:%lu RTO:%lu DMA:%lu",
+             (unsigned long)cli->uart_error_count,
+             (unsigned long)cli->uart_ore_count,
+             (unsigned long)cli->uart_fe_count,
+             (unsigned long)cli->uart_ne_count,
+             (unsigned long)cli->uart_pe_count,
+             (unsigned long)cli->uart_rto_count,
+             (unsigned long)cli->uart_dma_count);
+    ret |= cli_printline(cli, outline);
+
+    snprintf(outline, CLI_LINESZ,
+             "UART RX arm:%lu recover:%lu fail:%lu busy:%lu dropped:%lu",
+             (unsigned long)cli->rx_arm_count,
+             (unsigned long)cli->rx_recovery_count,
+             (unsigned long)cli->rx_rearm_fail_count,
+             (unsigned long)cli->rx_busy_count,
+             (unsigned long)cli->rx_drop_count);
+    ret |= cli_printline(cli, outline);
+
+    snprintf(outline, CLI_LINESZ,
+             "CLI msg count:%u processed:%u valid:%u pending:%d index:%u",
+             cli->msg_count,
+             cli->msg_proc,
+             cli->msg_valid,
+             cli->msg_pending,
+             cli->index);
     ret |= cli_printline(cli, outline);
 
     return ret;

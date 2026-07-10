@@ -224,47 +224,95 @@ void TIM7_IRQHandler(void)
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
     cli_device_t *cli = &app.board.cli;
+    uint8_t c;
 
     if((huart == NULL) || (cli->huart == NULL) || (huart->Instance != cli->huart->Instance))
     {
         return;
     }
 
-    uint8_t c = cli->c;
+    c = cli->c;
 
     if(cli->msg_pending)
     {
-        /* Drop new input until the task copies the completed line. Do not
-         * transmit from this ISR; blocking UART TX here adds IRQ latency. */
-        cli->index = 0;
-        (void)HAL_UART_Receive_IT(&huart3, &cli->c, 1);
+        /* Keep a completed command intact until the CLI task copies it. Bytes
+         * received meanwhile are intentionally dropped and counted. */
+        cli->index = 0u;
+        cli->rx_drop_count++;
+        (void)cli_uart_start_rx(cli);
         return;
     }
 
-    if(c == '\r' || c == '\n')
+    if((c == '\r') || (c == '\n'))
     {
-        if(cli->index > 0)
+        if(cli->index > 0u)
         {
             cli->line[cli->index] = '\0';
-            cli->index = 0;
+            cli->index = 0u;
             cli->msg_count++;
             cli->msg_pending = true;
         }
     }
-    else if(c == '\b' || c == 127)
+    else if((c == '\b') || (c == 127u))
     {
-        if(cli->index > 0)
+        if(cli->index > 0u)
         {
             cli->index--;
         }
     }
-    else if(cli->index < CLI_LINESZ - 1)
+    else if(cli->index < (CLI_LINESZ - 1u))
     {
-        cli->line[cli->index++] = c;
+        cli->line[cli->index++] = (char)c;
+    }
+    else
+    {
+        cli->rx_drop_count++;
     }
 
     /* RX ISR only receives bytes and re-arms RX. All CLI output happens from
      * the CLI task through cli_printline(). */
-    (void)HAL_UART_Receive_IT(&huart3, &cli->c, 1);
+    (void)cli_uart_start_rx(cli);
+}
+
+void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
+{
+    cli_device_t *cli = &app.board.cli;
+    uint32_t error_code;
+    HAL_StatusTypeDef status;
+
+    if((huart == NULL) || (cli->huart == NULL) || (huart->Instance != cli->huart->Instance))
+    {
+        return;
+    }
+
+    error_code = HAL_UART_GetError(huart);
+    cli_uart_note_error(cli, error_code);
+
+    /* Preserve a completed pending command, but discard a partial command
+     * because a framing/noise/overrun event may have corrupted it. */
+    if(cli->msg_pending == false)
+    {
+        cli->index = 0u;
+        cli->line[0] = '\0';
+    }
+
+    __HAL_UART_CLEAR_FLAG(huart,
+                          UART_CLEAR_OREF | UART_CLEAR_NEF |
+                          UART_CLEAR_PEF | UART_CLEAR_FEF);
+    __HAL_UART_SEND_REQ(huart, UART_RXDATA_FLUSH_REQUEST);
+    huart->ErrorCode = HAL_UART_ERROR_NONE;
+
+    /* ORE/RTO are blocking HAL errors, so RxState is normally READY here and
+     * must be re-armed. For non-blocking PE/FE/NE errors reception can still be
+     * BUSY_RX; the periodic task-side health service will recover any
+     * inconsistent state that remains. */
+    if(huart->RxState == HAL_UART_STATE_READY)
+    {
+        status = cli_uart_start_rx(cli);
+        if(status == HAL_OK)
+        {
+            cli->rx_recovery_count++;
+        }
+    }
 }
 /* USER CODE END 1 */
