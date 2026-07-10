@@ -17,9 +17,11 @@ CC ?= gcc
 CLANG ?= clang
 
 SRC := src/ams_host_test_runner.c
-BIN := $(BUILD_DIR)/ams_host_tests
+BIN = $(BUILD_DIR)/ams_host_tests
 UNIT_SRC := unit/ams_unit_test_runner.c
-UNIT_BIN := $(BUILD_DIR)/ams_unit_tests
+UNIT_BIN = $(BUILD_DIR)/ams_unit_tests
+OWNER_SRC := production/bms_owner_test.c
+OWNER_BIN = $(BUILD_DIR)/bms_owner_test
 ESTIMATOR_SRC := \
 	$(AMS_ROOT)/Core/Src/estimator/ams_soc_ekf.c \
 	$(AMS_ROOT)/Core/Src/estimator/ams_estimator_lut.c
@@ -31,6 +33,10 @@ COMMON_DEFS := \
 	-DSTM32F767xx \
 	-DUSE_HAL_DRIVER \
 	-DAMS_HOST_TEST=1
+
+HOST_EXERCISE_DEFS := \
+	-DAMS_ENABLE_HIL_CAN=1 \
+	-DAMS_ENABLE_SERVICE_CLI=1
 
 INC := \
 	-Iinclude \
@@ -57,7 +63,7 @@ WARN := \
 CFLAGS_COMMON := -std=c11 -g -O0 $(WARN) $(COMMON_DEFS) $(INC)
 LDLIBS := -lm
 
-.PHONY: help check-root compile unit test system-sil bringup-test hil-adbms-test safety-test stress ci asan ubsan analyze clang-analyze clean list make-build-dir
+.PHONY: help check-root compile unit test production-gates system-sil bringup-test hil-adbms-test safety-test stress ci asan ubsan analyze clang-analyze clean list make-build-dir
 
 help:
 	@echo "DER26 AMS host test harness"
@@ -65,6 +71,7 @@ help:
 	@echo "Targets:"
 	@echo "  make unit          Build and run isolated unit tests"
 	@echo "  make test          Build and run comprehensive host tests"
+	@echo "  make production-gates Verify HIL/service CLI are disabled by default"
 	@echo "  make system-sil    Alias for comprehensive system-level SIL/injection tests"
 	@echo "  make bringup-test  Run comprehensive tests with AMS_HW_BRINGUP=1"
 	@echo "  make hil-adbms-test Run focused CAN-fed ADBMS replacement tests"
@@ -101,11 +108,21 @@ unit: check-root make-build-dir
 	$(CC) $(CFLAGS_COMMON) $(UNIT_SRC) $(ESTIMATOR_SRC) $(ADBMS2950_SRC) -o $(UNIT_BIN) $(LDLIBS)
 	$(UNIT_BIN)
 
-ci: unit test analyze
+ci: unit test production-gates analyze
 
 # Normal run: catches logic regressions and compile/link problems.
+test: CFLAGS_COMMON += $(HOST_EXERCISE_DEFS)
 test: compile
 	$(BIN)
+
+production-gates: BUILD_DIR=build-production
+production-gates: CFLAGS_COMMON += -DAMS_HOST_PRODUCTION_GATE_TEST=1
+production-gates: compile
+	$(BIN)
+	$(CC) $(CFLAGS_COMMON) -ffunction-sections -fdata-sections \
+		$(AMS_ROOT)/Core/Src/app.c $(OWNER_SRC) \
+		-Wl,--gc-sections -o $(OWNER_BIN) $(LDLIBS)
+	$(OWNER_BIN)
 
 system-sil: test
 
@@ -122,18 +139,22 @@ stress: CFLAGS_COMMON += -DAMS_HOST_LONG_FUZZ_CYCLES=50000u -DAMS_HOST_CONCURREN
 stress: test
 
 # Strongest local run: catches many memory and undefined-behavior bugs in host-exercised paths.
+asan: CFLAGS_COMMON += $(HOST_EXERCISE_DEFS)
 asan: check-root $(BUILD_DIR)
 	$(CC) $(CFLAGS_COMMON) -fsanitize=address,undefined -fno-omit-frame-pointer $(SRC) -o $(BIN)-asan $(LDLIBS)
 	ASAN_OPTIONS=detect_leaks=0 $(BIN)-asan
 
+ubsan: CFLAGS_COMMON += $(HOST_EXERCISE_DEFS)
 ubsan: check-root $(BUILD_DIR)
 	$(CC) $(CFLAGS_COMMON) -fsanitize=undefined -fno-omit-frame-pointer $(SRC) -o $(BIN)-ubsan $(LDLIBS)
 	$(BIN)-ubsan
 
 # GCC static analyzer. Useful for null/bounds/uninitialized regressions.
+analyze: CFLAGS_COMMON += $(HOST_EXERCISE_DEFS)
 analyze: check-root $(BUILD_DIR)
 	$(CC) $(CFLAGS_COMMON) -fanalyzer -fsyntax-only $(SRC)
 
+clang-analyze: CFLAGS_COMMON += $(HOST_EXERCISE_DEFS)
 clang-analyze: check-root $(BUILD_DIR)
 	$(CLANG) $(CFLAGS_COMMON) --analyze $(SRC)
 

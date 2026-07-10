@@ -60,6 +60,19 @@ static adbms6830_scope_mode_t cli_adbms_scope_default_mode = ADBMS6830_SCOPE_REA
 static uint16_t cli_adbms_scope_default_repeat = 20u;
 static uint8_t cli_adbms_scope_preset_index = 0u;
 static bool cli_parse_scope_repeat(const char *arg, uint16_t *repeat_out);
+
+static int cli_service_action_refused(const char *action)
+{
+#if AMS_ENABLE_SERVICE_CLI
+    (void)action;
+    return 0;
+#else
+    snprintf(outline, CLI_LINESZ,
+             "%s refused: service CLI is compiled out (use AMS_HW_BRINGUP=1 or AMS_ENABLE_SERVICE_CLI=1 on a controlled bench)",
+             (action != NULL) ? action : "service action");
+    return cli_printline(cli, outline);
+#endif
+}
 command_t cmds[] =
 {
 	{"help", &help, "print help menu"},
@@ -266,8 +279,10 @@ void cli_task_fn(void *arg)
     snprintf(outline, CLI_LINESZ, "~~~~~~~~~~ DER AMS FW V%d.%d.%d ~~~~~~~~~~", VER_MAJOR, VER_MINOR, VER_BUG);
 	cli_printline(local_cli, outline);
     snprintf(outline, CLI_LINESZ,
-             "Build:%s APM2950:%d BMS_OK_inhibit:%d",
+             "Build:%s service_cli:%d hil_can:%d APM2950:%d BMS_OK_inhibit:%d",
              AMS_HW_BRINGUP ? "hw-bringup" : "normal",
+             AMS_ENABLE_SERVICE_CLI,
+             AMS_ENABLE_HIL_CAN,
              AMS_ENABLE_APM_2950_DEBUG,
              data->bms_output_inhibit);
     cli_printline(local_cli, outline);
@@ -361,26 +376,32 @@ int get_status(int argc, char *argv[])
     SPI_HandleTypeDef *hspi = data->acc.smb.hspi;
 
 	snprintf(outline, CLI_LINESZ,
-	             "FW v%d.%d.%d build:%s state:%s BMS_OK:%d inhibit:%d balance_inhibit:%d blocked:%lu",
+	             "FW v%d.%d.%d build:%s service:%d hil:%d state:%s BMS_OK:%d inhibit:%d ready:%d balance_inhibit:%d blocked:%lu",
 	             VER_MAJOR,
 	             VER_MINOR,
 	             VER_BUG,
 	             AMS_HW_BRINGUP ? "hw-bringup" : "normal",
+	             AMS_ENABLE_SERVICE_CLI,
+	             AMS_ENABLE_HIL_CAN,
 	             ams_state_to_str(data->state),
 	             data->bms_state,
 	             data->bms_output_inhibit,
+	             data->bms_supervisor_ready,
 	             data->balance_inhibit,
 	             (unsigned long)data->bms_output_block_count);
     ret |= cli_printline(cli, outline);
 
     snprintf(outline, CLI_LINESZ,
-             "Safety current valid:%d fault:%d voltage valid:%d fault:%d temp valid:%d fault:%d hard:%d",
+             "Safety current valid:%d fault:%d voltage valid:%d fault:%d temp valid:%d fault:%d imd valid:%d ok:%d fault:%d hard:%d",
              data->current_valid,
              data->current_fault,
              data->voltage_valid,
              data->voltage_fault,
              data->temp_valid,
              data->temp_fault,
+             data->imd_valid,
+             data->imd_ok,
+             data->imd_fault,
              data->hard_fault);
     ret |= cli_printline(cli, outline);
 
@@ -470,8 +491,12 @@ int get_faults(int argc, char *argv[])
         {
             if((argc >= 3) && (argv[2] != NULL) && !strcmp(argv[2], "clear"))
             {
+#if AMS_ENABLE_SERVICE_CLI
                 ams_fault_log_clear();
                 return cli_printline(cli, "fault log cleared");
+#else
+                return cli_service_action_refused("fault log clear");
+#endif
             }
 
             const ams_fault_log_t *log = ams_fault_log_get();
@@ -497,7 +522,7 @@ int get_faults(int argc, char *argv[])
             return ret;
         }
 
-#if AMS_FAULT_INJECTION_CLI
+#if AMS_FAULT_INJECTION_CLI && AMS_ENABLE_SERVICE_CLI
         if(!strcmp(argv[1], "inject") && (argc >= 3) && (argv[2] != NULL))
         {
             if(!strcmp(argv[2], "hardfault"))
@@ -1392,6 +1417,18 @@ static int cli_print_adbms_scope_preset(void)
 int get_spi_debug(int argc, char *argv[])
 {
     int ret = 0;
+
+#if !AMS_ENABLE_SERVICE_CLI
+    /* Production keeps read-only SPI health/pin reporting, but blocks every
+     * command that toggles chip selects, transmits diagnostic traffic, clears
+     * evidence, or changes debug instrumentation while the safety task runs. */
+    if((argc >= 2) && (argv[1] != NULL) &&
+       strcmp(argv[1], "status") && strcmp(argv[1], "pins"))
+    {
+        return cli_service_action_refused("ADBMS SPI service action");
+    }
+#endif
+
     adbms6830_driver_t *smb = &data->acc.smb;
     const adbms6830_spi_debug_t *dbg;
     const adbms6830_diag_health_t *health;
@@ -1863,6 +1900,14 @@ int get_spi_debug(int argc, char *argv[])
 int get_apm_debug(int argc, char *argv[])
 {
     int ret = 0;
+
+#if !AMS_ENABLE_SERVICE_CLI
+    if((argc >= 2) && (argv[1] != NULL) && strcmp(argv[1], "status"))
+    {
+        return cli_service_action_refused("ADBMS2950 service action");
+    }
+#endif
+
     adbms2950_driver_t *apm = &data->acc.apm;
     const adbms2950_spi_debug_t *dbg;
     HAL_StatusTypeDef probe_status;
@@ -1991,9 +2036,13 @@ int get_current(int argc, char *argv[])
     {
         if((argc >= 3) && (argv[2] != NULL) && !strcmp(argv[2], "clear"))
         {
+#if AMS_ENABLE_SERVICE_CLI
             current_sensor_zero_clear(cs);
             ret |= cli_printline(cli, "current zero: cleared");
             return ret;
+#else
+            return cli_service_action_refused("current zero clear");
+#endif
         }
 
         if((argc >= 3) && (argv[2] != NULL) && !strcmp(argv[2], "status"))
@@ -2012,6 +2061,10 @@ int get_current(int argc, char *argv[])
             ret |= cli_printline(cli, outline);
             return ret;
         }
+
+#if !AMS_ENABLE_SERVICE_CLI
+        return cli_service_action_refused("current zero calibration");
+#endif
 
         if((!data->bms_output_inhibit) || data->bms_state ||
            (data->state == STATE_CHARGE) || (data->state == STATE_DISCARGE))
@@ -2144,6 +2197,7 @@ int get_can_diag(int argc, char *argv[])
 
     if((argc >= 2) && (argv[1] != NULL) && !strcmp(argv[1], "recover"))
     {
+#if AMS_ENABLE_SERVICE_CLI
         HAL_StatusTypeDef status = canbus_recover(&data->board.canbus);
         if(status == HAL_OK)
         {
@@ -2156,6 +2210,9 @@ int get_can_diag(int argc, char *argv[])
         }
         snprintf(outline, CLI_LINESZ, "CAN recover: %s", cli_hal_status_str(status));
         ret |= cli_printline(cli, outline);
+#else
+        ret |= cli_service_action_refused("manual CAN recovery");
+#endif
     }
     else if((argc >= 2) && (argv[1] != NULL) && strcmp(argv[1], "diag"))
     {
@@ -2194,14 +2251,18 @@ int watchdog_control(int argc, char *argv[])
     {
         if(!strcmp(argv[1], "enable"))
         {
+#if AMS_ENABLE_SERVICE_CLI
 #if AMS_ENABLE_IWDG
             ams_safety_watchdog_enable_runtime(data, true);
             ret |= cli_printline(cli, "watchdog runtime feed gate enabled");
 #else
             ret |= cli_printline(cli, "watchdog compile flag disabled; rebuild with AMS_ENABLE_IWDG=1");
 #endif
+#else
+            ret |= cli_service_action_refused("watchdog runtime enable");
+#endif
         }
-#if AMS_FAULT_INJECTION_CLI
+#if AMS_FAULT_INJECTION_CLI && AMS_ENABLE_SERVICE_CLI
         else if(!strcmp(argv[1], "stopfeed"))
         {
             ams_safety_watchdog_stop_feed_for_test(true);
@@ -2790,7 +2851,14 @@ int get_bringup(int argc, char *argv[])
 int get_version(int argc, char *argv[])
 {
 	int ret = 0;
-	snprintf(outline, CLI_LINESZ, "v%d.%d.%d %s", VER_MAJOR, VER_MINOR, VER_BUG, AMS_HW_BRINGUP ? "hw-bringup" : "normal");
+	snprintf(outline, CLI_LINESZ,
+	         "v%d.%d.%d %s service_cli:%d hil_can:%d",
+	         VER_MAJOR,
+	         VER_MINOR,
+	         VER_BUG,
+	         AMS_HW_BRINGUP ? "hw-bringup" : "normal",
+	         AMS_ENABLE_SERVICE_CLI,
+	         AMS_ENABLE_HIL_CAN);
 	ret |= cli_printline(cli, outline);
 	return ret;
 }
@@ -2803,8 +2871,12 @@ int bmsok_control(int argc, char *argv[])
     {
         if(!strcmp(argv[1], "release") || !strcmp(argv[1], "enable"))
         {
+#if AMS_ENABLE_SERVICE_CLI
             data->bms_output_inhibit = false;
             ret |= cli_printline(cli, "BMS_OK output release enabled; safety gates still apply");
+#else
+            ret |= cli_service_action_refused("BMS_OK release");
+#endif
         }
         else if(!strcmp(argv[1], "inhibit") || !strcmp(argv[1], "disable"))
         {
@@ -2820,20 +2892,24 @@ int bmsok_control(int argc, char *argv[])
     }
 
     snprintf(outline, CLI_LINESZ,
-             "BMS_OK state:%d inhibit:%d blocked_assertions:%lu",
+             "BMS_OK state:%d inhibit:%d supervisor_ready:%d blocked_assertions:%lu",
              data->bms_state,
              data->bms_output_inhibit,
+             data->bms_supervisor_ready,
              (unsigned long)data->bms_output_block_count);
     ret |= cli_printline(cli, outline);
 
     snprintf(outline, CLI_LINESZ,
-             "ready gates voltage:%d current:%d hard:%d temp:%d charger:%d",
+             "ready gates voltage:%d current:%d temp:%d imd:%d adbms:%d heartbeat:%d charger:%d hard:%d",
              data->voltage_valid && !data->voltage_fault,
              data->current_valid && !data->current_fault,
-             data->hard_fault,
              data->temp_valid && !data->temp_fault &&
                  ((data->state != STATE_CHARGE) || !data->temp_charge_stop),
-             data->charger_fault);
+             data->imd_valid && data->imd_ok && !data->imd_fault,
+             !data->adbms_diag_fault,
+             !data->task_heartbeat_fault,
+             !data->charger_fault,
+             !data->hard_fault);
     ret |= cli_printline(cli, outline);
 
     return ret;
@@ -2858,8 +2934,12 @@ int balance_control(int argc, char *argv[])
         }
         else if(!strcmp(argv[1], "release") || !strcmp(argv[1], "enable"))
         {
+#if AMS_ENABLE_SERVICE_CLI
             data->balance_inhibit = false;
             ret |= cli_printline(cli, "Balancing release enabled; safety gates still apply");
+#else
+            ret |= cli_service_action_refused("balancing release");
+#endif
         }
         else if(!strcmp(argv[1], "clear"))
         {
@@ -2898,11 +2978,23 @@ int set_state(int argc, char *argv[])
     }
     else if(argc == 2)
     {
+#if !AMS_ENABLE_SERVICE_CLI
+        return cli_service_action_refused("AMS state change");
+#else
         if(!strcmp(argv[1], "charge")){
         	data->state = STATE_CHARGE;
-        	data->board.charger.last_rx_tick = osKernelGetTickCount();
+	        	/* A CLI state change must not fabricate charger freshness.  Force
+	        	 * the charge path to wait for a real charger status frame. */
+	        	data->board.charger.last_rx_tick = 0u;
+	        	data->board.charger.communication_fail = true;
+	        	data->charger_fault = true;
+	        	set_bms(0);
         }
-        else if(!strcmp(argv[1], "discharge")) data->state = STATE_DISCARGE;
+        else if(!strcmp(argv[1], "discharge"))
+        {
+            data->state = STATE_DISCARGE;
+            set_bms(0);
+        }
         else
         {
             snprintf(outline, CLI_LINESZ, "ERROR: unrecognized state: %s", argv[1]);
@@ -2918,6 +3010,7 @@ int set_state(int argc, char *argv[])
         {
             HAL_CAN_ActivateNotification(data->board.canbus.hcan, CAN_IT_RX_FIFO0_MSG_PENDING);
         }
+#endif
     }
     else
     {
@@ -2933,7 +3026,12 @@ int cause_fault(int argc, char *argv[])
 {
 	int ret = 0;
 
+#if AMS_ENABLE_SERVICE_CLI
 	set_bms(0);
+	ret |= cli_printline(cli, "BMS_OK forced low by service command");
+#else
+	ret |= cli_service_action_refused("cause_fault");
+#endif
 
 	return ret;
 };

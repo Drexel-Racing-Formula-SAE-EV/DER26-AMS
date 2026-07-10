@@ -165,6 +165,7 @@ static bool collect_group_temp(const app_data_t *data,
     return false;
 }
 
+#if AMS_ENABLE_HIL_CAN
 static bool hil_meas_fresh(const app_data_t *data, uint32_t now)
 {
     if (data == NULL)
@@ -178,6 +179,7 @@ static bool hil_meas_fresh(const app_data_t *data, uint32_t now)
             isfinite(data->hil.meas.i_pack_A) &&
             isfinite(data->hil.meas.t_surf_C));
 }
+#endif
 
 TaskHandle_t estimator_task_start(app_data_t *data)
 {
@@ -223,13 +225,17 @@ void estimator_task_fn(void *argument)
         }
 
         ams_estimator_input_source_t source = AMS_ESTIMATOR_INPUT_HARDWARE;
+#if AMS_ENABLE_HIL_CAN
         bool use_hil = hil_meas_fresh(data, entry);
         if (use_hil)
         {
             source = AMS_ESTIMATOR_INPUT_HIL_CAN;
         }
-
         float cc_current_A = use_hil ? data->hil.meas.i_pack_A : data->current;
+#else
+        const bool use_hil = false;
+        float cc_current_A = data->current;
+#endif
         (void)ams_estimator_cc_step(&data->estimator, cc_current_A, cc_dt_s);
 
         for (uint8_t i = 0U; (i < data->estimator.instance_count) && (i < AMS_EKF_MAX_INSTANCES); i++)
@@ -245,6 +251,7 @@ void estimator_task_fn(void *argument)
             float t_surf = 25.0f;
             bool input_ok = false;
 
+#if AMS_ENABLE_HIL_CAN
             if (use_hil &&
                 (inst->cfg.first_series_group == 0U) &&
                 (inst->cfg.series_group_count == AMS_EKF_PACK_SERIES_GROUPS))
@@ -255,6 +262,7 @@ void estimator_task_fn(void *argument)
                 input_ok = true;
             }
             else
+#endif
             {
                 uint16_t valid_v = 0U;
                 bool voltage_ok = collect_group_voltage(data, &inst->cfg, &v_meas, &valid_v);

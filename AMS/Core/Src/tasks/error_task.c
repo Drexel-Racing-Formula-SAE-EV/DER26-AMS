@@ -22,6 +22,31 @@
  */
 void error_task_fn(void *arg);
 
+static bool error_task_bms_ready(const app_data_t *data)
+{
+    if(data == NULL)
+    {
+        return false;
+    }
+
+    /* Caller holds the short safety critical section. */
+    return data->voltage_valid &&
+           !data->voltage_fault &&
+           data->temp_valid &&
+           !data->temp_fault &&
+           ((data->state != STATE_CHARGE) || !data->temp_charge_stop) &&
+           data->current_valid &&
+           !data->current_fault &&
+           !data->adbms_diag_fault &&
+           !data->task_heartbeat_fault &&
+           !data->fuse_fault &&
+           !data->charger_fault &&
+           data->imd_valid &&
+           data->imd_ok &&
+           !data->imd_fault &&
+           !data->hard_fault;
+}
+
 TaskHandle_t error_task_start(app_data_t *data)
 {
     TaskHandle_t handle = NULL;
@@ -33,6 +58,57 @@ TaskHandle_t error_task_start(app_data_t *data)
 
     xTaskCreate(error_task_fn, "ERROR task", AMS_STACK_ERROR_WORDS, (void *)data, ERR_PRIO, &handle);
     return handle;
+}
+
+void error_task_update(app_data_t *data, uint32_t now)
+{
+    if(data == NULL)
+    {
+        return;
+    }
+
+    data->air_state = HAL_GPIO_ReadPin(AIR_CTRL_GPIO_Port, AIR_CTRL_Pin);
+    (void)ams_heartbeat_update(data, now);
+    ams_rtos_diag_update(data);
+
+    /* Aggregate faults, evaluate readiness, and update BMS_OK as one atomic
+     * supervisor decision.  Keeping interrupts masked through set_bms() closes
+     * the race where an ISR could force BMS_OK low after the snapshot and the
+     * supervisor could then reassert it from stale readiness. */
+    taskENTER_CRITICAL();
+
+    data->hard_fault = (data->fuse_fault ||
+                        data->temp_fault ||
+                        data->voltage_fault ||
+                        data->imd_fault ||
+                        data->charger_fault ||
+                        data->adbms_diag_fault ||
+                        data->task_heartbeat_fault ||
+                        data->current_overcurrent_fault ||
+                        data->current_fault_latched ||
+                        data->rtos_fault);
+
+    data->soft_fault = (data->cli_fault ||
+                        data->canbus_fault ||
+                        data->logger_heartbeat_fault ||
+                        data->current_sensor_fault ||
+                        data->current_overcurrent_warning ||
+                        data->current_overcurrent_pending ||
+                        data->temp_warning ||
+                        data->temp_overtemp_pending ||
+                        data->fan_fault ||
+                        data->rtos_stack_warning ||
+                        data->rtos_heap_warning);
+
+    /* This task is the sole normal owner allowed to assert BMS_OK.
+     * Measurement/communication tasks may still force the output low for
+     * immediate response, but they cannot reassert it. */
+    data->bms_supervisor_ready = error_task_bms_ready(data);
+    set_bms(data->bms_supervisor_ready);
+
+    taskEXIT_CRITICAL();
+
+    ams_safety_watchdog_task_update(data);
 }
 
 void error_task_fn(void *arg)
@@ -50,40 +126,7 @@ void error_task_fn(void *arg)
     for(;;)
     {
         entry = osKernelGetTickCount();
-
-        data->air_state = HAL_GPIO_ReadPin(AIR_CTRL_GPIO_Port, AIR_CTRL_Pin);
-        (void)ams_heartbeat_update(data, entry);
-        ams_rtos_diag_update(data);
-
-
-	        data->hard_fault = (data->fuse_fault ||
-	                            data->temp_fault ||
-	                            data->voltage_fault ||
-	                            data->charger_fault ||
-	                            data->adbms_diag_fault ||
-	                            data->task_heartbeat_fault ||
-	                            data->current_overcurrent_fault ||
-	                            data->current_fault_latched ||
-                                data->rtos_fault);
-
-        data->soft_fault = (data->cli_fault ||
-                            data->canbus_fault ||
-                            data->logger_heartbeat_fault ||
-                            data->current_sensor_fault ||
-                            data->current_overcurrent_warning ||
-                            data->current_overcurrent_pending ||
-                            data->temp_warning ||
-                            data->temp_overtemp_pending ||
-                            data->fan_fault ||
-                            data->rtos_stack_warning ||
-                            data->rtos_heap_warning);
-
-        if(data->hard_fault)
-        {
-            set_bms(0);
-        }
-
-        ams_safety_watchdog_task_update(data);
+        error_task_update(data, entry);
 //        data->cascadia_error = HAL_GPIO_ReadPin(MTR_Fault_GPIO_Port, MTR_Fault_Pin);
 //		data->imd_fail = HAL_GPIO_ReadPin(IMD_Fail_GPIO_Port, IMD_Fail_Pin);
 //		data->bms_fail = HAL_GPIO_ReadPin(BMS_Fail_GPIO_Port, BMS_Fail_Pin);

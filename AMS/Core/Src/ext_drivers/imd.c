@@ -8,7 +8,6 @@
 */
 #include "ext_drivers/imd.h"
 
-// todo: better dummy init values
 void imd_init(imd_t *dev, uint32_t clock_freq, TIM_HandleTypeDef *htim, TIM_TypeDef *tim, HAL_TIM_ActiveChannel high_channel, HAL_TIM_ActiveChannel total_channel, GPIO_TypeDef *status_port, uint16_t status_pin)
 {
     if(dev == NULL)
@@ -27,11 +26,14 @@ void imd_init(imd_t *dev, uint32_t clock_freq, TIM_HandleTypeDef *htim, TIM_Type
 	dev->freq = 0;
 	dev->high_count = 0;
 	dev->total_count = 0;
-	dev->ret = 0;
-	dev->duty = 0.5;
-	dev->freq = 10.0;
-	dev->OK_HS = true;
-	dev->status = IMD_NORMAL;
+	/* Fail closed until both the digital status and PWM/status channel have
+	 * been read successfully.  Dummy "healthy" values can make an unconnected
+	 * or uninitialized IMD look valid to the safety supervisor. */
+	dev->ret = 1;
+	dev->duty = 0.0f;
+	dev->freq = 0.0f;
+	dev->OK_HS = false;
+	dev->status = IMD_UNKNOWN;
     if(htim != NULL)
     {
 	    (void)HAL_TIM_Base_Start(htim);
@@ -44,6 +46,12 @@ int imd_read(imd_t *dev)
 {
     if((dev == NULL) || (dev->htim == NULL) || (dev->status_port == NULL))
     {
+        if(dev != NULL)
+        {
+            dev->ret = 1;
+            dev->OK_HS = false;
+            dev->status = IMD_UNKNOWN;
+        }
         return 1;
     }
 
@@ -54,8 +62,23 @@ int imd_read(imd_t *dev)
 		dev->high_count = HAL_TIM_ReadCapturedValue(dev->htim, dev->high_channel);
 		dev->duty = (float)(dev->high_count * 100) / (float)dev->total_count;
 		dev->freq = (float)dev->clock_freq / (float)dev->total_count;
-		dev->status = 0.5 + dev->freq / 10.0; // TODO: probably need to round to nearest 10
-		return 0;
+		/* Preserve the existing frequency-to-status interpretation, but reject
+		 * values outside the defined status range instead of publishing an
+		 * arbitrary enum value.  The mapping still needs hardware validation. */
+		int status_code = (int)(0.5f + (dev->freq / 10.0f));
+		if((status_code >= (int)IMD_SHORT_TO_CHASSIS_GROUND) &&
+		   (status_code <= (int)IMD_GROUND_FAULT))
+		{
+			dev->status = (imd_status_t)status_code;
+			dev->ret = 0;
+			return 0;
+		}
+
+		dev->status = IMD_UNKNOWN;
+		dev->ret = 1;
+		return 1;
 	}
+	dev->status = IMD_UNKNOWN;
+	dev->ret = 1;
 	return 1;
 }

@@ -42,6 +42,25 @@
 #define AMS_HIL_REPLACE_ADBMS 0
 #endif
 
+/* HIL CAN injection is excluded from normal/production firmware unless an
+ * explicit HIL build enables it.  This prevents standard CAN frames from
+ * overwriting authoritative accumulator measurements in vehicle firmware. */
+#ifndef AMS_ENABLE_HIL_CAN
+#define AMS_ENABLE_HIL_CAN 0
+#endif
+
+/* Service CLI actions are disabled in normal/production firmware.  The
+ * dedicated hardware-bring-up profile enables them by default, and a build
+ * may still override this macro explicitly when required on a controlled
+ * bench. */
+#ifndef AMS_ENABLE_SERVICE_CLI
+#define AMS_ENABLE_SERVICE_CLI AMS_HW_BRINGUP
+#endif
+
+#if AMS_HIL_REPLACE_ADBMS && !AMS_ENABLE_HIL_CAN
+#error "AMS_HIL_REPLACE_ADBMS requires AMS_ENABLE_HIL_CAN=1"
+#endif
+
 #define AMS_HIL_ADBMS_IMAGE_TIMEOUT_MS 500u
 
 #define ERR_FREQ 20
@@ -306,6 +325,8 @@ struct app_data_t
 
 	bool air_state;
 	bool imd_ok;
+	bool imd_valid;
+	bool imd_fault;
 	imd_status_t imd_status;
     bool fan_state;
     float fan_command_percent;
@@ -330,6 +351,7 @@ struct app_data_t
 	uint16_t heartbeat_seen_mask;
     bool bms_state;
     bool bms_output_inhibit;
+    bool bms_supervisor_ready;
     uint32_t bms_output_block_count;
     bool balance_inhibit;
 

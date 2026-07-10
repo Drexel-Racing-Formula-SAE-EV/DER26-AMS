@@ -18,7 +18,7 @@
 
 extern app_data_t app;
 
-
+#if AMS_ENABLE_HIL_CAN
 static uint16_t be_u16(const uint8_t *data)
 {
     return (uint16_t)(((uint16_t)data[0] << 8) | data[1]);
@@ -116,6 +116,7 @@ static void canbus_parse_hil_frame(const CAN_RxHeaderTypeDef *rx_header, const u
             break;
     }
 }
+#endif /* AMS_ENABLE_HIL_CAN */
 
 void canbus_device_init(canbus_device_t *dev, CAN_HandleTypeDef *hcan)
 {
@@ -275,7 +276,9 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
     memset(app.board.canbus.rx_packet.data, 0, sizeof(app.board.canbus.rx_packet.data));
     memcpy(app.board.canbus.rx_packet.data, rx_data, rx_len);
 
+#if AMS_ENABLE_HIL_CAN
     canbus_parse_hil_frame(&rx_header, rx_data);
+#endif
 
     if(rx_header.IDE != CAN_ID_EXT) return;
     if(rx_header.ExtId != CHARGER_RX_ID) return;

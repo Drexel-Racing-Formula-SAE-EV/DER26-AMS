@@ -377,19 +377,9 @@ void adbms_task_fn(void *argument)
 	    }
 #endif
 
-	    bool bms_ok_ready = (data->voltage_valid &&
-	                         !data->voltage_fault &&
-	                         data->temp_valid &&
-	                         !data->temp_fault &&
-	                         !data->adbms_diag_fault &&
-	                         !data->task_heartbeat_fault &&
-	                             ((data->state != STATE_CHARGE) || !data->temp_charge_stop) &&
-	                             !data->fuse_fault &&
-	                             !data->charger_fault &&
-                             !data->hard_fault &&
-                             data->current_valid &&
-                             !data->current_fault);
-        set_bms(bms_ok_ready);
+	    /* Do not assert BMS_OK from a measurement task.  The error/safety
+	     * supervisor owns the complete readiness decision and is the only task
+	     * permitted to drive the output high. */
 
         /* Voltage charge-stop can still balance; hard faults/temp stop cannot. */
 #if !AMS_HIL_REPLACE_ADBMS

@@ -53,8 +53,12 @@ void imd_task_fn(void *argument){
     for(;;)
     {
     	entry = osKernelGetTickCount();
-    	data->imd_status = imd->status;
-    	data->imd_ok = imd->OK_HS;
+	    	int read_status = imd_read(imd);
+	    	data->imd_valid = (read_status == 0);
+	    	data->imd_status = data->imd_valid ? imd->status : IMD_UNKNOWN;
+	    	data->imd_ok = data->imd_valid && imd->OK_HS &&
+	    	               (imd->status == IMD_NORMAL);
+	    	data->imd_fault = !data->imd_ok;
     	osDelayUntil(entry + (1000 / IMD_FREQ));
     }
 

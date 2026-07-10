@@ -25,4 +25,9 @@
  */
 TaskHandle_t error_task_start(app_data_t *data);
 
+/* Executes one safety-supervisor evaluation without delaying.  The task loop
+ * calls this every ERR_FREQ period; host/SIL tests use the same function so
+ * BMS_OK ownership is tested without duplicating the decision logic. */
+void error_task_update(app_data_t *data, uint32_t now);
+
 #endif

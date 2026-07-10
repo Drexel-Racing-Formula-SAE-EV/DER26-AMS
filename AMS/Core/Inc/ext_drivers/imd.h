@@ -22,12 +22,13 @@
 */
 typedef enum
 {
-    IMD_SHORT_TO_CHASSIS_GROUND,
-    IMD_NORMAL,
-    IMD_UNDERVOLT,
-    IMD_SPEED_START,
-    IMD_DEVICE_ERROR,
-    IMD_GROUND_FAULT
+    IMD_SHORT_TO_CHASSIS_GROUND = 0,
+    IMD_NORMAL                  = 1,
+    IMD_UNDERVOLT               = 2,
+    IMD_SPEED_START             = 3,
+    IMD_DEVICE_ERROR            = 4,
+    IMD_GROUND_FAULT            = 5,
+    IMD_UNKNOWN                 = 0xFF
 } imd_status_t;
 
 /*

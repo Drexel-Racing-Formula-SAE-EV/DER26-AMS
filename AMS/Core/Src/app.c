@@ -19,6 +19,7 @@
 #include <tasks/adbms_task.h>
 #include "tasks/estimator_task.h"
 #include "ext_drivers/ams_rtos_diag.h"
+#include "task.h"
 
 app_data_t app = {0};
 static osMutexId_t adbms_spi_mutex;
@@ -263,6 +264,7 @@ void app_create()
 	app.bms_output_inhibit = false;
 #endif
 	app.bms_output_block_count = 0u;
+	app.bms_supervisor_ready = false;
 #if AMS_HW_BRINGUP_BALANCE_INHIBIT_DEFAULT
 	app.balance_inhibit = true;
 #else
@@ -270,8 +272,13 @@ void app_create()
 #endif
 
 	app.air_state = false;
-	app.imd_ok = true;
-	app.imd_status = IMD_NORMAL;
+	/* Fail closed until the IMD driver and capture path have produced a
+	 * validated result.  The IMD task is currently disabled on this board, so
+	 * treating the value as healthy here would be unsafe. */
+	app.imd_ok = false;
+	app.imd_valid = false;
+	app.imd_fault = true;
+	app.imd_status = IMD_UNKNOWN;
 
 	app.fan_state = false;
 	app.fan_command_percent = 0.0f;
@@ -330,14 +337,23 @@ void app_create()
 		}
 	}
 
-	/* BMS_OK is asserted by adbms_task after the first clean measurement pass. */
+	/* BMS_OK assertion is owned exclusively by the high-priority error/safety
+	 * supervisor task.  Other contexts may only force the output low. */
 }
 
 void set_bms(bool state)
 {
 	bool previous = app.bms_state;
+	bool assertion_owner = false;
 
-	if(state && (app.bms_output_inhibit || ams_safety_panic_active()))
+	if(state && (app.error_task != NULL))
+	{
+		assertion_owner = (xTaskGetCurrentTaskHandle() == app.error_task);
+	}
+
+	if(state && (!assertion_owner ||
+	             app.bms_output_inhibit ||
+	             ams_safety_panic_active()))
 	{
 		app.bms_output_block_count++;
 		app.bms_state = false;
