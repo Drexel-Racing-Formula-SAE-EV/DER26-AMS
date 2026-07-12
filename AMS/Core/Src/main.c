@@ -24,6 +24,9 @@
 /* USER CODE BEGIN Includes */
 #include "app.h"
 #include "ext_drivers/ams_safety.h"
+#if defined(AMS_ENABLE_TRACEALYZER) && (AMS_ENABLE_TRACEALYZER == 1)
+#include "trcRecorder.h"
+#endif
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -84,7 +87,9 @@ static void MX_TIM1_Init(void);
 void StartDefaultTask(void *argument);
 
 /* USER CODE BEGIN PFP */
-
+#if defined(AMS_ENABLE_TRACEALYZER) && (AMS_ENABLE_TRACEALYZER == 1)
+static void AMS_SWO_Pin_Init(void);
+#endif
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -134,7 +139,12 @@ int main(void)
   MX_USART3_UART_Init();
   MX_TIM1_Init();
   /* USER CODE BEGIN 2 */
-
+#if defined(AMS_ENABLE_TRACEALYZER) && (AMS_ENABLE_TRACEALYZER == 1)
+  /* CubeMX .ioc reserves PB3 as SWO. Keep this fallback so the trace branch
+   * remains usable even before code is regenerated from the .ioc file. */
+  AMS_SWO_Pin_Init();
+  (void)xTraceEnable(TRC_START);
+#endif
   /* USER CODE END 2 */
 
   /* Init scheduler */
@@ -921,6 +931,23 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+
+#if defined(AMS_ENABLE_TRACEALYZER) && (AMS_ENABLE_TRACEALYZER == 1)
+static void AMS_SWO_Pin_Init(void)
+{
+  GPIO_InitTypeDef gpio = {0};
+
+  __HAL_RCC_GPIOB_CLK_ENABLE();
+
+  gpio.Pin       = GPIO_PIN_3;
+  gpio.Mode      = GPIO_MODE_AF_PP;
+  gpio.Pull      = GPIO_NOPULL;
+  gpio.Speed     = GPIO_SPEED_FREQ_VERY_HIGH;
+  gpio.Alternate = GPIO_AF0_SWJ;
+
+  HAL_GPIO_Init(GPIOB, &gpio);
+}
+#endif
 
 /* USER CODE END 4 */
 

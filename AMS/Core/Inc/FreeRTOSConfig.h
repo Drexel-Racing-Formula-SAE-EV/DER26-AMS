@@ -155,11 +155,23 @@ standard names. */
 /* IMPORTANT: This define is commented when used with STM32Cube firmware, when the timebase source is SysTick,
               to prevent overwriting SysTick_Handler defined within STM32Cube HAL */
 
-#define xPortSysTickHandler SysTick_Handler
+/* CMSIS-RTOS2 (cmsis_os2.c) owns SysTick_Handler and forwards to
+ * xPortSysTickHandler. Do not alias the port handler to SysTick_Handler here. */
+/* #define xPortSysTickHandler SysTick_Handler */
 
 /* USER CODE BEGIN Defines */
 /* Section where parameter definitions can be added (for instance, to override default ones in FreeRTOS.h) */
 #define INCLUDE_xTaskGetCurrentTaskHandle 1
+
+#ifndef AMS_ENABLE_TRACEALYZER
+#define AMS_ENABLE_TRACEALYZER 0
+#endif
+
+#if (AMS_ENABLE_TRACEALYZER == 1)
+#include "trcRecorder.h"
+#endif
 /* USER CODE END Defines */
+
+
 
 #endif /* FREERTOS_CONFIG_H */
