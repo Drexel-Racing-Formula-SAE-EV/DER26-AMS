@@ -8,6 +8,21 @@
 */
 #include "ext_drivers/imd.h"
 
+#include <math.h>
+
+static int imd_fail_closed(imd_t *dev)
+{
+    if(dev != NULL)
+    {
+        dev->ret = 1;
+        dev->OK_HS = false;
+        dev->status = IMD_UNKNOWN;
+        dev->duty = 0.0f;
+        dev->freq = 0.0f;
+    }
+    return 1;
+}
+
 void imd_init(imd_t *dev, uint32_t clock_freq, TIM_HandleTypeDef *htim, TIM_TypeDef *tim, HAL_TIM_ActiveChannel high_channel, HAL_TIM_ActiveChannel total_channel, GPIO_TypeDef *status_port, uint16_t status_pin)
 {
     if(dev == NULL)
@@ -34,25 +49,29 @@ void imd_init(imd_t *dev, uint32_t clock_freq, TIM_HandleTypeDef *htim, TIM_Type
 	dev->freq = 0.0f;
 	dev->OK_HS = false;
 	dev->status = IMD_UNKNOWN;
+    dev->capture_started = false;
+    dev->init_status = HAL_ERROR;
     if(htim != NULL)
     {
-	    (void)HAL_TIM_Base_Start(htim);
-	    (void)HAL_TIM_IC_Start_IT(htim, total_channel);
-	    (void)HAL_TIM_IC_Start(htim, high_channel);
+	    dev->init_status = HAL_TIM_Base_Start(htim);
+        if(dev->init_status == HAL_OK)
+        {
+	        dev->init_status = HAL_TIM_IC_Start_IT(htim, total_channel);
+        }
+        if(dev->init_status == HAL_OK)
+        {
+	        dev->init_status = HAL_TIM_IC_Start(htim, high_channel);
+        }
+        dev->capture_started = (dev->init_status == HAL_OK);
     }
 }
 
 int imd_read(imd_t *dev)
 {
-    if((dev == NULL) || (dev->htim == NULL) || (dev->status_port == NULL))
+    if((dev == NULL) || !dev->capture_started || (dev->clock_freq == 0u) ||
+       (dev->htim == NULL) || (dev->status_port == NULL))
     {
-        if(dev != NULL)
-        {
-            dev->ret = 1;
-            dev->OK_HS = false;
-            dev->status = IMD_UNKNOWN;
-        }
-        return 1;
+        return imd_fail_closed(dev);
     }
 
 	dev->OK_HS = HAL_GPIO_ReadPin(dev->status_port, dev->status_pin);
@@ -60,8 +79,20 @@ int imd_read(imd_t *dev)
 	if (dev->total_count != 0)
 	{
 		dev->high_count = HAL_TIM_ReadCapturedValue(dev->htim, dev->high_channel);
-		dev->duty = (float)(dev->high_count * 100) / (float)dev->total_count;
+		if(dev->high_count > dev->total_count)
+        {
+            return imd_fail_closed(dev);
+        }
+
+		/* Convert before multiplying so a valid 32-bit capture cannot overflow
+		 * in integer arithmetic. */
+		dev->duty = ((float)dev->high_count * 100.0f) / (float)dev->total_count;
 		dev->freq = (float)dev->clock_freq / (float)dev->total_count;
+		if(!isfinite(dev->duty) || !isfinite(dev->freq) ||
+           (dev->duty < 0.0f) || (dev->duty > 100.0f))
+        {
+            return imd_fail_closed(dev);
+        }
 		/* Preserve the existing frequency-to-status interpretation, but reject
 		 * values outside the defined status range instead of publishing an
 		 * arbitrary enum value.  The mapping still needs hardware validation. */
@@ -75,10 +106,7 @@ int imd_read(imd_t *dev)
 		}
 
 		dev->status = IMD_UNKNOWN;
-		dev->ret = 1;
-		return 1;
+		return imd_fail_closed(dev);
 	}
-	dev->status = IMD_UNKNOWN;
-	dev->ret = 1;
-	return 1;
+	return imd_fail_closed(dev);
 }

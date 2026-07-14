@@ -12,8 +12,8 @@
 
 #include "ext_drivers/adbms6830_functions.h"
 
-unsigned char shared_buf[BUFSZ] = {0};
-uint8_t write_buf[BUFSZ] = {0};
+static unsigned char shared_buf[BUFSZ] = {0};
+static uint8_t write_buf[BUFSZ] = {0};
 static uint8_t spi_txrx_tx_buf[BUFSZ] = {0};
 static uint8_t spi_txrx_rx_buf[BUFSZ] = {0};
 

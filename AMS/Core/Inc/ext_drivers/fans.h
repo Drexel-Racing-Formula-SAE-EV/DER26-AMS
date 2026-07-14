@@ -9,6 +9,7 @@
 #ifndef INC_FANS_H_
 #define INC_FANS_H_
 
+#include <stdbool.h>
 #include <stdint.h>
 #include "stm32f7xx_hal.h"
 
@@ -32,6 +33,8 @@ typedef struct
 	uint64_t max_timer_val;
 	volatile uint32_t *CCR;
 	float duty_cycle;
+	bool initialized;
+	HAL_StatusTypeDef init_status;
 } fan_t;
 
 int set_fan_percent(fan_t *fan, float percent);

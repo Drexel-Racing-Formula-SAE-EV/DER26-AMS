@@ -13,5 +13,6 @@
 #include "cmsis_os.h"
 
 TaskHandle_t adbms_task_start(app_data_t *data);
+bool adbms_record_balance_write_result(app_data_t *data, int result);
 
 #endif /* __ADBMS_TASK_H_ */

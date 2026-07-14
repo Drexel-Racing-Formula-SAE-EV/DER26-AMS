@@ -71,7 +71,8 @@ static void adbms_task_run_periodic_diagnostics(app_data_t *data)
         status = adbms6830_read_status(smb, false);
         data->adbms_last_diag_status = status;
         data->adbms_status_diag_count++;
-        data->adbms_status_fault = ((status != HAL_OK) ||
+		data->adbms_status_fault = (!acc->delay_timer_ready ||
+									(status != HAL_OK) ||
                                     adbms_status_diag_has_safety_fault(smb));
     }
 
@@ -100,7 +101,8 @@ static void adbms_task_run_periodic_diagnostics(app_data_t *data)
 
     data->adbms_diag_fault = (data->adbms_config_fault ||
                               data->adbms_status_fault ||
-                              data->adbms_open_wire_fault);
+                              data->adbms_open_wire_fault ||
+                              data->adbms_balance_write_fault);
 }
 
 static uint32_t adbms_task_pack_cell_extremes(const app_data_t *data)
@@ -150,8 +152,53 @@ static uint16_t adbms_task_diag_reason_bits(const app_data_t *data)
     {
         reason |= 0x0004u;
     }
+    if(data->adbms_balance_write_fault)
+    {
+        reason |= 0x0008u;
+    }
 
     return reason;
+}
+
+bool adbms_record_balance_write_result(app_data_t *data, int result)
+{
+    bool was_faulted;
+
+    if(data == NULL)
+    {
+        return false;
+    }
+
+    was_faulted = data->adbms_balance_write_fault;
+    if(result == 0)
+    {
+        data->adbms_balance_write_fault = false;
+#if AMS_HIL_REPLACE_ADBMS
+        data->adbms_diag_fault = (data->can_busoff_fault || data->can_recover_pending);
+#else
+        data->adbms_diag_fault = (data->adbms_config_fault ||
+                                  data->adbms_status_fault ||
+                                  data->adbms_open_wire_fault);
+#endif
+        return true;
+    }
+
+    data->adbms_balance_write_fault = true;
+    if(data->adbms_balance_write_fail_count != UINT32_MAX)
+    {
+        data->adbms_balance_write_fail_count++;
+    }
+    data->adbms_last_diag_status = HAL_ERROR;
+    data->adbms_diag_fault = true;
+    if(!was_faulted)
+    {
+        ams_fault_log_event(AMS_FAULT_LOG_ADBMS_DIAG_FAIL,
+                            adbms_task_diag_reason_bits(data),
+                            (uint32_t)HAL_ERROR,
+                            data->adbms_balance_write_fail_count);
+    }
+    set_bms(false);
+    return false;
 }
 
 static void adbms_task_publish_voltage_state(app_data_t *data)
@@ -258,6 +305,14 @@ void adbms_task_fn(void *argument)
 	    data->adbms_scan_active = true;
 	    data->adbms_scan_count++;
 
+#if !AMS_HIL_REPLACE_ADBMS
+	    /* Own SPI6 for the complete scan.  Individual accumulator/driver
+	     * helpers lock recursively, while this outer lock prevents a service
+	     * command from interleaving wake, conversion, readback, diagnostics,
+	     * or balance writes that form one logical ADBMS operation. */
+	    adbms_spi_lock();
+#endif
+
         bool voltage_was_latched = data->voltage_fault_latched;
         voltage_fault_reason_t voltage_prev_latched_reason = data->voltage_fault_latched_reason;
         bool temp_was_latched = data->temp_fault_latched;
@@ -268,21 +323,9 @@ void adbms_task_fn(void *argument)
 
 	    /* Turn off balancing before reading so cell voltages recover from load. */
 #if !AMS_HIL_REPLACE_ADBMS
-	    if(accumulator_clear_balance(acc) != 0)
+	    if(!adbms_record_balance_write_result(data, accumulator_clear_balance(acc)))
 	    {
-            bool was_adbms_diag_fault = data->adbms_diag_fault;
-	        data->adbms_last_diag_status = HAL_ERROR;
-	        data->adbms_status_fault = true;
-	        data->adbms_diag_fault = true;
-            if(!was_adbms_diag_fault)
-            {
-                ams_fault_log_event(AMS_FAULT_LOG_ADBMS_DIAG_FAIL,
-                                    adbms_task_diag_reason_bits(data),
-                                    (uint32_t)data->adbms_last_diag_status,
-                                    data->adbms_scan_count);
-                adbms_diag_was_faulted = true;
-            }
-	        set_bms(0);
+            adbms_diag_was_faulted = true;
 	    }
 #endif
 	    osDelay(100);
@@ -357,6 +400,7 @@ void adbms_task_fn(void *argument)
 	    data->adbms_config_fault = false;
 	    data->adbms_status_fault = false;
 	    data->adbms_open_wire_fault = false;
+	    data->adbms_balance_write_fault = false;
         /* In ADBMS-image HIL mode, CAN is the measurement transport. Do not
          * clear a CAN bus-off/recovery-pending condition inside the ADBMS task
          * just because the last injected image has not aged out yet. */
@@ -395,15 +439,20 @@ void adbms_task_fn(void *argument)
            data->current_valid &&
            data->bms_state)
         {
-            (void)accumulator_set_balance(acc);
+            (void)adbms_record_balance_write_result(data, accumulator_set_balance(acc));
         }
         else
         {
-            accumulator_clear_balance(acc);
+	        (void)adbms_record_balance_write_result(data, accumulator_clear_balance(acc));
 	        }
 #endif
 
+#if !AMS_HIL_REPLACE_ADBMS
 	        data->adbms_scan_active = false;
+	        adbms_spi_unlock();
+#else
+	        data->adbms_scan_active = false;
+#endif
 	        osDelayUntil(entry + (1000 / ADBMS_FREQ));
 	}
 }

@@ -13,6 +13,7 @@ Thumbs.db
 AMS/Debug/
 AMS/Release/
 AMS/host_tests/build/
+AMS/host_tests/build-*/
 AMS/host_tests/*.exe
 AMS/host_tests/*.out
 AMS/host_tests/*.log

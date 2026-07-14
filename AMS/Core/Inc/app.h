@@ -339,11 +339,13 @@ struct app_data_t
 	bool adbms_config_fault;
 	bool adbms_status_fault;
 	bool adbms_open_wire_fault;
+	bool adbms_balance_write_fault;
 	bool adbms_scan_active;
 	uint32_t adbms_scan_count;
 	uint32_t adbms_status_diag_count;
 	uint32_t adbms_config_diag_count;
 	uint32_t adbms_open_wire_diag_count;
+	uint32_t adbms_balance_write_fail_count;
 	HAL_StatusTypeDef adbms_last_diag_status;
 	bool task_heartbeat_fault;
 	bool logger_heartbeat_fault;
@@ -374,7 +376,7 @@ struct app_data_t
 	TaskHandle_t estimator_task;
 };
 
-void app_create();
+void app_create(void);
 void set_bms(bool state);
 void adbms_spi_lock(void);
 void adbms_spi_unlock(void);

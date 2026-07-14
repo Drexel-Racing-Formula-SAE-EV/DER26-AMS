@@ -39,7 +39,15 @@ static uint32_t fan_channel_to_hal(int channel)
 
 int fan_init(fan_t *fan, TIM_TypeDef *timer, TIM_HandleTypeDef *htim, uint64_t max_timer_val, volatile uint32_t *CCR, int channel)
 {
-    if((fan == NULL) || (htim == NULL) || (CCR == NULL))
+    if(fan == NULL)
+    {
+        return 1;
+    }
+
+	fan->initialized = false;
+	fan->init_status = HAL_ERROR;
+
+    if((htim == NULL) || (CCR == NULL) || (max_timer_val > UINT32_MAX))
     {
         return 1;
     }
@@ -56,18 +64,22 @@ int fan_init(fan_t *fan, TIM_TypeDef *timer, TIM_HandleTypeDef *htim, uint64_t m
     fan->max_timer_val = max_timer_val;
     fan->CCR = CCR;
     fan->duty_cycle = 0.0f;
+	*(fan->CCR) = 0u;
 
-    if(HAL_TIM_PWM_Start(htim, hal_channel) != HAL_OK)
+	fan->init_status = HAL_TIM_PWM_Start(htim, hal_channel);
+    if(fan->init_status != HAL_OK)
     {
         return 1;
     }
 
+	fan->initialized = true;
     return set_fan_percent(fan, 0.0f);
 }
 
 int set_fan_percent(fan_t *fan, float percent)
 {
-    if((fan == NULL) || (fan->CCR == NULL))
+    if((fan == NULL) || !fan->initialized ||
+       (fan->init_status != HAL_OK) || (fan->CCR == NULL))
     {
         return 1;
     }
@@ -86,6 +98,13 @@ int set_fan_percent(fan_t *fan, float percent)
     }
 
     fan->duty_cycle = percent;
-    *(fan->CCR) = (uint32_t)(((float)fan->max_timer_val * percent) / 100.0f);
+    if(percent >= 100.0f)
+    {
+        *(fan->CCR) = fan->max_timer_val;
+    }
+    else
+    {
+        *(fan->CCR) = (uint32_t)(((double)fan->max_timer_val * (double)percent) / 100.0);
+    }
     return 0;
 }

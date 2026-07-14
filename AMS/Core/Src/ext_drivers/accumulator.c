@@ -71,9 +71,11 @@ void accumulator_init(accumulator_t *dev,
 					  uint16_t cs_pin_b,
 					  TIM_HandleTypeDef* htim)
 {
-    if(dev == NULL)
-    {
-        return;
+	TIM_HandleTypeDef *ready_timer = NULL;
+
+	if(dev == NULL)
+	{
+		return;
     }
 
 	dev->total_volt = 0;
@@ -139,6 +141,8 @@ void accumulator_init(accumulator_t *dev,
 	dev->voltage_full_updated = false;
 	dev->voltage_full_usable = false;
 	dev->voltage_startup_scan_complete = false;
+	dev->delay_timer_ready = false;
+	dev->delay_timer_status = HAL_ERROR;
 	memset(dev->cell_voltage_mv, 0, sizeof(dev->cell_voltage_mv));
 	memset(dev->cell_voltage_valid, 0, sizeof(dev->cell_voltage_valid));
 	memset(dev->cell_voltage_last_update_ms, 0, sizeof(dev->cell_voltage_last_update_ms));
@@ -157,37 +161,43 @@ void accumulator_init(accumulator_t *dev,
 
 	if(htim != NULL)
     {
-        (void)HAL_TIM_Base_Start(htim);
+		dev->delay_timer_status = HAL_TIM_Base_Start(htim);
+		if(dev->delay_timer_status == HAL_OK)
+		{
+			dev->delay_timer_ready = true;
+			ready_timer = htim;
+		}
     }
 
 	// Init pack monitor, just on port A. Disabled by default until ADBMS2950
 	// NDA documentation and board bring-up are complete.
 #if AMS_ENABLE_APM_2950_DEBUG
-	adbms2950_init(&dev->apm, NAPMS, dev->apm_ics, hspi, cs_port_a, cs_port_a, cs_pin_a, cs_pin_a, htim);
+	adbms2950_init(&dev->apm, NAPMS, dev->apm_ics, hspi, cs_port_a, cs_port_a, cs_pin_a, cs_pin_a, ready_timer);
 #else
 	memset(&dev->apm, 0, sizeof(dev->apm));
 	memset(dev->apm_ics, 0, sizeof(dev->apm_ics));
 #endif
 
-	adBms6830_init(&dev->smb, NSMBS, dev->smb_ics, hspi, cs_port_a, cs_port_b, cs_pin_a, cs_pin_b, htim);
+	adBms6830_init(&dev->smb, NSMBS, dev->smb_ics, hspi, cs_port_a, cs_port_b, cs_pin_a, cs_pin_b, ready_timer);
 }
 
 int accumulator_read_volt(accumulator_t *dev)
 {
-	int ret = 0;
-
 	if(dev == NULL)
 	{
 		return -1;
 	}
 
+	/* Serialize the complete wake/convert/read/parse sequence.  The ADBMS
+	 * driver uses shared scratch buffers, so locking only the final HAL
+	 * transfer is not sufficient. */
+	adbms_spi_lock();
 	smb_read_voltage(&dev->smb);
 //	apm_read_vbadc_viadc(&dev->apm);
 //	adbms6830_us_delay(&dev->smb, 5000);
+	adbms_spi_unlock();
 
-
-
-    return ret;
+    return 0;
 }
 
 void smb_read_voltage(adbms6830_driver_t* dev)
@@ -301,8 +311,6 @@ void apm_read_vbadc_viadc(adbms2950_driver_t* apm)
 
 int accumulator_read_temp(accumulator_t *dev)
 {
-	int error = 0;
-
 	if(dev == NULL)
 	{
 		return -1;
@@ -310,9 +318,11 @@ int accumulator_read_temp(accumulator_t *dev)
 
 //	apm_read_temps(&dev->apm);
 
+	adbms_spi_lock();
 	smb_read_temp(&dev->smb);
+	adbms_spi_unlock();
 
-	return error;
+	return 0;
 }
 
 void apm_read_temps(adbms2950_driver_t* apm)
@@ -367,14 +377,19 @@ int accumulator_set_temp_ch(accumulator_t *dev, uint8_t channel)
 
 int accumulator_set_mux_ch(accumulator_t *dev, uint8_t channel, uint8_t addr7)
 {
-    (void)addr7;
+	int status;
 
-    if((dev == NULL) || (channel >= NTEMPS))
-    {
-        return -1;
-    }
+	(void)addr7;
 
-    return mux_set_channel(&dev->smb, channel);
+	if((dev == NULL) || (channel >= NTEMPS))
+	{
+		return -1;
+	}
+
+	adbms_spi_lock();
+	status = mux_set_channel(&dev->smb, channel);
+	adbms_spi_unlock();
+	return status;
 }
 
 float NXFT15XV103FEAB050_convert(float ratio)
@@ -1238,6 +1253,9 @@ int accumulator_set_balance(accumulator_t *dev)
     adbms6830_driver_t *smb = &dev->smb;
     adbms6830_asic *smb_ics = (smb->ics != NULL) ? smb->ics : dev->smb_ics;
     uint8_t ic_count = accumulator_configured_smb_count(dev);
+    int result = -1;
+
+    adbms_spi_lock();
 
     for(uint8_t ic = 0; ic < ic_count; ic++)
     {
@@ -1283,11 +1301,13 @@ int accumulator_set_balance(accumulator_t *dev)
     }
 
     adbms6830_wakeup(smb);
-    if(adbms6830_wrcfgb_checked(smb) != HAL_OK)
+    if(adbms6830_wrcfgb_checked(smb) == HAL_OK)
     {
-        return -1;
+        result = (adbms6830_write_pwm_checked(smb) == HAL_OK) ? 0 : -1;
     }
-    return (adbms6830_write_pwm_checked(smb) == HAL_OK) ? 0 : -1;
+
+    adbms_spi_unlock();
+    return result;
 }
 
 int accumulator_clear_balance(accumulator_t *dev)
@@ -1301,6 +1321,8 @@ int accumulator_clear_balance(accumulator_t *dev)
     adbms6830_asic *smb_ics = (smb->ics != NULL) ? smb->ics : dev->smb_ics;
     uint8_t ic_count = accumulator_configured_smb_count(dev);
 
+    adbms_spi_lock();
+
     for(uint8_t ic = 0; ic < ic_count; ic++)
     {
         accumulator_clear_balance_shadow(&smb_ics[ic]);
@@ -1308,5 +1330,7 @@ int accumulator_clear_balance(accumulator_t *dev)
     adbms6830_wakeup(smb);
     HAL_StatusTypeDef cfg_status = adbms6830_wrcfgb_checked(smb);
     HAL_StatusTypeDef pwm_status = adbms6830_write_pwm_checked(smb);
-    return ((cfg_status == HAL_OK) && (pwm_status == HAL_OK)) ? 0 : -1;
+    int result = ((cfg_status == HAL_OK) && (pwm_status == HAL_OK)) ? 0 : -1;
+    adbms_spi_unlock();
+    return result;
 }

@@ -44,6 +44,7 @@ static uint32_t tx_free_level = 3;
 static HAL_StatusTypeDef fake_can_add_tx_status = HAL_OK;
 static uint32_t fake_can_error = HAL_CAN_ERROR_NONE;
 static HAL_StatusTypeDef fake_can_recover_status = HAL_OK;
+static HAL_StatusTypeDef fake_can_notification_status = HAL_OK;
 static char cli_capture[8192];
 static size_t cli_capture_len = 0u;
 static UART_HandleTypeDef cli_dummy_uart;
@@ -62,6 +63,14 @@ static uint16_t fake_adbms_updated_masks[ADBMS6830_MAX_TRACKED_ICS];
 static uint16_t fake_adbms_pec_masks[ADBMS6830_MAX_TRACKED_ICS];
 static HAL_StatusTypeDef fake_adbms_diag_status = HAL_OK;
 static uint16_t fake_adbms_config_mismatch_mask = 0u;
+static uint32_t fake_adbms_lock_depth = 0u;
+static uint32_t fake_adbms_lock_max_depth = 0u;
+static HAL_StatusTypeDef fake_tim_base_start_status = HAL_OK;
+static HAL_StatusTypeDef fake_tim_pwm_start_status = HAL_OK;
+static HAL_StatusTypeDef fake_tim_ic_start_it_status = HAL_OK;
+static HAL_StatusTypeDef fake_tim_ic_start_status = HAL_OK;
+static uint32_t fake_tim_total_capture = 1000u;
+static uint32_t fake_tim_high_capture = 500u;
 
 static uint16_t adc_count_for_mcu_voltage(float v);
 static uint16_t adc_count_for_sensor_voltage(float v);
@@ -90,7 +99,7 @@ HAL_StatusTypeDef HAL_CAN_Start(CAN_HandleTypeDef *hcan){ return hcan ? fake_can
 HAL_StatusTypeDef HAL_CAN_Stop(CAN_HandleTypeDef *hcan){ return hcan ? fake_can_recover_status : HAL_ERROR; }
 HAL_StatusTypeDef HAL_CAN_ResetError(CAN_HandleTypeDef *hcan){ if(!hcan) return HAL_ERROR; if(fake_can_recover_status == HAL_OK) fake_can_error = HAL_CAN_ERROR_NONE; return fake_can_recover_status; }
 uint32_t HAL_CAN_GetError(const CAN_HandleTypeDef *hcan){ (void)hcan; return fake_can_error; }
-HAL_StatusTypeDef HAL_CAN_ActivateNotification(CAN_HandleTypeDef *hcan, uint32_t notif){ (void)notif; return hcan ? HAL_OK : HAL_ERROR; }
+HAL_StatusTypeDef HAL_CAN_ActivateNotification(CAN_HandleTypeDef *hcan, uint32_t notif){ (void)notif; return hcan ? fake_can_notification_status : HAL_ERROR; }
 uint32_t HAL_CAN_GetTxMailboxesFreeLevel(const CAN_HandleTypeDef *hcan){ (void)hcan; return tx_free_level; }
 HAL_StatusTypeDef HAL_CAN_AddTxMessage(CAN_HandleTypeDef *hcan, const CAN_TxHeaderTypeDef *hdr, const uint8_t *data, uint32_t *mailbox){
     if(!hcan || !hdr || !data || tx_count >= AMS_HOST_TX_LOG_CAPACITY) return HAL_ERROR;
@@ -101,11 +110,11 @@ HAL_StatusTypeDef HAL_CAN_AddTxMessage(CAN_HandleTypeDef *hcan, const CAN_TxHead
 HAL_StatusTypeDef HAL_CAN_GetRxMessage(CAN_HandleTypeDef *hcan, uint32_t fifo, CAN_RxHeaderTypeDef *hdr, uint8_t data[]){
     (void)fifo; if(!hcan || !hdr || !data) return HAL_ERROR; *hdr = fake_rx_hdr; memcpy(data, fake_rx_data, 8); return fake_rx_status;
 }
-HAL_StatusTypeDef HAL_TIM_PWM_Start(TIM_HandleTypeDef *htim, uint32_t channel){ (void)channel; return htim ? HAL_OK : HAL_ERROR; }
-HAL_StatusTypeDef HAL_TIM_Base_Start(TIM_HandleTypeDef *htim){ return htim ? HAL_OK : HAL_ERROR; }
-HAL_StatusTypeDef HAL_TIM_IC_Start_IT(TIM_HandleTypeDef *htim, uint32_t channel){ (void)channel; return htim ? HAL_OK : HAL_ERROR; }
-HAL_StatusTypeDef HAL_TIM_IC_Start(TIM_HandleTypeDef *htim, uint32_t channel){ (void)channel; return htim ? HAL_OK : HAL_ERROR; }
-uint32_t HAL_TIM_ReadCapturedValue(const TIM_HandleTypeDef *htim, uint32_t channel){ (void)htim; return channel == TIM_CHANNEL_1 ? 1000u : 500u; }
+HAL_StatusTypeDef HAL_TIM_PWM_Start(TIM_HandleTypeDef *htim, uint32_t channel){ (void)channel; return htim ? fake_tim_pwm_start_status : HAL_ERROR; }
+HAL_StatusTypeDef HAL_TIM_Base_Start(TIM_HandleTypeDef *htim){ return htim ? fake_tim_base_start_status : HAL_ERROR; }
+HAL_StatusTypeDef HAL_TIM_IC_Start_IT(TIM_HandleTypeDef *htim, uint32_t channel){ (void)channel; return htim ? fake_tim_ic_start_it_status : HAL_ERROR; }
+HAL_StatusTypeDef HAL_TIM_IC_Start(TIM_HandleTypeDef *htim, uint32_t channel){ (void)channel; return htim ? fake_tim_ic_start_status : HAL_ERROR; }
+uint32_t HAL_TIM_ReadCapturedValue(const TIM_HandleTypeDef *htim, uint32_t channel){ (void)htim; return channel == TIM_CHANNEL_1 ? fake_tim_total_capture : fake_tim_high_capture; }
 GPIO_PinState HAL_GPIO_ReadPin(GPIO_TypeDef *port, uint16_t pin){ (void)port; (void)pin; return GPIO_PIN_SET; }
 void HAL_GPIO_WritePin(GPIO_TypeDef *port, uint16_t pin, GPIO_PinState state){ (void)port; (void)pin; bms_pin_state = state; }
 void HAL_GPIO_TogglePin(GPIO_TypeDef *port, uint16_t pin){ (void)port; (void)pin; bms_pin_state = !bms_pin_state; }
@@ -137,8 +146,20 @@ HAL_StatusTypeDef HAL_UART_Transmit(UART_HandleTypeDef *huart, const uint8_t *pD
 HAL_StatusTypeDef HAL_UART_Transmit_IT(UART_HandleTypeDef *huart, const uint8_t *pData, uint16_t Size){ (void)huart; cli_capture_append(pData, Size); return HAL_OK; }
 HAL_StatusTypeDef HAL_UART_Receive_IT(UART_HandleTypeDef *huart, uint8_t *pData, uint16_t Size){ (void)huart;(void)pData;(void)Size; return HAL_OK; }
 uint32_t HAL_UART_GetError(const UART_HandleTypeDef *huart){ return huart ? huart->ErrorCode : HAL_UART_ERROR_NONE; }
-void adbms_spi_lock(void){}
-void adbms_spi_unlock(void){}
+void adbms_spi_lock(void)
+{
+    fake_adbms_lock_depth++;
+    if(fake_adbms_lock_depth > fake_adbms_lock_max_depth)
+    {
+        fake_adbms_lock_max_depth = fake_adbms_lock_depth;
+    }
+}
+
+void adbms_spi_unlock(void)
+{
+    assert(fake_adbms_lock_depth > 0u);
+    fake_adbms_lock_depth--;
+}
 
 void set_bms(bool state){
     if(state && (app.bms_output_inhibit || ams_safety_panic_active())){
@@ -571,6 +592,17 @@ int tokenize(char *s, char *toks[], int maxtoks, char *delim)
 #include "Core/Src/tasks/current_task.c"
 #include "Core/Src/tasks/estimator_task.c"
 
+static void host_can_rx_isr_only(CAN_HandleTypeDef *hcan)
+{
+    HAL_CAN_RxFifo0MsgPendingCallback(hcan);
+}
+
+static uint32_t host_receive_can_frame(CAN_HandleTypeDef *hcan)
+{
+    host_can_rx_isr_only(hcan);
+    return canbus_process_rx_queue(&app.board.canbus, &app, CANBUS_RX_QUEUE_DEPTH);
+}
+
 static uint16_t word_at(uint32_t frame, uint8_t word_index){ return ((uint16_t)tx_log[frame].data[word_index*2] << 8) | tx_log[frame].data[word_index*2+1]; }
 static int16_t code_for_volts(float v){ return (int16_t)((v / 0.000150f) - 10000.0f); }
 static int16_t raw_for_ntc_voltage(float v){ return (int16_t)((v / 0.000150f) - 10000.0f); }
@@ -593,7 +625,7 @@ static int16_t raw_for_temp_c(float temp_c){ return raw_for_ntc_voltage(ntc_volt
 
 static void sil_mark_all_heartbeats_alive(app_data_t *d);
 
-static void init_fake_app(void){ memset(&app,0,sizeof(app)); ams_safety_host_reset_state(); ams_rtos_host_reset_state(); ams_rtos_diag_init(&app); app.acc.smb.num_ics = NSMBS; app.acc.smb.ics = app.acc.smb_ics; current_fault_init(&app.current_fault_state); voltage_fault_init(&app.voltage_fault_state); temperature_fault_init(&app.temp_fault_state); ams_heartbeat_init(&app, fake_tick); app.current_meas_reason = CURRENT_SENSOR_REASON_ADC_READ; app.current_fault_reason = CURRENT_FAULT_REASON_SENSOR_NOT_READY; app.voltage_fault_reason = VOLTAGE_FAULT_REASON_NOT_READY; app.temp_fault = true; app.temp_read_fault = true; app.temp_fan_max = true; app.temp_fault_reason = TEMPERATURE_FAULT_REASON_NOT_READY; app.imd_valid = true; app.imd_ok = true; app.imd_fault = false; app.imd_status = IMD_NORMAL; app.balance_inhibit = (AMS_HW_BRINGUP_BALANCE_INHIBIT_DEFAULT != 0); fake_adbms_voltage_masks_full_update(); fake_adc_read_index = 0u; fake_adbms_wrcfgb_status = HAL_OK; fake_adbms_wrpwm_status = HAL_OK; fake_adbms_wrpwm_fail_after_ok = -1; fake_adbms_diag_status = HAL_OK; fake_adbms_config_mismatch_mask = 0u; fake_can_add_tx_status = HAL_OK; fake_can_error = HAL_CAN_ERROR_NONE; fake_can_recover_status = HAL_OK; bms_pin_state = GPIO_PIN_RESET; }
+static void init_fake_app(void){ memset(&app,0,sizeof(app)); ams_safety_host_reset_state(); ams_rtos_host_reset_state(); ams_rtos_diag_init(&app); app.acc.smb.num_ics = NSMBS; app.acc.smb.ics = app.acc.smb_ics; app.acc.delay_timer_ready = true; app.acc.delay_timer_status = HAL_OK; current_fault_init(&app.current_fault_state); voltage_fault_init(&app.voltage_fault_state); temperature_fault_init(&app.temp_fault_state); ams_heartbeat_init(&app, fake_tick); app.current_meas_reason = CURRENT_SENSOR_REASON_ADC_READ; app.current_fault_reason = CURRENT_FAULT_REASON_SENSOR_NOT_READY; app.voltage_fault_reason = VOLTAGE_FAULT_REASON_NOT_READY; app.temp_fault = true; app.temp_read_fault = true; app.temp_fan_max = true; app.temp_fault_reason = TEMPERATURE_FAULT_REASON_NOT_READY; app.imd_valid = true; app.imd_ok = true; app.imd_fault = false; app.imd_status = IMD_NORMAL; app.balance_inhibit = (AMS_HW_BRINGUP_BALANCE_INHIBIT_DEFAULT != 0); fake_adbms_voltage_masks_full_update(); fake_adc_read_index = 0u; fake_adbms_wrcfgb_status = HAL_OK; fake_adbms_wrpwm_status = HAL_OK; fake_adbms_wrpwm_fail_after_ok = -1; fake_adbms_diag_status = HAL_OK; fake_adbms_config_mismatch_mask = 0u; fake_can_add_tx_status = HAL_OK; fake_can_error = HAL_CAN_ERROR_NONE; fake_can_recover_status = HAL_OK; fake_can_notification_status = HAL_OK; fake_rx_status = HAL_OK; fake_tim_base_start_status = HAL_OK; fake_tim_pwm_start_status = HAL_OK; fake_tim_ic_start_it_status = HAL_OK; fake_tim_ic_start_status = HAL_OK; fake_tim_total_capture = 1000u; fake_tim_high_capture = 500u; memset(&fake_rx_hdr, 0, sizeof(fake_rx_hdr)); memset(fake_rx_data, 0, sizeof(fake_rx_data)); bms_pin_state = GPIO_PIN_RESET; }
 
 static void host_mark_updated_cells(app_data_t *d)
 {
@@ -632,7 +664,8 @@ static void host_send_hil_cell_triplet(uint8_t seg,
     fake_rx_data[5] = (uint8_t)(mv1 & 0xFFu);
     fake_rx_data[6] = (uint8_t)(mv2 >> 8);
     fake_rx_data[7] = (uint8_t)(mv2 & 0xFFu);
-    HAL_CAN_RxFifo0MsgPendingCallback(&hil_fake_hcan);
+    app.board.canbus.hcan = &hil_fake_hcan;
+    (void)host_receive_can_frame(&hil_fake_hcan);
 }
 
 static void host_send_hil_temp_triplet(uint8_t seg,
@@ -653,7 +686,8 @@ static void host_send_hil_temp_triplet(uint8_t seg,
     fake_rx_data[5] = (uint8_t)((uint16_t)t1_deci_c & 0xFFu);
     fake_rx_data[6] = (uint8_t)((uint16_t)t2_deci_c >> 8);
     fake_rx_data[7] = (uint8_t)((uint16_t)t2_deci_c & 0xFFu);
-    HAL_CAN_RxFifo0MsgPendingCallback(&hil_fake_hcan);
+    app.board.canbus.hcan = &hil_fake_hcan;
+    (void)host_receive_can_frame(&hil_fake_hcan);
 }
 
 static void test_accumulator_stats_and_balance(void){
@@ -814,6 +848,8 @@ static void test_logger_can_contract_packets(void){
     app.adbms_last_diag_status = HAL_BUSY;
     app.adbms_diag_fault = true;
     app.adbms_config_fault = true;
+    app.adbms_balance_write_fault = true;
+    app.adbms_balance_write_fail_count = 7u;
     app.adbms_scan_active = true;
     app.hil.meas.fresh = 1u;
     app.hil.truth.fresh = 1u;
@@ -887,6 +923,7 @@ static void test_logger_can_contract_packets(void){
     CHECK((tx_log[15].data[6] & (1u << AMS_LOGGER_ADBMS_DIAG_FLAG_DIAG_FAULT)) != 0u);
     CHECK((tx_log[15].data[6] & (1u << AMS_LOGGER_ADBMS_DIAG_FLAG_CONFIG_FAULT)) != 0u);
     CHECK((tx_log[15].data[6] & (1u << AMS_LOGGER_ADBMS_DIAG_FLAG_SCAN_ACTIVE)) != 0u);
+    CHECK((tx_log[15].data[6] & (1u << AMS_LOGGER_ADBMS_DIAG_FLAG_BALANCE_WRITE_FAULT)) != 0u);
     CHECK(tx_log[15].data[7] == 0x07u);
 
     CHECK(tx_log[16].stdid == AMS_LOGGER_CAN_ID_CURRENT_ADC);
@@ -948,7 +985,7 @@ static void test_logger_can_contract_packets(void){
 static void test_charger_rx_and_tx(void){
     init_fake_app(); static CAN_HandleTypeDef hcan; app.board.canbus.hcan=&hcan; charger_init(&app.board.charger, &app.board.canbus);
     memset(&fake_rx_hdr,0,sizeof(fake_rx_hdr)); fake_rx_hdr.IDE=CAN_ID_EXT; fake_rx_hdr.ExtId=CHARGER_RX_ID; fake_rx_hdr.DLC=5; fake_rx_data[0]=0x0C; fake_rx_data[1]=0x34; fake_rx_data[2]=0x00; fake_rx_data[3]=0x2A; fake_rx_data[4]=0x0B; fake_tick=1234;
-    HAL_CAN_RxFifo0MsgPendingCallback(&hcan);
+    (void)host_receive_can_frame(&hcan);
     CHECK(fabsf(app.board.charger.read_voltage - 312.4f) < 0.01f);
     CHECK(fabsf(app.board.charger.read_current - 4.2f) < 0.01f);
     CHECK(app.board.charger.hardware_fail == true);
@@ -1021,6 +1058,8 @@ static void sil_attach_fans(app_data_t *d)
         d->board.fans[i].CCR = &sil_fan_ccr[i];
         d->board.fans[i].max_timer_val = 1000u;
         d->board.fans[i].htim = &sil_fan_htim;
+		d->board.fans[i].initialized = true;
+		d->board.fans[i].init_status = HAL_OK;
     }
 }
 
@@ -1255,7 +1294,7 @@ static void test_task_iterations_with_injected_signals(void){
     run_one_error_task_iteration(&app);
     CHECK(app.hard_fault == true); CHECK(app.bms_state == false);
 
-    init_fake_app(); for(int i=0;i<NFANS;i++){ static TIM_HandleTypeDef ht; static uint32_t ccrs[NFANS]; app.board.fans[i].CCR=&ccrs[i]; app.board.fans[i].max_timer_val=1000; app.board.fans[i].htim=&ht; }
+    init_fake_app(); for(int i=0;i<NFANS;i++){ static TIM_HandleTypeDef ht; static uint32_t ccrs[NFANS]; app.board.fans[i].CCR=&ccrs[i]; app.board.fans[i].max_timer_val=1000; app.board.fans[i].htim=&ht; app.board.fans[i].initialized=true; app.board.fans[i].init_status=HAL_OK; }
     app.max_temp = 0.0f; app.temp_valid = false; app.temp_usable_sensor_count = 0u; run_one_fan_task_iteration(&app); CHECK(app.fan_state == true); for(int i=0;i<NFANS;i++) CHECK(app.board.fans[i].duty_cycle == 100.0f);
     app.temp_valid = true; app.temp_read_fault = false; app.temp_fault = false; app.temp_fan_max = true; app.temp_usable_sensor_count = AMS_EXPECTED_TEMP_SENSOR_COUNT;
     app.max_temp = TEMP_FAN_MAX_C + 1.0f; run_one_fan_task_iteration(&app); CHECK(app.fan_state == true); for(int i=0;i<NFANS;i++) CHECK(app.board.fans[i].duty_cycle == 100.0f);
@@ -1529,6 +1568,80 @@ static void test_fan_current_and_null_guards(void){
     CHECK(imd_read(NULL) == 1); imd_init(NULL, 0, NULL, NULL, 0, 0, NULL, 0);
 }
 
+static void test_imd_capture_validation(void)
+{
+    static TIM_HandleTypeDef htim;
+    static GPIO_TypeDef status_port;
+    imd_t imd;
+
+    init_fake_app();
+    fake_tim_total_capture = 100u;
+    fake_tim_high_capture = 50u;
+    imd_init(&imd,
+             1000u,
+             &htim,
+             NULL,
+             TIM_CHANNEL_2,
+             TIM_CHANNEL_1,
+             &status_port,
+             1u);
+    CHECK(imd.capture_started == true);
+    CHECK(imd.init_status == HAL_OK);
+    CHECK(imd_read(&imd) == 0);
+    CHECK(imd.status == IMD_NORMAL);
+    CHECK(imd.OK_HS == true);
+    CHECK(fabsf(imd.freq - 10.0f) < 0.01f);
+    CHECK(fabsf(imd.duty - 50.0f) < 0.01f);
+
+    fake_tim_high_capture = 101u;
+    CHECK(imd_read(&imd) != 0);
+    CHECK(imd.status == IMD_UNKNOWN);
+    CHECK(imd.OK_HS == false);
+    CHECK(imd.duty == 0.0f);
+    CHECK(imd.freq == 0.0f);
+
+    /* Full-width captures must not overflow high_count * 100 before the
+     * floating-point duty conversion. */
+    fake_tim_total_capture = UINT32_MAX;
+    fake_tim_high_capture = UINT32_MAX;
+    imd_init(&imd,
+             UINT32_MAX,
+             &htim,
+             NULL,
+             TIM_CHANNEL_2,
+             TIM_CHANNEL_1,
+             &status_port,
+             1u);
+    CHECK(imd_read(&imd) == 0);
+    CHECK(isfinite(imd.duty));
+    CHECK(fabsf(imd.duty - 100.0f) < 0.01f);
+
+    fake_tim_base_start_status = HAL_ERROR;
+    imd_init(&imd,
+             1000u,
+             &htim,
+             NULL,
+             TIM_CHANNEL_2,
+             TIM_CHANNEL_1,
+             &status_port,
+             1u);
+    CHECK(imd.capture_started == false);
+    CHECK(imd.init_status == HAL_ERROR);
+    CHECK(imd_read(&imd) != 0);
+
+    fake_tim_base_start_status = HAL_OK;
+    imd_init(&imd,
+             0u,
+             &htim,
+             NULL,
+             TIM_CHANNEL_2,
+             TIM_CHANNEL_1,
+             &status_port,
+             1u);
+    CHECK(imd.capture_started == true);
+    CHECK(imd_read(&imd) != 0);
+}
+
 
 
 static void test_safety_panic_reset_watchdog_and_log(void)
@@ -1570,6 +1683,16 @@ static void test_safety_panic_reset_watchdog_and_log(void)
     CHECK(log->count >= 2u);
     ams_fault_log_clear();
     CHECK(ams_fault_log_get()->count == 0u);
+
+    ams_fault_log_event(AMS_FAULT_LOG_BOOT, 1u, 2u, 3u);
+    ams_fault_log_t snapshot;
+    CHECK(ams_fault_log_snapshot(&snapshot));
+    CHECK(snapshot.count == 1u);
+    CHECK(snapshot.entry[0].event == AMS_FAULT_LOG_BOOT);
+    ams_fault_log_event(AMS_FAULT_LOG_CAN_RECOVERED, 4u, 5u, 6u);
+    CHECK(snapshot.count == 1u);
+    CHECK(ams_fault_log_get()->count == 2u);
+    CHECK(!ams_fault_log_snapshot(NULL));
 }
 
 static void sil_make_measurement_gates_ready(app_data_t *d)
@@ -1733,6 +1856,8 @@ static void test_can_busoff_sets_fault_and_recovers(void)
     CHECK(app.can_error_code == HAL_CAN_ERROR_NONE);
     CHECK(app.canbus_fault == false);
     CHECK(fake_can_error == HAL_CAN_ERROR_NONE);
+	CHECK(app.board.canbus.started == true);
+	CHECK(app.board.canbus.notification_active == true);
 
     init_fake_app();
     app.board.canbus.hcan = &hcan;
@@ -1748,19 +1873,35 @@ static void test_can_busoff_sets_fault_and_recovers(void)
     CHECK(app.can_recover_pending == true);
     CHECK(app.can_recover_count == 0u);
     CHECK(app.canbus_fault == true);
+	CHECK(app.board.canbus.started == false);
+	CHECK(app.board.canbus.notification_active == false);
     CHECK(app.can_last_error_tick > first_recovery_tick);
     uint32_t failed_recovery_tick = app.can_last_error_tick;
     fake_tick += (AMS_CAN_BUSOFF_RECOVERY_COOLDOWN_MS / 2u);
     canbus_poll_errors(&app.board.canbus, &app);
     CHECK(app.can_last_error_tick == failed_recovery_tick);
 
-    fake_can_recover_status = HAL_OK;
+	fake_can_recover_status = HAL_OK;
+	fake_can_notification_status = HAL_ERROR;
     fake_tick = failed_recovery_tick + AMS_CAN_BUSOFF_RECOVERY_COOLDOWN_MS + 1u;
     canbus_poll_errors(&app.board.canbus, &app);
+	CHECK(app.can_busoff_fault == true);
+	CHECK(app.can_recover_pending == true);
+	CHECK(app.can_recover_count == 0u);
+	CHECK(app.canbus_fault == true);
+	CHECK(app.board.canbus.started == true);
+	CHECK(app.board.canbus.notification_active == false);
+	failed_recovery_tick = app.can_last_error_tick;
+
+	fake_can_notification_status = HAL_OK;
+	fake_tick = failed_recovery_tick + AMS_CAN_BUSOFF_RECOVERY_COOLDOWN_MS + 1u;
+	canbus_poll_errors(&app.board.canbus, &app);
     CHECK(app.can_busoff_fault == false);
     CHECK(app.can_recover_pending == false);
     CHECK(app.can_recover_count == 1u);
     CHECK(app.canbus_fault == false);
+	CHECK(app.board.canbus.started == true);
+	CHECK(app.board.canbus.notification_active == true);
 
     init_fake_app();
     app.board.canbus.hcan = &hcan;
@@ -2181,8 +2322,12 @@ static void test_system_sil_balance_inhibit_ladder_bringup_lockout(void)
     app.acc.smb_ics[0].PwmA.pwma[0] = BALANCE_PWM_DUTY;
     app.acc.smb_ics[0].PwmB.pwmb[0] = BALANCE_PWM_DUTY;
     app.acc.smb_ics[0].tx_cfgb.dcc = 0x0003u;
+    fake_adbms_lock_depth = 0u;
+    fake_adbms_lock_max_depth = 0u;
     sil_prepare_cli_capture();
     CHECK(balance_control(2, balance_clear_argv) == 0);
+    CHECK(fake_adbms_lock_depth == 0u);
+    CHECK(fake_adbms_lock_max_depth >= 2u);
     CHECK(strstr(cli_capture, "Balancing PWM/DCC cleared") != NULL);
     sil_expect_balancing_clear(&app);
 
@@ -2215,6 +2360,8 @@ static void test_system_sil_bench_cli_abuse_and_balance_idempotence(void)
     char *bmsok_bad[] = {"bmsok", "wat", NULL};
     char *bmsok_status[] = {"bmsok", "status", NULL};
     char *state_bad[] = {"state", "launch", NULL};
+    char *state_charge[] = {"state", "charge", NULL};
+    char *state_discharge[] = {"state", "discharge", NULL};
 
     sil_prepare_ready_system(STATE_CHARGE, 0.0f, 3.700f);
     app.balance_inhibit = false;
@@ -2240,6 +2387,35 @@ static void test_system_sil_bench_cli_abuse_and_balance_idempotence(void)
     CHECK(set_state(2, state_bad) == 1);
     CHECK(app.state == before_state);
     CHECK(strstr(cli_capture, "Usage: state") != NULL);
+
+    app.acc.smb_ics[0].tx_cfgb.dcc = 0x0002u;
+    app.acc.smb_ics[0].PwmA.pwma[1] = BALANCE_PWM_DUTY;
+    app.bms_state = true;
+    bms_pin_state = GPIO_PIN_SET;
+    sil_prepare_cli_capture();
+    CHECK(set_state(2, state_discharge) == 0);
+    CHECK(app.state == STATE_DISCARGE);
+    CHECK(app.bms_state == false);
+    CHECK(bms_pin_state == GPIO_PIN_RESET);
+    sil_expect_balancing_clear(&app);
+
+    app.acc.smb_ics[0].tx_cfgb.dcc = 0x0002u;
+    app.acc.smb_ics[0].PwmA.pwma[1] = BALANCE_PWM_DUTY;
+    fake_adbms_wrpwm_status = HAL_ERROR;
+    sil_prepare_cli_capture();
+    CHECK(set_state(2, state_charge) == 0);
+    CHECK(app.state == STATE_CHARGE);
+    CHECK(app.adbms_balance_write_fault == true);
+    CHECK(app.adbms_diag_fault == true);
+    CHECK(app.bms_state == false);
+    CHECK(strstr(cli_capture, "balance-clear write failure") != NULL);
+    sil_expect_balancing_clear(&app);
+
+    fake_adbms_wrpwm_status = HAL_OK;
+    sil_prepare_cli_capture();
+    CHECK(set_state(2, state_discharge) == 0);
+    CHECK(app.adbms_balance_write_fault == false);
+    CHECK(app.adbms_diag_fault == false);
 
     for(uint8_t i = 0u; i < 12u; i++)
     {
@@ -2345,7 +2521,8 @@ static void test_system_sil_bench_adbms_write_failures_and_recovery(void)
     fake_adbms_wrcfgb_status = HAL_ERROR;
     sil_run_voltage_sample(&app);
     CHECK(app.adbms_diag_fault == true);
-    CHECK(app.adbms_status_fault == true);
+    CHECK(app.adbms_balance_write_fault == true);
+    CHECK(app.adbms_balance_write_fail_count >= 1u);
     CHECK(app.bms_state == false);
     CHECK(bms_pin_state == GPIO_PIN_RESET);
     sil_expect_balancing_clear(&app);
@@ -2357,6 +2534,7 @@ static void test_system_sil_bench_adbms_write_failures_and_recovery(void)
     }
     CHECK(app.adbms_diag_fault == false);
     CHECK(app.adbms_status_fault == false);
+    CHECK(app.adbms_balance_write_fault == false);
     CHECK(app.bms_state == true);
     CHECK(bms_pin_state == GPIO_PIN_SET);
 
@@ -2367,7 +2545,9 @@ static void test_system_sil_bench_adbms_write_failures_and_recovery(void)
     fake_adbms_voltage_masks_full_update();
     fake_adbms_wrpwm_fail_after_ok = 1;
     sil_run_voltage_sample(&app);
-    CHECK(app.bms_state == true);
+    CHECK(app.bms_state == false);
+    CHECK(app.adbms_diag_fault == true);
+    CHECK(app.adbms_balance_write_fault == true);
     CHECK(app.charge_voltage_stop == true);
     CHECK(sil_balance_pwm_duty(&app, 0u, 1u) == BALANCE_PWM_DUTY);
 
@@ -2375,6 +2555,8 @@ static void test_system_sil_bench_adbms_write_failures_and_recovery(void)
     fake_adbms_wrpwm_fail_after_ok = -1;
     sil_run_voltage_sample(&app);
     sil_expect_balancing_clear(&app);
+    CHECK(app.adbms_balance_write_fault == false);
+    CHECK(app.adbms_diag_fault == false);
     CHECK(app.bms_state == true);
 }
 
@@ -3354,6 +3536,96 @@ static void test_system_sil_cli_can_diagnostic_consistency(void)
     CHECK(strstr(cli_capture, "ADC map L:PC0 ADC2_IN10 50A H:PA3 ADC1_IN3 800A") != NULL);
 }
 
+static void test_cli_numeric_and_telemetry_conversion_guards(void)
+{
+    static CAN_HandleTypeDef hcan;
+    uint16_t repeat = 77u;
+    int whole = 123;
+    int decimal = 456;
+
+    init_fake_app();
+    sil_prepare_cli_capture();
+
+    /* Malformed channel strings must not fall through atoi() as channel 0 or
+     * execute any mux delays/SPI activity. */
+    uint32_t tick_before = fake_tick;
+    char *bad_ic[] = {"tempsns", "abc", "0", NULL};
+    CHECK(get_temperature_sensor(3, bad_ic) == 0);
+    CHECK(fake_tick == tick_before);
+    CHECK(strstr(cli_capture, "Error: ic") != NULL);
+
+    sil_prepare_cli_capture();
+    char *bad_sensor[] = {"tempsns", "0", "1junk", NULL};
+    CHECK(get_temperature_sensor(3, bad_sensor) == 0);
+    CHECK(fake_tick == tick_before);
+    CHECK(strstr(cli_capture, "sensor out of range") != NULL);
+
+    sil_prepare_cli_capture();
+    char *overflow_ic[] = {"tempsns", "999999999999999999999999", "0", NULL};
+    CHECK(get_temperature_sensor(3, overflow_ic) == 0);
+    CHECK(fake_tick == tick_before);
+    CHECK(strstr(cli_capture, "Error: ic") != NULL);
+
+    CHECK(!cli_parse_scope_repeat("12junk", &repeat));
+    CHECK(repeat == 77u);
+    CHECK(!cli_parse_scope_repeat("101", &repeat));
+    CHECK(repeat == 77u);
+    CHECK(cli_parse_scope_repeat("100", &repeat));
+    CHECK(repeat == 100u);
+
+    cli_fixed1(NAN, &whole, &decimal);
+    CHECK(whole == 0 && decimal == 0);
+    cli_fixed3(INFINITY, &whole, &decimal);
+    CHECK(whole == 0 && decimal == 0);
+    cli_fixed1(1.0e30f, &whole, &decimal);
+    CHECK(whole == (INT_MAX / 10) && decimal == (INT_MAX % 10));
+    cli_fixed1(-1.0e30f, &whole, &decimal);
+    CHECK(whole == (INT_MIN / 10) && decimal == abs(INT_MIN % 10));
+
+    app.board.canbus.hcan = &hcan;
+    app.temp_valid = true;
+    app.current = NAN;
+    app.board.imd.duty = INFINITY;
+    app.max_temp = NAN;
+    app.min_voltage = -INFINITY;
+    app.max_voltage = INFINITY;
+    app.board.fans[0].duty_cycle = INFINITY;
+    tx_count = 0u;
+    tx_free_level = 3u;
+    CHECK(send_ecu_ams_status(&app.board.canbus, &app) == HAL_OK);
+    CHECK(tx_count == 3u);
+    CHECK(word_at(0u, 3u) == 0u);
+    CHECK(word_at(1u, 3u) == 0u);
+    CHECK(word_at(2u, 1u) == ECU_TEMP_INVALID_DECI_C);
+    CHECK(word_at(2u, 2u) == 0u);
+    CHECK(word_at(2u, 3u) == 0u);
+
+    tx_count = 0u;
+    CHECK(send_ecu_ams_fans(&app.board.canbus, &app) == HAL_OK);
+    CHECK(word_at(0u, 1u) == 0u);
+
+    app.current = 1.0e30f;
+    app.max_temp = -1.0e30f;
+    app.min_voltage = 1.0e30f;
+    app.max_voltage = 1.0e30f;
+    tx_count = 0u;
+    CHECK(send_ecu_ams_status(&app.board.canbus, &app) == HAL_OK);
+    CHECK((int16_t)word_at(0u, 3u) == INT16_MAX);
+    CHECK((int16_t)word_at(2u, 1u) == INT16_MIN);
+    CHECK(word_at(2u, 2u) == UINT16_MAX);
+    CHECK(word_at(2u, 3u) == UINT16_MAX);
+
+    CHECK(current_task_abs_deciamps(NAN) == 0u);
+    CHECK(current_task_abs_deciamps(1.0e30f) == UINT32_MAX);
+
+    fan_t fan = {0};
+    uint32_t ccr = 0u;
+    static TIM_HandleTypeDef htim;
+    CHECK(fan_init(&fan, NULL, &htim, UINT32_MAX, &ccr, 1) == 0);
+    CHECK(set_fan_percent(&fan, 100.0f) == 0);
+    CHECK(ccr == UINT32_MAX);
+}
+
 static void test_adbms6830_diagnostic_commands_and_cli_health(void)
 {
     static SPI_HandleTypeDef hspi;
@@ -3490,6 +3762,21 @@ static void test_adbms_periodic_diagnostics_and_safe_open_wire(void)
     CHECK(app.acc.smb.health.open_wire_even_count == 1u);
     CHECK(app.acc.smb.health.open_wire_odd_count == 0u);
     CHECK(app.adbms_open_wire_fault == false);
+
+	init_fake_app();
+	fill_nominal_pack(&app, 3.700f);
+	app.state = STATE_DISCARGE;
+	app.current_valid = true;
+	app.bms_state = true;
+	bms_pin_state = GPIO_PIN_SET;
+	app.acc.delay_timer_ready = false;
+	app.acc.delay_timer_status = HAL_ERROR;
+	app.adbms_scan_count = ADBMS_STATUS_DIAG_PERIOD_CYCLES - 1u;
+	run_one_adbms_task_iteration(&app);
+	CHECK(app.adbms_status_fault == true);
+	CHECK(app.adbms_diag_fault == true);
+	CHECK(app.bms_state == false);
+	CHECK(bms_pin_state == GPIO_PIN_RESET);
 }
 
 static void test_adbms_cli_scan_guard_and_cs_probe_commands(void)
@@ -4755,23 +5042,23 @@ static void test_can_rx_filter_matrix(void){
     fake_rx_status = HAL_ERROR;
     fake_rx_hdr.IDE = CAN_ID_EXT; fake_rx_hdr.ExtId = CHARGER_RX_ID; fake_rx_hdr.DLC = 8;
     memset(fake_rx_data, 0xAA, sizeof(fake_rx_data));
-    HAL_CAN_RxFifo0MsgPendingCallback(&hcan);
+    (void)host_receive_can_frame(&hcan);
     CHECK(app.board.charger.rx_count == 0u);
     CHECK(app.board.charger.flags == 0u);
 
     fake_rx_status = HAL_OK;
     fake_rx_hdr.IDE = CAN_ID_STD; fake_rx_hdr.StdId = (uint32_t)CHARGER_RX_ID; fake_rx_hdr.DLC = 8;
-    HAL_CAN_RxFifo0MsgPendingCallback(&hcan);
+    (void)host_receive_can_frame(&hcan);
     CHECK(app.board.canbus.rx_packet.id == (uint32_t)CHARGER_RX_ID);
     CHECK(app.board.charger.rx_count == 0u);
 
     fake_rx_hdr.IDE = CAN_ID_EXT; fake_rx_hdr.ExtId = CHARGER_RX_ID ^ 0x10u; fake_rx_hdr.DLC = 8;
-    HAL_CAN_RxFifo0MsgPendingCallback(&hcan);
+    (void)host_receive_can_frame(&hcan);
     CHECK(app.board.canbus.rx_packet.id == (CHARGER_RX_ID ^ 0x10u));
     CHECK(app.board.charger.rx_count == 0u);
 
     fake_rx_hdr.IDE = CAN_ID_EXT; fake_rx_hdr.ExtId = CHARGER_RX_ID; fake_rx_hdr.DLC = 4;
-    HAL_CAN_RxFifo0MsgPendingCallback(&hcan);
+    (void)host_receive_can_frame(&hcan);
     CHECK(app.board.charger.rx_count == 0u);
 
     fake_rx_hdr.DLC = 8;
@@ -4779,13 +5066,149 @@ static void test_can_rx_filter_matrix(void){
     fake_rx_data[2] = 0x00; fake_rx_data[3] = 0x0A; // 1.0 A
     fake_rx_data[4] = 0x0Fu;
     fake_tick = 7777u;
-    HAL_CAN_RxFifo0MsgPendingCallback(&hcan);
+    (void)host_receive_can_frame(&hcan);
     CHECK(app.board.charger.rx_count == 1u);
     CHECK(fabsf(app.board.charger.read_voltage - 312.0f) < 0.01f);
     CHECK(fabsf(app.board.charger.read_current - 1.0f) < 0.01f);
     CHECK(app.board.charger.hardware_fail && app.board.charger.overtemp_fail && app.board.charger.input_volt_fail && app.board.charger.voltage_sense_fail);
     CHECK(app.board.charger.communication_fail == false);
     CHECK(app.board.charger.last_rx_tick == 7777u);
+}
+
+static void test_can_rx_isr_queue_ownership_and_overflow(void)
+{
+    static CAN_HandleTypeDef hcan;
+    static CAN_HandleTypeDef wrong_hcan;
+    const uint32_t queue_capacity = CANBUS_RX_QUEUE_DEPTH - 1u;
+
+    init_fake_app();
+    canbus_device_init(&app.board.canbus, &hcan);
+    charger_init(&app.board.charger, &app.board.canbus);
+
+    fake_rx_hdr.IDE = CAN_ID_EXT;
+    fake_rx_hdr.RTR = CAN_RTR_DATA;
+    fake_rx_hdr.ExtId = CHARGER_RX_ID;
+    fake_rx_hdr.DLC = 5u;
+    fake_rx_data[0] = 0x0Cu;
+    fake_rx_data[1] = 0x34u;
+    fake_rx_data[2] = 0x00u;
+    fake_rx_data[3] = 0x2Au;
+    fake_rx_data[4] = 0x00u;
+    fake_tick = 1234u;
+
+    host_can_rx_isr_only(&hcan);
+    CHECK(app.board.canbus.rx_isr_count == 1u);
+    CHECK(canbus_rx_queue_count(&app.board.canbus) == 1u);
+    CHECK(app.board.canbus.rx_packet.dlc == 0u);
+    CHECK(app.board.charger.rx_count == 0u);
+    CHECK(app.board.charger.read_voltage == 0.0f);
+
+    /* Parsing happens in task context, and freshness uses receipt time rather
+     * than a potentially delayed task-processing time. */
+    fake_tick = 2000u;
+    CHECK(canbus_process_rx_queue(&app.board.canbus, &app, 1u) == 1u);
+    CHECK(app.board.canbus.rx_processed_count == 1u);
+    CHECK(canbus_rx_queue_count(&app.board.canbus) == 0u);
+    CHECK(app.board.charger.rx_count == 1u);
+    CHECK(fabsf(app.board.charger.read_voltage - 312.4f) < 0.01f);
+    CHECK(app.board.charger.last_rx_tick == 1234u);
+    CHECK(app.board.canbus.rx_packet.tick == 1234u);
+
+    /* A callback from a different CAN peripheral must not consume or publish
+     * a frame into this device's queue. */
+    host_can_rx_isr_only(&wrong_hcan);
+    CHECK(app.board.canbus.rx_isr_count == 1u);
+    CHECK(canbus_rx_queue_count(&app.board.canbus) == 0u);
+
+    /* Remote request frames carry no charger status payload. */
+    fake_rx_hdr.RTR = CAN_RTR_REMOTE;
+    fake_tick = 2100u;
+    host_can_rx_isr_only(&hcan);
+    CHECK(canbus_process_rx_queue(&app.board.canbus, &app, 1u) == 1u);
+    CHECK(app.board.canbus.rx_packet.rtr == CAN_RTR_REMOTE);
+    CHECK(app.board.charger.rx_count == 1u);
+
+#if AMS_ENABLE_HIL_CAN
+    /* HIL state follows the same ownership rule: no ISR-side mutation. */
+    memset(&fake_rx_hdr, 0, sizeof(fake_rx_hdr));
+    memset(fake_rx_data, 0, sizeof(fake_rx_data));
+    fake_rx_hdr.IDE = CAN_ID_STD;
+    fake_rx_hdr.RTR = CAN_RTR_DATA;
+    fake_rx_hdr.StdId = AMS_HIL_CAN_ID_MEAS;
+    fake_rx_hdr.DLC = 7u;
+    fake_rx_data[0] = 0x7Bu;
+    fake_rx_data[1] = 0x00u;
+    fake_tick = 2200u;
+    host_can_rx_isr_only(&hcan);
+    CHECK(app.hil.meas.fresh == 0u);
+    CHECK(canbus_process_rx_queue(&app.board.canbus, &app, 1u) == 1u);
+    CHECK(app.hil.meas.fresh == 1u);
+    CHECK(app.hil.meas.last_rx_tick == 2200u);
+#endif
+
+    /* A HAL receive failure is counted in the ISR, then converted into an
+     * application-visible soft CAN fault by task context. */
+    fake_rx_status = HAL_ERROR;
+    host_can_rx_isr_only(&hcan);
+    CHECK(app.board.canbus.rx_hal_error_count == 1u);
+    CHECK(app.canbus_fault == false);
+    CHECK(canbus_process_rx_queue(&app.board.canbus, &app, 0u) == 0u);
+    CHECK(app.canbus_fault == true);
+    CHECK(app.can_error_count == 1u);
+    CHECK((app.can_error_code & HAL_CAN_ERROR_RX_FOV0) != 0u);
+    CHECK(strcmp(canbus_error_str(app.can_error_code), "rx_fifo0_overrun") == 0);
+
+    /* Reinitialize, fill past ring capacity without task service, and verify
+     * exact loss accounting plus FIFO order during bounded draining. */
+    init_fake_app();
+    canbus_device_init(&app.board.canbus, &hcan);
+    fake_rx_hdr.IDE = CAN_ID_STD;
+    fake_rx_hdr.RTR = CAN_RTR_DATA;
+    fake_rx_hdr.StdId = 0x321u;
+    fake_rx_hdr.DLC = 1u;
+
+    for(uint32_t i = 0u; i < (CANBUS_RX_QUEUE_DEPTH + 5u); i++)
+    {
+        fake_tick = i;
+        fake_rx_data[0] = (uint8_t)i;
+        host_can_rx_isr_only(&hcan);
+    }
+
+    CHECK(app.board.canbus.rx_isr_count == (CANBUS_RX_QUEUE_DEPTH + 5u));
+    CHECK(canbus_rx_queue_count(&app.board.canbus) == queue_capacity);
+    CHECK(app.board.canbus.rx_queue_high_water == queue_capacity);
+    CHECK(app.board.canbus.rx_queue_drop_count == 6u);
+    CHECK(app.board.canbus.rx_packet.dlc == 0u);
+
+    CHECK(canbus_process_rx_queue(&app.board.canbus, &app, 7u) == 7u);
+    CHECK(app.board.canbus.rx_packet.data[0] == 6u);
+    CHECK(canbus_rx_queue_count(&app.board.canbus) == (queue_capacity - 7u));
+    CHECK(app.canbus_fault == true);
+    CHECK(app.can_error_count == 6u);
+    CHECK((app.can_error_code & HAL_CAN_ERROR_RX_FOV0) != 0u);
+
+    CHECK(canbus_process_rx_queue(&app.board.canbus, &app, CANBUS_RX_QUEUE_DEPTH) ==
+          (queue_capacity - 7u));
+    CHECK(canbus_rx_queue_count(&app.board.canbus) == 0u);
+    CHECK(app.board.canbus.rx_processed_count == queue_capacity);
+    CHECK(app.board.canbus.rx_packet.data[0] == (uint8_t)(queue_capacity - 1u));
+
+    /* Exercise the physical end of the array after both indices stopped at
+     * slot 95, proving that enqueue/dequeue preserve order across wrap. */
+    for(uint8_t i = 0u; i < 12u; i++)
+    {
+        fake_rx_data[0] = (uint8_t)(0xA0u + i);
+        host_can_rx_isr_only(&hcan);
+    }
+    CHECK(canbus_rx_queue_count(&app.board.canbus) == 12u);
+    CHECK(canbus_process_rx_queue(&app.board.canbus, &app, 12u) == 12u);
+    CHECK(app.board.canbus.rx_packet.data[0] == 0xABu);
+    CHECK(canbus_rx_queue_count(&app.board.canbus) == 0u);
+
+    /* Loss counters are edge-accounted; repeatedly servicing an empty queue
+     * must not count the same six dropped frames again. */
+    CHECK(canbus_process_rx_queue(&app.board.canbus, &app, CANBUS_RX_QUEUE_DEPTH) == 0u);
+    CHECK(app.can_error_count == 6u);
 }
 
 
@@ -4949,11 +5372,11 @@ static void test_hil_parser_edge_cases(void){
     memset(fake_rx_data, 0xFF, sizeof(fake_rx_data));
 
     fake_rx_hdr.IDE = CAN_ID_EXT; fake_rx_hdr.ExtId = AMS_HIL_CAN_ID_MEAS; fake_rx_hdr.DLC = 8;
-    HAL_CAN_RxFifo0MsgPendingCallback(&hcan);
+    (void)host_receive_can_frame(&hcan);
     CHECK(app.hil.meas.fresh == 0u);
 
     fake_rx_hdr.IDE = CAN_ID_STD; fake_rx_hdr.StdId = AMS_HIL_CAN_ID_MEAS; fake_rx_hdr.DLC = 6;
-    HAL_CAN_RxFifo0MsgPendingCallback(&hcan);
+    (void)host_receive_can_frame(&hcan);
     CHECK(app.hil.meas.fresh == 0u);
 
     fake_rx_hdr.DLC = 8;
@@ -4961,7 +5384,7 @@ static void test_hil_parser_edge_cases(void){
     fake_rx_data[2]=0xFF; fake_rx_data[3]=0x38; /* -2.00 A at 10 mA/count */
     fake_rx_data[4]=0x09; fake_rx_data[5]=0xC4; /* 25.00 C */
     fake_rx_data[6]=3u; fake_tick=44u;
-    HAL_CAN_RxFifo0MsgPendingCallback(&hcan);
+    (void)host_receive_can_frame(&hcan);
     CHECK(app.hil.meas.fresh == 1u);
     CHECK(app.hil.meas.last_rx_tick == 44u);
     CHECK(fabsf(app.hil.meas.v_pack_V - 314.88f) < 0.02f);
@@ -4973,7 +5396,7 @@ static void test_hil_parser_edge_cases(void){
     fake_rx_data[4]=0x0A; fake_rx_data[5]=0x28; /* 26.00 C */
     fake_rx_data[6]=0x09; fake_rx_data[7]=0xC4; /* 25.00 C */
     fake_tick=55u;
-    HAL_CAN_RxFifo0MsgPendingCallback(&hcan);
+    (void)host_receive_can_frame(&hcan);
     CHECK(app.hil.summary.fresh == 1u);
     CHECK(app.hil.summary.last_rx_tick == 55u);
     CHECK(fabsf(app.hil.summary.v_min_V - 3.600f) < 0.002f);
@@ -5067,7 +5490,7 @@ static void test_hil_parser_and_estimator_core(void){
     fake_rx_data[2]=(uint8_t)((uint16_t)i_10mA>>8); fake_rx_data[3]=(uint8_t)((uint16_t)i_10mA);
     fake_rx_data[4]=(uint8_t)((uint16_t)t_cC>>8); fake_rx_data[5]=(uint8_t)((uint16_t)t_cC);
     fake_rx_data[6]=77u; fake_tick=1234u;
-    HAL_CAN_RxFifo0MsgPendingCallback(&hcan);
+    (void)host_receive_can_frame(&hcan);
     CHECK(app.hil.meas.fresh == 1u);
     CHECK(app.hil.meas.counter == 77u);
     CHECK(fabsf(app.hil.meas.v_pack_V - 315.0f) < 0.02f);
@@ -5079,7 +5502,7 @@ static void test_hil_parser_and_estimator_core(void){
     fake_rx_data[0]=(uint8_t)(soc_d2>>8); fake_rx_data[1]=(uint8_t)soc_d2;
     fake_rx_data[2]=(uint8_t)((uint16_t)tc_cC>>8); fake_rx_data[3]=(uint8_t)((uint16_t)tc_cC);
     fake_rx_data[4]=78u; fake_rx_data[5]=(uint8_t)(step>>16); fake_rx_data[6]=(uint8_t)(step>>8); fake_rx_data[7]=(uint8_t)step;
-    HAL_CAN_RxFifo0MsgPendingCallback(&hcan);
+    (void)host_receive_can_frame(&hcan);
     CHECK(app.hil.truth.fresh == 1u);
     CHECK(app.hil.truth.plant_step == step);
     CHECK(fabsf(app.hil.truth.soc_true - 0.9876f) < 0.0002f);
@@ -5109,7 +5532,7 @@ static void test_hil_parser_and_estimator_core(void){
     fake_rx_data[2]=(uint8_t)((uint16_t)i_10mA>>8); fake_rx_data[3]=(uint8_t)((uint16_t)i_10mA);
     fake_rx_data[4]=(uint8_t)((uint16_t)t_cC>>8); fake_rx_data[5]=(uint8_t)((uint16_t)t_cC);
     fake_rx_data[6]=79u; fake_rx_data[7]=0u; fake_tick=1300u;
-    HAL_CAN_RxFifo0MsgPendingCallback(&hcan);
+    (void)host_receive_can_frame(&hcan);
     CHECK(fabsf(app.hil.meas.v_pack_V - 450.0f) < 0.02f);
     CHECK(fabsf(app.hil.meas.i_pack_A - 123.45f) < 0.02f);
     CHECK(fabsf(app.hil.meas.t_surf_C + 1.23f) < 0.02f);
@@ -5237,6 +5660,10 @@ static void test_hil_adbms_image_replaces_raw_reads(void)
 
     app.can_busoff_fault = true;
     app.can_recover_pending = true;
+    app.adbms_balance_write_fault = true;
+    CHECK(adbms_record_balance_write_result(&app, 0));
+    CHECK(app.adbms_balance_write_fault == false);
+    CHECK(app.adbms_diag_fault == true);
     app.bms_state = true;
     bms_pin_state = GPIO_PIN_SET;
     run_one_adbms_task_iteration(&app);
@@ -5387,6 +5814,9 @@ static void test_telemetry_absent_segments_and_invalid_channels(void){
 
 static void test_periods_and_driver_edge_cases(void){
     static CAN_HandleTypeDef hcan;
+	static SPI_HandleTypeDef hspi;
+	static GPIO_TypeDef cs_a;
+	static GPIO_TypeDef cs_b;
     init_fake_app(); fill_nominal_pack(&app, 3.7f); app.board.canbus.hcan=&hcan; app.state=STATE_DISCARGE; fake_tick=123; tx_count=0; tx_free_level=3;
     run_one_canbus_task_iteration(&app); CHECK(fake_tick == 123u + CAN_ECU_FAST_PERIOD_MS);
 
@@ -5397,8 +5827,45 @@ static void test_periods_and_driver_edge_cases(void){
     CHECK(set_fan_percent(&fan, NAN) == 0); CHECK(ccr == 0u && fan.duty_cycle == 0.0f);
     CHECK(set_fan_percent(&fan, INFINITY) == 0); CHECK(ccr == 0u && fan.duty_cycle == 0.0f);
     CHECK(set_fan_percent(&fan, -INFINITY) == 0); CHECK(ccr == 0u && fan.duty_cycle == 0.0f);
+	fake_tim_pwm_start_status = HAL_ERROR;
+	ccr = 1234u;
+	CHECK(fan_init(&fan, NULL, &htim, 1000u, &ccr, 1) != 0);
+	CHECK(fan.initialized == false);
+	CHECK(fan.init_status == HAL_ERROR);
+	CHECK(ccr == 0u);
+	CHECK(set_fan_percent(&fan, 50.0f) != 0);
+	fake_tim_pwm_start_status = HAL_OK;
 
-    canbus_device_t cb={0}; CHECK(canbus_send(NULL, CAN_ID_STD, ECU_CANBUS_ID, (uint8_t[8]){0}) == HAL_ERROR);
+	accumulator_t timer_acc;
+	fake_tim_base_start_status = HAL_ERROR;
+	accumulator_init(&timer_acc, &hspi, &cs_a, &cs_b, 1u, 2u, &htim);
+	CHECK(timer_acc.delay_timer_ready == false);
+	CHECK(timer_acc.delay_timer_status == HAL_ERROR);
+	CHECK(timer_acc.smb.htim == NULL);
+	fake_tim_base_start_status = HAL_OK;
+	accumulator_init(&timer_acc, &hspi, &cs_a, &cs_b, 1u, 2u, &htim);
+	CHECK(timer_acc.delay_timer_ready == true);
+	CHECK(timer_acc.delay_timer_status == HAL_OK);
+	CHECK(timer_acc.smb.htim == &htim);
+
+	canbus_device_t cb = {0};
+	CHECK(canbus_device_init(NULL, &hcan) == HAL_ERROR);
+	fake_can_recover_status = HAL_ERROR;
+	CHECK(canbus_device_init(&cb, &hcan) == HAL_ERROR);
+	CHECK(cb.started == false);
+	CHECK(cb.notification_active == false);
+	fake_can_recover_status = HAL_OK;
+	fake_can_notification_status = HAL_ERROR;
+	CHECK(canbus_device_init(&cb, &hcan) == HAL_ERROR);
+	CHECK(cb.started == true);
+	CHECK(cb.notification_active == false);
+	fake_can_notification_status = HAL_OK;
+	CHECK(canbus_device_init(&cb, &hcan) == HAL_OK);
+	CHECK(cb.started == true);
+	CHECK(cb.notification_active == true);
+
+	CHECK(canbus_send(NULL, CAN_ID_STD, ECU_CANBUS_ID, (uint8_t[8]){0}) == HAL_ERROR);
+	cb.hcan = NULL;
     CHECK(canbus_send(&cb, CAN_ID_STD, ECU_CANBUS_ID, (uint8_t[8]){0}) == HAL_ERROR);
     cb.hcan = &hcan; CHECK(canbus_send(&cb, CAN_ID_STD, ECU_CANBUS_ID, NULL) == HAL_ERROR);
 }
@@ -5435,7 +5902,8 @@ static void test_production_safety_gates(void)
     fake_rx_hdr.DLC = 7u;
     fake_rx_data[0] = 0x0Bu;
     fake_rx_data[1] = 0xB8u;
-    HAL_CAN_RxFifo0MsgPendingCallback(&hcan);
+    app.board.canbus.hcan = &hcan;
+    (void)host_receive_can_frame(&hcan);
     CHECK(app.hil.meas.fresh == 0u);
 
     /* Service actions remain visible for diagnosis but are immutable in the
@@ -5551,6 +6019,7 @@ int main(void){
     test_system_sil_recovery_and_latch_reset_paths(); puts("PASS system SIL warning recovery/latch reset paths");
     test_system_sil_current_boundary_timing_edges(); puts("PASS system SIL current debounce boundary timing");
     test_system_sil_cli_can_diagnostic_consistency(); puts("PASS system SIL CLI/CAN diagnostic consistency");
+    test_cli_numeric_and_telemetry_conversion_guards(); puts("PASS CLI numeric/telemetry conversion guards");
     test_adbms6830_diagnostic_commands_and_cli_health(); puts("PASS ADBMS6830 diagnostic commands/CLI health");
     test_adbms_periodic_diagnostics_and_safe_open_wire(); puts("PASS ADBMS6830 periodic diagnostics/safe open-wire");
     test_adbms_cli_scan_guard_and_cs_probe_commands(); puts("PASS ADBMS CLI scan guard/CS probe commands");
@@ -5586,12 +6055,14 @@ int main(void){
     test_estimator_task_hil_and_hardware_paths(); puts("PASS estimator task HIL/hardware paths");
     test_estimator_status_packet_edges(); puts("PASS estimator status packet edges");
     test_can_rx_filter_matrix(); puts("PASS CAN RX filter matrix");
+    test_can_rx_isr_queue_ownership_and_overflow(); puts("PASS CAN RX ISR queue ownership/overflow");
     test_charge_state_disable_matrix(); puts("PASS charge-state disable matrix");
     test_charger_command_priority_tx_failure_and_cli(); puts("PASS charger command priority/TX failure/CLI diagnostics");
     test_current_sensor_measurement_model(); puts("PASS current sensor measurement model");
     test_current_task_measurement_state(); puts("PASS current task measurement state");
     test_current_task_threshold_faults(); puts("PASS current task threshold faults");
     test_fan_current_and_null_guards(); puts("PASS fan/current/null guards");
+    test_imd_capture_validation(); puts("PASS IMD capture validation");
     test_periods_and_driver_edge_cases(); puts("PASS periods and driver edge cases");
     test_task_iterations_with_injected_signals(); puts("PASS one-iteration task injection tests");
     test_safety_panic_reset_watchdog_and_log(); puts("PASS safety panic/reset/log path");

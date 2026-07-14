@@ -147,6 +147,12 @@ typedef struct
 	bool voltage_full_usable;
 	bool voltage_startup_scan_complete;
 
+	/* The ADBMS wake/conversion delays use this timer as their microsecond
+	 * timebase.  Keep the startup result explicit: a populated timer handle is
+	 * not proof that HAL_TIM_Base_Start() succeeded. */
+	bool delay_timer_ready;
+	HAL_StatusTypeDef delay_timer_status;
+
 	adbms2950_asic apm_ics[NAPMS];
 	adbms2950_driver_t apm;
 

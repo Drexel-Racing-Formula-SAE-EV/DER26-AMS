@@ -52,6 +52,9 @@ typedef enum
     AMS_PANIC_RTOS_ASSERT_FAILED,
     AMS_PANIC_FAULT_INJECTION_HARDFAULT,
     AMS_PANIC_FAULT_INJECTION_BUSFAULT,
+    AMS_PANIC_MUTEX_CREATE_FAILED,
+    AMS_PANIC_MUTEX_ACQUIRE_FAILED,
+    AMS_PANIC_MUTEX_RELEASE_FAILED,
 } ams_panic_reason_t;
 
 typedef enum
@@ -142,6 +145,7 @@ void ams_fault_log_event(ams_fault_log_event_t event,
                          uint16_t reason,
                          uint32_t arg0,
                          uint32_t arg1);
+bool ams_fault_log_snapshot(ams_fault_log_t *out);
 const ams_fault_log_t *ams_fault_log_get(void);
 void ams_fault_log_clear(void);
 const char *ams_fault_log_event_str(uint16_t event);

@@ -8,9 +8,29 @@
 
 #include "tasks/current_task.h"
 
+#include <math.h>
+
 #define CURRENT_TASK_PERIOD_MS (1000u / CURRENT_FREQ)
 
 void current_task_fn(void *argument);
+
+static uint32_t current_task_abs_deciamps(float current_a)
+{
+    double scaled;
+
+    if(!isfinite(current_a) || (current_a <= 0.0f))
+    {
+        return 0u;
+    }
+
+    scaled = (double)current_a * 10.0;
+    if(scaled >= (double)UINT32_MAX)
+    {
+        return UINT32_MAX;
+    }
+
+    return (uint32_t)(scaled + 0.5);
+}
 
 static current_fault_mode_t current_task_fault_mode_from_state(state_t state)
 {
@@ -108,7 +128,7 @@ void current_task_fn(void *argument)
         {
             ams_fault_log_event(AMS_FAULT_LOG_CURRENT_LATCH,
                                 (uint16_t)app_data->current_fault_latched_reason,
-                                (uint32_t)(app_data->current_fault_state.abs_current_a * 10.0f),
+                                current_task_abs_deciamps(app_data->current_fault_state.abs_current_a),
                                 (uint32_t)app_data->current_fault_mode);
         }
 

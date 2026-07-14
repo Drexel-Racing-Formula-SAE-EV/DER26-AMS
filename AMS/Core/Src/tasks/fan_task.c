@@ -172,7 +172,10 @@ void fan_task_fn(void *argument)
             if(set_fan_percent(&data->board.fans[i], percent) != 0)
             {
                 data->fan_fault = true;
-                data->fan_set_fail_count++;
+				if(data->fan_set_fail_count != UINT32_MAX)
+				{
+					data->fan_set_fail_count++;
+				}
             }
         }
 

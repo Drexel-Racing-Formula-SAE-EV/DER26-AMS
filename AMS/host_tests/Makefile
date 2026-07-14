@@ -115,9 +115,11 @@ test: CFLAGS_COMMON += $(HOST_EXERCISE_DEFS)
 test: compile
 	$(BIN)
 
-production-gates: BUILD_DIR=build-production
+production-gates: BUILD_DIR = build-production
 production-gates: CFLAGS_COMMON += -DAMS_HOST_PRODUCTION_GATE_TEST=1
-production-gates: compile
+production-gates: check-root
+	@mkdir -p "$(BUILD_DIR)"
+	$(CC) $(CFLAGS_COMMON) $(SRC) -o $(BIN) $(LDLIBS)
 	$(BIN)
 	$(CC) $(CFLAGS_COMMON) -ffunction-sections -fdata-sections \
 		$(AMS_ROOT)/Core/Src/app.c $(OWNER_SRC) \
@@ -140,22 +142,32 @@ stress: test
 
 # Strongest local run: catches many memory and undefined-behavior bugs in host-exercised paths.
 asan: CFLAGS_COMMON += $(HOST_EXERCISE_DEFS)
-asan: check-root $(BUILD_DIR)
+asan: check-root
+	@mkdir -p "$(BUILD_DIR)"
+	$(CC) $(CFLAGS_COMMON) -fsanitize=address,undefined -fno-omit-frame-pointer \
+		$(UNIT_SRC) $(ESTIMATOR_SRC) $(ADBMS2950_SRC) -o $(UNIT_BIN)-asan $(LDLIBS)
+	ASAN_OPTIONS=detect_leaks=0 $(UNIT_BIN)-asan
 	$(CC) $(CFLAGS_COMMON) -fsanitize=address,undefined -fno-omit-frame-pointer $(SRC) -o $(BIN)-asan $(LDLIBS)
 	ASAN_OPTIONS=detect_leaks=0 $(BIN)-asan
 
 ubsan: CFLAGS_COMMON += $(HOST_EXERCISE_DEFS)
-ubsan: check-root $(BUILD_DIR)
+ubsan: check-root
+	@mkdir -p "$(BUILD_DIR)"
+	$(CC) $(CFLAGS_COMMON) -fsanitize=undefined -fno-omit-frame-pointer \
+		$(UNIT_SRC) $(ESTIMATOR_SRC) $(ADBMS2950_SRC) -o $(UNIT_BIN)-ubsan $(LDLIBS)
+	$(UNIT_BIN)-ubsan
 	$(CC) $(CFLAGS_COMMON) -fsanitize=undefined -fno-omit-frame-pointer $(SRC) -o $(BIN)-ubsan $(LDLIBS)
 	$(BIN)-ubsan
 
 # GCC static analyzer. Useful for null/bounds/uninitialized regressions.
 analyze: CFLAGS_COMMON += $(HOST_EXERCISE_DEFS)
-analyze: check-root $(BUILD_DIR)
+analyze: check-root
+	@mkdir -p "$(BUILD_DIR)"
 	$(CC) $(CFLAGS_COMMON) -fanalyzer -fsyntax-only $(SRC)
 
 clang-analyze: CFLAGS_COMMON += $(HOST_EXERCISE_DEFS)
-clang-analyze: check-root $(BUILD_DIR)
+clang-analyze: check-root
+	@mkdir -p "$(BUILD_DIR)"
 	$(CLANG) $(CFLAGS_COMMON) --analyze $(SRC)
 
 list:

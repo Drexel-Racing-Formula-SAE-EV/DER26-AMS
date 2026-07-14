@@ -68,6 +68,8 @@ typedef struct
 	uint32_t total_count;
 	float duty;
 	float freq;
+	bool capture_started;
+	HAL_StatusTypeDef init_status;
 	int ret;
 } imd_t;
 

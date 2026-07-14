@@ -153,7 +153,7 @@ static uint16_t fan_percent_for_ecu(const app_data_t *data, uint8_t fan)
         return 0u;
     }
 
-    return (uint16_t)(data->board.fans[fan].duty_cycle * 10.0f);
+    return sat_u16_scaled(data->board.fans[fan].duty_cycle, 10.0f);
 }
 
 
@@ -365,24 +365,30 @@ static HAL_StatusTypeDef send_ecu_ams_status(canbus_device_t *canbus, const app_
 {
     HAL_StatusTypeDef ret = HAL_OK;
 
+    if((canbus == NULL) || (data == NULL))
+    {
+        return HAL_ERROR;
+    }
+
     ret |= send_ams_packet(canbus,
                            0u,
                            (uint16_t)data->state,
                            (uint16_t)data->air_state,
-                           (uint16_t)((int16_t)(data->current * 10.0f)));
+                           (uint16_t)sat_i16_scaled(data->current, 10.0f));
 
     ret |= send_ams_packet(canbus,
                            1u,
                            (uint16_t)data->imd_ok,
                            (uint16_t)data->imd_status,
-                           (uint16_t)((int16_t)(data->board.imd.duty * 10.0f)));
+                           (uint16_t)sat_i16_scaled(data->board.imd.duty, 10.0f));
 
     ret |= send_ams_packet(canbus,
                            2u,
-                           data->temp_valid ? (uint16_t)((int16_t)(data->max_temp * 10.0f)) :
-                                              ECU_TEMP_INVALID_DECI_C,
-                           (uint16_t)(data->min_voltage * 1000.0f),
-                           (uint16_t)(data->max_voltage * 1000.0f));
+                           (data->temp_valid && isfinite(data->max_temp)) ?
+                               (uint16_t)sat_i16_scaled(data->max_temp, 10.0f) :
+                               ECU_TEMP_INVALID_DECI_C,
+                           sat_u16_scaled(data->min_voltage, 1000.0f),
+                           sat_u16_scaled(data->max_voltage, 1000.0f));
 
     return ret;
 }
@@ -890,7 +896,8 @@ static HAL_StatusTypeDef send_logger_summaries(canbus_device_t *canbus,
                  logger_bool_bit(data->adbms_status_fault, AMS_LOGGER_ADBMS_DIAG_FLAG_STATUS_FAULT) |
                  logger_bool_bit(data->adbms_open_wire_fault, AMS_LOGGER_ADBMS_DIAG_FLAG_OPEN_WIRE_FAULT) |
                  logger_bool_bit(data->adbms_scan_active, AMS_LOGGER_ADBMS_DIAG_FLAG_SCAN_ACTIVE) |
-                 logger_bool_bit((AMS_HIL_REPLACE_ADBMS != 0), AMS_LOGGER_ADBMS_DIAG_FLAG_HIL_REPLACE);
+                 logger_bool_bit((AMS_HIL_REPLACE_ADBMS != 0), AMS_LOGGER_ADBMS_DIAG_FLAG_HIL_REPLACE) |
+                 logger_bool_bit(data->adbms_balance_write_fault, AMS_LOGGER_ADBMS_DIAG_FLAG_BALANCE_WRITE_FAULT);
     payload[7] = logger_bool_bit(data->hil.meas.fresh != 0u, AMS_LOGGER_HIL_FLAG_MEAS_FRESH) |
                  logger_bool_bit(data->hil.truth.fresh != 0u, AMS_LOGGER_HIL_FLAG_TRUTH_FRESH) |
                  logger_bool_bit(data->hil.summary.fresh != 0u, AMS_LOGGER_HIL_FLAG_SUMMARY_FRESH);
@@ -1185,6 +1192,7 @@ void canbus_task_fn(void *arg)
     {
         entry = osKernelGetTickCount();
         ret = HAL_OK;
+        (void)canbus_process_rx_queue(canbus, data, CANBUS_RX_QUEUE_DEPTH);
         canbus_poll_errors(canbus, data);
 
         if(data->can_busoff_fault || data->can_recover_pending)

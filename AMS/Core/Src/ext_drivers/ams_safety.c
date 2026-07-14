@@ -22,6 +22,8 @@ static bool g_watchdog_runtime_enabled;
 static bool g_watchdog_stop_feed_test;
 static bool g_panic_active;
 
+typedef uint32_t ams_irq_state_t;
+
 #if AMS_HOST_TEST
 static uint32_t g_host_reset_csr;
 static uint32_t g_host_cfsr;
@@ -30,6 +32,32 @@ static uint32_t g_host_mmfar;
 static uint32_t g_host_bfar;
 static bool g_host_bms_forced_low;
 #endif
+
+
+static ams_irq_state_t ams_safety_irq_save(void)
+{
+#if AMS_HOST_TEST
+    return 0u;
+#else
+    ams_irq_state_t state = __get_PRIMASK();
+    __disable_irq();
+    __DMB();
+    return state;
+#endif
+}
+
+static void ams_safety_irq_restore(ams_irq_state_t state)
+{
+#if AMS_HOST_TEST
+    (void)state;
+#else
+    __DMB();
+    if((state & 1u) == 0u)
+    {
+        __enable_irq();
+    }
+#endif
+}
 
 
 static void ams_safety_zero_bytes(void *ptr, size_t len)
@@ -161,6 +189,8 @@ void ams_fault_log_event(ams_fault_log_event_t event,
                          uint32_t arg0,
                          uint32_t arg1)
 {
+    ams_irq_state_t irq_state = ams_safety_irq_save();
+
     ams_fault_log_init_if_needed();
 
     uint32_t index = g_fault_log.write_index % AMS_FAULT_LOG_DEPTH;
@@ -174,18 +204,42 @@ void ams_fault_log_event(ams_fault_log_event_t event,
     {
         g_fault_log.count++;
     }
+
+    ams_safety_irq_restore(irq_state);
+}
+
+bool ams_fault_log_snapshot(ams_fault_log_t *out)
+{
+    ams_irq_state_t irq_state;
+
+    if(out == NULL)
+    {
+        return false;
+    }
+
+    irq_state = ams_safety_irq_save();
+    ams_fault_log_init_if_needed();
+    memcpy(out, &g_fault_log, sizeof(*out));
+    ams_safety_irq_restore(irq_state);
+    return true;
 }
 
 const ams_fault_log_t *ams_fault_log_get(void)
 {
-    ams_fault_log_init_if_needed();
-    return &g_fault_log;
+    /* Compatibility accessor for diagnostics.  Return a coherent copy rather
+     * than exposing the live multi-writer .noinit ring. */
+    static ams_fault_log_t snapshot;
+    (void)ams_fault_log_snapshot(&snapshot);
+    return &snapshot;
 }
 
 void ams_fault_log_clear(void)
 {
+    ams_irq_state_t irq_state = ams_safety_irq_save();
+
     memset(&g_fault_log, 0, sizeof(g_fault_log));
     g_fault_log.magic = AMS_FAULT_LOG_MAGIC;
+    ams_safety_irq_restore(irq_state);
 }
 
 const char *ams_fault_log_event_str(uint16_t event)
@@ -358,6 +412,9 @@ const char *ams_safety_panic_reason_str(uint32_t reason)
     case AMS_PANIC_RTOS_ASSERT_FAILED: return "rtos_assert_failed";
     case AMS_PANIC_FAULT_INJECTION_HARDFAULT: return "inject_hardfault";
     case AMS_PANIC_FAULT_INJECTION_BUSFAULT: return "inject_busfault";
+    case AMS_PANIC_MUTEX_CREATE_FAILED: return "mutex_create_failed";
+    case AMS_PANIC_MUTEX_ACQUIRE_FAILED: return "mutex_acquire_failed";
+    case AMS_PANIC_MUTEX_RELEASE_FAILED: return "mutex_release_failed";
     default: return "unknown";
     }
 }

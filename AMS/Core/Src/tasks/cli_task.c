@@ -11,7 +11,10 @@
 */
 
 #include "tasks/cli_task.h"
+#include "tasks/adbms_task.h"
 #include "main.h"
+#include <errno.h>
+#include <limits.h>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -60,6 +63,25 @@ static adbms6830_scope_mode_t cli_adbms_scope_default_mode = ADBMS6830_SCOPE_REA
 static uint16_t cli_adbms_scope_default_repeat = 20u;
 static uint8_t cli_adbms_scope_preset_index = 0u;
 static bool cli_parse_scope_repeat(const char *arg, uint16_t *repeat_out);
+static int get_temperature_sensor_locked(int argc, char *argv[]);
+static int get_spi_debug_locked(int argc, char *argv[]);
+static int get_apm_debug_locked(int argc, char *argv[]);
+
+static int cli_clear_balance_recorded(void)
+{
+    int result;
+
+    if(data == NULL)
+    {
+        return -1;
+    }
+
+    adbms_spi_lock();
+    result = accumulator_clear_balance(&data->acc);
+    adbms_spi_unlock();
+    (void)adbms_record_balance_write_result(data, result);
+    return result;
+}
 
 static int cli_service_action_refused(const char *action)
 {
@@ -131,28 +153,70 @@ static uint8_t smb_ic_count(const adbms6830_driver_t *smb)
     return (smb->num_ics > NSMBS) ? (uint8_t)NSMBS : (uint8_t)smb->num_ics;
 }
 
+static bool cli_parse_int_range(const char *arg, int min_value, int max_value, int *value_out)
+{
+    char *end = NULL;
+    long parsed;
+
+    if((arg == NULL) || (value_out == NULL) || (min_value > max_value))
+    {
+        return false;
+    }
+
+    errno = 0;
+    parsed = strtol(arg, &end, 10);
+    if((errno == ERANGE) || (end == arg) || (*end != '\0') ||
+       (parsed < (long)min_value) || (parsed > (long)max_value))
+    {
+        return false;
+    }
+
+    *value_out = (int)parsed;
+    return true;
+}
+
+static int cli_scaled_int(float value, int scale)
+{
+    double scaled;
+
+    if(!isfinite(value) || (scale <= 0))
+    {
+        return 0;
+    }
+
+    scaled = round((double)value * (double)scale);
+    if(scaled >= (double)INT_MAX)
+    {
+        return INT_MAX;
+    }
+    if(scaled <= (double)INT_MIN)
+    {
+        return INT_MIN;
+    }
+
+    return (int)scaled;
+}
+
 static void cli_fixed1(float value, int *whole, int *decimal)
 {
-    int scaled = (int)roundf(value * 10.0f);
-
-    if(whole == NULL || decimal == NULL)
+    if((whole == NULL) || (decimal == NULL))
     {
         return;
     }
 
+    int scaled = cli_scaled_int(value, 10);
     *whole = scaled / 10;
     *decimal = abs(scaled % 10);
 }
 
 static void cli_fixed3(float value, int *whole, int *decimal)
 {
-    int scaled = (int)roundf(value * 1000.0f);
-
-    if(whole == NULL || decimal == NULL)
+    if((whole == NULL) || (decimal == NULL))
     {
         return;
     }
 
+    int scaled = cli_scaled_int(value, 1000);
     *whole = scaled / 1000;
     *decimal = abs(scaled % 1000);
 }
@@ -373,7 +437,11 @@ int help(int argc, char *argv[])
 int get_status(int argc, char *argv[])
 {
     int ret = 0;
+    int max_temp_whole;
+    int max_temp_decimal;
     SPI_HandleTypeDef *hspi = data->acc.smb.hspi;
+
+    cli_fixed1(data->max_temp, &max_temp_whole, &max_temp_decimal);
 
 	snprintf(outline, CLI_LINESZ,
 	             "FW v%d.%d.%d build:%s service:%d hil:%d state:%s BMS_OK:%d inhibit:%d ready:%d balance_inhibit:%d blocked:%lu",
@@ -411,8 +479,8 @@ int get_status(int argc, char *argv[])
              (unsigned)data->voltage_updated_cell_count,
              (unsigned)data->voltage_stale_cell_count,
              data->fan_state,
-             (int)data->max_temp,
-             abs((int)roundf((data->max_temp - (float)((int)data->max_temp)) * 10.0f)));
+             max_temp_whole,
+             max_temp_decimal);
     ret |= cli_printline(cli, outline);
 
     snprintf(outline, CLI_LINESZ,
@@ -567,6 +635,15 @@ int get_faults(int argc, char *argv[])
 	snprintf(outline, CLI_LINESZ, "  canbus: %d", data->canbus_fault);
 	ret |= cli_printline(cli, outline);
 	snprintf(outline, CLI_LINESZ, "  charger: %d", data->charger_fault);
+	ret |= cli_printline(cli, outline);
+	snprintf(outline, CLI_LINESZ,
+             "  adbms: diag:%d cfg:%d status:%d openwire:%d balance_write:%d failures:%lu",
+             data->adbms_diag_fault,
+             data->adbms_config_fault,
+             data->adbms_status_fault,
+             data->adbms_open_wire_fault,
+             data->adbms_balance_write_fault,
+             (unsigned long)data->adbms_balance_write_fail_count);
 	ret |= cli_printline(cli, outline);
 	snprintf(outline, CLI_LINESZ, "  heartbeat: critical:%d logger:%d seen:0x%04X stale:0x%04X",
              data->task_heartbeat_fault,
@@ -785,7 +862,13 @@ int get_fan_diag(int argc, char *argv[])
 
     for(int i = 0; i < NFANS; i++)
     {
-        snprintf(outline, CLI_LINESZ, "  fan%-2d duty:%.1f%%", i, (double)data->board.fans[i].duty_cycle);
+		const fan_t *fan = &data->board.fans[i];
+		snprintf(outline, CLI_LINESZ,
+				 "  fan%-2d duty:%.1f%% initialized:%d status:%s",
+				 i,
+				 (double)fan->duty_cycle,
+				 fan->initialized,
+				 cli_hal_status_str(fan->init_status));
         ret |= cli_printline(cli, outline);
     }
 
@@ -793,6 +876,16 @@ int get_fan_diag(int argc, char *argv[])
 }
 
 int get_temperature_sensor(int argc, char *argv[])
+{
+    int ret;
+
+    adbms_spi_lock();
+    ret = get_temperature_sensor_locked(argc, argv);
+    adbms_spi_unlock();
+    return ret;
+}
+
+static int get_temperature_sensor_locked(int argc, char *argv[])
 {
     int ret = 0;
     adbms6830_driver_t *smb = &data->acc.smb;
@@ -804,20 +897,20 @@ int get_temperature_sensor(int argc, char *argv[])
         return ret;
     }
 
-    int ic     = atoi(argv[1]);
-    int sensor = atoi(argv[2]);
-
-    /* Validate IC index */
     uint8_t ic_count = smb_ic_count(smb);
-    if (ic < 0 || ic >= (int)ic_count)
+    int ic;
+    int sensor;
+
+    /* Reject partial strings (for example "1x") and overflow instead of
+     * silently treating malformed service input as channel zero. */
+    if(!cli_parse_int_range(argv[1], 0, (int)ic_count - 1, &ic))
     {
         snprintf(outline, CLI_LINESZ, "Error: ic must be 0 to %u", (unsigned)((ic_count > 0u) ? (ic_count - 1u) : 0u));
         ret |= cli_printline(cli, outline);
         return ret;
     }
 
-    /* Validate sensor index (0–23 per requirements) */
-    if ((sensor < 0) || (sensor >= NTEMPS))
+    if(!cli_parse_int_range(argv[2], 0, NTEMPS - 1, &sensor))
     {
         ret |= cli_printline(cli, "Error: sensor out of range");
         return ret;
@@ -1360,13 +1453,12 @@ static bool cli_parse_scope_repeat(const char *arg, uint16_t *repeat_out)
         return false;
     }
 
-    parsed = atoi(arg);
-    if(parsed <= 0)
+    if(!cli_parse_int_range(arg, 1, 100, &parsed))
     {
         return false;
     }
 
-    *repeat_out = (parsed > 100) ? 100u : (uint16_t)parsed;
+    *repeat_out = (uint16_t)parsed;
     return true;
 }
 
@@ -1415,6 +1507,16 @@ static int cli_print_adbms_scope_preset(void)
 }
 
 int get_spi_debug(int argc, char *argv[])
+{
+    int ret;
+
+    adbms_spi_lock();
+    ret = get_spi_debug_locked(argc, argv);
+    adbms_spi_unlock();
+    return ret;
+}
+
+static int get_spi_debug_locked(int argc, char *argv[])
 {
     int ret = 0;
 
@@ -1765,21 +1867,25 @@ int get_spi_debug(int argc, char *argv[])
 	    ret |= cli_printline(cli, outline);
 
 	    snprintf(outline, CLI_LINESZ,
-	             "scan active:%d count:%lu diag fault:%d cfg:%d stat:%d ow:%d last:%s",
+	             "scan active:%d count:%lu diag fault:%d cfg:%d stat:%d ow:%d balance:%d balance_fail:%lu last:%s",
 	             data->adbms_scan_active,
 	             (unsigned long)data->adbms_scan_count,
 	             data->adbms_diag_fault,
 	             data->adbms_config_fault,
 	             data->adbms_status_fault,
 	             data->adbms_open_wire_fault,
+	             data->adbms_balance_write_fault,
+	             (unsigned long)data->adbms_balance_write_fail_count,
 	             cli_hal_status_str(data->adbms_last_diag_status));
 	    ret |= cli_printline(cli, outline);
 
 	    snprintf(outline, CLI_LINESZ,
-	             "diag periodic status:%lu cfg:%lu openwire:%lu",
+	             "diag periodic status:%lu cfg:%lu openwire:%lu timer_ready:%d timer_status:%s",
 	             (unsigned long)data->adbms_status_diag_count,
 	             (unsigned long)data->adbms_config_diag_count,
-	             (unsigned long)data->adbms_open_wire_diag_count);
+	             (unsigned long)data->adbms_open_wire_diag_count,
+	             data->acc.delay_timer_ready,
+	             cli_hal_status_str(data->acc.delay_timer_status));
 	    ret |= cli_printline(cli, outline);
 
     snprintf(outline, CLI_LINESZ,
@@ -1898,6 +2004,16 @@ int get_spi_debug(int argc, char *argv[])
 
 
 int get_apm_debug(int argc, char *argv[])
+{
+    int ret;
+
+    adbms_spi_lock();
+    ret = get_apm_debug_locked(argc, argv);
+    adbms_spi_unlock();
+    return ret;
+}
+
+static int get_apm_debug_locked(int argc, char *argv[])
 {
     int ret = 0;
 
@@ -2232,6 +2348,26 @@ int get_can_diag(int argc, char *argv[])
              (unsigned long)data->can_last_error_tick);
     ret |= cli_printline(cli, outline);
 
+    uint16_t rx_queued = canbus_rx_queue_count(&data->board.canbus);
+    snprintf(outline, CLI_LINESZ,
+             "CAN RX isr:%lu processed:%lu queued:%u high:%u dropped:%lu hal_err:%lu",
+             (unsigned long)data->board.canbus.rx_isr_count,
+             (unsigned long)data->board.canbus.rx_processed_count,
+             (unsigned)rx_queued,
+             (unsigned)data->board.canbus.rx_queue_high_water,
+             (unsigned long)data->board.canbus.rx_queue_drop_count,
+             (unsigned long)data->board.canbus.rx_hal_error_count);
+    ret |= cli_printline(cli, outline);
+
+	snprintf(outline, CLI_LINESZ,
+			 "CAN init:%s start:%s notify:%s started:%d active:%d",
+			 cli_hal_status_str(data->board.canbus.init_status),
+			 cli_hal_status_str(data->board.canbus.start_status),
+			 cli_hal_status_str(data->board.canbus.notification_status),
+			 data->board.canbus.started,
+			 data->board.canbus.notification_active);
+	ret |= cli_printline(cli, outline);
+
     snprintf(outline, CLI_LINESZ,
              "CAN fault:%d charger_fault:%d HIL_ADBMS:%d cooldown_ms:%u",
              data->canbus_fault,
@@ -2528,11 +2664,18 @@ int get_bringup(int argc, char *argv[])
     {
         SPI_HandleTypeDef *hspi = smb->hspi;
         current_sensor_t *cs = &data->board.current_sensor;
+        int sensor_high_whole;
+        int sensor_high_decimal;
+        int sensor_low_whole;
+        int sensor_low_decimal;
         bool spi_ok = cli_spi6_mode3_ok(hspi);
         bool current_alive = data->current_valid && cs->last_read_ok &&
                              (fabsf(cs->sensor_voltage_high - 2.5f) <= 0.35f) &&
                              (fabsf(cs->sensor_voltage_low - 2.5f) <= 0.35f) &&
                              (fabsf(data->current) <= 5.0f);
+
+        cli_fixed3(cs->sensor_voltage_high, &sensor_high_whole, &sensor_high_decimal);
+        cli_fixed3(cs->sensor_voltage_low, &sensor_low_whole, &sensor_low_decimal);
 
         snprintf(outline, CLI_LINESZ,
                  "BRINGUP BOARD build:%s state:%s BMS_OK:%d inhibit:%d",
@@ -2557,10 +2700,10 @@ int get_bringup(int argc, char *argv[])
                  current_sensor_reason_str(data->current_meas_reason),
                  cs->count_high,
                  cs->count_low,
-                 (int)cs->sensor_voltage_high,
-                 abs((int)roundf((cs->sensor_voltage_high - (float)((int)cs->sensor_voltage_high)) * 1000.0f)),
-                 (int)cs->sensor_voltage_low,
-                 abs((int)roundf((cs->sensor_voltage_low - (float)((int)cs->sensor_voltage_low)) * 1000.0f)));
+                 sensor_high_whole,
+                 sensor_high_decimal,
+                 sensor_low_whole,
+                 sensor_low_decimal);
         ret |= cli_printline(cli, outline);
 
         ret |= cli_printline(cli, "current_zero note: PASS if DHAB is LV-powered; WARN can be OK if harness omits DHAB");
@@ -2647,7 +2790,7 @@ int get_bringup(int argc, char *argv[])
         ret |= cli_printline(cli, outline);
 
         snprintf(outline, CLI_LINESZ,
-                 "sid=%s mask:0x%04X stat=%s mask:0x%04X diag_fault:%d cfg:%d stat:%d ow:%d",
+                 "sid=%s mask:0x%04X stat=%s mask:0x%04X diag_fault:%d cfg:%d stat:%d ow:%d balance:%d",
                  cli_passfail((sid_mask & expected_mask) == expected_mask),
                  sid_mask,
                  cli_passfail((stat_mask & expected_mask) == expected_mask),
@@ -2655,7 +2798,8 @@ int get_bringup(int argc, char *argv[])
                  data->adbms_diag_fault,
                  data->adbms_config_fault,
                  data->adbms_status_fault,
-                 data->adbms_open_wire_fault);
+                 data->adbms_open_wire_fault,
+                 data->adbms_balance_write_fault);
         ret |= cli_printline(cli, outline);
 
         if(smb_health != NULL)
@@ -2924,9 +3068,7 @@ int balance_control(int argc, char *argv[])
         if(!strcmp(argv[1], "inhibit") || !strcmp(argv[1], "disable"))
         {
             data->balance_inhibit = true;
-            adbms_spi_lock();
-            int clear_ret = accumulator_clear_balance(&data->acc);
-            adbms_spi_unlock();
+            int clear_ret = cli_clear_balance_recorded();
             ret |= cli_printline(cli,
                                  (clear_ret == 0) ?
                                  "Balancing inhibited and PWM/DCC cleared" :
@@ -2943,9 +3085,7 @@ int balance_control(int argc, char *argv[])
         }
         else if(!strcmp(argv[1], "clear"))
         {
-            adbms_spi_lock();
-            int clear_ret = accumulator_clear_balance(&data->acc);
-            adbms_spi_unlock();
+            int clear_ret = cli_clear_balance_recorded();
             ret |= cli_printline(cli,
                                  (clear_ret == 0) ?
                                  "Balancing PWM/DCC cleared" :
@@ -2981,19 +3121,15 @@ int set_state(int argc, char *argv[])
 #if !AMS_ENABLE_SERVICE_CLI
         return cli_service_action_refused("AMS state change");
 #else
-        if(!strcmp(argv[1], "charge")){
-        	data->state = STATE_CHARGE;
-	        	/* A CLI state change must not fabricate charger freshness.  Force
-	        	 * the charge path to wait for a real charger status frame. */
-	        	data->board.charger.last_rx_tick = 0u;
-	        	data->board.charger.communication_fail = true;
-	        	data->charger_fault = true;
-	        	set_bms(0);
+        state_t requested_state;
+
+        if(!strcmp(argv[1], "charge"))
+        {
+            requested_state = STATE_CHARGE;
         }
         else if(!strcmp(argv[1], "discharge"))
         {
-            data->state = STATE_DISCARGE;
-            set_bms(0);
+            requested_state = STATE_DISCARGE;
         }
         else
         {
@@ -3001,6 +3137,27 @@ int set_state(int argc, char *argv[])
             cli_printline(cli, outline);
             cli_printline(cli, "Usage: state [charge|discharge]");
             return 1;
+        }
+
+        /* Drop BMS_OK before changing modes and synchronously clear all
+         * balance outputs.  Waiting for the next periodic ADBMS scan leaves a
+         * window where bleed resistors can remain active in the new state. */
+        set_bms(false);
+        int clear_result = cli_clear_balance_recorded();
+        data->state = requested_state;
+
+        if(requested_state == STATE_CHARGE)
+        {
+            /* A CLI state change must not fabricate charger freshness.  Force
+             * the charge path to wait for a real charger status frame. */
+            data->board.charger.last_rx_tick = 0u;
+            data->board.charger.communication_fail = true;
+            data->charger_fault = true;
+        }
+
+        if(clear_result != 0)
+        {
+            ret |= cli_printline(cli, "WARNING state changed with balance-clear write failure; BMS_OK held low");
         }
 
         snprintf(outline, CLI_LINESZ, "AMS State: %s", ams_state_to_str(data->state));

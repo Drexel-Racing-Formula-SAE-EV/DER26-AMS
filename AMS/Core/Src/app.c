@@ -23,6 +23,30 @@
 
 app_data_t app = {0};
 static osMutexId_t adbms_spi_mutex;
+static StaticSemaphore_t adbms_spi_mutex_cb;
+
+/*
+ * ADBMS operations contain nested helper calls and prepare shared driver
+ * buffers before the final HAL SPI transfer.  The mutex therefore has to be
+ * recursive and must be held for the complete logical operation, not only for
+ * the final transfer.  Static allocation also keeps this safety-critical lock
+ * independent of the FreeRTOS heap.
+ */
+static const osMutexAttr_t adbms_spi_mutex_attr =
+{
+	.name = "ADBMS SPI",
+	.attr_bits = osMutexRecursive | osMutexPrioInherit,
+	.cb_mem = &adbms_spi_mutex_cb,
+	.cb_size = sizeof(adbms_spi_mutex_cb),
+};
+
+static void adbms_spi_lock_panic(ams_panic_reason_t reason)
+{
+	ams_safety_panic(reason);
+	for(;;)
+	{
+	}
+}
 
 uint32_t ams_heartbeat_timeout_ms(ams_heartbeat_id_t id)
 {
@@ -81,11 +105,15 @@ void ams_heartbeat_kick(app_data_t *data, ams_heartbeat_id_t id, uint32_t now)
 		return;
 	}
 
+	/* Multiple tasks kick different bits in the same mask.  Protect the whole
+	 * read-modify-write so one preemption cannot erase another task's kick. */
+	taskENTER_CRITICAL();
 	data->heartbeat.last_tick[id] = now;
 	data->heartbeat.count[id]++;
 	data->heartbeat.seen_mask |= AMS_HEARTBEAT_BIT(id);
 	data->heartbeat.seen_mask &= (uint16_t)((1u << (uint16_t)AMS_HEARTBEAT_COUNT) - 1u);
 	data->heartbeat_seen_mask = data->heartbeat.seen_mask;
+	taskEXIT_CRITICAL();
 }
 
 uint16_t ams_heartbeat_update(app_data_t *data, uint32_t now)
@@ -99,6 +127,10 @@ uint16_t ams_heartbeat_update(app_data_t *data, uint32_t now)
 		return 0u;
 	}
 
+	/* Keep last_tick[] and seen_mask coherent with concurrent task kicks.  The
+	 * monitor has only five entries, so this critical section is deliberately
+	 * short and bounded. */
+	taskENTER_CRITICAL();
 	startup_grace = (now - data->heartbeat.boot_tick) < AMS_HEARTBEAT_STARTUP_GRACE_MS;
 
 	for(uint8_t i = 0u; i < (uint8_t)AMS_HEARTBEAT_COUNT; i++)
@@ -133,26 +165,33 @@ uint16_t ams_heartbeat_update(app_data_t *data, uint32_t now)
 	data->task_heartbeat_fault = (data->heartbeat.safety_stale_mask != 0u);
 	data->logger_heartbeat_fault = (data->heartbeat.logger_stale_mask != 0u);
 
-	return data->heartbeat.stale_mask;
+	stale = data->heartbeat.stale_mask;
+	taskEXIT_CRITICAL();
+	return stale;
 }
 
 void adbms_spi_lock(void)
 {
-	if(adbms_spi_mutex != NULL)
+	if(adbms_spi_mutex == NULL)
 	{
-		(void)osMutexAcquire(adbms_spi_mutex, osWaitForever);
+		adbms_spi_lock_panic(AMS_PANIC_MUTEX_ACQUIRE_FAILED);
+	}
+
+	if(osMutexAcquire(adbms_spi_mutex, osWaitForever) != osOK)
+	{
+		adbms_spi_lock_panic(AMS_PANIC_MUTEX_ACQUIRE_FAILED);
 	}
 }
 
 void adbms_spi_unlock(void)
 {
-	if(adbms_spi_mutex != NULL)
+	if((adbms_spi_mutex == NULL) || (osMutexRelease(adbms_spi_mutex) != osOK))
 	{
-		(void)osMutexRelease(adbms_spi_mutex);
+		adbms_spi_lock_panic(AMS_PANIC_MUTEX_RELEASE_FAILED);
 	}
 }
 
-void app_create()
+void app_create(void)
 {
 	app.hard_fault = false;
 	app.soft_fault = false;
@@ -247,11 +286,13 @@ void app_create()
 	app.adbms_config_fault = false;
 	app.adbms_status_fault = false;
 	app.adbms_open_wire_fault = false;
+	app.adbms_balance_write_fault = false;
 	app.adbms_scan_active = false;
 	app.adbms_scan_count = 0u;
 	app.adbms_status_diag_count = 0u;
 	app.adbms_config_diag_count = 0u;
 	app.adbms_open_wire_diag_count = 0u;
+	app.adbms_balance_write_fail_count = 0u;
 	app.adbms_last_diag_status = HAL_OK;
 	app.task_heartbeat_fault = false;
 	app.logger_heartbeat_fault = false;
@@ -298,11 +339,31 @@ void app_create()
 	app.current_meas_reason = CURRENT_SENSOR_REASON_ADC_READ;
 
 	board_init(&app.board);
+	if(app.board.canbus.init_status != HAL_OK)
+	{
+		app.canbus_fault = true;
+		app.can_recover_pending = true;
+		app.can_error_code = app.board.canbus.started ?
+			HAL_CAN_ERROR_NOT_READY : HAL_CAN_ERROR_NOT_STARTED;
+		app.can_error_count = 1u;
+		app.can_last_error_tick = osKernelGetTickCount();
+	}
+	for(uint8_t fan_index = 0u; fan_index < NFANS; fan_index++)
+	{
+		if(!app.board.fans[fan_index].initialized)
+		{
+			app.fan_fault = true;
+		}
+	}
 	ams_heartbeat_init(&app, osKernelGetTickCount());
 	ams_safety_sync_app(&app);
 	ams_fault_log_event(AMS_FAULT_LOG_BOOT, 0u, app.reset_flags, app.last_panic_reason);
 	set_bms(0);
-	adbms_spi_mutex = osMutexNew(NULL);
+	adbms_spi_mutex = osMutexNew(&adbms_spi_mutex_attr);
+	if(adbms_spi_mutex == NULL)
+	{
+		adbms_spi_lock_panic(AMS_PANIC_MUTEX_CREATE_FAILED);
+	}
 
 	accumulator_init(&app.acc,
 					 app.board.stm32f767z.hspi6,
@@ -311,6 +372,17 @@ void app_create()
 					 CS_A_Pin,
 					 CS_B_Pin,
 					 app.board.stm32f767z.htim1);
+#if !AMS_HIL_REPLACE_ADBMS
+	if(!app.acc.delay_timer_ready)
+	{
+		/* ADBMS wake/conversion timing is not trustworthy without TIM1.  Keep
+		 * the supervisor inhibited and retain this as a status diagnostic even
+		 * if an undelayed SPI transaction happens to return data. */
+		app.adbms_status_fault = true;
+		app.adbms_diag_fault = true;
+		app.adbms_last_diag_status = app.acc.delay_timer_status;
+	}
+#endif
 	(void)cli_uart_start_rx(&app.board.cli);
 
 	app.cli_task = cli_task_start(&app);

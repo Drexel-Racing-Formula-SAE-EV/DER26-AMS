@@ -11,8 +11,8 @@
 #include <stddef.h>
 #include <string.h>
 
-uint8_t buf[BUFSZ] = {0};
-uint8_t wrbuf[BUFSZ] = {0};
+static uint8_t buf[BUFSZ] = {0};
+static uint8_t wrbuf[BUFSZ] = {0};
 static uint8_t adbms2950_spi_txrx_tx_buf[BUFSZ] = {0};
 static uint8_t adbms2950_spi_txrx_rx_buf[BUFSZ] = {0};
 
