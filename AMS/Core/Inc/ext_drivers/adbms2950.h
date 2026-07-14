@@ -165,6 +165,7 @@ void adbms2950_gpo_set(adbms2950_driver_t* dev, GPO gpo, CFGA_GPO state);
 
 // Control
 void adbms2950_wakeup(adbms2950_driver_t *dev);
+void adbms2950_set_cs(adbms2950_driver_t *dev, uint8_t state);
 // Utility
 void adbms2950_us_delay(adbms2950_driver_t* dev, uint16_t microseconds);
 

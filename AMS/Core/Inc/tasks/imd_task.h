@@ -21,5 +21,6 @@
 * data - an app_data_t pointer representing the app containing the imd we want to run
 */
 TaskHandle_t imd_task_start(app_data_t *data);
+bool imd_task_update(app_data_t *data, uint32_t now);
 
 #endif

@@ -31,6 +31,7 @@ static uint32_t g_host_hfsr;
 static uint32_t g_host_mmfar;
 static uint32_t g_host_bfar;
 static bool g_host_bms_forced_low;
+static bool g_host_watchdog_start_fail;
 #endif
 
 
@@ -453,6 +454,7 @@ const char *ams_safety_watchdog_block_reason_str(uint32_t reason)
     case AMS_WATCHDOG_BLOCK_TEMP_STALE: return "temp_stale";
     case AMS_WATCHDOG_BLOCK_HARD_FAULT: return "hard_fault";
     case AMS_WATCHDOG_BLOCK_STOP_FEED_TEST: return "stop_feed_test";
+    case AMS_WATCHDOG_BLOCK_START_FAILED: return "start_failed";
     default: return "unknown";
     }
 }
@@ -461,7 +463,16 @@ static bool watchdog_start_hw(void)
 {
 #if !AMS_ENABLE_IWDG
     return false;
-#elif AMS_HOST_TEST
+#else
+    if(g_watchdog_hw_started)
+    {
+        return true;
+    }
+#if AMS_HOST_TEST
+    if(g_host_watchdog_start_fail)
+    {
+        return false;
+    }
     g_watchdog_hw_started = true;
     return true;
 #else
@@ -481,15 +492,23 @@ static bool watchdog_start_hw(void)
     IWDG->PR = prescaler_code;
     IWDG->RLR = reload;
 
-    for(uint32_t timeout = 0u; ((IWDG->SR & (IWDG_SR_PVU | IWDG_SR_RVU)) != 0u) && (timeout < 100000u); timeout++)
+    uint32_t timeout = 0u;
+    while(((IWDG->SR & (IWDG_SR_PVU | IWDG_SR_RVU)) != 0u) &&
+          (timeout < 100000u))
     {
         __NOP();
+        timeout++;
+    }
+    if((IWDG->SR & (IWDG_SR_PVU | IWDG_SR_RVU)) != 0u)
+    {
+        return false;
     }
 
     IWDG->KR = 0xCCCCu;
     IWDG->KR = 0xAAAAu;
     g_watchdog_hw_started = true;
     return true;
+#endif
 #endif
 }
 
@@ -510,10 +529,18 @@ static void watchdog_feed_hw(void)
 void ams_safety_watchdog_enable_runtime(app_data_t *data, bool enable)
 {
 #if AMS_ENABLE_IWDG
-    /* Do not start the irreversible hardware IWDG from the CLI/control path.
-     * It starts only from ams_safety_watchdog_task_update() after the error
-     * task has evaluated the full health gate and is ready to feed it. */
-    g_watchdog_runtime_enabled = enable;
+    /* Enabling the watchdog is intentionally irreversible until reset.  Once
+     * hardware has started, a request to disable the software gate would only
+     * guarantee an unexpected reset, so retain the enabled state. */
+    if(enable)
+    {
+        g_watchdog_runtime_enabled = true;
+        (void)watchdog_start_hw();
+    }
+    else if(!g_watchdog_hw_started)
+    {
+        g_watchdog_runtime_enabled = false;
+    }
 #else
     (void)enable;
     g_watchdog_runtime_enabled = false;
@@ -524,6 +551,15 @@ void ams_safety_watchdog_enable_runtime(app_data_t *data, bool enable)
         data->watchdog_runtime_enabled = g_watchdog_runtime_enabled;
         data->watchdog_hw_started = g_watchdog_hw_started;
     }
+}
+
+void ams_safety_watchdog_boot_arm(app_data_t *data)
+{
+#if AMS_ENABLE_IWDG
+    ams_safety_watchdog_enable_runtime(data, true);
+#else
+    (void)data;
+#endif
 }
 
 bool ams_safety_watchdog_hw_started(void)
@@ -545,6 +581,10 @@ bool ams_safety_watchdog_ok(const app_data_t *data)
     startup_grace = (now - data->heartbeat.boot_tick) < AMS_HEARTBEAT_STARTUP_GRACE_MS;
 
     if(!g_watchdog_runtime_enabled)
+    {
+        return false;
+    }
+    if(!g_watchdog_hw_started)
     {
         return false;
     }
@@ -614,13 +654,13 @@ void ams_safety_watchdog_task_update(app_data_t *data)
         reason = AMS_WATCHDOG_BLOCK_STOP_FEED_TEST;
     }
 #endif
-    else if(data->hard_fault || data->charger_fault || data->adbms_diag_fault || data->fuse_fault)
-    {
-        reason = AMS_WATCHDOG_BLOCK_HARD_FAULT;
-    }
     else if((now - data->heartbeat.boot_tick) < AMS_HEARTBEAT_STARTUP_GRACE_MS)
     {
         reason = AMS_WATCHDOG_BLOCK_STARTUP_GRACE;
+    }
+    else if(data->hard_fault || data->charger_fault || data->adbms_diag_fault || data->fuse_fault)
+    {
+        reason = AMS_WATCHDOG_BLOCK_HARD_FAULT;
     }
     else if(data->task_heartbeat_fault || (data->heartbeat.safety_stale_mask != 0u))
     {
@@ -639,37 +679,50 @@ void ams_safety_watchdog_task_update(app_data_t *data)
         reason = AMS_WATCHDOG_BLOCK_TEMP_STALE;
     }
 
-    if(reason == AMS_WATCHDOG_BLOCK_NONE)
+    if((reason == AMS_WATCHDOG_BLOCK_NONE) ||
+       (reason == AMS_WATCHDOG_BLOCK_STARTUP_GRACE))
     {
         if(!g_watchdog_hw_started)
         {
             (void)watchdog_start_hw();
             data->watchdog_hw_started = g_watchdog_hw_started;
         }
-        watchdog_feed_hw();
-        data->watchdog_feed_count++;
-        data->watchdog_last_feed_tick = now;
-        data->watchdog_last_block_reason = AMS_WATCHDOG_BLOCK_NONE;
-    }
-    else
-    {
-        data->watchdog_last_block_reason = (uint32_t)reason;
+        if(g_watchdog_hw_started)
+        {
+            watchdog_feed_hw();
+            if(data->watchdog_feed_count != UINT32_MAX)
+            {
+                data->watchdog_feed_count++;
+            }
+            data->watchdog_last_feed_tick = now;
+            data->watchdog_last_block_reason = (uint32_t)reason;
+            return;
+        }
 
-        /* Disabled/default and startup-grace states are status, not fault-log
-         * events. Only count/log feed stoppage after the runtime watchdog gate
-         * is enabled and the block reason represents an actual health problem. */
-        if((reason != AMS_WATCHDOG_BLOCK_NOT_ENABLED) &&
-           (reason != AMS_WATCHDOG_BLOCK_STARTUP_GRACE))
+        /* Never report a software feed when the hardware start handshake did
+         * not complete.  This condition also keeps BMS_OK inhibited. */
+        reason = AMS_WATCHDOG_BLOCK_START_FAILED;
+    }
+
+    data->watchdog_last_block_reason = (uint32_t)reason;
+
+    /* Disabled/default and startup-grace states are status, not fault-log
+     * events. Only count/log feed stoppage after the runtime watchdog gate
+     * is enabled and the block reason represents an actual health problem. */
+    if((reason != AMS_WATCHDOG_BLOCK_NOT_ENABLED) &&
+       (reason != AMS_WATCHDOG_BLOCK_STARTUP_GRACE))
+    {
+        if(data->watchdog_block_count != UINT32_MAX)
         {
             data->watchdog_block_count++;
-            if(data->watchdog_last_logged_block_reason != (uint32_t)reason)
-            {
-                data->watchdog_last_logged_block_reason = (uint32_t)reason;
-                ams_fault_log_event(AMS_FAULT_LOG_WATCHDOG_FEED_STOPPED,
-                                    (uint16_t)reason,
-                                    data->heartbeat.safety_stale_mask,
-                                    data->watchdog_block_count);
-            }
+        }
+        if(data->watchdog_last_logged_block_reason != (uint32_t)reason)
+        {
+            data->watchdog_last_logged_block_reason = (uint32_t)reason;
+            ams_fault_log_event(AMS_FAULT_LOG_WATCHDOG_FEED_STOPPED,
+                                (uint16_t)reason,
+                                data->heartbeat.safety_stale_mask,
+                                data->watchdog_block_count);
         }
     }
 }
@@ -707,6 +760,7 @@ void ams_safety_host_reset_state(void)
     g_host_mmfar = 0u;
     g_host_bfar = 0u;
     g_host_bms_forced_low = false;
+    g_host_watchdog_start_fail = false;
 }
 
 void ams_safety_host_set_reset_csr(uint32_t csr)

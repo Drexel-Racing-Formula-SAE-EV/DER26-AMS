@@ -14,16 +14,21 @@ static uint8_t sensor_num = 0;
 
 uint8_t accumulator_configured_smb_count(const accumulator_t *dev)
 {
-    if((dev == NULL) || (dev->smb.num_ics <= 0))
+    if((dev == NULL) ||
+       (dev->smb.ics == NULL) ||
+       (dev->smb.num_ics <= 0) ||
+       (dev->smb.num_ics > NSMBS) ||
+       (dev->smb.num_ics > (int)ADBMS6830_MAX_TRACKED_ICS) ||
+       (dev->smb.ics_capacity < (uint8_t)dev->smb.num_ics))
     {
         return 0u;
     }
 
-    return (dev->smb.num_ics > NSMBS) ? (uint8_t)NSMBS : (uint8_t)dev->smb.num_ics;
+    return (uint8_t)dev->smb.num_ics;
 }
 
-void smb_read_voltage(adbms6830_driver_t* dev);
-void smb_read_temp(adbms6830_driver_t* dev);
+int smb_read_voltage(adbms6830_driver_t* dev);
+int smb_read_temp(adbms6830_driver_t* dev);
 void apm_read_vbadc_viadc(adbms2950_driver_t* apm);
 void apm_read_temps(adbms2950_driver_t* apm);
 
@@ -61,6 +66,28 @@ static void accumulator_set_balance_pwm_cell(adbms6830_asic *ic, uint8_t cell, u
             ic->PwmB.pwmb[pwmb_index] = (uint8_t)(duty & 0x0Fu);
         }
     }
+}
+
+/* Caller owns the ADBMS SPI lock.  This is intentionally best-effort: the
+ * original write/readback error remains the reported result, but every failed
+ * balance transaction still gets an immediate second attempt to command all
+ * discharge paths off. */
+static void accumulator_best_effort_clear_balance_locked(adbms6830_driver_t *smb,
+                                                          adbms6830_asic *smb_ics,
+                                                          uint8_t ic_count)
+{
+    if((smb == NULL) || (smb_ics == NULL))
+    {
+        return;
+    }
+
+    for(uint8_t ic = 0u; ic < ic_count; ic++)
+    {
+        accumulator_clear_balance_shadow(&smb_ics[ic]);
+    }
+
+    (void)adbms6830_wrcfgb_checked(smb);
+    (void)adbms6830_write_pwm_checked(smb);
 }
 
 void accumulator_init(accumulator_t *dev,
@@ -143,6 +170,8 @@ void accumulator_init(accumulator_t *dev,
 	dev->voltage_startup_scan_complete = false;
 	dev->delay_timer_ready = false;
 	dev->delay_timer_status = HAL_ERROR;
+	dev->smb_ready = false;
+	dev->smb_init_status = HAL_ERROR;
 	memset(dev->cell_voltage_mv, 0, sizeof(dev->cell_voltage_mv));
 	memset(dev->cell_voltage_valid, 0, sizeof(dev->cell_voltage_valid));
 	memset(dev->cell_voltage_last_update_ms, 0, sizeof(dev->cell_voltage_last_update_ms));
@@ -178,7 +207,35 @@ void accumulator_init(accumulator_t *dev,
 	memset(dev->apm_ics, 0, sizeof(dev->apm_ics));
 #endif
 
-	adBms6830_init(&dev->smb, NSMBS, dev->smb_ics, hspi, cs_port_a, cs_port_b, cs_pin_a, cs_pin_b, ready_timer);
+	memset(dev->smb_ics, 0, sizeof(dev->smb_ics));
+	dev->smb_init_status = adBms6830_init(&dev->smb,
+	                                      NSMBS,
+	                                      dev->smb_ics,
+	                                      NSMBS,
+	                                      hspi,
+	                                      cs_port_a,
+	                                      cs_port_b,
+	                                      cs_pin_a,
+	                                      cs_pin_b,
+	                                      ready_timer);
+	if(dev->smb_init_status == HAL_OK)
+	{
+		const adbms6830_diag_health_t *health;
+
+		/* A successful write only proves that the MCU completed the SPI
+		 * transfer. Read both configuration groups back before declaring the
+		 * monitor chain ready for safety use. */
+		adbms_spi_lock();
+		dev->smb_init_status = adbms6830_verify_config_readback(&dev->smb);
+		health = adbms6830_diag_health_get(&dev->smb);
+		if((dev->smb_init_status == HAL_OK) &&
+		   ((health == NULL) || (health->config_mismatch_mask != 0u)))
+		{
+			dev->smb_init_status = HAL_ERROR;
+		}
+		adbms_spi_unlock();
+	}
+	dev->smb_ready = (dev->smb_init_status == HAL_OK);
 }
 
 int accumulator_read_volt(accumulator_t *dev)
@@ -192,51 +249,83 @@ int accumulator_read_volt(accumulator_t *dev)
 	 * driver uses shared scratch buffers, so locking only the final HAL
 	 * transfer is not sufficient. */
 	adbms_spi_lock();
-	smb_read_voltage(&dev->smb);
+	int status = smb_read_voltage(&dev->smb);
 //	apm_read_vbadc_viadc(&dev->apm);
 //	adbms6830_us_delay(&dev->smb, 5000);
 	adbms_spi_unlock();
 
-    return 0;
+	return status;
 }
 
-void smb_read_voltage(adbms6830_driver_t* dev)
+int smb_read_voltage(adbms6830_driver_t* dev)
 {
     if(dev == NULL)
     {
-        return;
+        return -1;
     }
 
-	adbms6830_wakeup(dev);
+    memset(dev->last_cell_updated_mask, 0, sizeof(dev->last_cell_updated_mask));
+    memset(dev->last_cell_pec_mask, 0, sizeof(dev->last_cell_pec_mask));
+
+    if((dev->ics == NULL) || (dev->num_ics <= 0) ||
+       (dev->num_ics > (int)dev->ics_capacity) ||
+       (dev->num_ics > (int)ADBMS6830_MAX_TRACKED_ICS))
+    {
+        return -1;
+    }
+
+	if(adbms6830_wakeup_checked(dev) != HAL_OK)
+	{
+		return -1;
+	}
 //	adbms6830_wrcfga(dev);
 //	adbms6830_wrcfgb(dev);
 
 	// Wait ~3ms for the precision voltage reference to warm up and settle
-	adbms6830_us_delay(dev, 3000);
+	if(adbms6830_us_delay(dev, 3000u) != HAL_OK)
+	{
+		return -1;
+	}
 
 	// 2. START ADC CONVERSION
-	adbms6830_start_adc_cell_voltage_measurement(dev);
+	if(adbms6830_start_adc_cell_voltage_measurement(dev) != HAL_OK)
+	{
+		return -1;
+	}
 
 	// 3. WAIT FOR THE FIRST CONVERSION CYCLE TO FINISH
-	adbms6830_us_delay(dev, 5000);
+	if(adbms6830_us_delay(dev, 5000u) != HAL_OK)
+	{
+		return -1;
+	}
 
 	// 4. SNAP, READ, AND PARSE
-	adbms6830_read_cell_voltages(dev);
+	if(adbms6830_read_cell_voltages(dev) != HAL_OK)
+	{
+		return -1;
+	}
 //	adbms6830_us_delay(dev, 2000);
 //	adbms6830_wakeup(dev);
-
+	return 0;
 }
 
-void smb_read_temp(adbms6830_driver_t* dev)
+int smb_read_temp(adbms6830_driver_t* dev)
 {
     if(dev == NULL)
     {
-        return;
+        return -1;
     }
 
     for(uint8_t ic = 0u; ic < ADBMS6830_MAX_TRACKED_ICS; ic++)
     {
         dev->last_temp_updated_mask[ic] = 0u;
+    }
+
+    if((dev->ics == NULL) || (dev->num_ics <= 0) ||
+       (dev->num_ics > (int)dev->ics_capacity) ||
+       (dev->num_ics > (int)ADBMS6830_MAX_TRACKED_ICS))
+    {
+        return -1;
     }
 
 //	adbms6830_wakeup(dev);
@@ -251,30 +340,42 @@ void smb_read_temp(adbms6830_driver_t* dev)
 //	adbms6830_wakeup(dev);
 //	adbms6830_us_delay(dev, 3000);
 
-    adbms6830_wakeup(dev);
+    if(adbms6830_wakeup_checked(dev) != HAL_OK)
+    {
+        return -1;
+    }
 //    sensor_num = ((sensor_num) % (NTEMPS)) + 1u;
     sensor_num = (sensor_num % (NTEMPS / 3)) + 1u;
 
-    mux_set_channel(dev, sensor_num - 1u);
-    adbms6830_us_delay(dev, 2000u);
-    mux_set_channel(dev, sensor_num + 7u);
-    adbms6830_us_delay(dev, 2000u);
-    mux_set_channel(dev, sensor_num + 15u);
-    adbms6830_us_delay(dev, 2000u);
+    if((mux_set_channel(dev, sensor_num - 1u) != 0) ||
+       (adbms6830_us_delay(dev, 2000u) != HAL_OK) ||
+       (mux_set_channel(dev, sensor_num + 7u) != 0) ||
+       (adbms6830_us_delay(dev, 2000u) != HAL_OK) ||
+       (mux_set_channel(dev, sensor_num + 15u) != 0) ||
+       (adbms6830_us_delay(dev, 2000u) != HAL_OK))
+    {
+        return -1;
+    }
 
-    adbms6830_wakeup(dev);
-    mux_read_gpio_voltage(dev, sensor_num - 1u);
-    adbms6830_us_delay(dev, 2000u);
-    mux_read_gpio_voltage(dev, sensor_num + 7u);
-    adbms6830_us_delay(dev, 2000u);
-    mux_read_gpio_voltage(dev, sensor_num + 15u);
-    adbms6830_us_delay(dev, 2000u);
+    if(adbms6830_wakeup_checked(dev) != HAL_OK)
+    {
+        return -1;
+    }
+    if((mux_read_gpio_voltage(dev, sensor_num - 1u) != 0) ||
+       (adbms6830_us_delay(dev, 2000u) != HAL_OK) ||
+       (mux_read_gpio_voltage(dev, sensor_num + 7u) != 0) ||
+       (adbms6830_us_delay(dev, 2000u) != HAL_OK) ||
+       (mux_read_gpio_voltage(dev, sensor_num + 15u) != 0) ||
+       (adbms6830_us_delay(dev, 2000u) != HAL_OK))
+    {
+        return -1;
+    }
 
 //	adbms6830_us_delay(dev, 3000);
 //	mux_read_gpio_voltage(dev, sensor_num + 7u);
 //	adbms6830_us_delay(dev, 3000);
 //	mux_read_gpio_voltage(dev, sensor_num + 15u);
-
+	return 0;
 }
 
 void apm_read_vbadc_viadc(adbms2950_driver_t* apm)
@@ -319,10 +420,10 @@ int accumulator_read_temp(accumulator_t *dev)
 //	apm_read_temps(&dev->apm);
 
 	adbms_spi_lock();
-	smb_read_temp(&dev->smb);
+	int status = smb_read_temp(&dev->smb);
 	adbms_spi_unlock();
 
-	return 0;
+	return status;
 }
 
 void apm_read_temps(adbms2950_driver_t* apm)
@@ -406,7 +507,9 @@ float NXFT15XV103FEAB050_convert(float ratio)
 
 float convert_adc_to_volt(int value)
 {
-	return (value + 10000) * .000150;
+	/* Convert before adding the signed offset so even an adversarial full-range
+	 * int input cannot overflow in integer arithmetic. */
+	return ((float)value + 10000.0f) * 0.000150f;
 }
 
 static uint16_t accumulator_code_to_mv(int16_t code)
@@ -572,8 +675,7 @@ void accumulator_hil_refresh_update_masks(accumulator_t *dev,
             uint16_t bit = (uint16_t)(1u << cell);
             if((dev->hil_cell_seen_mask[seg] & bit) != 0u)
             {
-                uint32_t age_ms = (now_ms >= dev->hil_cell_last_update_ms[seg][cell]) ?
-                                  (now_ms - dev->hil_cell_last_update_ms[seg][cell]) : 0u;
+                uint32_t age_ms = (uint32_t)(now_ms - dev->hil_cell_last_update_ms[seg][cell]);
                 if(age_ms <= timeout_ms)
                 {
                     cell_mask |= bit;
@@ -586,8 +688,7 @@ void accumulator_hil_refresh_update_masks(accumulator_t *dev,
             uint32_t bit = (uint32_t)(1UL << sensor);
             if((dev->hil_temp_seen_mask[seg] & bit) != 0u)
             {
-                uint32_t age_ms = (now_ms >= dev->hil_temp_last_update_ms[seg][sensor]) ?
-                                  (now_ms - dev->hil_temp_last_update_ms[seg][sensor]) : 0u;
+                uint32_t age_ms = (uint32_t)(now_ms - dev->hil_temp_last_update_ms[seg][sensor]);
                 if(age_ms <= timeout_ms)
                 {
                     temp_mask |= bit;
@@ -799,8 +900,7 @@ void accumulator_update_voltage_stats_at(accumulator_t *dev, uint32_t now_ms)
 
             if(dev->cell_voltage_valid[ic][cell])
             {
-                uint32_t age_ms = (now >= dev->cell_voltage_last_update_ms[ic][cell]) ?
-                                  (now - dev->cell_voltage_last_update_ms[ic][cell]) : 0u;
+                uint32_t age_ms = (uint32_t)(now - dev->cell_voltage_last_update_ms[ic][cell]);
 
                 usable = (age_ms <= ACCUMULATOR_CELL_STALE_TIMEOUT_MS) &&
                          (dev->cell_voltage_consecutive_misses[ic][cell] <= ACCUMULATOR_CELL_MAX_CONSEC_MISSES);
@@ -1056,7 +1156,7 @@ void accumulator_update_temp_stats_at(accumulator_t *dev, uint32_t now_ms)
                         uint16_t delta_deci_c = (deci_c >= previous_deci_c) ?
                                                 (uint16_t)(deci_c - previous_deci_c) :
                                                 (uint16_t)(previous_deci_c - deci_c);
-                        uint32_t elapsed_ms = (now >= previous_tick) ? (now - previous_tick) : 0u;
+                        uint32_t elapsed_ms = (uint32_t)(now - previous_tick);
 
                         if(delta_deci_c >= ACCUMULATOR_TEMP_IMPLAUSIBLE_JUMP_DECI_C)
                         {
@@ -1135,8 +1235,7 @@ void accumulator_update_temp_stats_at(accumulator_t *dev, uint32_t now_ms)
 
             if(dev->temp_sensor_valid[ic][sensor])
             {
-                uint32_t age_ms = (now >= dev->temp_last_update_ms[ic][sensor]) ?
-                                  (now - dev->temp_last_update_ms[ic][sensor]) : 0u;
+                uint32_t age_ms = (uint32_t)(now - dev->temp_last_update_ms[ic][sensor]);
 
                 usable = (age_ms <= ACCUMULATOR_TEMP_STALE_TIMEOUT_MS) &&
                          (dev->temp_consecutive_misses[ic][sensor] <= ACCUMULATOR_TEMP_MAX_CONSEC_MISSES);
@@ -1291,7 +1390,8 @@ int accumulator_set_balance(accumulator_t *dev)
 
             uint16_t cell_mv = dev->cell_voltage_mv[ic][cell];
             if((cell_mv >= BALANCE_START_MV) &&
-               (cell_mv > (uint16_t)(cohort_min_mv + BALANCE_ON_DELTA_MV)) &&
+			   (cell_mv > cohort_min_mv) &&
+			   ((uint16_t)(cell_mv - cohort_min_mv) > BALANCE_ON_DELTA_MV) &&
                (balance_count < BALANCE_MAX_CELLS_PER_SEG))
             {
                 accumulator_set_balance_pwm_cell(&smb_ics[ic], cell, BALANCE_PWM_DUTY);
@@ -1300,10 +1400,18 @@ int accumulator_set_balance(accumulator_t *dev)
         }
     }
 
-    adbms6830_wakeup(smb);
     if(adbms6830_wrcfgb_checked(smb) == HAL_OK)
     {
-        result = (adbms6830_write_pwm_checked(smb) == HAL_OK) ? 0 : -1;
+        if((adbms6830_write_pwm_checked(smb) == HAL_OK) &&
+           (adbms6830_verify_balance_readback(smb) == HAL_OK))
+        {
+            result = 0;
+        }
+    }
+
+    if(result != 0)
+    {
+        accumulator_best_effort_clear_balance_locked(smb, smb_ics, ic_count);
     }
 
     adbms_spi_unlock();
@@ -1327,10 +1435,21 @@ int accumulator_clear_balance(accumulator_t *dev)
     {
         accumulator_clear_balance_shadow(&smb_ics[ic]);
     }
-    adbms6830_wakeup(smb);
     HAL_StatusTypeDef cfg_status = adbms6830_wrcfgb_checked(smb);
     HAL_StatusTypeDef pwm_status = adbms6830_write_pwm_checked(smb);
-    int result = ((cfg_status == HAL_OK) && (pwm_status == HAL_OK)) ? 0 : -1;
+    HAL_StatusTypeDef verify_status = HAL_ERROR;
+    if((cfg_status == HAL_OK) && (pwm_status == HAL_OK))
+    {
+        verify_status = adbms6830_verify_balance_readback(smb);
+    }
+
+    int result = ((cfg_status == HAL_OK) &&
+                  (pwm_status == HAL_OK) &&
+                  (verify_status == HAL_OK)) ? 0 : -1;
+    if(result != 0)
+    {
+        accumulator_best_effort_clear_balance_locked(smb, smb_ics, ic_count);
+    }
     adbms_spi_unlock();
     return result;
 }

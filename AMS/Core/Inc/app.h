@@ -57,6 +57,14 @@
 #define AMS_ENABLE_SERVICE_CLI AMS_HW_BRINGUP
 #endif
 
+/* The PCB/Cube configuration routes IMD_PWM to TIM2_CH1.  Keep the feature
+ * opt-in until that external PWM/status wiring and polarity have been checked
+ * on the target.  With it disabled, the supervisor deliberately retains the
+ * initialized IMD fault and cannot assert BMS_OK. */
+#ifndef AMS_ENABLE_IMD
+#define AMS_ENABLE_IMD 0
+#endif
+
 #if AMS_HIL_REPLACE_ADBMS && !AMS_ENABLE_HIL_CAN
 #error "AMS_HIL_REPLACE_ADBMS requires AMS_ENABLE_HIL_CAN=1"
 #endif
@@ -79,6 +87,13 @@
 #define AMS_HEARTBEAT_TEMP_TIMEOUT_MS 3000u
 #define AMS_HEARTBEAT_CAN_TIMEOUT_MS 2000u
 #define AMS_HEARTBEAT_LOGGER_TIMEOUT_MS 2000u
+#define AMS_HEARTBEAT_IMD_TIMEOUT_MS 500u
+
+/* CMSIS-RTOS mutex timeouts are expressed in kernel ticks.  The generated
+ * FreeRTOS configuration uses a 1 kHz kernel tick, so this is 500 ms on the
+ * target.  A bounded wait is essential here: the caller's panic path drops
+ * BMS_OK, whereas osWaitForever could leave it asserted after a deadlock. */
+#define AMS_ADBMS_MUTEX_TIMEOUT_TICKS 500u
 
 /* FreeRTOS priority policy: larger number means higher priority.
  * Safety supervisor stays highest. Blocking bench/service CLI stays below all
@@ -139,6 +154,27 @@ typedef enum
 	STATE_ERROR
 } state_t;
 
+static inline bool ams_state_is_valid(state_t state)
+{
+	return (state >= STATE_NULL) && (state <= STATE_ERROR);
+}
+
+static inline bool ams_state_allows_bms_ok(state_t state)
+{
+	switch(state)
+	{
+	case STATE_START:
+	case STATE_CHARGE:
+	case STATE_DISCARGE:
+	case STATE_BALANCE:
+		return true;
+	case STATE_NULL:
+	case STATE_ERROR:
+	default:
+		return false;
+	}
+}
+
 typedef enum
 {
 	AMS_HEARTBEAT_ADBMS = 0,
@@ -146,6 +182,7 @@ typedef enum
 	AMS_HEARTBEAT_TEMP,
 	AMS_HEARTBEAT_CAN,
 	AMS_HEARTBEAT_LOGGER,
+	AMS_HEARTBEAT_IMD,
 	AMS_HEARTBEAT_COUNT
 } ams_heartbeat_id_t;
 
@@ -184,7 +221,8 @@ typedef enum
 #define AMS_HEARTBEAT_SAFETY_MASK (AMS_HEARTBEAT_BIT(AMS_HEARTBEAT_ADBMS) | \
                                    AMS_HEARTBEAT_BIT(AMS_HEARTBEAT_CURRENT) | \
                                    AMS_HEARTBEAT_BIT(AMS_HEARTBEAT_TEMP) | \
-                                   AMS_HEARTBEAT_BIT(AMS_HEARTBEAT_CAN))
+                                   AMS_HEARTBEAT_BIT(AMS_HEARTBEAT_CAN) | \
+                                   (AMS_ENABLE_IMD ? AMS_HEARTBEAT_BIT(AMS_HEARTBEAT_IMD) : 0u))
 #define AMS_HEARTBEAT_LOGGER_MASK AMS_HEARTBEAT_BIT(AMS_HEARTBEAT_LOGGER)
 
 typedef struct
@@ -328,6 +366,7 @@ struct app_data_t
 	bool imd_valid;
 	bool imd_fault;
 	imd_status_t imd_status;
+	uint32_t imd_last_valid_tick;
     bool fan_state;
     float fan_command_percent;
     uint8_t fan_control_reason;

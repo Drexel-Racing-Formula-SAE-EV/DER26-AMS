@@ -50,10 +50,25 @@ static current_fault_mode_t current_task_fault_mode_from_state(state_t state)
     }
 }
 
-static void current_task_publish_fault_state(app_data_t *app_data)
+static void current_task_publish_fault_state(app_data_t *app_data,
+                                             const current_fault_state_t *fault,
+                                             const current_sensor_t *sensor,
+                                             float published_current)
 {
-    current_fault_state_t *fault = &app_data->current_fault_state;
+    if((app_data == NULL) || (fault == NULL) || (sensor == NULL))
+    {
+        return;
+    }
 
+    /* The supervisor runs at a higher priority.  Publish the measurement,
+     * state-machine internals, and flattened gates as one snapshot so it can
+     * never combine fields from two different current samples. */
+    taskENTER_CRITICAL();
+    app_data->current_valid = sensor->current_valid;
+    app_data->current_selected_range = sensor->selected_range;
+    app_data->current_meas_reason = sensor->reason;
+    app_data->current = published_current;
+    app_data->current_fault_state = *fault;
     app_data->current_sensor_fault = fault->sensor_fault;
     app_data->current_overcurrent_warning = fault->warning;
     app_data->current_overcurrent_pending = fault->pending;
@@ -66,6 +81,7 @@ static void current_task_publish_fault_state(app_data_t *app_data)
     app_data->current_fault = (app_data->current_sensor_fault ||
                                app_data->current_overcurrent_fault ||
                                app_data->current_fault_latched);
+    taskEXIT_CRITICAL();
 }
 
 TaskHandle_t current_task_start(app_data_t *data)
@@ -102,25 +118,22 @@ void current_task_fn(void *argument)
             (void)current_sensor_convert(current_sensor);
         }
 
-        app_data->current_valid = current_sensor->current_valid;
-        app_data->current_selected_range = current_sensor->selected_range;
-        app_data->current_meas_reason = current_sensor->reason;
-
-        if(current_sensor->current_valid)
-        {
-            app_data->current = current_sensor->current;
-        }
-
         bool current_was_latched = app_data->current_fault_latched;
         current_fault_reason_t current_prev_latched_reason = app_data->current_fault_latched_reason;
+        float published_current = current_sensor->current_valid ?
+                                  current_sensor->current : app_data->current;
+        current_fault_state_t next_fault = app_data->current_fault_state;
 
-        current_fault_update(&app_data->current_fault_state,
+        current_fault_update(&next_fault,
                              current_task_fault_mode_from_state(app_data->state),
-                             app_data->current,
+                             published_current,
                              current_sensor->current_valid,
                              current_sensor->reason,
                              CURRENT_TASK_PERIOD_MS);
-        current_task_publish_fault_state(app_data);
+        current_task_publish_fault_state(app_data,
+                                         &next_fault,
+                                         current_sensor,
+                                         published_current);
 
         if(app_data->current_fault_latched &&
            (!current_was_latched ||

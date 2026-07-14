@@ -15,6 +15,8 @@
 #include "stm32f7xx_hal.h"
 
 #define ADBMS6830_MAX_TRACKED_ICS 16u
+#define ADBMS6830_MUX_COUNT 3u
+#define ADBMS6830_TEMP_SENSOR_COUNT 24u
 
 #define ADBMS6830_SPI_DEBUG_PREVIEW_BYTES 16u
 
@@ -32,6 +34,7 @@ typedef enum
   ADBMS6830_SPI_OP_READ_STATUS,
   ADBMS6830_SPI_OP_CLEAR_FLAGS,
   ADBMS6830_SPI_OP_CONFIG_CHECK,
+  ADBMS6830_SPI_OP_BALANCE_CHECK,
   ADBMS6830_SPI_OP_CELL_ADC_SELF_TEST,
   ADBMS6830_SPI_OP_OPEN_WIRE_EVEN,
   ADBMS6830_SPI_OP_OPEN_WIRE_ODD,
@@ -119,12 +122,19 @@ typedef struct
   uint16_t configb_mismatch_mask;
   uint16_t config_mismatch_mask;
 
+  uint16_t balance_cfgb_mismatch_mask;
+  uint16_t balance_pwma_mismatch_mask;
+  uint16_t balance_pwmb_mismatch_mask;
+  uint16_t balance_mismatch_mask;
+
   uint32_t pec_pass_count[ADBMS6830_MAX_TRACKED_ICS];
   uint32_t pec_fail_count[ADBMS6830_MAX_TRACKED_ICS];
   uint32_t cmd_counter_mismatch_count[ADBMS6830_MAX_TRACKED_ICS];
   uint32_t config_mismatch_count[ADBMS6830_MAX_TRACKED_ICS];
+  uint32_t balance_mismatch_count[ADBMS6830_MAX_TRACKED_ICS];
 
   uint32_t config_readback_count;
+  uint32_t balance_readback_count;
   uint32_t cell_adc_self_test_count;
   uint32_t open_wire_even_count;
   uint32_t open_wire_odd_count;
@@ -173,6 +183,7 @@ typedef struct
 typedef struct
 {
   int num_ics;
+  uint8_t ics_capacity;
   adbms6830_asic *ics;
   adbms_string string;
   SPI_HandleTypeDef *hspi;
@@ -184,6 +195,9 @@ typedef struct
   loop_manager_6830_t loop_manager;
 
   TIM_HandleTypeDef *htim;
+
+  HAL_StatusTypeDef delay_last_status;
+  uint32_t delay_timeout_count;
 
   /* Last cell-voltage read status. One bit per cell index for each IC.
    * last_cell_updated_mask is set only when the register group PEC passed and
@@ -199,6 +213,13 @@ typedef struct
    * thermistor codes as newly updated.
    */
   uint32_t last_temp_updated_mask[ADBMS6830_MAX_TRACKED_ICS];
+
+  /* A temperature is publishable only when the corresponding ADG728 channel
+   * selection was acknowledged by that IC's local mux.  RDCOMM supplies the
+   * per-IC ACK result after STCOMM; retaining it here prevents a failed mux
+   * write from relabelling the previous physical channel as a new sensor. */
+  uint16_t mux_selection_valid_mask[ADBMS6830_MUX_COUNT];
+  uint8_t mux_selected_channel[ADBMS6830_MAX_TRACKED_ICS][ADBMS6830_MUX_COUNT];
 
   adbms6830_spi_debug_t spi_debug;
   adbms6830_ic_diag_t diag[ADBMS6830_MAX_TRACKED_ICS];

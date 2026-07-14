@@ -67,12 +67,14 @@ uint16_t stm32f767z_adc_read(ADC_HandleTypeDef *hadc)
 static uint8_t unit_spi_last_tx[BUFSZ];
 static uint8_t unit_spi_last_txrx_tx[BUFSZ];
 static uint8_t unit_spi_txrx_response[BUFSZ];
-static uint8_t unit_spi_txrx_sequence[4][BUFSZ];
+static uint8_t unit_spi_txrx_sequence[8][BUFSZ];
 static uint16_t unit_spi_last_tx_len = 0u;
 static uint16_t unit_spi_last_txrx_len = 0u;
 static uint32_t unit_spi_tx_calls = 0u;
 static uint32_t unit_spi_txrx_calls = 0u;
 static uint32_t unit_spi_txrx_sequence_count = 0u;
+static HAL_StatusTypeDef unit_spi_tx_status_sequence[8];
+static uint32_t unit_spi_tx_status_sequence_count = 0u;
 static uint32_t unit_gpio_write_calls = 0u;
 static GPIO_PinState unit_gpio_states[64];
 static HAL_StatusTypeDef unit_spi_tx_status = HAL_OK;
@@ -90,6 +92,8 @@ static void unit_spi_reset(void)
     unit_spi_tx_calls = 0u;
     unit_spi_txrx_calls = 0u;
     unit_spi_txrx_sequence_count = 0u;
+    memset(unit_spi_tx_status_sequence, 0, sizeof(unit_spi_tx_status_sequence));
+    unit_spi_tx_status_sequence_count = 0u;
     unit_gpio_write_calls = 0u;
     unit_spi_tx_status = HAL_OK;
     unit_spi_txrx_status = HAL_OK;
@@ -97,6 +101,8 @@ static void unit_spi_reset(void)
 
 HAL_StatusTypeDef HAL_SPI_Transmit(SPI_HandleTypeDef *hspi, uint8_t *pData, uint16_t Size, uint32_t Timeout)
 {
+    HAL_StatusTypeDef status;
+
     (void)Timeout;
     if((hspi == NULL) || (pData == NULL) || (Size > BUFSZ))
     {
@@ -105,8 +111,12 @@ HAL_StatusTypeDef HAL_SPI_Transmit(SPI_HandleTypeDef *hspi, uint8_t *pData, uint
 
     memcpy(unit_spi_last_tx, pData, Size);
     unit_spi_last_tx_len = Size;
+    status = ((unit_spi_tx_status_sequence_count > 0u) &&
+              (unit_spi_tx_calls < unit_spi_tx_status_sequence_count))
+                 ? unit_spi_tx_status_sequence[unit_spi_tx_calls]
+                 : unit_spi_tx_status;
     unit_spi_tx_calls++;
-    return unit_spi_tx_status;
+    return status;
 }
 
 HAL_StatusTypeDef HAL_SPI_TransmitReceive(SPI_HandleTypeDef *hspi,
@@ -145,6 +155,33 @@ void HAL_GPIO_WritePin(GPIO_TypeDef *GPIOx, uint16_t GPIO_Pin, GPIO_PinState Pin
     }
     unit_gpio_write_calls++;
 }
+
+static TIM_TypeDef unit_delay_timer_instance;
+static TIM_HandleTypeDef unit_delay_timer;
+static uint32_t unit_delay_counter;
+static bool unit_delay_timer_advances = true;
+
+static void unit_delay_counter_set(uint32_t value)
+{
+    unit_delay_counter = value;
+}
+
+static uint32_t unit_delay_counter_get(void)
+{
+    if(unit_delay_timer_advances && (unit_delay_counter != UINT32_MAX))
+    {
+        unit_delay_counter++;
+    }
+    return unit_delay_counter;
+}
+
+/* Replace only the timer counter access used by the directly-included ADBMS
+ * driver.  This gives unit tests a deterministic advancing or frozen 1 MHz
+ * timer without a background host thread. */
+#undef __HAL_TIM_SET_COUNTER
+#undef __HAL_TIM_GET_COUNTER
+#define __HAL_TIM_SET_COUNTER(handle, value) unit_delay_counter_set((uint32_t)(value))
+#define __HAL_TIM_GET_COUNTER(handle) unit_delay_counter_get()
 
 #include "Core/Src/ext_drivers/current_sensor.c"
 #include "Core/Src/ext_drivers/current_fault.c"
@@ -1097,6 +1134,39 @@ static void unit_adbms_make_read_packet_from_data(uint8_t *dst, const uint8_t pa
     }
 }
 
+static void unit_adbms_make_comm_result(uint8_t *dst,
+                                        uint8_t cmd_counter,
+                                        bool address_ack,
+                                        bool data_ack,
+                                        bool corrupt_pec)
+{
+    uint8_t payload[TX_DATA] =
+    {
+        (uint8_t)((ICOMM_START_ << 4u) | (address_ack ? 0x07u : 0x0Fu)),
+        0u,
+        (uint8_t)((ICOMM_BLANK_ << 4u) | (data_ack ? 0x07u : 0x0Fu)),
+        0u,
+        (uint8_t)((ICOMM_STOP_ << 4u) | FCOMM_NACK_STOP_),
+        0u
+    };
+
+    unit_adbms_make_read_packet_from_data(dst, payload, cmd_counter, corrupt_pec);
+}
+
+static void unit_adbms_make_aux_result(uint8_t *dst,
+                                       uint8_t gpio_ch,
+                                       uint16_t raw,
+                                       uint8_t cmd_counter,
+                                       bool corrupt_pec)
+{
+    uint8_t payload[TX_DATA] = {0u};
+    uint8_t byte_lo = (uint8_t)(gpio_ch * 2u);
+
+    payload[byte_lo] = (uint8_t)raw;
+    payload[byte_lo + 1u] = (uint8_t)(raw >> 8u);
+    unit_adbms_make_read_packet_from_data(dst, payload, cmd_counter, corrupt_pec);
+}
+
 static void unit_adbms_init_driver(adbms6830_driver_t *dev,
                                    adbms6830_asic *ics,
                                    SPI_HandleTypeDef *spi,
@@ -1104,10 +1174,127 @@ static void unit_adbms_init_driver(adbms6830_driver_t *dev,
                                    GPIO_TypeDef *gpio_b,
                                    uint8_t num_ics)
 {
-    adBms6830_init(dev, num_ics, ics, spi, gpio_a, gpio_b, 3u, 4u, NULL);
+    memset(&unit_delay_timer_instance, 0, sizeof(unit_delay_timer_instance));
+    memset(&unit_delay_timer, 0, sizeof(unit_delay_timer));
+    unit_delay_timer.Instance = &unit_delay_timer_instance;
+    unit_delay_timer_advances = true;
+    (void)adBms6830_init(dev,
+                        num_ics,
+                        ics,
+                        num_ics,
+                        spi,
+                        gpio_a,
+                        gpio_b,
+                        3u,
+                        4u,
+                        &unit_delay_timer);
     unit_spi_reset();
     dev->string = STRING_B;
     adbms6830_spi_debug_clear(dev);
+}
+
+static void test_adbms_topology_and_delay_guards(void)
+{
+    adbms6830_driver_t dev;
+    adbms6830_asic ics[2];
+    SPI_HandleTypeDef spi;
+    GPIO_TypeDef gpio_a;
+    GPIO_TypeDef gpio_b;
+
+    memset(&dev, 0xA5, sizeof(dev));
+    memset(ics, 0, sizeof(ics));
+    memset(&spi, 0, sizeof(spi));
+    memset(&gpio_a, 0, sizeof(gpio_a));
+    memset(&gpio_b, 0, sizeof(gpio_b));
+    memset(&unit_delay_timer_instance, 0, sizeof(unit_delay_timer_instance));
+    memset(&unit_delay_timer, 0, sizeof(unit_delay_timer));
+    unit_delay_timer.Instance = &unit_delay_timer_instance;
+    unit_delay_timer_advances = true;
+    unit_spi_reset();
+
+    EXPECT_TRUE(adBms6830_init(NULL,
+                         1u,
+                         ics,
+                         1u,
+                         &spi,
+                         &gpio_a,
+                         &gpio_b,
+                         3u,
+                         4u,
+                         &unit_delay_timer) == HAL_ERROR);
+    EXPECT_TRUE(adBms6830_init(&dev,
+                         2u,
+                         ics,
+                         1u,
+                         &spi,
+                         &gpio_a,
+                         &gpio_b,
+                         3u,
+                         4u,
+                         &unit_delay_timer) == HAL_ERROR);
+    EXPECT_TRUE(dev.num_ics == 0);
+    EXPECT_TRUE(unit_gpio_write_calls == 0u);
+
+    memset(ics, 0xA5, sizeof(ics));
+    unit_spi_reset();
+    unit_spi_tx_status = HAL_TIMEOUT;
+    EXPECT_TRUE(adBms6830_init(&dev,
+                              2u,
+                              ics,
+                              2u,
+                              &spi,
+                              &gpio_a,
+                              &gpio_b,
+                              3u,
+                              4u,
+                              &unit_delay_timer) == HAL_TIMEOUT);
+    EXPECT_TRUE(unit_spi_tx_calls == 1u);
+    EXPECT_TRUE(ics[0].tx_cfgb.dcc == 0u);
+    EXPECT_TRUE(ics[1].tx_cfgb.dcc == 0u);
+    unit_spi_tx_status = HAL_OK;
+
+    unit_adbms_init_driver(&dev, ics, &spi, &gpio_a, &gpio_b, 2u);
+    unit_spi_reset();
+    dev.ics_capacity = 1u;
+    EXPECT_TRUE(adbms6830_wrcfgb_checked(&dev) == HAL_ERROR);
+    EXPECT_TRUE(unit_spi_tx_calls == 0u);
+
+    dev.ics_capacity = 2u;
+    unit_delay_timer_advances = false;
+    uint32_t timeout_count = dev.delay_timeout_count;
+    EXPECT_TRUE(adbms6830_us_delay(&dev, 10u) == HAL_TIMEOUT);
+    EXPECT_TRUE(dev.delay_last_status == HAL_TIMEOUT);
+    EXPECT_TRUE(dev.delay_timeout_count == timeout_count + 1u);
+
+    unit_spi_reset();
+    EXPECT_TRUE(adbms6830_wakeup_checked(&dev) == HAL_TIMEOUT);
+    EXPECT_TRUE(unit_spi_tx_calls == 0u);
+    EXPECT_TRUE(unit_spi_txrx_calls == 0u);
+    EXPECT_TRUE(adbms6830_read_cell_voltages(&dev) == HAL_TIMEOUT);
+    EXPECT_TRUE(unit_spi_tx_calls == 0u);
+    EXPECT_TRUE(unit_spi_txrx_calls == 0u);
+
+    unit_delay_timer_advances = true;
+    EXPECT_TRUE(adbms6830_us_delay(&dev, 10u) == HAL_OK);
+    EXPECT_TRUE(dev.delay_last_status == HAL_OK);
+
+    for(uint8_t ic = 0u; ic < 2u; ic++)
+    {
+        dev.last_cell_updated_mask[ic] = UINT16_MAX;
+        dev.last_cell_pec_mask[ic] = UINT16_MAX;
+    }
+    unit_spi_reset();
+    unit_spi_txrx_status = HAL_TIMEOUT;
+    EXPECT_TRUE(adbms6830_read_cell_voltages(&dev) == HAL_TIMEOUT);
+    EXPECT_TRUE(unit_spi_txrx_calls == 6u);
+    EXPECT_TRUE(dev.last_cell_updated_mask[0] == 0u);
+    EXPECT_TRUE(dev.last_cell_updated_mask[1] == 0u);
+    EXPECT_TRUE(dev.last_cell_pec_mask[0] == 0u);
+    EXPECT_TRUE(dev.last_cell_pec_mask[1] == 0u);
+    unit_spi_txrx_status = HAL_OK;
+
+    dev.htim = NULL;
+    EXPECT_TRUE(adbms6830_us_delay(&dev, 10u) == HAL_ERROR);
 }
 
 static void test_adbms_spi_debug_write_and_full_duplex_paths(void)
@@ -1175,6 +1362,24 @@ static void test_adbms_spi_debug_write_and_full_duplex_paths(void)
     }
     EXPECT_TRUE(dev.spi_debug.error_count == 1u);
     EXPECT_TRUE(dev.spi_debug.last_status == HAL_ERROR);
+
+    unit_spi_reset();
+    EXPECT_TRUE(adbms6830_spi_write_read(&dev,
+                                         tx,
+                                         1u,
+                                         rx,
+                                         UINT16_MAX,
+                                         1u) == HAL_ERROR);
+    EXPECT_TRUE(unit_spi_txrx_calls == 0u);
+
+    dev.string = (adbms_string)-1;
+    adbms6830_set_cs(&dev, 0u);
+    EXPECT_TRUE(unit_gpio_write_calls == 0u);
+    EXPECT_TRUE(adbms6830_spi_write(&dev, tx, sizeof(tx), 1u) == HAL_ERROR);
+    EXPECT_TRUE(unit_spi_tx_calls == 0u);
+    EXPECT_TRUE(adbms6830_spi_probe_rdcfga_on_string(&dev,
+                                                     (adbms_string)-1) == HAL_ERROR);
+    dev.string = STRING_B;
 }
 
 static void test_adbms_spi_debug_rd48_pec_masks_and_clear(void)
@@ -1340,6 +1545,75 @@ static void test_adbms_spi_sid_status_and_counter_mismatch(void)
     EXPECT_TRUE(dev.spi_debug.error_count == 1u);
 }
 
+static void test_adbms_counter_mismatch_rejects_stale_data(void)
+{
+    adbms6830_driver_t dev;
+    adbms6830_asic ics[1];
+    SPI_HandleTypeDef spi;
+    GPIO_TypeDef gpio_a;
+    GPIO_TypeDef gpio_b;
+    const uint8_t statc[TX_DATA] = {0u};
+    const uint8_t statd[TX_DATA] = {0xFFu, 0xFFu, 0xFFu, 0xFFu, 0u, 0xA5u};
+    const uint8_t state[TX_DATA] = {0u};
+
+    memset(&dev, 0, sizeof(dev));
+    memset(ics, 0, sizeof(ics));
+    memset(&spi, 0, sizeof(spi));
+    memset(&gpio_a, 0, sizeof(gpio_a));
+    memset(&gpio_b, 0, sizeof(gpio_b));
+    unit_adbms_init_driver(&dev, ics, &spi, &gpio_a, &gpio_b, 1u);
+
+    /* RDSTATC establishes the expected count. RDSTATD has a valid PEC but
+     * the wrong count and therefore must neither overwrite the old parsed
+     * status nor be marked valid. RDSTATE demonstrates recovery after the
+     * counter tracker resynchronizes. */
+    dev.diag[0].cell_ov_mask = 0x1234u;
+    dev.diag[0].cell_uv_mask = 0x5678u;
+    dev.diag[0].osc_counter = 0x3Cu;
+    unit_spi_txrx_sequence_count = 3u;
+    unit_adbms_make_read_packet_from_data(
+        &unit_spi_txrx_sequence[0][CMDSZ + PEC15SZ], statc, 7u, false);
+    unit_adbms_make_read_packet_from_data(
+        &unit_spi_txrx_sequence[1][CMDSZ + PEC15SZ], statd, 8u, false);
+    unit_adbms_make_read_packet_from_data(
+        &unit_spi_txrx_sequence[2][CMDSZ + PEC15SZ], state, 8u, false);
+
+    EXPECT_TRUE(adbms6830_read_status(&dev, false) == HAL_ERROR);
+    EXPECT_TRUE(dev.diag[0].statc_valid);
+    EXPECT_FALSE(dev.diag[0].statd_valid);
+    EXPECT_TRUE(dev.diag[0].state_valid);
+    EXPECT_TRUE(dev.diag[0].cell_ov_mask == 0x1234u);
+    EXPECT_TRUE(dev.diag[0].cell_uv_mask == 0x5678u);
+    EXPECT_TRUE(dev.diag[0].osc_counter == 0x3Cu);
+    EXPECT_TRUE(dev.health.sticky_cmd_counter_mismatch_mask == 0x0001u);
+
+    /* The same rule applies to voltage groups. Reject only the mismatched
+     * group, retain its previous values, and make the complete scan fail. */
+    unit_spi_reset();
+    adbms6830_spi_debug_clear(&dev);
+    ics[0].cell.c_codes[3] = 1111;
+    ics[0].cell.c_codes[4] = 2222;
+    ics[0].cell.c_codes[5] = 3333;
+    unit_spi_txrx_sequence_count = 6u;
+    for(uint8_t group = 0u; group < 6u; group++)
+    {
+        uint8_t counter = (group == 0u) ? 5u : 6u;
+        unit_adbms_make_valid_read_packet(
+            &unit_spi_txrx_sequence[group][CMDSZ + PEC15SZ],
+            (uint8_t)(0x10u + (group * 0x10u)),
+            counter,
+            false);
+    }
+
+    EXPECT_TRUE(adbms6830_read_cell_voltages(&dev) == HAL_ERROR);
+    EXPECT_TRUE(dev.last_cell_updated_mask[0] == 0xFFC7u);
+    EXPECT_TRUE(dev.last_cell_pec_mask[0] == 0u);
+    EXPECT_TRUE(ics[0].cell.c_codes[3] == 1111);
+    EXPECT_TRUE(ics[0].cell.c_codes[4] == 2222);
+    EXPECT_TRUE(ics[0].cell.c_codes[5] == 3333);
+    EXPECT_TRUE(dev.health.sticky_cmd_counter_mismatch_mask == 0x0001u);
+}
+
 static void test_adbms_spi_coldwake_and_clear_flags(void)
 {
     adbms6830_driver_t dev;
@@ -1413,6 +1687,273 @@ static void test_adbms_pwm_write_packing(void)
     EXPECT_TRUE(unit_spi_last_tx[5] == ((PWM_59_4_PCT << 4) | PWM_52_8_PCT));
     EXPECT_TRUE(unit_spi_last_tx[6] == 0u);
     EXPECT_TRUE(unit_spi_last_tx[9] == 0u);
+}
+
+static void test_adbms_config_and_balance_readback(void)
+{
+    adbms6830_driver_t dev;
+    adbms6830_asic ics[1];
+    SPI_HandleTypeDef spi;
+    GPIO_TypeDef gpio_a;
+    GPIO_TypeDef gpio_b;
+    uint8_t bad_pwma[TX_DATA];
+
+    memset(&spi, 0, sizeof(spi));
+    memset(&gpio_a, 0, sizeof(gpio_a));
+    memset(&gpio_b, 0, sizeof(gpio_b));
+    unit_adbms_init_driver(&dev, ics, &spi, &gpio_a, &gpio_b, 1u);
+
+    adbms6830_pack_cfga(&dev);
+    adbms6830_pack_cfgb(&dev);
+    unit_spi_reset();
+    adbms6830_spi_debug_clear(&dev);
+    unit_spi_txrx_sequence_count = 2u;
+    unit_adbms_make_read_packet_from_data(
+        &unit_spi_txrx_sequence[0][CMDSZ + PEC15SZ],
+        ics[0].configa.tx_data,
+        4u,
+        false);
+    unit_adbms_make_read_packet_from_data(
+        &unit_spi_txrx_sequence[1][CMDSZ + PEC15SZ],
+        ics[0].configb.tx_data,
+        4u,
+        false);
+    EXPECT_TRUE(adbms6830_verify_config_readback(&dev) == HAL_OK);
+    EXPECT_TRUE(dev.health.config_mismatch_mask == 0u);
+
+    unit_spi_reset();
+    adbms6830_spi_debug_clear(&dev);
+    unit_spi_txrx_sequence_count = 2u;
+    unit_adbms_make_read_packet_from_data(
+        &unit_spi_txrx_sequence[0][CMDSZ + PEC15SZ],
+        ics[0].configa.tx_data,
+        5u,
+        false);
+    unit_adbms_make_read_packet_from_data(
+        &unit_spi_txrx_sequence[1][CMDSZ + PEC15SZ],
+        ics[0].configb.tx_data,
+        5u,
+        true);
+    EXPECT_TRUE(adbms6830_verify_config_readback(&dev) == HAL_ERROR);
+    EXPECT_TRUE(dev.health.configb_mismatch_mask == 0x0001u);
+    EXPECT_TRUE(dev.health.config_mismatch_mask == 0x0001u);
+
+    ics[0].PwmA.pwma[0] = PWM_33_0_PCT;
+    ics[0].PwmA.pwma[11] = PWM_26_4_PCT;
+    ics[0].PwmB.pwmb[0] = PWM_39_6_PCT;
+    adbms6830_pack_cfgb(&dev);
+    adbms6830_pack_pwma(&dev);
+    adbms6830_pack_pwmb(&dev);
+
+    unit_spi_reset();
+    adbms6830_spi_debug_clear(&dev);
+    unit_spi_txrx_sequence_count = 3u;
+    unit_adbms_make_read_packet_from_data(
+        &unit_spi_txrx_sequence[0][CMDSZ + PEC15SZ],
+        ics[0].configb.tx_data,
+        6u,
+        false);
+    unit_adbms_make_read_packet_from_data(
+        &unit_spi_txrx_sequence[1][CMDSZ + PEC15SZ],
+        ics[0].pwma.tx_data,
+        6u,
+        false);
+    unit_adbms_make_read_packet_from_data(
+        &unit_spi_txrx_sequence[2][CMDSZ + PEC15SZ],
+        ics[0].pwmb.tx_data,
+        6u,
+        false);
+    EXPECT_TRUE(adbms6830_verify_balance_readback(&dev) == HAL_OK);
+    EXPECT_TRUE(dev.health.balance_mismatch_mask == 0u);
+    EXPECT_TRUE(dev.health.last_op == ADBMS6830_SPI_OP_BALANCE_CHECK);
+    EXPECT_TRUE(unit_spi_txrx_calls == 3u);
+
+    memcpy(bad_pwma, ics[0].pwma.tx_data, sizeof(bad_pwma));
+    bad_pwma[0] ^= 0x01u;
+    unit_spi_reset();
+    adbms6830_spi_debug_clear(&dev);
+    unit_spi_txrx_sequence_count = 3u;
+    unit_adbms_make_read_packet_from_data(
+        &unit_spi_txrx_sequence[0][CMDSZ + PEC15SZ],
+        ics[0].configb.tx_data,
+        7u,
+        false);
+    unit_adbms_make_read_packet_from_data(
+        &unit_spi_txrx_sequence[1][CMDSZ + PEC15SZ],
+        bad_pwma,
+        7u,
+        false);
+    unit_adbms_make_read_packet_from_data(
+        &unit_spi_txrx_sequence[2][CMDSZ + PEC15SZ],
+        ics[0].pwmb.tx_data,
+        7u,
+        false);
+    EXPECT_TRUE(adbms6830_verify_balance_readback(&dev) == HAL_ERROR);
+    EXPECT_TRUE(dev.health.balance_cfgb_mismatch_mask == 0u);
+    EXPECT_TRUE(dev.health.balance_pwma_mismatch_mask == 0x0001u);
+    EXPECT_TRUE(dev.health.balance_pwmb_mismatch_mask == 0u);
+    EXPECT_TRUE(dev.health.balance_mismatch_count[0] >= 1u);
+
+    /* Counter integrity remains safety-active when verbose SPI logging is off. */
+    unit_spi_reset();
+    adbms6830_spi_debug_enable(&dev, false);
+    adbms6830_spi_debug_clear(&dev);
+    unit_spi_txrx_sequence_count = 3u;
+    unit_adbms_make_read_packet_from_data(
+        &unit_spi_txrx_sequence[0][CMDSZ + PEC15SZ],
+        ics[0].configb.tx_data,
+        8u,
+        false);
+    unit_adbms_make_read_packet_from_data(
+        &unit_spi_txrx_sequence[1][CMDSZ + PEC15SZ],
+        ics[0].pwma.tx_data,
+        9u,
+        false);
+    unit_adbms_make_read_packet_from_data(
+        &unit_spi_txrx_sequence[2][CMDSZ + PEC15SZ],
+        ics[0].pwmb.tx_data,
+        9u,
+        false);
+    EXPECT_TRUE(adbms6830_verify_balance_readback(&dev) == HAL_ERROR);
+    EXPECT_TRUE(dev.health.balance_pwma_mismatch_mask == 0x0001u);
+    EXPECT_TRUE(dev.health.sticky_cmd_counter_mismatch_mask == 0x0001u);
+    adbms6830_spi_debug_enable(&dev, true);
+
+    unit_spi_reset();
+    adbms6830_spi_debug_clear(&dev);
+    unit_spi_txrx_status = HAL_TIMEOUT;
+    EXPECT_TRUE(adbms6830_verify_balance_readback(&dev) == HAL_TIMEOUT);
+    EXPECT_TRUE(dev.health.balance_mismatch_mask == 0x0001u);
+    EXPECT_TRUE(unit_spi_txrx_calls == 3u);
+    unit_spi_txrx_status = HAL_OK;
+}
+
+static void test_adbms_mux_ack_and_temperature_freshness(void)
+{
+    adbms6830_driver_t dev;
+    adbms6830_asic ics[1];
+    SPI_HandleTypeDef spi;
+    GPIO_TypeDef gpio_a;
+    GPIO_TypeDef gpio_b;
+    const uint8_t sensor = 5u;
+    const uint32_t sensor_bit = (uint32_t)(1UL << sensor);
+    int16_t original_raw;
+
+    memset(&dev, 0, sizeof(dev));
+    memset(ics, 0, sizeof(ics));
+    memset(&spi, 0, sizeof(spi));
+    memset(&gpio_a, 0, sizeof(gpio_a));
+    memset(&gpio_b, 0, sizeof(gpio_b));
+    unit_adbms_init_driver(&dev, ics, &spi, &gpio_a, &gpio_b, 1u);
+
+    unit_adbms_make_comm_result(&unit_spi_txrx_response[CMDSZ + PEC15SZ],
+                                2u,
+                                true,
+                                true,
+                                false);
+    EXPECT_TRUE(mux_set_channel(&dev, sensor) == 0);
+    EXPECT_TRUE(unit_spi_tx_calls == 2u);
+    EXPECT_TRUE(unit_spi_txrx_calls == 1u);
+    EXPECT_TRUE(dev.mux_selection_valid_mask[0] == 0x0001u);
+    EXPECT_TRUE(dev.mux_selected_channel[0][0] == sensor);
+
+    unit_spi_reset();
+    unit_adbms_make_aux_result(&unit_spi_txrx_response[CMDSZ + PEC15SZ],
+                               0u,
+                               0x1234u,
+                               3u,
+                               false);
+    EXPECT_TRUE(mux_read_gpio_voltage(&dev, sensor) == 0);
+    EXPECT_TRUE(dev.ics[0].temp.raw[sensor] == (int16_t)0x1234);
+    EXPECT_TRUE((dev.last_temp_updated_mask[0] & sensor_bit) != 0u);
+    original_raw = dev.ics[0].temp.raw[sensor];
+
+    /* A plausible old value must not be republished after a PEC failure. */
+    unit_spi_reset();
+    unit_adbms_make_aux_result(&unit_spi_txrx_response[CMDSZ + PEC15SZ],
+                               0u,
+                               0x5678u,
+                               4u,
+                               true);
+    EXPECT_TRUE(mux_read_gpio_voltage(&dev, sensor) == -1);
+    EXPECT_TRUE(dev.ics[0].temp.raw[sensor] == original_raw);
+    EXPECT_TRUE((dev.last_temp_updated_mask[0] & sensor_bit) == 0u);
+
+    /* ADBMS invalid-code sentinels likewise remain stale. */
+    unit_spi_reset();
+    unit_adbms_make_aux_result(&unit_spi_txrx_response[CMDSZ + PEC15SZ],
+                               0u,
+                               0xFFFFu,
+                               5u,
+                               false);
+    EXPECT_TRUE(mux_read_gpio_voltage(&dev, sensor) == -1);
+    EXPECT_TRUE(dev.ics[0].temp.raw[sensor] == original_raw);
+    EXPECT_TRUE((dev.last_temp_updated_mask[0] & sensor_bit) == 0u);
+
+    unit_spi_reset();
+    unit_spi_txrx_status = HAL_TIMEOUT;
+    EXPECT_TRUE(mux_read_gpio_voltage(&dev, sensor) == -1);
+    EXPECT_TRUE(dev.ics[0].temp.raw[sensor] == original_raw);
+    EXPECT_TRUE((dev.last_temp_updated_mask[0] & sensor_bit) == 0u);
+
+    /* A different requested sensor cannot reuse the previous selection. */
+    unit_spi_reset();
+    EXPECT_TRUE(mux_read_gpio_voltage(&dev, (uint8_t)(sensor - 1u)) == -1);
+    EXPECT_TRUE(unit_spi_tx_calls == 0u);
+    EXPECT_TRUE(unit_spi_txrx_calls == 0u);
+}
+
+static void test_adbms_mux_transport_and_ack_failures(void)
+{
+    adbms6830_driver_t dev;
+    adbms6830_asic ics[1];
+    SPI_HandleTypeDef spi;
+    GPIO_TypeDef gpio_a;
+    GPIO_TypeDef gpio_b;
+    const uint8_t sensor = 9u;
+
+    memset(&dev, 0, sizeof(dev));
+    memset(ics, 0, sizeof(ics));
+    memset(&spi, 0, sizeof(spi));
+    memset(&gpio_a, 0, sizeof(gpio_a));
+    memset(&gpio_b, 0, sizeof(gpio_b));
+    unit_adbms_init_driver(&dev, ics, &spi, &gpio_a, &gpio_b, 1u);
+
+    unit_adbms_make_comm_result(&unit_spi_txrx_response[CMDSZ + PEC15SZ],
+                                2u,
+                                false,
+                                true,
+                                false);
+    EXPECT_TRUE(mux_set_channel(&dev, sensor) == -1);
+    EXPECT_TRUE(dev.mux_selection_valid_mask[1] == 0u);
+    EXPECT_TRUE(dev.mux_selected_channel[0][1] == UINT8_MAX);
+
+    unit_spi_reset();
+    unit_adbms_make_comm_result(&unit_spi_txrx_response[CMDSZ + PEC15SZ],
+                                4u,
+                                true,
+                                true,
+                                true);
+    EXPECT_TRUE(mux_set_channel(&dev, sensor) == -1);
+    EXPECT_TRUE(dev.mux_selection_valid_mask[1] == 0u);
+
+    /* WRCOMM success followed by STCOMM failure must not reach RDCOMM. */
+    unit_spi_reset();
+    unit_spi_tx_status_sequence_count = 2u;
+    unit_spi_tx_status_sequence[0] = HAL_OK;
+    unit_spi_tx_status_sequence[1] = HAL_TIMEOUT;
+    EXPECT_TRUE(mux_set_channel(&dev, sensor) == -1);
+    EXPECT_TRUE(unit_spi_tx_calls == 2u);
+    EXPECT_TRUE(unit_spi_txrx_calls == 0u);
+    EXPECT_TRUE(dev.mux_selection_valid_mask[1] == 0u);
+
+    unit_spi_reset();
+    unit_spi_tx_status_sequence_count = 1u;
+    unit_spi_tx_status_sequence[0] = HAL_ERROR;
+    EXPECT_TRUE(mux_set_channel(&dev, sensor) == -1);
+    EXPECT_TRUE(unit_spi_tx_calls == 1u);
+    EXPECT_TRUE(unit_spi_txrx_calls == 0u);
+    EXPECT_TRUE(dev.mux_selection_valid_mask[1] == 0u);
 }
 
 
@@ -1500,6 +2041,22 @@ static void test_adbms2950_spi_debug_write_and_full_duplex_paths(void)
     }
     EXPECT_TRUE(dev.spi_debug.error_count == 1u);
     EXPECT_TRUE(dev.spi_debug.last_status == HAL_TIMEOUT);
+
+    unit_spi_reset();
+    EXPECT_TRUE(adbms2950_spi_write_read(&dev,
+                                         tx,
+                                         1u,
+                                         rx,
+                                         UINT16_MAX,
+                                         1u) == HAL_ERROR);
+    EXPECT_TRUE(unit_spi_txrx_calls == 0u);
+
+    dev.string = (adbms_string)-1;
+    adbms2950_set_cs(&dev, 0u);
+    EXPECT_TRUE(unit_gpio_write_calls == 0u);
+    EXPECT_TRUE(adbms2950_spi_write(&dev, tx, sizeof(tx), 1u) == HAL_ERROR);
+    EXPECT_TRUE(unit_spi_tx_calls == 0u);
+    dev.string = STRING_B;
 }
 
 static void test_adbms2950_spi_probe_pec_masks_and_clear(void)
@@ -1574,12 +2131,17 @@ int main(void)
     run_test("coulomb count baseline", test_coulomb_count_baseline);
     run_test("voltage fault thresholds/latch", test_voltage_fault_thresholds_latch_and_reset);
     run_test("voltage fault read failure/strings", test_voltage_fault_read_failure_precedence_and_strings);
+    run_test("ADBMS topology/delay guards", test_adbms_topology_and_delay_guards);
     run_test("ADBMS SPI debug write/full-duplex", test_adbms_spi_debug_write_and_full_duplex_paths);
     run_test("ADBMS SPI rd48 PEC masks", test_adbms_spi_debug_rd48_pec_masks_and_clear);
     run_test("ADBMS SPI scope activity", test_adbms_spi_scope_activity);
     run_test("ADBMS SPI SID/status/counter diagnostics", test_adbms_spi_sid_status_and_counter_mismatch);
+    run_test("ADBMS command counter rejects stale data", test_adbms_counter_mismatch_rejects_stale_data);
     run_test("ADBMS SPI cold wake and clear flags", test_adbms_spi_coldwake_and_clear_flags);
     run_test("ADBMS PWM write packing", test_adbms_pwm_write_packing);
+    run_test("ADBMS config/balance readback", test_adbms_config_and_balance_readback);
+    run_test("ADBMS mux ACK/temperature freshness", test_adbms_mux_ack_and_temperature_freshness);
+    run_test("ADBMS mux transport/ACK failures", test_adbms_mux_transport_and_ack_failures);
     run_test("ADBMS2950 SPI write/full-duplex", test_adbms2950_spi_debug_write_and_full_duplex_paths);
     run_test("ADBMS2950 SPI probe PEC masks", test_adbms2950_spi_probe_pec_masks_and_clear);
     run_test("current sensor conversion/range", test_current_sensor_conversion_zero_and_range_selection);

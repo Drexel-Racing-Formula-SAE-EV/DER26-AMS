@@ -68,12 +68,18 @@ static void adbms_task_run_periodic_diagnostics(app_data_t *data)
 
     if((data->adbms_scan_count % ADBMS_STATUS_DIAG_PERIOD_CYCLES) == 0u)
     {
+        bool status_fault;
+
         status = adbms6830_read_status(smb, false);
+        status_fault = (!acc->delay_timer_ready ||
+                        !acc->smb_ready ||
+                        (status != HAL_OK) ||
+                        adbms_status_diag_has_safety_fault(smb));
+        taskENTER_CRITICAL();
         data->adbms_last_diag_status = status;
         data->adbms_status_diag_count++;
-		data->adbms_status_fault = (!acc->delay_timer_ready ||
-									(status != HAL_OK) ||
-                                    adbms_status_diag_has_safety_fault(smb));
+		data->adbms_status_fault = status_fault;
+        taskEXIT_CRITICAL();
     }
 
     if((data->adbms_scan_count % ADBMS_CONFIG_DIAG_PERIOD_CYCLES) == 0u)
@@ -81,12 +87,14 @@ static void adbms_task_run_periodic_diagnostics(app_data_t *data)
         const adbms6830_diag_health_t *health;
 
         status = adbms6830_verify_config_readback(smb);
+        health = adbms6830_diag_health_get(smb);
+        taskENTER_CRITICAL();
         data->adbms_last_diag_status = status;
         data->adbms_config_diag_count++;
-        health = adbms6830_diag_health_get(smb);
         data->adbms_config_fault = ((status != HAL_OK) ||
                                     ((health != NULL) &&
                                      (health->config_mismatch_mask != 0u)));
+        taskEXIT_CRITICAL();
     }
 
     if(((data->adbms_scan_count % ADBMS_OPEN_WIRE_DIAG_PERIOD_CYCLES) == 0u) &&
@@ -94,15 +102,19 @@ static void adbms_task_run_periodic_diagnostics(app_data_t *data)
     {
         bool odd = ((data->adbms_open_wire_diag_count & 1u) != 0u);
         status = adbms6830_run_open_wire_check(smb, odd);
+        taskENTER_CRITICAL();
         data->adbms_last_diag_status = status;
         data->adbms_open_wire_diag_count++;
         data->adbms_open_wire_fault = (status != HAL_OK);
+        taskEXIT_CRITICAL();
     }
 
+    taskENTER_CRITICAL();
     data->adbms_diag_fault = (data->adbms_config_fault ||
                               data->adbms_status_fault ||
                               data->adbms_open_wire_fault ||
                               data->adbms_balance_write_fault);
+    taskEXIT_CRITICAL();
 }
 
 static uint32_t adbms_task_pack_cell_extremes(const app_data_t *data)
@@ -163,12 +175,15 @@ static uint16_t adbms_task_diag_reason_bits(const app_data_t *data)
 bool adbms_record_balance_write_result(app_data_t *data, int result)
 {
     bool was_faulted;
+    uint16_t reason_bits = 0u;
+    uint32_t fail_count = 0u;
 
     if(data == NULL)
     {
         return false;
     }
 
+    taskENTER_CRITICAL();
     was_faulted = data->adbms_balance_write_fault;
     if(result == 0)
     {
@@ -180,6 +195,7 @@ bool adbms_record_balance_write_result(app_data_t *data, int result)
                                   data->adbms_status_fault ||
                                   data->adbms_open_wire_fault);
 #endif
+        taskEXIT_CRITICAL();
         return true;
     }
 
@@ -190,21 +206,34 @@ bool adbms_record_balance_write_result(app_data_t *data, int result)
     }
     data->adbms_last_diag_status = HAL_ERROR;
     data->adbms_diag_fault = true;
+    reason_bits = adbms_task_diag_reason_bits(data);
+    fail_count = data->adbms_balance_write_fail_count;
+    taskEXIT_CRITICAL();
     if(!was_faulted)
     {
         ams_fault_log_event(AMS_FAULT_LOG_ADBMS_DIAG_FAIL,
-                            adbms_task_diag_reason_bits(data),
+                            reason_bits,
                             (uint32_t)HAL_ERROR,
-                            data->adbms_balance_write_fail_count);
+                            fail_count);
     }
     set_bms(false);
     return false;
 }
 
-static void adbms_task_publish_voltage_state(app_data_t *data)
+static void adbms_task_publish_voltage_state(app_data_t *data,
+                                             const voltage_fault_state_t *fault,
+                                             const accumulator_t *acc)
 {
-    voltage_fault_state_t *fault = &data->voltage_fault_state;
+    if((data == NULL) || (fault == NULL) || (acc == NULL))
+    {
+        return;
+    }
 
+    taskENTER_CRITICAL();
+    data->voltage_fault_state = *fault;
+    data->max_voltage = acc->max_volt;
+    data->min_voltage = acc->min_volt;
+    data->total_voltage = acc->total_volt;
     data->voltage_valid = fault->voltage_valid;
     data->voltage_read_fault = fault->read_fault;
     data->voltage_warning = fault->warning;
@@ -218,11 +247,11 @@ static void adbms_task_publish_voltage_state(app_data_t *data)
     data->voltage_updated_cell_count = fault->updated_cell_count;
     data->voltage_stale_cell_count = fault->stale_cell_count;
     data->voltage_pec_fail_cell_count = fault->pec_fail_cell_count;
-    data->voltage_jump_cell_count = data->acc.voltage_jump_cell_count;
-    data->voltage_stuck_cell_count = data->acc.voltage_stuck_cell_count;
-    data->voltage_max_delta_mv = data->acc.voltage_max_delta_mv;
-    data->voltage_max_delta_seg = data->acc.voltage_max_delta_seg;
-    data->voltage_max_delta_cell = data->acc.voltage_max_delta_cell;
+    data->voltage_jump_cell_count = acc->voltage_jump_cell_count;
+    data->voltage_stuck_cell_count = acc->voltage_stuck_cell_count;
+    data->voltage_max_delta_mv = acc->voltage_max_delta_mv;
+    data->voltage_max_delta_seg = acc->voltage_max_delta_seg;
+    data->voltage_max_delta_cell = acc->voltage_max_delta_cell;
     data->max_voltage_seg = fault->max_cell_segment;
     data->max_voltage_cell = fault->max_cell_index;
     data->min_voltage_seg = fault->min_cell_segment;
@@ -232,12 +261,22 @@ static void adbms_task_publish_voltage_state(app_data_t *data)
                            fault->overvoltage_fault ||
                            fault->undervoltage_fault ||
                            fault->latched);
+    taskEXIT_CRITICAL();
 }
 
-static void adbms_task_publish_temperature_state(app_data_t *data)
+static void adbms_task_publish_temperature_state(app_data_t *data,
+                                                 const temperature_fault_state_t *fault,
+                                                 const accumulator_t *acc)
 {
-    temperature_fault_state_t *fault = &data->temp_fault_state;
+    if((data == NULL) || (fault == NULL) || (acc == NULL))
+    {
+        return;
+    }
 
+    taskENTER_CRITICAL();
+    data->temp_fault_state = *fault;
+    data->max_temp = acc->max_temp;
+    data->avg_temp = acc->avg_temp;
     data->temp_valid = fault->temp_valid;
     data->temp_read_fault = fault->read_fault;
     data->temp_warning = fault->warning;
@@ -272,6 +311,7 @@ static void adbms_task_publish_temperature_state(app_data_t *data)
     data->temp_fault = (fault->read_fault ||
                         fault->overtemp_fault ||
                         fault->latched);
+    taskEXIT_CRITICAL();
 }
 
 TaskHandle_t adbms_task_start(app_data_t *data)
@@ -339,12 +379,9 @@ void adbms_task_fn(void *argument)
 #endif
         accumulator_update_voltage_stats_at(acc, osKernelGetTickCount());
 
-        data->max_voltage = acc->max_volt;
-        data->min_voltage = acc->min_volt;
-        data->total_voltage = acc->total_volt;
-
-        voltage_fault_update(&data->voltage_fault_state, acc);
-        adbms_task_publish_voltage_state(data);
+        voltage_fault_state_t next_voltage_fault = data->voltage_fault_state;
+        voltage_fault_update(&next_voltage_fault, acc);
+        adbms_task_publish_voltage_state(data, &next_voltage_fault, acc);
 
         if(data->voltage_fault_latched &&
            (!voltage_was_latched ||
@@ -371,13 +408,11 @@ void adbms_task_fn(void *argument)
         (void)accumulator_read_temp(acc);
 #endif
         accumulator_update_temp_stats_at(acc, osKernelGetTickCount());
-        data->max_temp = acc->max_temp;
-        data->avg_temp = acc->avg_temp;
-
-        temperature_fault_update_with_period(&data->temp_fault_state,
+        temperature_fault_state_t next_temp_fault = data->temp_fault_state;
+        temperature_fault_update_with_period(&next_temp_fault,
                                              acc,
                                              (1000u / ADBMS_FREQ));
-        adbms_task_publish_temperature_state(data);
+        adbms_task_publish_temperature_state(data, &next_temp_fault, acc);
 
         if(data->temp_fault_latched &&
            (!temp_was_latched ||
@@ -397,6 +432,7 @@ void adbms_task_fn(void *argument)
 	    ams_heartbeat_kick(data, AMS_HEARTBEAT_TEMP, osKernelGetTickCount());
 
 #if AMS_HIL_REPLACE_ADBMS
+	    taskENTER_CRITICAL();
 	    data->adbms_config_fault = false;
 	    data->adbms_status_fault = false;
 	    data->adbms_open_wire_fault = false;
@@ -406,6 +442,7 @@ void adbms_task_fn(void *argument)
          * just because the last injected image has not aged out yet. */
 	    data->adbms_diag_fault = (data->can_busoff_fault || data->can_recover_pending);
 	    data->adbms_last_diag_status = data->adbms_diag_fault ? HAL_ERROR : HAL_OK;
+	    taskEXIT_CRITICAL();
 #else
 	    adbms_task_run_periodic_diagnostics(data);
         if(data->adbms_diag_fault && !adbms_diag_was_faulted)

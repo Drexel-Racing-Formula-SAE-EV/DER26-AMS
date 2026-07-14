@@ -16,6 +16,22 @@
 #define CUR_SEN_CH_L ADC_CHANNEL_10
 #define CUR_SEN_CH_H ADC_CHANNEL_3
 
+#if AMS_ENABLE_IMD
+static uint32_t board_apb1_timer_clock_hz(void)
+{
+	RCC_ClkInitTypeDef clocks = {0};
+	uint32_t flash_latency = 0u;
+	uint32_t timer_clock = HAL_RCC_GetPCLK1Freq();
+
+	HAL_RCC_GetClockConfig(&clocks, &flash_latency);
+	if(clocks.APB1CLKDivider != RCC_HCLK_DIV1)
+	{
+		timer_clock *= 2u;
+	}
+	return timer_clock;
+}
+#endif
+
 void board_init(board_t *board)
 {
     if(board == NULL)
@@ -43,7 +59,19 @@ void board_init(board_t *board)
 						CUR_SEN_CH_H
 					   );
 
-	//imd_init(&board->imd, 84000000, &board->stm32f767z.htim5, TIM5, TIM_CHANNEL_2, TIM_CHANNEL_1, IMD_STATUS_MCU_GPIO_Port, IMD_STATUS_MCU_Pin);
+#if AMS_ENABLE_IMD
+	/* TIM2 is configured in PWM-input/reset mode: CH1 captures the period and
+	 * CH2 captures high time.  TIM5 belongs to fan outputs and must not be used
+	 * for IMD capture. */
+	imd_init(&board->imd,
+	         board_apb1_timer_clock_hz(),
+	         board->stm32f767z.htim2,
+	         TIM2,
+	         TIM_CHANNEL_2,
+	         TIM_CHANNEL_1,
+	         IMD_STAT_GPIO_Port,
+	         IMD_STAT_Pin);
+#endif
 
 	return;
 }

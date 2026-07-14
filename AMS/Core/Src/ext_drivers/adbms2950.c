@@ -235,7 +235,9 @@ static void adbms2950_spi_debug_note_tx(adbms2950_driver_t *dev,
 	dev->spi_debug.last_string = dev->string;
 	dev->spi_debug.last_tx_len = tx_len;
 	dev->spi_debug.last_rx_len = rx_len;
-	dev->spi_debug.last_total_len = (uint16_t)(tx_len + rx_len);
+	dev->spi_debug.last_total_len =
+		(rx_len > (uint16_t)(UINT16_MAX - tx_len)) ?
+		UINT16_MAX : (uint16_t)(tx_len + rx_len);
 	dev->spi_debug.last_read_pec_pass_mask = 0u;
 	dev->spi_debug.last_read_pec_fail_mask = 0u;
 	memset(dev->spi_debug.last_cmd_counter, 0, sizeof(dev->spi_debug.last_cmd_counter));
@@ -960,8 +962,10 @@ void adbms2950_wakeup(adbms2950_driver_t *dev)
 void adbms2950_set_cs(adbms2950_driver_t* dev, uint8_t state)
 {
 	if((dev == NULL) ||
+	   ((int)dev->string < (int)STRING_A) ||
 	   (dev->string > STRING_B) ||
-	   (dev->cs_port[dev->string] == NULL))
+	   (dev->cs_port[dev->string] == NULL) ||
+	   (dev->cs_pin[dev->string] == 0u))
 	{
 		return;
 	}
@@ -986,7 +990,12 @@ HAL_StatusTypeDef adbms2950_spi_write(adbms2950_driver_t* dev, uint8_t* data, ui
 {
 	HAL_StatusTypeDef status;
 
-	if((dev == NULL) || (dev->hspi == NULL) || (data == NULL) || (len == 0u))
+	if((dev == NULL) || (dev->hspi == NULL) || (data == NULL) || (len == 0u) ||
+	   (use_cs &&
+	    (((int)dev->string < (int)STRING_A) ||
+	     (dev->string > STRING_B) ||
+	     (dev->cs_port[dev->string] == NULL) ||
+	     (dev->cs_pin[dev->string] == 0u))))
 	{
 		return HAL_ERROR;
 	}
@@ -1032,16 +1041,22 @@ HAL_StatusTypeDef adbms2950_spi_write_read(adbms2950_driver_t *dev,
 	uint16_t total_len;
 
 	if((dev == NULL) || (dev->hspi == NULL) || (tx_Data == NULL) ||
-	   (rx_data == NULL) || (tx_len == 0u) || (rx_len == 0u))
+	   (rx_data == NULL) || (tx_len == 0u) || (rx_len == 0u) ||
+	   (use_cs &&
+	    (((int)dev->string < (int)STRING_A) ||
+	     (dev->string > STRING_B) ||
+	     (dev->cs_port[dev->string] == NULL) ||
+	     (dev->cs_pin[dev->string] == 0u))))
 	{
 		return HAL_ERROR;
 	}
 
-	total_len = (uint16_t)(tx_len + rx_len);
-	if(total_len > BUFSZ)
+	if((tx_len > BUFSZ) || (rx_len > BUFSZ) ||
+	   (((uint32_t)tx_len + (uint32_t)rx_len) > BUFSZ))
 	{
 		return HAL_ERROR;
 	}
+	total_len = (uint16_t)(tx_len + rx_len);
 
 	memset(adbms2950_spi_txrx_tx_buf, ADBMS2950_SPI_DUMMY_BYTE, total_len);
 	memset(adbms2950_spi_txrx_rx_buf, 0, total_len);

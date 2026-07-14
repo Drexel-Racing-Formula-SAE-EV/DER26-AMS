@@ -21,9 +21,10 @@ typedef enum
     ADBMS6830_SCOPE_PATTERN
 } adbms6830_scope_mode_t;
 
-void adBms6830_init(adbms6830_driver_t* dev,
-				    uint8_t num_ics,
-				    adbms6830_asic* ics,
+HAL_StatusTypeDef adBms6830_init(adbms6830_driver_t* dev,
+                    uint8_t num_ics,
+                    adbms6830_asic* ics,
+                    uint8_t ics_capacity,
 				    SPI_HandleTypeDef* hspi,
 				    GPIO_TypeDef* cs_port_a,
 				    GPIO_TypeDef* cs_port_b,
@@ -34,6 +35,7 @@ void adBms6830_init(adbms6830_driver_t* dev,
 void adbms6830_reset_cfg(adbms6830_driver_t *dev);
 void adbms6830_srst(adbms6830_driver_t *dev);
 void adbms6830_wrcfga(adbms6830_driver_t *dev);
+HAL_StatusTypeDef adbms6830_wrcfga_checked(adbms6830_driver_t *dev);
 void adbms6830_wrcfgb(adbms6830_driver_t *dev);
 HAL_StatusTypeDef adbms6830_wrcfgb_checked(adbms6830_driver_t *dev);
 HAL_StatusTypeDef adbms6830_wrpwma_checked(adbms6830_driver_t *dev);
@@ -44,14 +46,14 @@ void adbms6830_rdcfgb(adbms6830_driver_t *dev);
 void adbms6830_adcv(adbms6830_driver_t *dev, RD rd, CONT cont, DCP dcp, RSTF rstf, OW_C_S owcs);
 
 void adbms6830_wakeup(adbms6830_driver_t* dev);
+HAL_StatusTypeDef adbms6830_wakeup_checked(adbms6830_driver_t* dev);
 void adbms6830_wakeup_cold(adbms6830_driver_t* dev);
 
-void adbms6830_us_delay(adbms6830_driver_t* dev, uint16_t microseconds);
+HAL_StatusTypeDef adbms6830_us_delay(adbms6830_driver_t* dev, uint16_t microseconds);
 
-void adbms6830_adcv(adbms6830_driver_t *dev, RD rd, CONT cont, DCP dcp, RSTF rstf, OW_C_S owcs);
-void adbms6830_start_adc_cell_voltage_measurement(adbms6830_driver_t *dev);
+HAL_StatusTypeDef adbms6830_start_adc_cell_voltage_measurement(adbms6830_driver_t *dev);
 void adbms6830_parse_cell(adbms6830_driver_t *dev, uint8_t *data, GRP grp);
-void adbms6830_read_cell_voltages(adbms6830_driver_t *dev);
+HAL_StatusTypeDef adbms6830_read_cell_voltages(adbms6830_driver_t *dev);
 
 
 void adbms6830_spi_debug_enable(adbms6830_driver_t *dev, bool enable);
@@ -70,6 +72,7 @@ HAL_StatusTypeDef adbms6830_clear_all_flags(adbms6830_driver_t *dev);
 const adbms6830_diag_health_t *adbms6830_diag_health_get(const adbms6830_driver_t *dev);
 void adbms6830_diag_health_clear(adbms6830_driver_t *dev);
 HAL_StatusTypeDef adbms6830_verify_config_readback(adbms6830_driver_t *dev);
+HAL_StatusTypeDef adbms6830_verify_balance_readback(adbms6830_driver_t *dev);
 HAL_StatusTypeDef adbms6830_run_cell_adc_self_test(adbms6830_driver_t *dev);
 HAL_StatusTypeDef adbms6830_run_open_wire_check(adbms6830_driver_t *dev, bool odd_channels);
 HAL_StatusTypeDef adbms6830_run_aux_gpio_diagnostic(adbms6830_driver_t *dev);
@@ -95,7 +98,10 @@ HAL_StatusTypeDef adbms6830_run_aux_gpio_diagnostic(adbms6830_driver_t *dev);
 
 //int  mux_read_gpio_voltage(adbms6830_driver_t *dev, uint8_t ic_idx, uint8_t sensor_num);
 int mux_read_gpio_voltage(adbms6830_driver_t *dev, uint8_t sensor_num);
-int  adbms6830_read_temp_raw(adbms6830_driver_t *dev, uint8_t ic_idx, int16_t *out_raw);
+int adbms6830_read_temp_raw(adbms6830_driver_t *dev,
+                            uint8_t ic_idx,
+                            uint8_t sensor_num,
+                            int16_t *out_raw);
 float adbms6830_convert_temp(adbms6830_driver_t *dev, uint8_t ic_idx, uint8_t sensor_num, float vref);
 float voltage_to_temp(float v);
 int mux_set_channel(adbms6830_driver_t *dev, uint8_t sensor_num);

@@ -115,6 +115,7 @@ HAL_StatusTypeDef HAL_TIM_Base_Start(TIM_HandleTypeDef *htim){ return htim ? fak
 HAL_StatusTypeDef HAL_TIM_IC_Start_IT(TIM_HandleTypeDef *htim, uint32_t channel){ (void)channel; return htim ? fake_tim_ic_start_it_status : HAL_ERROR; }
 HAL_StatusTypeDef HAL_TIM_IC_Start(TIM_HandleTypeDef *htim, uint32_t channel){ (void)channel; return htim ? fake_tim_ic_start_status : HAL_ERROR; }
 uint32_t HAL_TIM_ReadCapturedValue(const TIM_HandleTypeDef *htim, uint32_t channel){ (void)htim; return channel == TIM_CHANNEL_1 ? fake_tim_total_capture : fake_tim_high_capture; }
+uint32_t HAL_GetTick(void){ return fake_tick; }
 GPIO_PinState HAL_GPIO_ReadPin(GPIO_TypeDef *port, uint16_t pin){ (void)port; (void)pin; return GPIO_PIN_SET; }
 void HAL_GPIO_WritePin(GPIO_TypeDef *port, uint16_t pin, GPIO_PinState state){ (void)port; (void)pin; bms_pin_state = state; }
 void HAL_GPIO_TogglePin(GPIO_TypeDef *port, uint16_t pin){ (void)port; (void)pin; bms_pin_state = !bms_pin_state; }
@@ -181,6 +182,7 @@ uint32_t ams_heartbeat_timeout_ms(ams_heartbeat_id_t id)
         case AMS_HEARTBEAT_TEMP: return AMS_HEARTBEAT_TEMP_TIMEOUT_MS;
         case AMS_HEARTBEAT_CAN: return AMS_HEARTBEAT_CAN_TIMEOUT_MS;
         case AMS_HEARTBEAT_LOGGER: return AMS_HEARTBEAT_LOGGER_TIMEOUT_MS;
+        case AMS_HEARTBEAT_IMD: return AMS_HEARTBEAT_IMD_TIMEOUT_MS;
         default: return 0u;
     }
 }
@@ -194,6 +196,7 @@ const char *ams_heartbeat_name(ams_heartbeat_id_t id)
         case AMS_HEARTBEAT_TEMP: return "temp";
         case AMS_HEARTBEAT_CAN: return "can";
         case AMS_HEARTBEAT_LOGGER: return "logger";
+        case AMS_HEARTBEAT_IMD: return "imd";
         default: return "unknown";
     }
 }
@@ -215,9 +218,9 @@ void ams_heartbeat_init(app_data_t *d, uint32_t now)
 
 void ams_heartbeat_kick(app_data_t *d, ams_heartbeat_id_t id, uint32_t now)
 {
-    if((d == NULL) || (id >= AMS_HEARTBEAT_COUNT)) return;
+    if((d == NULL) || ((int)id < 0) || (id >= AMS_HEARTBEAT_COUNT)) return;
     d->heartbeat.last_tick[id] = now;
-    d->heartbeat.count[id]++;
+    if(d->heartbeat.count[id] != UINT32_MAX) d->heartbeat.count[id]++;
     d->heartbeat.seen_mask |= AMS_HEARTBEAT_BIT(id);
     d->heartbeat_seen_mask = d->heartbeat.seen_mask;
 }
@@ -251,10 +254,12 @@ uint16_t ams_heartbeat_update(app_data_t *d, uint32_t now)
 }
 
 // External driver stubs used by accumulator/CLI paths
+static HAL_StatusTypeDef fake_adbms_init_status = HAL_OK;
 static HAL_StatusTypeDef fake_adbms_wrcfgb_status = HAL_OK;
 static HAL_StatusTypeDef fake_adbms_wrpwm_status = HAL_OK;
+static HAL_StatusTypeDef fake_adbms_balance_verify_status = HAL_OK;
 static int fake_adbms_wrpwm_fail_after_ok = -1;
-void adBms6830_init(adbms6830_driver_t* dev, uint8_t num_ics, adbms6830_asic* ics, SPI_HandleTypeDef* hspi, GPIO_TypeDef* cs_port_a, GPIO_TypeDef* cs_port_b, uint16_t cs_pin_a, uint16_t cs_pin_b, TIM_HandleTypeDef *htim){ if(dev){ dev->num_ics=num_ics; dev->ics=ics; dev->hspi=hspi; dev->cs_port[0]=cs_port_a; dev->cs_port[1]=cs_port_b; dev->cs_pin[0]=cs_pin_a; dev->cs_pin[1]=cs_pin_b; dev->htim=htim; dev->string=STRING_B; memset(&dev->spi_debug, 0, sizeof(dev->spi_debug)); memset(&dev->health, 0, sizeof(dev->health)); dev->spi_debug.last_status=HAL_OK; dev->spi_debug.last_tx_status=HAL_OK; dev->spi_debug.last_rx_status=HAL_OK; dev->spi_debug.last_xfer_status=HAL_OK; dev->health.last_status=HAL_OK; for(uint8_t ic=0; ic<ADBMS6830_MAX_TRACKED_ICS; ic++){ dev->last_cell_updated_mask[ic]=0u; dev->last_cell_pec_mask[ic]=0u; dev->last_temp_updated_mask[ic]=0u; } } }
+HAL_StatusTypeDef adBms6830_init(adbms6830_driver_t* dev, uint8_t num_ics, adbms6830_asic* ics, uint8_t ics_capacity, SPI_HandleTypeDef* hspi, GPIO_TypeDef* cs_port_a, GPIO_TypeDef* cs_port_b, uint16_t cs_pin_a, uint16_t cs_pin_b, TIM_HandleTypeDef *htim){ if((dev == NULL) || (num_ics == 0u) || (num_ics > ics_capacity) || (num_ics > ADBMS6830_MAX_TRACKED_ICS) || (ics == NULL)){ return HAL_ERROR; } dev->num_ics=num_ics; dev->ics_capacity=ics_capacity; dev->ics=ics; dev->hspi=hspi; dev->cs_port[0]=cs_port_a; dev->cs_port[1]=cs_port_b; dev->cs_pin[0]=cs_pin_a; dev->cs_pin[1]=cs_pin_b; dev->htim=htim; dev->string=STRING_B; memset(&dev->spi_debug, 0, sizeof(dev->spi_debug)); memset(&dev->health, 0, sizeof(dev->health)); dev->spi_debug.last_status=HAL_OK; dev->spi_debug.last_tx_status=HAL_OK; dev->spi_debug.last_rx_status=HAL_OK; dev->spi_debug.last_xfer_status=HAL_OK; dev->health.last_status=HAL_OK; for(uint8_t ic=0; ic<ADBMS6830_MAX_TRACKED_ICS; ic++){ dev->last_cell_updated_mask[ic]=0u; dev->last_cell_pec_mask[ic]=0u; dev->last_temp_updated_mask[ic]=0u; } return fake_adbms_init_status; }
 static HAL_StatusTypeDef fake_adbms_wrpwm_next_status(void)
 {
     if(fake_adbms_wrpwm_fail_after_ok == 0)
@@ -268,9 +273,10 @@ static HAL_StatusTypeDef fake_adbms_wrpwm_next_status(void)
     return fake_adbms_wrpwm_status;
 }
 void adbms6830_reset_cfg(adbms6830_driver_t *dev){(void)dev;} void adbms6830_srst(adbms6830_driver_t *dev){(void)dev;} void adbms6830_wrcfga(adbms6830_driver_t *dev){(void)dev;} void adbms6830_wrcfgb(adbms6830_driver_t *dev){(void)adbms6830_wrcfgb_checked(dev);} HAL_StatusTypeDef adbms6830_wrcfgb_checked(adbms6830_driver_t *dev){(void)dev; return fake_adbms_wrcfgb_status;} HAL_StatusTypeDef adbms6830_wrpwma_checked(adbms6830_driver_t *dev){(void)dev; return fake_adbms_wrpwm_next_status();} HAL_StatusTypeDef adbms6830_wrpwmb_checked(adbms6830_driver_t *dev){(void)dev; return fake_adbms_wrpwm_next_status();} HAL_StatusTypeDef adbms6830_write_pwm_checked(adbms6830_driver_t *dev){(void)dev; return fake_adbms_wrpwm_next_status();} void adbms6830_rdcfga(adbms6830_driver_t *dev){(void)dev;} void adbms6830_rdcfgb(adbms6830_driver_t *dev){(void)dev;}
-void adbms6830_adcv(adbms6830_driver_t *dev, RD rd, CONT cont, DCP dcp, RSTF rstf, OW_C_S owcs){(void)dev;(void)rd;(void)cont;(void)dcp;(void)rstf;(void)owcs;} void adbms6830_wakeup(adbms6830_driver_t* dev){(void)dev;} void adbms6830_us_delay(adbms6830_driver_t* dev, uint16_t microseconds){(void)dev;(void)microseconds;} void adbms6830_start_adc_cell_voltage_measurement(adbms6830_driver_t *dev){(void)dev;} void adbms6830_parse_cell(adbms6830_driver_t *dev, uint8_t *data, GRP grp){(void)dev;(void)data;(void)grp;}
+HAL_StatusTypeDef adbms6830_verify_balance_readback(adbms6830_driver_t *dev){(void)dev; return fake_adbms_balance_verify_status;}
+void adbms6830_adcv(adbms6830_driver_t *dev, RD rd, CONT cont, DCP dcp, RSTF rstf, OW_C_S owcs){(void)dev;(void)rd;(void)cont;(void)dcp;(void)rstf;(void)owcs;} void adbms6830_wakeup(adbms6830_driver_t* dev){(void)dev;} HAL_StatusTypeDef adbms6830_wakeup_checked(adbms6830_driver_t* dev){return (dev != NULL) ? HAL_OK : HAL_ERROR;} HAL_StatusTypeDef adbms6830_us_delay(adbms6830_driver_t* dev, uint16_t microseconds){(void)dev;(void)microseconds; return HAL_OK;} HAL_StatusTypeDef adbms6830_start_adc_cell_voltage_measurement(adbms6830_driver_t *dev){return (dev != NULL) ? HAL_OK : HAL_ERROR;} void adbms6830_parse_cell(adbms6830_driver_t *dev, uint8_t *data, GRP grp){(void)dev;(void)data;(void)grp;}
 void adbms6830_wakeup_cold(adbms6830_driver_t* dev){ if(dev){ dev->spi_debug.last_op = ADBMS6830_SPI_OP_COLD_WAKE; } }
-void adbms6830_read_cell_voltages(adbms6830_driver_t *dev){
+HAL_StatusTypeDef adbms6830_read_cell_voltages(adbms6830_driver_t *dev){
     if(dev){
         for(uint8_t ic=0; ic<ADBMS6830_MAX_TRACKED_ICS; ic++){
             dev->last_cell_updated_mask[ic]=0u;
@@ -286,7 +292,9 @@ void adbms6830_read_cell_voltages(adbms6830_driver_t *dev){
                 dev->last_cell_pec_mask[ic]=0u;
             }
         }
+        return HAL_OK;
     }
+    return HAL_ERROR;
 }
 void adbms6830_spi_debug_enable(adbms6830_driver_t *dev, bool enable){ if(dev) dev->spi_debug.enabled = enable; }
 void adbms6830_spi_debug_clear(adbms6830_driver_t *dev){ if(dev){ bool en = dev->spi_debug.enabled; memset(&dev->spi_debug, 0, sizeof(dev->spi_debug)); dev->spi_debug.enabled = en; } }
@@ -448,7 +456,7 @@ int mux_read_gpio_voltage(adbms6830_driver_t *dev, uint8_t sensor_num){
     }
     return (sensor_num < 24) ? 0 : -1;
 }
-int adbms6830_read_temp_raw(adbms6830_driver_t *dev, uint8_t ic_idx, int16_t *out_raw){ (void)dev;(void)ic_idx; if(out_raw) *out_raw=0; return 0; }
+int adbms6830_read_temp_raw(adbms6830_driver_t *dev, uint8_t ic_idx, uint8_t sensor_num, int16_t *out_raw){ (void)dev;(void)ic_idx;(void)sensor_num; if(out_raw) *out_raw=0; return 0; }
 float adbms6830_convert_temp(adbms6830_driver_t *dev, uint8_t ic_idx, uint8_t sensor_num, float vref){ (void)dev;(void)ic_idx;(void)sensor_num;(void)vref; return 25.0f; }
 float voltage_to_temp(float raw){ float voltage = ((float)raw + 10000.0f) * 0.000150f; if(voltage <= 0.0f || voltage >= 5.0f) return NAN; float resistance = 10000.0f * (5.0f - voltage) / voltage; float x = logf(resistance / 10000.0f); return (1.0f / (3.354016435e-3f + 2.565235509e-4f * x)) - 273.15f; }
 int mux_set_channel(adbms6830_driver_t *dev, uint8_t sensor_num){ (void)dev; return sensor_num < 24 ? 0 : -1; }
@@ -590,6 +598,7 @@ int tokenize(char *s, char *toks[], int maxtoks, char *delim)
 #include "Core/Src/tasks/error_task.c"
 #include "Core/Src/tasks/fan_task.c"
 #include "Core/Src/tasks/current_task.c"
+#include "Core/Src/tasks/imd_task.c"
 #include "Core/Src/tasks/estimator_task.c"
 
 static void host_can_rx_isr_only(CAN_HandleTypeDef *hcan)
@@ -625,7 +634,7 @@ static int16_t raw_for_temp_c(float temp_c){ return raw_for_ntc_voltage(ntc_volt
 
 static void sil_mark_all_heartbeats_alive(app_data_t *d);
 
-static void init_fake_app(void){ memset(&app,0,sizeof(app)); ams_safety_host_reset_state(); ams_rtos_host_reset_state(); ams_rtos_diag_init(&app); app.acc.smb.num_ics = NSMBS; app.acc.smb.ics = app.acc.smb_ics; app.acc.delay_timer_ready = true; app.acc.delay_timer_status = HAL_OK; current_fault_init(&app.current_fault_state); voltage_fault_init(&app.voltage_fault_state); temperature_fault_init(&app.temp_fault_state); ams_heartbeat_init(&app, fake_tick); app.current_meas_reason = CURRENT_SENSOR_REASON_ADC_READ; app.current_fault_reason = CURRENT_FAULT_REASON_SENSOR_NOT_READY; app.voltage_fault_reason = VOLTAGE_FAULT_REASON_NOT_READY; app.temp_fault = true; app.temp_read_fault = true; app.temp_fan_max = true; app.temp_fault_reason = TEMPERATURE_FAULT_REASON_NOT_READY; app.imd_valid = true; app.imd_ok = true; app.imd_fault = false; app.imd_status = IMD_NORMAL; app.balance_inhibit = (AMS_HW_BRINGUP_BALANCE_INHIBIT_DEFAULT != 0); fake_adbms_voltage_masks_full_update(); fake_adc_read_index = 0u; fake_adbms_wrcfgb_status = HAL_OK; fake_adbms_wrpwm_status = HAL_OK; fake_adbms_wrpwm_fail_after_ok = -1; fake_adbms_diag_status = HAL_OK; fake_adbms_config_mismatch_mask = 0u; fake_can_add_tx_status = HAL_OK; fake_can_error = HAL_CAN_ERROR_NONE; fake_can_recover_status = HAL_OK; fake_can_notification_status = HAL_OK; fake_rx_status = HAL_OK; fake_tim_base_start_status = HAL_OK; fake_tim_pwm_start_status = HAL_OK; fake_tim_ic_start_it_status = HAL_OK; fake_tim_ic_start_status = HAL_OK; fake_tim_total_capture = 1000u; fake_tim_high_capture = 500u; memset(&fake_rx_hdr, 0, sizeof(fake_rx_hdr)); memset(fake_rx_data, 0, sizeof(fake_rx_data)); bms_pin_state = GPIO_PIN_RESET; }
+static void init_fake_app(void){ fake_tick = 0u; memset(&app,0,sizeof(app)); ams_safety_host_reset_state(); ams_rtos_host_reset_state(); ams_rtos_diag_init(&app); app.state = STATE_START; app.acc.smb.num_ics = NSMBS; app.acc.smb.ics_capacity = NSMBS; app.acc.smb.ics = app.acc.smb_ics; app.acc.delay_timer_ready = true; app.acc.delay_timer_status = HAL_OK; app.acc.smb_ready = true; app.acc.smb_init_status = HAL_OK; current_fault_init(&app.current_fault_state); voltage_fault_init(&app.voltage_fault_state); temperature_fault_init(&app.temp_fault_state); ams_heartbeat_init(&app, fake_tick); ams_safety_watchdog_boot_arm(&app); app.current_meas_reason = CURRENT_SENSOR_REASON_ADC_READ; app.current_fault_reason = CURRENT_FAULT_REASON_SENSOR_NOT_READY; app.voltage_fault_reason = VOLTAGE_FAULT_REASON_NOT_READY; app.temp_fault = true; app.temp_read_fault = true; app.temp_fan_max = true; app.temp_fault_reason = TEMPERATURE_FAULT_REASON_NOT_READY; app.imd_valid = true; app.imd_ok = true; app.imd_fault = false; app.imd_status = IMD_NORMAL; app.balance_inhibit = (AMS_HW_BRINGUP_BALANCE_INHIBIT_DEFAULT != 0); fake_adbms_voltage_masks_full_update(); fake_adc_read_index = 0u; fake_adbms_init_status = HAL_OK; fake_adbms_wrcfgb_status = HAL_OK; fake_adbms_wrpwm_status = HAL_OK; fake_adbms_balance_verify_status = HAL_OK; fake_adbms_wrpwm_fail_after_ok = -1; fake_adbms_diag_status = HAL_OK; fake_adbms_config_mismatch_mask = 0u; fake_can_add_tx_status = HAL_OK; fake_can_error = HAL_CAN_ERROR_NONE; fake_can_recover_status = HAL_OK; fake_can_notification_status = HAL_OK; fake_rx_status = HAL_OK; fake_tim_base_start_status = HAL_OK; fake_tim_pwm_start_status = HAL_OK; fake_tim_ic_start_it_status = HAL_OK; fake_tim_ic_start_status = HAL_OK; fake_tim_total_capture = 1000u; fake_tim_high_capture = 500u; memset(&fake_rx_hdr, 0, sizeof(fake_rx_hdr)); memset(fake_rx_data, 0, sizeof(fake_rx_data)); bms_pin_state = GPIO_PIN_RESET; }
 
 static void host_mark_updated_cells(app_data_t *d)
 {
@@ -714,18 +723,28 @@ static void test_accumulator_stats_and_balance(void){
     CHECK(sil_balance_pwm_duty(&app, 2u, 6u) == 0u);
     CHECK((app.acc.smb_ics[3].tx_cfgb.dcc) == 0u);
     CHECK(sil_balance_pwm_duty(&app, 4u, 14u) == 0u);
+    fake_adbms_balance_verify_status = HAL_ERROR;
+    CHECK(accumulator_set_balance(&app.acc) == -1);
+    sil_expect_balancing_clear(&app);
+    fake_adbms_balance_verify_status = HAL_OK;
     fake_adbms_wrpwm_status = HAL_ERROR;
     CHECK(accumulator_set_balance(&app.acc) == -1);
+    sil_expect_balancing_clear(&app);
     fake_adbms_wrpwm_status = HAL_OK;
     fake_adbms_wrcfgb_status = HAL_ERROR;
     CHECK(accumulator_clear_balance(&app.acc) == -1);
     fake_adbms_wrcfgb_status = HAL_OK;
+    fake_adbms_balance_verify_status = HAL_ERROR;
+    CHECK(accumulator_clear_balance(&app.acc) == -1);
+    fake_adbms_balance_verify_status = HAL_OK;
     CHECK(accumulator_clear_balance(&app.acc) == 0);
     sil_expect_balancing_clear(&app);
 
-    app.acc.smb.num_ics = 99; // bad config should still stay bounded
+    app.acc.smb.num_ics = 99; /* Corrupt topology must fail closed and stay bounded. */
     accumulator_update_voltage_stats(&app.acc);
-    CHECK(app.acc.max_volt > 4.0f && app.acc.min_volt > 3.0f);
+    CHECK(app.acc.valid_voltage_count == 0u);
+    CHECK(app.acc.voltage_full_usable == false);
+    CHECK(app.acc.max_volt == 0.0f && app.acc.min_volt == 0.0f);
 }
 
 static void test_temp_stats(void){
@@ -1539,6 +1558,8 @@ static void test_current_task_threshold_faults(void)
     CHECK(app.bms_state == false);
     CHECK(bms_pin_state == GPIO_PIN_RESET);
 
+    /* The second half verifies a valid cold reading, so restore a working mux. */
+    fake_mux_write_enable = 1;
     init_fake_app();
     app.state = STATE_START;
     app.bms_state = true;
@@ -1575,6 +1596,7 @@ static void test_imd_capture_validation(void)
     imd_t imd;
 
     init_fake_app();
+    fake_tick = 1000u;
     fake_tim_total_capture = 100u;
     fake_tim_high_capture = 50u;
     imd_init(&imd,
@@ -1587,6 +1609,8 @@ static void test_imd_capture_validation(void)
              1u);
     CHECK(imd.capture_started == true);
     CHECK(imd.init_status == HAL_OK);
+    CHECK(imd_read_at(&imd, fake_tick) != 0);
+    imd_capture_event(&imd, fake_tick);
     CHECK(imd_read(&imd) == 0);
     CHECK(imd.status == IMD_NORMAL);
     CHECK(imd.OK_HS == true);
@@ -1612,9 +1636,26 @@ static void test_imd_capture_validation(void)
              TIM_CHANNEL_1,
              &status_port,
              1u);
+    imd_capture_event(&imd, fake_tick);
     CHECK(imd_read(&imd) == 0);
     CHECK(isfinite(imd.duty));
     CHECK(fabsf(imd.duty - 100.0f) < 0.01f);
+
+    /* Corrupt clock/capture values can produce a frequency above INT_MAX.
+     * Reject it before the status-code float-to-int conversion. */
+    fake_tim_total_capture = 1u;
+    fake_tim_high_capture = 0u;
+    imd_init(&imd,
+             UINT32_MAX,
+             &htim,
+             NULL,
+             TIM_CHANNEL_2,
+             TIM_CHANNEL_1,
+             &status_port,
+             1u);
+    imd_capture_event(&imd, fake_tick);
+    CHECK(imd_read(&imd) != 0);
+    CHECK(imd.status == IMD_UNKNOWN);
 
     fake_tim_base_start_status = HAL_ERROR;
     imd_init(&imd,
@@ -1640,6 +1681,59 @@ static void test_imd_capture_validation(void)
              1u);
     CHECK(imd.capture_started == true);
     CHECK(imd_read(&imd) != 0);
+
+    /* A plausible capture register value must not stay healthy after the PWM
+     * edges stop, including when the RTOS tick wraps. */
+    fake_tim_total_capture = 100u;
+    fake_tim_high_capture = 50u;
+    imd_init(&imd,
+             1000u,
+             &htim,
+             NULL,
+             TIM_CHANNEL_2,
+             TIM_CHANNEL_1,
+             &status_port,
+             1u);
+    fake_tick = UINT32_MAX - 20u;
+    imd_capture_event(&imd, fake_tick);
+    CHECK(imd_read_at(&imd, 30u) == 0);
+    CHECK(imd_read_at(&imd,
+                      (uint32_t)(fake_tick + AMS_IMD_CAPTURE_TIMEOUT_MS + 1u)) != 0);
+    CHECK(imd.status == IMD_UNKNOWN);
+    CHECK(imd.OK_HS == false);
+
+    /* The task publishes a coherent fail-closed snapshot and immediately
+     * drops BMS_OK when capture freshness is lost. */
+    init_fake_app();
+    fake_tick = 2000u;
+    fake_tim_total_capture = 100u;
+    fake_tim_high_capture = 50u;
+    imd_init(&app.board.imd,
+             1000u,
+             &htim,
+             NULL,
+             TIM_CHANNEL_2,
+             TIM_CHANNEL_1,
+             &status_port,
+             1u);
+    imd_capture_event(&app.board.imd, fake_tick);
+    CHECK(imd_task_update(&app, fake_tick));
+    CHECK(app.imd_valid == true);
+    CHECK(app.imd_ok == true);
+    CHECK(app.imd_fault == false);
+    CHECK(app.imd_last_valid_tick == fake_tick);
+    CHECK((app.heartbeat.seen_mask & AMS_HEARTBEAT_BIT(AMS_HEARTBEAT_IMD)) != 0u);
+
+    app.bms_state = true;
+    bms_pin_state = GPIO_PIN_SET;
+    fake_tick += AMS_IMD_CAPTURE_TIMEOUT_MS + 1u;
+    CHECK(!imd_task_update(&app, fake_tick));
+    CHECK(app.imd_valid == false);
+    CHECK(app.imd_ok == false);
+    CHECK(app.imd_fault == true);
+    CHECK(app.imd_status == IMD_UNKNOWN);
+    CHECK(app.bms_state == false);
+    CHECK(bms_pin_state == GPIO_PIN_RESET);
 }
 
 
@@ -1727,12 +1821,13 @@ static void test_watchdog_feed_gate(void)
 {
     init_fake_app();
     fake_tick = AMS_HEARTBEAT_STARTUP_GRACE_MS + 100u;
+    app.heartbeat.boot_tick = 0u;
     ams_safety_watchdog_enable_runtime(&app, true);
     ams_safety_watchdog_task_update(&app);
 
 #if AMS_ENABLE_IWDG
     CHECK(app.watchdog_runtime_enabled == true);
-    CHECK(app.watchdog_hw_started == false);
+    CHECK(app.watchdog_hw_started == true);
     CHECK(app.watchdog_feed_count == 0u);
     CHECK(app.watchdog_last_block_reason != AMS_WATCHDOG_BLOCK_NONE);
 
@@ -1758,6 +1853,74 @@ static void test_watchdog_feed_gate(void)
     CHECK(app.watchdog_runtime_enabled == false);
     CHECK(app.watchdog_feed_count == 0u);
     CHECK(app.watchdog_last_block_reason == AMS_WATCHDOG_BLOCK_NOT_ENABLED);
+#endif
+}
+
+static void test_watchdog_boot_arm_and_startup_grace(void)
+{
+    init_fake_app();
+    fake_tick = 100u;
+    ams_heartbeat_init(&app, fake_tick);
+    ams_safety_watchdog_boot_arm(&app);
+    ams_safety_watchdog_task_update(&app);
+
+#if AMS_ENABLE_IWDG
+    CHECK(app.watchdog_runtime_enabled == true);
+    CHECK(app.watchdog_hw_started == true);
+    CHECK(app.watchdog_feed_count == 1u);
+    CHECK(app.watchdog_last_feed_tick == fake_tick);
+    CHECK(app.watchdog_last_block_reason == AMS_WATCHDOG_BLOCK_STARTUP_GRACE);
+
+    fake_tick += AMS_HEARTBEAT_STARTUP_GRACE_MS + 1u;
+    app.hard_fault = true;
+    ams_safety_watchdog_task_update(&app);
+    CHECK(app.watchdog_feed_count == 1u);
+    CHECK(app.watchdog_last_block_reason == AMS_WATCHDOG_BLOCK_HARD_FAULT);
+#else
+    CHECK(app.watchdog_runtime_enabled == false);
+    CHECK(app.watchdog_hw_started == false);
+    CHECK(app.watchdog_feed_count == 0u);
+    CHECK(app.watchdog_last_block_reason == AMS_WATCHDOG_BLOCK_NOT_ENABLED);
+#endif
+}
+
+static void test_watchdog_start_failure_is_fail_closed(void)
+{
+#if AMS_ENABLE_IWDG
+    init_fake_app();
+
+    /* Recreate a boot where the target's IWDG status bits never complete the
+     * start handshake.  This host-only flag models that register-level fault. */
+    ams_safety_host_reset_state();
+    app.watchdog_runtime_enabled = false;
+    app.watchdog_hw_started = false;
+    app.watchdog_feed_count = 0u;
+    app.watchdog_block_count = 0u;
+    app.watchdog_last_logged_block_reason = AMS_WATCHDOG_BLOCK_NONE;
+    g_host_watchdog_start_fail = true;
+
+    fake_tick = AMS_HEARTBEAT_STARTUP_GRACE_MS + 100u;
+    sil_make_watchdog_ready(&app);
+    ams_safety_watchdog_boot_arm(&app);
+
+    CHECK(app.watchdog_runtime_enabled == true);
+    CHECK(app.watchdog_hw_started == false);
+    CHECK(ams_safety_watchdog_ok(&app) == false);
+
+    set_bms(true);
+    error_task_update(&app, fake_tick);
+    CHECK(app.bms_state == false);
+    CHECK(app.watchdog_feed_count == 0u);
+    CHECK(app.watchdog_block_count == 1u);
+    CHECK(app.watchdog_last_block_reason == AMS_WATCHDOG_BLOCK_START_FAILED);
+
+    /* Once the modeled hardware fault clears, the next healthy supervisor
+     * update starts and feeds the watchdog normally. */
+    g_host_watchdog_start_fail = false;
+    ams_safety_watchdog_task_update(&app);
+    CHECK(app.watchdog_hw_started == true);
+    CHECK(app.watchdog_feed_count == 1u);
+    CHECK(app.watchdog_last_block_reason == AMS_WATCHDOG_BLOCK_NONE);
 #endif
 }
 
@@ -1994,6 +2157,9 @@ static void test_fault_matrix_extra(void){
 
 
 static void test_voltage_stats_boundaries_and_fuzz(void){
+    CHECK(isfinite(convert_adc_to_volt(INT_MAX)));
+    CHECK(isfinite(convert_adc_to_volt(INT_MIN)));
+
     init_fake_app();
     app.acc.smb.num_ics = 0;
     accumulator_update_voltage_stats(&app.acc);
@@ -2019,7 +2185,7 @@ static void test_voltage_stats_boundaries_and_fuzz(void){
     CHECK(app.acc.min_volt > 3.49f && app.acc.max_volt < 3.52f);
 
     init_fake_app();
-    app.acc.smb.num_ics = 255;
+    app.acc.smb.num_ics = NSMBS;
     app.acc.smb.ics = app.acc.smb_ics;
     float expected_min = 99.0f, expected_max = -99.0f, expected_total = 0.0f;
     unsigned expected_valid = 0u;
@@ -2055,6 +2221,11 @@ static void test_voltage_stats_boundaries_and_fuzz(void){
     CHECK(fabsf(app.acc.min_volt - expected_min) < 0.002f);
     CHECK(fabsf(app.acc.max_volt - expected_max) < 0.002f);
     CHECK(fabsf(app.acc.total_volt - expected_total) < 0.050f);
+
+    app.acc.smb.num_ics = 255;
+    accumulator_update_voltage_stats(&app.acc);
+    CHECK(app.acc.valid_voltage_count == 0u);
+    CHECK(app.acc.voltage_full_usable == false);
 }
 
 
@@ -2549,7 +2720,8 @@ static void test_system_sil_bench_adbms_write_failures_and_recovery(void)
     CHECK(app.adbms_diag_fault == true);
     CHECK(app.adbms_balance_write_fault == true);
     CHECK(app.charge_voltage_stop == true);
-    CHECK(sil_balance_pwm_duty(&app, 0u, 1u) == BALANCE_PWM_DUTY);
+    /* A partial CFG/PWM write now triggers an immediate all-off rollback. */
+    sil_expect_balancing_clear(&app);
 
     app.state = STATE_DISCARGE;
     fake_adbms_wrpwm_fail_after_ok = -1;
@@ -3777,6 +3949,21 @@ static void test_adbms_periodic_diagnostics_and_safe_open_wire(void)
 	CHECK(app.adbms_diag_fault == true);
 	CHECK(app.bms_state == false);
 	CHECK(bms_pin_state == GPIO_PIN_RESET);
+
+	init_fake_app();
+	fill_nominal_pack(&app, 3.700f);
+	app.state = STATE_DISCARGE;
+	app.current_valid = true;
+	app.bms_state = true;
+	bms_pin_state = GPIO_PIN_SET;
+	app.acc.smb_ready = false;
+	app.acc.smb_init_status = HAL_TIMEOUT;
+	app.adbms_scan_count = ADBMS_STATUS_DIAG_PERIOD_CYCLES - 1u;
+	run_one_adbms_task_iteration(&app);
+	CHECK(app.adbms_status_fault == true);
+	CHECK(app.adbms_diag_fault == true);
+	CHECK(app.bms_state == false);
+	CHECK(bms_pin_state == GPIO_PIN_RESET);
 }
 
 static void test_adbms_cli_scan_guard_and_cs_probe_commands(void)
@@ -3932,6 +4119,7 @@ static void test_software_heartbeat_monitor_faults_and_recovery(void)
     ams_heartbeat_kick(&app, AMS_HEARTBEAT_TEMP, fake_tick);
     ams_heartbeat_kick(&app, AMS_HEARTBEAT_CAN, fake_tick);
     ams_heartbeat_kick(&app, AMS_HEARTBEAT_LOGGER, fake_tick);
+    ams_heartbeat_kick(&app, AMS_HEARTBEAT_IMD, fake_tick);
     fake_tick += AMS_HEARTBEAT_CURRENT_TIMEOUT_MS + 1u;
     app.bms_state = true;
     bms_pin_state = GPIO_PIN_SET;
@@ -3965,11 +4153,13 @@ static void test_software_heartbeat_monitor_faults_and_recovery(void)
     ams_heartbeat_kick(&app, AMS_HEARTBEAT_TEMP, fake_tick);
     ams_heartbeat_kick(&app, AMS_HEARTBEAT_CAN, fake_tick);
     ams_heartbeat_kick(&app, AMS_HEARTBEAT_LOGGER, fake_tick);
+    ams_heartbeat_kick(&app, AMS_HEARTBEAT_IMD, fake_tick);
     fake_tick += AMS_HEARTBEAT_LOGGER_TIMEOUT_MS + 1u;
     ams_heartbeat_kick(&app, AMS_HEARTBEAT_ADBMS, fake_tick);
     ams_heartbeat_kick(&app, AMS_HEARTBEAT_CURRENT, fake_tick);
     ams_heartbeat_kick(&app, AMS_HEARTBEAT_TEMP, fake_tick);
     ams_heartbeat_kick(&app, AMS_HEARTBEAT_CAN, fake_tick);
+    ams_heartbeat_kick(&app, AMS_HEARTBEAT_IMD, fake_tick);
 
     run_one_error_task_iteration(&app);
     CHECK(app.task_heartbeat_fault == false);
@@ -3997,6 +4187,39 @@ static void test_software_heartbeat_monitor_faults_and_recovery(void)
     CHECK(app.task_heartbeat_fault == true);
     CHECK((app.heartbeat_stale_mask & AMS_HEARTBEAT_SAFETY_MASK) == AMS_HEARTBEAT_SAFETY_MASK);
     CHECK(app.bms_state == false);
+}
+
+static void test_supervisor_rejects_non_operating_and_corrupt_states(void)
+{
+    static const state_t rejected_states[] =
+    {
+        STATE_NULL,
+        STATE_ERROR,
+        (state_t)0x7F
+    };
+
+    for(size_t i = 0u; i < (sizeof(rejected_states) / sizeof(rejected_states[0])); i++)
+    {
+        init_fake_app();
+        fake_tick = 1000u;
+        sil_make_measurement_gates_ready(&app);
+        sil_mark_all_heartbeats_alive(&app);
+        app.current_overcurrent_fault = false;
+        app.current_fault_latched = false;
+        app.state = rejected_states[i];
+        app.bms_state = true;
+        bms_pin_state = GPIO_PIN_SET;
+
+        error_task_update(&app, fake_tick);
+
+        CHECK(app.bms_supervisor_ready == false);
+        CHECK(app.bms_state == false);
+        CHECK(bms_pin_state == GPIO_PIN_RESET);
+        if(i == 2u)
+        {
+            CHECK(app.state == STATE_ERROR);
+        }
+    }
 }
 
 static void test_system_sil_bringup_status_and_bmsok_inhibit(void)
@@ -4120,6 +4343,7 @@ static void test_bringup_cli_board_ready_and_adbms_summaries(void)
     sil_prepare_cli_capture();
     CHECK(get_bringup(2, adbms_argv) == 0);
     CHECK(strstr(cli_capture, "BRINGUP ADBMS6830") != NULL);
+    CHECK(strstr(cli_capture, "startup=PASS init:OK timer=PASS") != NULL);
     CHECK(strstr(cli_capture, "mode=PASS") != NULL);
     CHECK(strstr(cli_capture, "response=FAIL all_ff") != NULL);
     CHECK(strstr(cli_capture, "pec=FAIL") != NULL);
@@ -4474,6 +4698,7 @@ static void test_system_sil_concurrent_heartbeat_starvation_and_recovery(void)
     ams_heartbeat_kick(&app, AMS_HEARTBEAT_CURRENT, fake_tick);
     ams_heartbeat_kick(&app, AMS_HEARTBEAT_TEMP, fake_tick);
     ams_heartbeat_kick(&app, AMS_HEARTBEAT_CAN, fake_tick);
+    ams_heartbeat_kick(&app, AMS_HEARTBEAT_IMD, fake_tick);
     run_one_error_task_iteration(&app);
     CHECK(app.task_heartbeat_fault == false);
     CHECK(app.logger_heartbeat_fault == true);
@@ -5674,6 +5899,70 @@ static void test_hil_adbms_image_replaces_raw_reads(void)
 #endif
 }
 
+static void test_accumulator_tick_wrap_freshness(void)
+{
+    const uint32_t before_wrap = UINT32_MAX - 100u;
+    const uint32_t after_wrap = 50u;
+    const uint16_t cell_mv[3] = {3700u, 3701u, 3702u};
+    const int16_t temp_deci_c[3] = {250, 251, 252};
+
+    init_fake_app();
+    CHECK(accumulator_hil_ingest_cell_triplet(&app.acc,
+                                               0u,
+                                               0u,
+                                               cell_mv,
+                                               before_wrap) == 0);
+    CHECK(accumulator_hil_ingest_temp_triplet(&app.acc,
+                                               0u,
+                                               0u,
+                                               temp_deci_c,
+                                               before_wrap) == 0);
+
+    accumulator_hil_refresh_update_masks(&app.acc,
+                                          after_wrap,
+                                          AMS_HIL_ADBMS_IMAGE_TIMEOUT_MS);
+    CHECK((app.acc.smb.last_cell_updated_mask[0] & 0x0007u) == 0x0007u);
+    CHECK((app.acc.smb.last_temp_updated_mask[0] & 0x00000007u) == 0x00000007u);
+
+    accumulator_hil_refresh_update_masks(
+        &app.acc,
+        (uint32_t)(before_wrap + AMS_HIL_ADBMS_IMAGE_TIMEOUT_MS + 1u),
+        AMS_HIL_ADBMS_IMAGE_TIMEOUT_MS);
+    CHECK((app.acc.smb.last_cell_updated_mask[0] & 0x0007u) == 0u);
+    CHECK((app.acc.smb.last_temp_updated_mask[0] & 0x00000007u) == 0u);
+
+    /* Exercise the independent cell/temperature stale timers across the same
+     * wrap, not just the HIL image-age gate. */
+    init_fake_app();
+    app.acc.smb_ics[0].cell.c_codes[0] = code_for_volts(3.700f);
+    app.acc.smb.last_cell_updated_mask[0] = 0x0001u;
+    accumulator_update_voltage_stats_at(&app.acc, before_wrap);
+    CHECK(app.acc.cell_voltage_valid[0][0] == true);
+    app.acc.smb.last_cell_updated_mask[0] = 0u;
+    accumulator_update_voltage_stats_at(&app.acc, after_wrap);
+    CHECK(app.acc.cell_voltage_valid[0][0] == true);
+    accumulator_update_voltage_stats_at(
+        &app.acc,
+        (uint32_t)(before_wrap + ACCUMULATOR_CELL_STALE_TIMEOUT_MS + 1u));
+    CHECK(app.acc.cell_voltage_valid[0][0] == true);
+    CHECK(accumulator_cell_voltage_usable(&app.acc, 0u, 0u) == false);
+    CHECK((app.acc.stale_voltage_mask[0] & 0x0001u) != 0u);
+
+    app.acc.smb_ics[0].temp.raw[0] = raw_for_temp_c(25.0f);
+    app.acc.smb.last_temp_updated_mask[0] = 0x00000001u;
+    accumulator_update_temp_stats_at(&app.acc, before_wrap);
+    CHECK(app.acc.temp_sensor_valid[0][0] == true);
+    app.acc.smb.last_temp_updated_mask[0] = 0u;
+    accumulator_update_temp_stats_at(&app.acc, after_wrap);
+    CHECK(app.acc.temp_sensor_valid[0][0] == true);
+    accumulator_update_temp_stats_at(
+        &app.acc,
+        (uint32_t)(before_wrap + ACCUMULATOR_TEMP_STALE_TIMEOUT_MS + 1u));
+    CHECK(app.acc.temp_sensor_valid[0][0] == true);
+    CHECK(accumulator_temp_sensor_usable(&app.acc, 0u, 0u) == false);
+    CHECK((app.acc.stale_temp_mask[0] & 0x00000001u) != 0u);
+}
+
 static void test_charge_state_disable_matrix(void){
     static CAN_HandleTypeDef hcan;
     struct Case { bool hard_fault, voltage_fault, temp_fault, temp_charge_stop, bms_state, hw, ot, input, sense, timeout; uint8_t disable; } cases[] = {
@@ -5843,10 +6132,28 @@ static void test_periods_and_driver_edge_cases(void){
 	CHECK(timer_acc.delay_timer_status == HAL_ERROR);
 	CHECK(timer_acc.smb.htim == NULL);
 	fake_tim_base_start_status = HAL_OK;
+	fake_adbms_init_status = HAL_TIMEOUT;
+	accumulator_init(&timer_acc, &hspi, &cs_a, &cs_b, 1u, 2u, &htim);
+	CHECK(timer_acc.delay_timer_ready == true);
+	CHECK(timer_acc.smb_ready == false);
+	CHECK(timer_acc.smb_init_status == HAL_TIMEOUT);
+	fake_adbms_init_status = HAL_OK;
 	accumulator_init(&timer_acc, &hspi, &cs_a, &cs_b, 1u, 2u, &htim);
 	CHECK(timer_acc.delay_timer_ready == true);
 	CHECK(timer_acc.delay_timer_status == HAL_OK);
+	CHECK(timer_acc.smb_ready == true);
+	CHECK(timer_acc.smb_init_status == HAL_OK);
 	CHECK(timer_acc.smb.htim == &htim);
+	fake_adbms_config_mismatch_mask = 0x0001u;
+	accumulator_init(&timer_acc, &hspi, &cs_a, &cs_b, 1u, 2u, &htim);
+	CHECK(timer_acc.smb_ready == false);
+	CHECK(timer_acc.smb_init_status == HAL_ERROR);
+	fake_adbms_config_mismatch_mask = 0u;
+	fake_adbms_diag_status = HAL_TIMEOUT;
+	accumulator_init(&timer_acc, &hspi, &cs_a, &cs_b, 1u, 2u, &htim);
+	CHECK(timer_acc.smb_ready == false);
+	CHECK(timer_acc.smb_init_status == HAL_TIMEOUT);
+	fake_adbms_diag_status = HAL_OK;
 
 	canbus_device_t cb = {0};
 	CHECK(canbus_device_init(NULL, &hcan) == HAL_ERROR);
@@ -5988,6 +6295,7 @@ int main(void){
     return 0;
 #elif AMS_HOST_ONLY_HIL_ADBMS_TEST
     test_hil_adbms_image_replaces_raw_reads(); puts("PASS HIL ADBMS image replacement");
+    test_accumulator_tick_wrap_freshness(); puts("PASS accumulator tick-wrap freshness");
     puts("ALL HIL ADBMS REPLACEMENT TESTS PASSED");
     return 0;
 #else
@@ -6024,6 +6332,7 @@ int main(void){
     test_adbms_periodic_diagnostics_and_safe_open_wire(); puts("PASS ADBMS6830 periodic diagnostics/safe open-wire");
     test_adbms_cli_scan_guard_and_cs_probe_commands(); puts("PASS ADBMS CLI scan guard/CS probe commands");
     test_software_heartbeat_monitor_faults_and_recovery(); puts("PASS software heartbeat monitor faults/recovery");
+    test_supervisor_rejects_non_operating_and_corrupt_states(); puts("PASS supervisor rejects non-operating/corrupt states");
     test_system_sil_bringup_status_and_bmsok_inhibit(); puts("PASS system SIL bring-up status/BMS_OK inhibit");
     test_bringup_cli_board_ready_and_adbms_summaries(); puts("PASS bring-up CLI board/ready/ADBMS summaries");
     test_bringup_cli_apm_and_charger_phase_split(); puts("PASS bring-up CLI APM/charger phase split");
@@ -6052,6 +6361,7 @@ int main(void){
     test_hil_parser_edge_cases(); puts("PASS HIL parser edge cases");
     test_hil_parser_and_estimator_core(); puts("PASS HIL parser and estimator core");
     test_hil_adbms_image_replaces_raw_reads(); puts("PASS HIL ADBMS image replacement");
+    test_accumulator_tick_wrap_freshness(); puts("PASS accumulator tick-wrap freshness");
     test_estimator_task_hil_and_hardware_paths(); puts("PASS estimator task HIL/hardware paths");
     test_estimator_status_packet_edges(); puts("PASS estimator status packet edges");
     test_can_rx_filter_matrix(); puts("PASS CAN RX filter matrix");
@@ -6067,6 +6377,8 @@ int main(void){
     test_task_iterations_with_injected_signals(); puts("PASS one-iteration task injection tests");
     test_safety_panic_reset_watchdog_and_log(); puts("PASS safety panic/reset/log path");
     test_watchdog_feed_gate(); puts("PASS watchdog feed gate");
+    test_watchdog_boot_arm_and_startup_grace(); puts("PASS watchdog boot arm/startup grace");
+    test_watchdog_start_failure_is_fail_closed(); puts("PASS watchdog start-failure fail-closed gate");
     test_rtos_stack_heap_diag_and_faults(); puts("PASS RTOS stack/heap diagnostics");
     test_can_busoff_sets_fault_and_recovers(); puts("PASS CAN bus-off fault/recovery");
     test_fault_matrix_extra(); puts("PASS fault matrix extra");

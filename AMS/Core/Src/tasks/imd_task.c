@@ -35,10 +35,45 @@ TaskHandle_t imd_task_start(app_data_t *data)
     return handle;
 }
 
-// todo: fix channel #, not sure which channel this should exist on atm
-void imd_task_fn(void *argument){
+bool imd_task_update(app_data_t *data, uint32_t now)
+{
+    bool valid;
+    bool ok;
+    imd_status_t status;
+
+    if(data == NULL)
+    {
+        return false;
+    }
+
+    imd_t *imd = &data->board.imd;
+    valid = (imd_read_at(imd, now) == 0);
+    status = valid ? imd->status : IMD_UNKNOWN;
+    ok = valid && imd->OK_HS && (status == IMD_NORMAL);
+
+    taskENTER_CRITICAL();
+    data->imd_valid = valid;
+    data->imd_status = status;
+    data->imd_ok = ok;
+    data->imd_fault = !ok;
+    if(valid)
+    {
+        data->imd_last_valid_tick = now;
+    }
+    taskEXIT_CRITICAL();
+
+    if(!ok)
+    {
+        set_bms(false);
+    }
+
+    ams_heartbeat_kick(data, AMS_HEARTBEAT_IMD, now);
+    return ok;
+}
+
+void imd_task_fn(void *argument)
+{
     app_data_t *data;
-    imd_t *imd;
 
     data = (app_data_t *) argument;
     if(data == NULL)
@@ -47,18 +82,12 @@ void imd_task_fn(void *argument){
         return;
     }
 
-    imd = &data->board.imd;
     uint32_t entry;
 
     for(;;)
     {
     	entry = osKernelGetTickCount();
-	    	int read_status = imd_read(imd);
-	    	data->imd_valid = (read_status == 0);
-	    	data->imd_status = data->imd_valid ? imd->status : IMD_UNKNOWN;
-	    	data->imd_ok = data->imd_valid && imd->OK_HS &&
-	    	               (imd->status == IMD_NORMAL);
-	    	data->imd_fault = !data->imd_ok;
+		(void)imd_task_update(data, entry);
     	osDelayUntil(entry + (1000 / IMD_FREQ));
     }
 

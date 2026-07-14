@@ -29,8 +29,19 @@ static bool error_task_bms_ready(const app_data_t *data)
         return false;
     }
 
+#if AMS_ENABLE_IWDG
+    /* A compile-enabled hardware watchdog is part of the safety architecture,
+     * not an optional diagnostic.  If its irreversible start handshake did
+     * not complete, keep BMS_OK low. */
+    if(!ams_safety_watchdog_hw_started())
+    {
+        return false;
+    }
+#endif
+
     /* Caller holds the short safety critical section. */
-    return data->voltage_valid &&
+    return ams_state_allows_bms_ok(data->state) &&
+           data->voltage_valid &&
            !data->voltage_fault &&
            data->temp_valid &&
            !data->temp_fault &&
@@ -76,6 +87,15 @@ void error_task_update(app_data_t *data, uint32_t now)
      * the race where an ISR could force BMS_OK low after the snapshot and the
      * supervisor could then reassert it from stale readiness. */
     taskENTER_CRITICAL();
+
+    /* An out-of-range state is memory corruption, not an operating mode.
+     * Normalize it to the explicit fail-safe state before evaluating the
+     * output gate.  STATE_NULL and STATE_ERROR remain intact but can never
+     * authorize BMS_OK. */
+    if(!ams_state_is_valid(data->state))
+    {
+        data->state = STATE_ERROR;
+    }
 
     data->hard_fault = (data->fuse_fault ||
                         data->temp_fault ||

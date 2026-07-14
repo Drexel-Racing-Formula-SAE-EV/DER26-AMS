@@ -57,6 +57,7 @@ uint32_t ams_heartbeat_timeout_ms(ams_heartbeat_id_t id)
 	case AMS_HEARTBEAT_TEMP:    return AMS_HEARTBEAT_TEMP_TIMEOUT_MS;
 	case AMS_HEARTBEAT_CAN:     return AMS_HEARTBEAT_CAN_TIMEOUT_MS;
 	case AMS_HEARTBEAT_LOGGER:  return AMS_HEARTBEAT_LOGGER_TIMEOUT_MS;
+	case AMS_HEARTBEAT_IMD:     return AMS_HEARTBEAT_IMD_TIMEOUT_MS;
 	default:                    return 0u;
 	}
 }
@@ -70,6 +71,7 @@ const char *ams_heartbeat_name(ams_heartbeat_id_t id)
 	case AMS_HEARTBEAT_TEMP:    return "temp";
 	case AMS_HEARTBEAT_CAN:     return "can";
 	case AMS_HEARTBEAT_LOGGER:  return "logger";
+	case AMS_HEARTBEAT_IMD:     return "imd";
 	default:                    return "unknown";
 	}
 }
@@ -100,7 +102,7 @@ void ams_heartbeat_init(app_data_t *data, uint32_t now)
 
 void ams_heartbeat_kick(app_data_t *data, ams_heartbeat_id_t id, uint32_t now)
 {
-	if((data == NULL) || (id >= AMS_HEARTBEAT_COUNT))
+	if((data == NULL) || ((int)id < 0) || (id >= AMS_HEARTBEAT_COUNT))
 	{
 		return;
 	}
@@ -109,7 +111,10 @@ void ams_heartbeat_kick(app_data_t *data, ams_heartbeat_id_t id, uint32_t now)
 	 * read-modify-write so one preemption cannot erase another task's kick. */
 	taskENTER_CRITICAL();
 	data->heartbeat.last_tick[id] = now;
-	data->heartbeat.count[id]++;
+	if(data->heartbeat.count[id] != UINT32_MAX)
+	{
+		data->heartbeat.count[id]++;
+	}
 	data->heartbeat.seen_mask |= AMS_HEARTBEAT_BIT(id);
 	data->heartbeat.seen_mask &= (uint16_t)((1u << (uint16_t)AMS_HEARTBEAT_COUNT) - 1u);
 	data->heartbeat_seen_mask = data->heartbeat.seen_mask;
@@ -128,7 +133,7 @@ uint16_t ams_heartbeat_update(app_data_t *data, uint32_t now)
 	}
 
 	/* Keep last_tick[] and seen_mask coherent with concurrent task kicks.  The
-	 * monitor has only five entries, so this critical section is deliberately
+	 * monitor has only a handful of entries, so this critical section is deliberately
 	 * short and bounded. */
 	taskENTER_CRITICAL();
 	startup_grace = (now - data->heartbeat.boot_tick) < AMS_HEARTBEAT_STARTUP_GRACE_MS;
@@ -177,7 +182,7 @@ void adbms_spi_lock(void)
 		adbms_spi_lock_panic(AMS_PANIC_MUTEX_ACQUIRE_FAILED);
 	}
 
-	if(osMutexAcquire(adbms_spi_mutex, osWaitForever) != osOK)
+	if(osMutexAcquire(adbms_spi_mutex, AMS_ADBMS_MUTEX_TIMEOUT_TICKS) != osOK)
 	{
 		adbms_spi_lock_panic(AMS_PANIC_MUTEX_ACQUIRE_FAILED);
 	}
@@ -320,6 +325,7 @@ void app_create(void)
 	app.imd_valid = false;
 	app.imd_fault = true;
 	app.imd_status = IMD_UNKNOWN;
+	app.imd_last_valid_tick = 0u;
 
 	app.fan_state = false;
 	app.fan_command_percent = 0.0f;
@@ -356,6 +362,10 @@ void app_create(void)
 		}
 	}
 	ams_heartbeat_init(&app, osKernelGetTickCount());
+	/* A compile-enabled IWDG must protect startup as well as steady state.  It
+	 * is fed during the bounded heartbeat grace period, then only while the
+	 * safety supervisor's complete health gate remains satisfied. */
+	ams_safety_watchdog_boot_arm(&app);
 	ams_safety_sync_app(&app);
 	ams_fault_log_event(AMS_FAULT_LOG_BOOT, 0u, app.reset_flags, app.last_panic_reason);
 	set_bms(0);
@@ -373,14 +383,16 @@ void app_create(void)
 					 CS_B_Pin,
 					 app.board.stm32f767z.htim1);
 #if !AMS_HIL_REPLACE_ADBMS
-	if(!app.acc.delay_timer_ready)
+	if(!app.acc.delay_timer_ready || !app.acc.smb_ready)
 	{
-		/* ADBMS wake/conversion timing is not trustworthy without TIM1.  Keep
-		 * the supervisor inhibited and retain this as a status diagnostic even
-		 * if an undelayed SPI transaction happens to return data. */
+		/* ADBMS startup is not trustworthy without the microsecond timer and a
+		 * successful reset/config write/readback sequence. Keep the supervisor inhibited
+		 * even if a later undelayed transaction happens to return data. */
 		app.adbms_status_fault = true;
 		app.adbms_diag_fault = true;
-		app.adbms_last_diag_status = app.acc.delay_timer_status;
+		app.adbms_last_diag_status = !app.acc.smb_ready ?
+		                             app.acc.smb_init_status :
+		                             app.acc.delay_timer_status;
 	}
 #endif
 	(void)cli_uart_start_rx(&app.board.cli);
@@ -390,7 +402,9 @@ void app_create(void)
 	app.error_task = error_task_start(&app);
 	app.canbus_task = canbus_task_start(&app);
 //	app.air_task = air_task_start(&app);
-//	app.imd_task = imd_task_start(&app);
+#if AMS_ENABLE_IMD
+	app.imd_task = imd_task_start(&app);
+#endif
 	app.current_task = current_task_start(&app);
 	app.adbms_task = adbms_task_start(&app);
 	app.estimator_task = estimator_task_start(&app);
@@ -399,6 +413,9 @@ void app_create(void)
 	   (app.fan_task == NULL) ||
 	   (app.error_task == NULL) ||
 	   (app.canbus_task == NULL) ||
+#if AMS_ENABLE_IMD
+	   (app.imd_task == NULL) ||
+#endif
 	   (app.current_task == NULL) ||
 	   (app.adbms_task == NULL) ||
 	   (app.estimator_task == NULL))
@@ -411,6 +428,18 @@ void app_create(void)
 
 	/* BMS_OK assertion is owned exclusively by the high-priority error/safety
 	 * supervisor task.  Other contexts may only force the output low. */
+}
+
+void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim)
+{
+#if AMS_ENABLE_IMD
+	if((htim != NULL) && (htim == app.board.imd.htim))
+	{
+		imd_capture_event(&app.board.imd, osKernelGetTickCount());
+	}
+#else
+	(void)htim;
+#endif
 }
 
 void set_bms(bool state)

@@ -152,6 +152,8 @@ typedef struct
 	 * not proof that HAL_TIM_Base_Start() succeeded. */
 	bool delay_timer_ready;
 	HAL_StatusTypeDef delay_timer_status;
+	bool smb_ready;
+	HAL_StatusTypeDef smb_init_status;
 
 	adbms2950_asic apm_ics[NAPMS];
 	adbms2950_driver_t apm;

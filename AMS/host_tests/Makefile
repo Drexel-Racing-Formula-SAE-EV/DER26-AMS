@@ -63,7 +63,7 @@ WARN := \
 CFLAGS_COMMON := -std=c11 -g -O0 $(WARN) $(COMMON_DEFS) $(INC)
 LDLIBS := -lm
 
-.PHONY: help check-root compile unit test production-gates system-sil bringup-test hil-adbms-test safety-test stress ci asan ubsan analyze clang-analyze clean list make-build-dir
+.PHONY: help check-root compile unit test production-gates system-sil bringup-test hil-adbms-test imd-test safety-test stress ci asan ubsan analyze clang-analyze clean list make-build-dir
 
 help:
 	@echo "DER26 AMS host test harness"
@@ -75,6 +75,7 @@ help:
 	@echo "  make system-sil    Alias for comprehensive system-level SIL/injection tests"
 	@echo "  make bringup-test  Run comprehensive tests with AMS_HW_BRINGUP=1"
 	@echo "  make hil-adbms-test Run focused CAN-fed ADBMS replacement tests"
+	@echo "  make imd-test       Run comprehensive tests with AMS_ENABLE_IMD=1"
 	@echo "  make safety-test    Run comprehensive tests with AMS_ENABLE_IWDG=1"
 	@echo "  make stress        Run comprehensive SIL with extended seeded fuzz cycles"
 	@echo "  make ci            Run unit, comprehensive, and analyzer targets"
@@ -134,6 +135,9 @@ bringup-test: test
 hil-adbms-test: CFLAGS_COMMON += -DAMS_HIL_REPLACE_ADBMS=1 -DAMS_HOST_ONLY_HIL_ADBMS_TEST=1
 hil-adbms-test: test
 
+imd-test: CFLAGS_COMMON += -DAMS_ENABLE_IMD=1
+imd-test: test
+
 safety-test: CFLAGS_COMMON += -DAMS_ENABLE_IWDG=1
 safety-test: test
 
@@ -164,11 +168,13 @@ analyze: CFLAGS_COMMON += $(HOST_EXERCISE_DEFS)
 analyze: check-root
 	@mkdir -p "$(BUILD_DIR)"
 	$(CC) $(CFLAGS_COMMON) -fanalyzer -fsyntax-only $(SRC)
+	$(CC) $(CFLAGS_COMMON) -fanalyzer -fsyntax-only $(UNIT_SRC)
 
 clang-analyze: CFLAGS_COMMON += $(HOST_EXERCISE_DEFS)
 clang-analyze: check-root
 	@mkdir -p "$(BUILD_DIR)"
 	$(CLANG) $(CFLAGS_COMMON) --analyze $(SRC)
+	$(CLANG) $(CFLAGS_COMMON) --analyze $(UNIT_SRC)
 
 list:
 	@grep -E '^static void test_' $(SRC) | sed -E 's/static void (test_[^(]+).*/\1/'

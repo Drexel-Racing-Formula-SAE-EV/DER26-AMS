@@ -69,6 +69,7 @@ typedef enum
     AMS_WATCHDOG_BLOCK_TEMP_STALE,
     AMS_WATCHDOG_BLOCK_HARD_FAULT,
     AMS_WATCHDOG_BLOCK_STOP_FEED_TEST,
+    AMS_WATCHDOG_BLOCK_START_FAILED,
 } ams_watchdog_block_reason_t;
 
 typedef enum
@@ -136,6 +137,7 @@ const char *ams_safety_panic_reason_str(uint32_t reason);
 void ams_safety_format_reset_flags(uint32_t flags, char *buf, size_t len);
 
 bool ams_safety_watchdog_ok(const app_data_t *data);
+void ams_safety_watchdog_boot_arm(app_data_t *data);
 void ams_safety_watchdog_task_update(app_data_t *data);
 void ams_safety_watchdog_enable_runtime(app_data_t *data, bool enable);
 bool ams_safety_watchdog_hw_started(void);

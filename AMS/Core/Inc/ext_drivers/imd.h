@@ -13,6 +13,14 @@
 #include <stdbool.h>
 #include "stm32f7xx_hal.h"
 
+#ifndef AMS_ENABLE_IMD
+#define AMS_ENABLE_IMD 0
+#endif
+
+#ifndef AMS_IMD_CAPTURE_TIMEOUT_MS
+#define AMS_IMD_CAPTURE_TIMEOUT_MS 250u
+#endif
+
 /*
 * enum: imd_status_t
 * ------------------
@@ -60,8 +68,8 @@ typedef struct
 	uint32_t clock_freq;
 	TIM_HandleTypeDef *htim;
 	TIM_TypeDef *tim;
-	HAL_TIM_ActiveChannel high_channel;
-	HAL_TIM_ActiveChannel total_channel;
+	uint32_t high_channel;
+	uint32_t total_channel;
 	GPIO_TypeDef *status_port;
 	uint16_t status_pin;
 	uint32_t high_count;
@@ -69,6 +77,9 @@ typedef struct
 	float duty;
 	float freq;
 	bool capture_started;
+	volatile bool capture_seen;
+	volatile uint32_t capture_count;
+	volatile uint32_t last_capture_tick;
 	HAL_StatusTypeDef init_status;
 	int ret;
 } imd_t;
@@ -79,8 +90,10 @@ typedef struct
 *
 * imd: a pointer to and imd_t we want to initialize
 */
-void imd_init(imd_t *dev, uint32_t clock_freq, TIM_HandleTypeDef *htim, TIM_TypeDef *tim, HAL_TIM_ActiveChannel high_channel, HAL_TIM_ActiveChannel total_channel, GPIO_TypeDef *status_port, uint16_t status_pin);
+void imd_init(imd_t *dev, uint32_t clock_freq, TIM_HandleTypeDef *htim, TIM_TypeDef *tim, uint32_t high_channel, uint32_t total_channel, GPIO_TypeDef *status_port, uint16_t status_pin);
 
 int imd_read(imd_t *dev);
+int imd_read_at(imd_t *dev, uint32_t now);
+void imd_capture_event(imd_t *dev, uint32_t now);
 
 #endif

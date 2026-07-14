@@ -23,7 +23,7 @@ static int imd_fail_closed(imd_t *dev)
     return 1;
 }
 
-void imd_init(imd_t *dev, uint32_t clock_freq, TIM_HandleTypeDef *htim, TIM_TypeDef *tim, HAL_TIM_ActiveChannel high_channel, HAL_TIM_ActiveChannel total_channel, GPIO_TypeDef *status_port, uint16_t status_pin)
+void imd_init(imd_t *dev, uint32_t clock_freq, TIM_HandleTypeDef *htim, TIM_TypeDef *tim, uint32_t high_channel, uint32_t total_channel, GPIO_TypeDef *status_port, uint16_t status_pin)
 {
     if(dev == NULL)
     {
@@ -50,6 +50,9 @@ void imd_init(imd_t *dev, uint32_t clock_freq, TIM_HandleTypeDef *htim, TIM_Type
 	dev->OK_HS = false;
 	dev->status = IMD_UNKNOWN;
     dev->capture_started = false;
+    dev->capture_seen = false;
+    dev->capture_count = 0u;
+    dev->last_capture_tick = 0u;
     dev->init_status = HAL_ERROR;
     if(htim != NULL)
     {
@@ -66,10 +69,34 @@ void imd_init(imd_t *dev, uint32_t clock_freq, TIM_HandleTypeDef *htim, TIM_Type
     }
 }
 
-int imd_read(imd_t *dev)
+void imd_capture_event(imd_t *dev, uint32_t now)
+{
+    if((dev == NULL) || !dev->capture_started)
+    {
+        return;
+    }
+
+    dev->last_capture_tick = now;
+    if(dev->capture_count != UINT32_MAX)
+    {
+        dev->capture_count++;
+    }
+    dev->capture_seen = true;
+}
+
+int imd_read_at(imd_t *dev, uint32_t now)
 {
     if((dev == NULL) || !dev->capture_started || (dev->clock_freq == 0u) ||
        (dev->htim == NULL) || (dev->status_port == NULL))
+    {
+        return imd_fail_closed(dev);
+    }
+
+    /* Capture registers retain their old value indefinitely.  Require a real
+     * capture interrupt and reject it once its age exceeds two slow (10 Hz)
+     * PWM periods.  Unsigned subtraction remains correct across tick wrap. */
+    if(!dev->capture_seen ||
+       ((uint32_t)(now - dev->last_capture_tick) > AMS_IMD_CAPTURE_TIMEOUT_MS))
     {
         return imd_fail_closed(dev);
     }
@@ -96,7 +123,17 @@ int imd_read(imd_t *dev)
 		/* Preserve the existing frequency-to-status interpretation, but reject
 		 * values outside the defined status range instead of publishing an
 		 * arbitrary enum value.  The mapping still needs hardware validation. */
-		int status_code = (int)(0.5f + (dev->freq / 10.0f));
+		float rounded_status = 0.5f + (dev->freq / 10.0f);
+		if(!isfinite(rounded_status) ||
+		   (rounded_status < 0.0f) ||
+		   (rounded_status >= ((float)IMD_GROUND_FAULT + 1.0f)))
+		{
+			return imd_fail_closed(dev);
+		}
+
+		/* The explicit range check above makes this float-to-int conversion
+		 * defined even if the timer clock/capture registers are corrupted. */
+		int status_code = (int)rounded_status;
 		if((status_code >= (int)IMD_SHORT_TO_CHASSIS_GROUND) &&
 		   (status_code <= (int)IMD_GROUND_FAULT))
 		{
@@ -109,4 +146,9 @@ int imd_read(imd_t *dev)
 		return imd_fail_closed(dev);
 	}
 	return imd_fail_closed(dev);
+}
+
+int imd_read(imd_t *dev)
+{
+    return imd_read_at(dev, HAL_GetTick());
 }

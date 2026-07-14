@@ -142,6 +142,15 @@ int main(void)
     ams_heartbeat_kick(&heartbeat_app, AMS_HEARTBEAT_COUNT, 113u);
     CHECK(fake_critical_enter_count == 3u);
 
+    ams_heartbeat_kick(&heartbeat_app, (ams_heartbeat_id_t)-1, 114u);
+    CHECK(fake_critical_enter_count == 3u);
+
+    heartbeat_app.heartbeat.count[AMS_HEARTBEAT_ADBMS] = UINT32_MAX;
+    ams_heartbeat_kick(&heartbeat_app, AMS_HEARTBEAT_ADBMS, 115u);
+    CHECK(heartbeat_app.heartbeat.count[AMS_HEARTBEAT_ADBMS] == UINT32_MAX);
+    CHECK(fake_critical_enter_count == 4u);
+    CHECK(fake_critical_exit_count == 4u);
+
     puts("PASS BMS_OK ownership and heartbeat critical-section enforcement");
     return 0;
 }

@@ -1880,10 +1880,12 @@ static int get_spi_debug_locked(int argc, char *argv[])
 	    ret |= cli_printline(cli, outline);
 
 	    snprintf(outline, CLI_LINESZ,
-	             "diag periodic status:%lu cfg:%lu openwire:%lu timer_ready:%d timer_status:%s",
+	             "diag periodic status:%lu cfg:%lu openwire:%lu smb_ready:%d smb_init:%s timer_ready:%d timer_status:%s",
 	             (unsigned long)data->adbms_status_diag_count,
 	             (unsigned long)data->adbms_config_diag_count,
 	             (unsigned long)data->adbms_open_wire_diag_count,
+	             data->acc.smb_ready,
+	             cli_hal_status_str(data->acc.smb_init_status),
 	             data->acc.delay_timer_ready,
 	             cli_hal_status_str(data->acc.delay_timer_status));
 	    ret |= cli_printline(cli, outline);
@@ -2765,6 +2767,14 @@ int get_bringup(int argc, char *argv[])
                  expected_mask,
                  data->adbms_scan_active,
                  (smb_dbg != NULL) ? smb_dbg->enabled : 0);
+        ret |= cli_printline(cli, outline);
+
+        snprintf(outline, CLI_LINESZ,
+                 "startup=%s init:%s timer=%s timer_status:%s",
+                 cli_passfail(data->acc.smb_ready && data->acc.delay_timer_ready),
+                 cli_hal_status_str(data->acc.smb_init_status),
+                 cli_passfail(data->acc.delay_timer_ready),
+                 cli_hal_status_str(data->acc.delay_timer_status));
         ret |= cli_printline(cli, outline);
 
         snprintf(outline, CLI_LINESZ,
