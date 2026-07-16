@@ -1187,7 +1187,8 @@ static void unit_adbms_init_driver(adbms6830_driver_t *dev,
                         gpio_b,
                         3u,
                         4u,
-                        &unit_delay_timer);
+                        &unit_delay_timer,
+                        ADBMS6830_INIT_FULL_CONFIG);
     unit_spi_reset();
     dev->string = STRING_B;
     adbms6830_spi_debug_clear(dev);
@@ -1221,7 +1222,8 @@ static void test_adbms_topology_and_delay_guards(void)
                          &gpio_b,
                          3u,
                          4u,
-                         &unit_delay_timer) == HAL_ERROR);
+                         &unit_delay_timer,
+                         ADBMS6830_INIT_FULL_CONFIG) == HAL_ERROR);
     EXPECT_TRUE(adBms6830_init(&dev,
                          2u,
                          ics,
@@ -1231,7 +1233,8 @@ static void test_adbms_topology_and_delay_guards(void)
                          &gpio_b,
                          3u,
                          4u,
-                         &unit_delay_timer) == HAL_ERROR);
+                         &unit_delay_timer,
+                         ADBMS6830_INIT_FULL_CONFIG) == HAL_ERROR);
     EXPECT_TRUE(dev.num_ics == 0);
     EXPECT_TRUE(unit_gpio_write_calls == 0u);
 
@@ -1247,11 +1250,32 @@ static void test_adbms_topology_and_delay_guards(void)
                               &gpio_b,
                               3u,
                               4u,
-                              &unit_delay_timer) == HAL_TIMEOUT);
+                              &unit_delay_timer,
+                              ADBMS6830_INIT_FULL_CONFIG) == HAL_TIMEOUT);
     EXPECT_TRUE(unit_spi_tx_calls == 1u);
     EXPECT_TRUE(ics[0].tx_cfgb.dcc == 0u);
     EXPECT_TRUE(ics[1].tx_cfgb.dcc == 0u);
     unit_spi_tx_status = HAL_OK;
+
+    /* Monitor-only initialization sends only the fail-safe SRST command.  It
+     * must not follow with the two CFGA/CFGB writes used by production. */
+    memset(&dev, 0, sizeof(dev));
+    memset(ics, 0xA5, sizeof(ics));
+    unit_spi_reset();
+    EXPECT_TRUE(adBms6830_init(&dev,
+                              2u,
+                              ics,
+                              2u,
+                              &spi,
+                              &gpio_a,
+                              &gpio_b,
+                              3u,
+                              4u,
+                              &unit_delay_timer,
+                              ADBMS6830_INIT_MONITOR_ONLY) == HAL_OK);
+    EXPECT_TRUE(unit_spi_tx_calls == 1u);
+    EXPECT_TRUE(ics[0].tx_cfgb.dcc == 0u);
+    EXPECT_TRUE(ics[1].tx_cfgb.dcc == 0u);
 
     unit_adbms_init_driver(&dev, ics, &spi, &gpio_a, &gpio_b, 2u);
     unit_spi_reset();
@@ -1380,6 +1404,38 @@ static void test_adbms_spi_debug_write_and_full_duplex_paths(void)
     EXPECT_TRUE(adbms6830_spi_probe_rdcfga_on_string(&dev,
                                                      (adbms_string)-1) == HAL_ERROR);
     dev.string = STRING_B;
+}
+
+static void test_adbms_sixteenth_cell_group_parse(void)
+{
+    adbms6830_driver_t dev;
+    adbms6830_asic ics[1];
+    SPI_HandleTypeDef spi;
+    GPIO_TypeDef gpio_a;
+    GPIO_TypeDef gpio_b;
+    uint8_t packet[RX_DATA] = {0};
+    const int16_t code = 12345;
+
+    memset(&dev, 0, sizeof(dev));
+    memset(ics, 0, sizeof(ics));
+    memset(&spi, 0, sizeof(spi));
+    memset(&gpio_a, 0, sizeof(gpio_a));
+    memset(&gpio_b, 0, sizeof(gpio_b));
+    unit_adbms_init_driver(&dev, ics, &spi, &gpio_a, &gpio_b, 1u);
+
+    packet[0] = (uint8_t)((uint16_t)code & 0xFFu);
+    packet[1] = (uint8_t)(((uint16_t)code >> 8u) & 0xFFu);
+    uint16_t pec = pec10_calc(1u, RX_DATA - 2u, packet);
+    packet[RX_DATA - 2u] = (uint8_t)((pec >> 8u) & 0x03u);
+    packet[RX_DATA - 1u] = (uint8_t)(pec & 0xFFu);
+
+    dev.last_cell_updated_mask[0] = 0u;
+    dev.last_cell_pec_mask[0] = 0u;
+    adbms6830_parse_cell(&dev, packet, F);
+
+    EXPECT_TRUE(dev.ics[0].cell.c_codes[15] == code);
+    EXPECT_TRUE(dev.last_cell_updated_mask[0] == 0x8000u);
+    EXPECT_TRUE(dev.last_cell_pec_mask[0] == 0u);
 }
 
 static void test_adbms_spi_debug_rd48_pec_masks_and_clear(void)
@@ -2133,6 +2189,7 @@ int main(void)
     run_test("voltage fault read failure/strings", test_voltage_fault_read_failure_precedence_and_strings);
     run_test("ADBMS topology/delay guards", test_adbms_topology_and_delay_guards);
     run_test("ADBMS SPI debug write/full-duplex", test_adbms_spi_debug_write_and_full_duplex_paths);
+    run_test("ADBMS sixteenth-cell group parse", test_adbms_sixteenth_cell_group_parse);
     run_test("ADBMS SPI rd48 PEC masks", test_adbms_spi_debug_rd48_pec_masks_and_clear);
     run_test("ADBMS SPI scope activity", test_adbms_spi_scope_activity);
     run_test("ADBMS SPI SID/status/counter diagnostics", test_adbms_spi_sid_status_and_counter_mismatch);

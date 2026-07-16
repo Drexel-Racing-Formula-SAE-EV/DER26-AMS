@@ -6,7 +6,9 @@
  *
  * Threshold basis:
  * - Molicel P42A charge voltage limit: 4.20 V/cell.
- * - Pack topology: 75s total, 15s per segment.
+ * - Production pack topology: 75s total, 15s per segment.  The isolated
+ *   EVAL-ADBMS6830BMSW profile substitutes one 16-channel monitor while
+ *   permanently inhibiting BMS_OK.
  * - Charger target is expected around 312 V, or 4.16 V/cell.
  *
  * HARD thresholds drop BMS_OK and latch. WARN/CHARGE_STOP are observable

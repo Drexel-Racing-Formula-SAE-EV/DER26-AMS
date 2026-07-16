@@ -17,8 +17,8 @@
 #include "ext_drivers/accumulator.h"
 
 #define AMS_EXPECTED_CELL_COUNT          (NSMBS * NCELLS)
-#define AMS_SERIES_CELLS                 75u
-#define AMS_SEGMENT_SERIES_CELLS         15u
+#define AMS_SERIES_CELLS                 AMS_EXPECTED_CELL_COUNT
+#define AMS_SEGMENT_SERIES_CELLS         NCELLS
 
 #define CELL_OV_WARN_MV                  4150u
 #define CELL_CHARGE_STOP_MV              4180u

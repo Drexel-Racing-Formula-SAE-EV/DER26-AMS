@@ -63,6 +63,13 @@ static uint16_t fake_adbms_updated_masks[ADBMS6830_MAX_TRACKED_ICS];
 static uint16_t fake_adbms_pec_masks[ADBMS6830_MAX_TRACKED_ICS];
 static HAL_StatusTypeDef fake_adbms_diag_status = HAL_OK;
 static uint16_t fake_adbms_config_mismatch_mask = 0u;
+static adbms6830_init_mode_t fake_adbms_init_mode = ADBMS6830_INIT_FULL_CONFIG;
+static uint32_t fake_adbms_wrcfgb_calls = 0u;
+static uint32_t fake_adbms_wrpwm_calls = 0u;
+static uint32_t fake_adbms_sid_calls = 0u;
+static uint32_t fake_adbms_open_wire_calls = 0u;
+static uint32_t fake_mux_select_calls = 0u;
+static uint32_t fake_mux_read_calls = 0u;
 static uint32_t fake_adbms_lock_depth = 0u;
 static uint32_t fake_adbms_lock_max_depth = 0u;
 static HAL_StatusTypeDef fake_tim_base_start_status = HAL_OK;
@@ -163,7 +170,7 @@ void adbms_spi_unlock(void)
 }
 
 void set_bms(bool state){
-    if(state && (app.bms_output_inhibit || ams_safety_panic_active())){
+    if(state && ((AMS_EVAL_ADBMS6830_BMSW != 0) || app.bms_output_inhibit || ams_safety_panic_active())){
         app.bms_output_block_count++;
         app.bms_state = false;
         HAL_GPIO_WritePin(BMS_OK_GPIO_Port, BMS_OK_Pin, GPIO_PIN_RESET);
@@ -259,7 +266,7 @@ static HAL_StatusTypeDef fake_adbms_wrcfgb_status = HAL_OK;
 static HAL_StatusTypeDef fake_adbms_wrpwm_status = HAL_OK;
 static HAL_StatusTypeDef fake_adbms_balance_verify_status = HAL_OK;
 static int fake_adbms_wrpwm_fail_after_ok = -1;
-HAL_StatusTypeDef adBms6830_init(adbms6830_driver_t* dev, uint8_t num_ics, adbms6830_asic* ics, uint8_t ics_capacity, SPI_HandleTypeDef* hspi, GPIO_TypeDef* cs_port_a, GPIO_TypeDef* cs_port_b, uint16_t cs_pin_a, uint16_t cs_pin_b, TIM_HandleTypeDef *htim){ if((dev == NULL) || (num_ics == 0u) || (num_ics > ics_capacity) || (num_ics > ADBMS6830_MAX_TRACKED_ICS) || (ics == NULL)){ return HAL_ERROR; } dev->num_ics=num_ics; dev->ics_capacity=ics_capacity; dev->ics=ics; dev->hspi=hspi; dev->cs_port[0]=cs_port_a; dev->cs_port[1]=cs_port_b; dev->cs_pin[0]=cs_pin_a; dev->cs_pin[1]=cs_pin_b; dev->htim=htim; dev->string=STRING_B; memset(&dev->spi_debug, 0, sizeof(dev->spi_debug)); memset(&dev->health, 0, sizeof(dev->health)); dev->spi_debug.last_status=HAL_OK; dev->spi_debug.last_tx_status=HAL_OK; dev->spi_debug.last_rx_status=HAL_OK; dev->spi_debug.last_xfer_status=HAL_OK; dev->health.last_status=HAL_OK; for(uint8_t ic=0; ic<ADBMS6830_MAX_TRACKED_ICS; ic++){ dev->last_cell_updated_mask[ic]=0u; dev->last_cell_pec_mask[ic]=0u; dev->last_temp_updated_mask[ic]=0u; } return fake_adbms_init_status; }
+HAL_StatusTypeDef adBms6830_init(adbms6830_driver_t* dev, uint8_t num_ics, adbms6830_asic* ics, uint8_t ics_capacity, SPI_HandleTypeDef* hspi, GPIO_TypeDef* cs_port_a, GPIO_TypeDef* cs_port_b, uint16_t cs_pin_a, uint16_t cs_pin_b, TIM_HandleTypeDef *htim, adbms6830_init_mode_t init_mode){ if((dev == NULL) || (num_ics == 0u) || (num_ics > ics_capacity) || (num_ics > ADBMS6830_MAX_TRACKED_ICS) || (ics == NULL)){ return HAL_ERROR; } fake_adbms_init_mode=init_mode; dev->num_ics=num_ics; dev->ics_capacity=ics_capacity; dev->ics=ics; dev->hspi=hspi; dev->cs_port[0]=cs_port_a; dev->cs_port[1]=cs_port_b; dev->cs_pin[0]=cs_pin_a; dev->cs_pin[1]=cs_pin_b; dev->htim=htim; dev->string=STRING_B; memset(&dev->spi_debug, 0, sizeof(dev->spi_debug)); memset(&dev->health, 0, sizeof(dev->health)); dev->spi_debug.last_status=HAL_OK; dev->spi_debug.last_tx_status=HAL_OK; dev->spi_debug.last_rx_status=HAL_OK; dev->spi_debug.last_xfer_status=HAL_OK; dev->health.last_status=HAL_OK; for(uint8_t ic=0; ic<ADBMS6830_MAX_TRACKED_ICS; ic++){ dev->last_cell_updated_mask[ic]=0u; dev->last_cell_pec_mask[ic]=0u; dev->last_temp_updated_mask[ic]=0u; } return fake_adbms_init_status; }
 static HAL_StatusTypeDef fake_adbms_wrpwm_next_status(void)
 {
     if(fake_adbms_wrpwm_fail_after_ok == 0)
@@ -272,7 +279,7 @@ static HAL_StatusTypeDef fake_adbms_wrpwm_next_status(void)
     }
     return fake_adbms_wrpwm_status;
 }
-void adbms6830_reset_cfg(adbms6830_driver_t *dev){(void)dev;} void adbms6830_srst(adbms6830_driver_t *dev){(void)dev;} void adbms6830_wrcfga(adbms6830_driver_t *dev){(void)dev;} void adbms6830_wrcfgb(adbms6830_driver_t *dev){(void)adbms6830_wrcfgb_checked(dev);} HAL_StatusTypeDef adbms6830_wrcfgb_checked(adbms6830_driver_t *dev){(void)dev; return fake_adbms_wrcfgb_status;} HAL_StatusTypeDef adbms6830_wrpwma_checked(adbms6830_driver_t *dev){(void)dev; return fake_adbms_wrpwm_next_status();} HAL_StatusTypeDef adbms6830_wrpwmb_checked(adbms6830_driver_t *dev){(void)dev; return fake_adbms_wrpwm_next_status();} HAL_StatusTypeDef adbms6830_write_pwm_checked(adbms6830_driver_t *dev){(void)dev; return fake_adbms_wrpwm_next_status();} void adbms6830_rdcfga(adbms6830_driver_t *dev){(void)dev;} void adbms6830_rdcfgb(adbms6830_driver_t *dev){(void)dev;}
+void adbms6830_reset_cfg(adbms6830_driver_t *dev){(void)dev;} void adbms6830_srst(adbms6830_driver_t *dev){(void)dev;} void adbms6830_wrcfga(adbms6830_driver_t *dev){(void)dev;} void adbms6830_wrcfgb(adbms6830_driver_t *dev){(void)adbms6830_wrcfgb_checked(dev);} HAL_StatusTypeDef adbms6830_wrcfgb_checked(adbms6830_driver_t *dev){(void)dev; fake_adbms_wrcfgb_calls++; return fake_adbms_wrcfgb_status;} HAL_StatusTypeDef adbms6830_wrpwma_checked(adbms6830_driver_t *dev){(void)dev; fake_adbms_wrpwm_calls++; return fake_adbms_wrpwm_next_status();} HAL_StatusTypeDef adbms6830_wrpwmb_checked(adbms6830_driver_t *dev){(void)dev; fake_adbms_wrpwm_calls++; return fake_adbms_wrpwm_next_status();} HAL_StatusTypeDef adbms6830_write_pwm_checked(adbms6830_driver_t *dev){(void)dev; fake_adbms_wrpwm_calls++; return fake_adbms_wrpwm_next_status();} void adbms6830_rdcfga(adbms6830_driver_t *dev){(void)dev;} void adbms6830_rdcfgb(adbms6830_driver_t *dev){(void)dev;}
 HAL_StatusTypeDef adbms6830_verify_balance_readback(adbms6830_driver_t *dev){(void)dev; return fake_adbms_balance_verify_status;}
 void adbms6830_adcv(adbms6830_driver_t *dev, RD rd, CONT cont, DCP dcp, RSTF rstf, OW_C_S owcs){(void)dev;(void)rd;(void)cont;(void)dcp;(void)rstf;(void)owcs;} void adbms6830_wakeup(adbms6830_driver_t* dev){(void)dev;} HAL_StatusTypeDef adbms6830_wakeup_checked(adbms6830_driver_t* dev){return (dev != NULL) ? HAL_OK : HAL_ERROR;} HAL_StatusTypeDef adbms6830_us_delay(adbms6830_driver_t* dev, uint16_t microseconds){(void)dev;(void)microseconds; return HAL_OK;} HAL_StatusTypeDef adbms6830_start_adc_cell_voltage_measurement(adbms6830_driver_t *dev){return (dev != NULL) ? HAL_OK : HAL_ERROR;} void adbms6830_parse_cell(adbms6830_driver_t *dev, uint8_t *data, GRP grp){(void)dev;(void)data;(void)grp;}
 void adbms6830_wakeup_cold(adbms6830_driver_t* dev){ if(dev){ dev->spi_debug.last_op = ADBMS6830_SPI_OP_COLD_WAKE; } }
@@ -284,11 +291,11 @@ HAL_StatusTypeDef adbms6830_read_cell_voltages(adbms6830_driver_t *dev){
         }
         for(uint8_t ic=0; (dev->ics != NULL) && (ic < (uint8_t)dev->num_ics) && (ic < ADBMS6830_MAX_TRACKED_ICS); ic++){
             if(fake_adbms_use_custom_voltage_masks){
-                dev->last_cell_updated_mask[ic]=(uint16_t)(fake_adbms_updated_masks[ic] & 0x7FFFu);
-                dev->last_cell_pec_mask[ic]=(uint16_t)(fake_adbms_pec_masks[ic] & 0x7FFFu);
+                dev->last_cell_updated_mask[ic]=(uint16_t)(fake_adbms_updated_masks[ic] & ACCUMULATOR_CELL_MASK);
+                dev->last_cell_pec_mask[ic]=(uint16_t)(fake_adbms_pec_masks[ic] & ACCUMULATOR_CELL_MASK);
             }
             else{
-                dev->last_cell_updated_mask[ic]=0x7FFFu;
+                dev->last_cell_updated_mask[ic]=ACCUMULATOR_CELL_MASK;
                 dev->last_cell_pec_mask[ic]=0u;
             }
         }
@@ -359,6 +366,7 @@ HAL_StatusTypeDef adbms6830_scope_activity(adbms6830_driver_t *dev, adbms_string
 }
 HAL_StatusTypeDef adbms6830_read_sid(adbms6830_driver_t *dev){
     if(dev == NULL) return HAL_ERROR;
+    fake_adbms_sid_calls++;
     for(uint8_t ic = 0u; (dev->ics != NULL) && (ic < (uint8_t)dev->num_ics) && (ic < ADBMS6830_MAX_TRACKED_ICS); ic++){
         for(uint8_t b = 0u; b < RSID; b++){
             dev->diag[ic].sid[b] = (uint8_t)(0x10u + (ic * 0x10u) + b);
@@ -425,6 +433,7 @@ HAL_StatusTypeDef adbms6830_run_cell_adc_self_test(adbms6830_driver_t *dev){
 }
 HAL_StatusTypeDef adbms6830_run_open_wire_check(adbms6830_driver_t *dev, bool odd_channels){
     if(dev == NULL) return HAL_ERROR;
+    fake_adbms_open_wire_calls++;
     dev->health.last_op = odd_channels ? ADBMS6830_SPI_OP_OPEN_WIRE_ODD : ADBMS6830_SPI_OP_OPEN_WIRE_EVEN;
     dev->health.last_status = fake_adbms_diag_status;
     dev->spi_debug.last_op = dev->health.last_op;
@@ -443,6 +452,7 @@ HAL_StatusTypeDef adbms6830_run_aux_gpio_diagnostic(adbms6830_driver_t *dev){
 }
 
 int mux_read_gpio_voltage(adbms6830_driver_t *dev, uint8_t sensor_num){
+    fake_mux_read_calls++;
     if(fake_mux_write_enable && dev && dev->ics && dev->num_ics > 0 && sensor_num < 24){
         for(uint8_t ic = 0u; ic < (uint8_t)dev->num_ics && ic < ADBMS6830_MAX_TRACKED_ICS; ic++){
             dev->ics[ic].temp.raw[sensor_num] = (int16_t)((2.5f/0.000150f)-10000.0f);
@@ -459,7 +469,7 @@ int mux_read_gpio_voltage(adbms6830_driver_t *dev, uint8_t sensor_num){
 int adbms6830_read_temp_raw(adbms6830_driver_t *dev, uint8_t ic_idx, uint8_t sensor_num, int16_t *out_raw){ (void)dev;(void)ic_idx;(void)sensor_num; if(out_raw) *out_raw=0; return 0; }
 float adbms6830_convert_temp(adbms6830_driver_t *dev, uint8_t ic_idx, uint8_t sensor_num, float vref){ (void)dev;(void)ic_idx;(void)sensor_num;(void)vref; return 25.0f; }
 float voltage_to_temp(float raw){ float voltage = ((float)raw + 10000.0f) * 0.000150f; if(voltage <= 0.0f || voltage >= 5.0f) return NAN; float resistance = 10000.0f * (5.0f - voltage) / voltage; float x = logf(resistance / 10000.0f); return (1.0f / (3.354016435e-3f + 2.565235509e-4f * x)) - 273.15f; }
-int mux_set_channel(adbms6830_driver_t *dev, uint8_t sensor_num){ (void)dev; return sensor_num < 24 ? 0 : -1; }
+int mux_set_channel(adbms6830_driver_t *dev, uint8_t sensor_num){ (void)dev; fake_mux_select_calls++; return sensor_num < 24 ? 0 : -1; }
 
 void adbms2950_gpo_set(adbms2950_driver_t *dev, GPO gp, CFGA_GPO state){(void)dev;(void)gp;(void)state;} void adbms2950_wakeup(adbms2950_driver_t *dev){(void)dev;} void adbms2950_wrcfga(adbms2950_driver_t *dev){(void)dev;} void adbms2950_rdcfga(adbms2950_driver_t *dev){(void)dev;} void adbms2950_rdvb(adbms2950_driver_t *dev){(void)dev;} void adbms2950_rdi(adbms2950_driver_t *dev){(void)dev;} void adbms2950_adv(adbms2950_driver_t *dev, adv_ *adv){(void)dev;(void)adv;} void adbms2950_plv(adbms2950_driver_t *dev){(void)dev;} void adbms2950_rdv1d(adbms2950_driver_t *dev){(void)dev;}
 void adbms2950_spi_debug_enable(adbms2950_driver_t *dev, bool enable){ if(dev) dev->spi_debug.enabled = enable; }
@@ -641,7 +651,7 @@ static void host_mark_updated_cells(app_data_t *d)
     if(d == NULL) return;
     for(uint8_t ic = 0u; ic < NSMBS; ic++)
     {
-        d->acc.smb.last_cell_updated_mask[ic] = (ic < (uint8_t)d->acc.smb.num_ics) ? 0x7FFFu : 0u;
+        d->acc.smb.last_cell_updated_mask[ic] = (ic < (uint8_t)d->acc.smb.num_ics) ? ACCUMULATOR_CELL_MASK : 0u;
         d->acc.smb.last_cell_pec_mask[ic] = 0u;
     }
 }
@@ -1042,7 +1052,7 @@ static void fill_nominal_pack(app_data_t *d, float base_v){
     d->acc.smb.num_ics = NSMBS; d->acc.smb.ics = d->acc.smb_ics;
     for(int ic=0; ic<NSMBS; ic++){
         for(int c=0;c<NCELLS;c++) d->acc.smb_ics[ic].cell.c_codes[c] = code_for_volts(base_v);
-        d->acc.smb.last_cell_updated_mask[ic] = 0x7FFFu;
+        d->acc.smb.last_cell_updated_mask[ic] = ACCUMULATOR_CELL_MASK;
         d->acc.smb.last_cell_pec_mask[ic] = 0u;
     }
     for(int ic=0; ic<NSMBS; ic++) for(int s=0;s<NTEMPS;s++) d->acc.smb_ics[ic].temp.raw[s] = raw_for_ntc_voltage(2.5f);
@@ -1356,7 +1366,7 @@ static void fake_adbms_voltage_masks_full_update(void)
     fake_adbms_use_custom_voltage_masks = false;
     for(uint8_t ic = 0u; ic < ADBMS6830_MAX_TRACKED_ICS; ic++)
     {
-        fake_adbms_updated_masks[ic] = 0x7FFFu;
+        fake_adbms_updated_masks[ic] = ACCUMULATOR_CELL_MASK;
         fake_adbms_pec_masks[ic] = 0u;
     }
 }
@@ -1367,7 +1377,7 @@ static void fake_adbms_voltage_masks_all_missing(bool pec_fail)
     for(uint8_t ic = 0u; ic < ADBMS6830_MAX_TRACKED_ICS; ic++)
     {
         fake_adbms_updated_masks[ic] = 0u;
-        fake_adbms_pec_masks[ic] = pec_fail ? 0x7FFFu : 0u;
+        fake_adbms_pec_masks[ic] = pec_fail ? ACCUMULATOR_CELL_MASK : 0u;
     }
 }
 
@@ -1376,7 +1386,7 @@ static void fake_adbms_voltage_masks_one_missing(uint8_t seg, uint8_t cell, bool
     fake_adbms_use_custom_voltage_masks = true;
     for(uint8_t ic = 0u; ic < ADBMS6830_MAX_TRACKED_ICS; ic++)
     {
-        fake_adbms_updated_masks[ic] = 0x7FFFu;
+        fake_adbms_updated_masks[ic] = ACCUMULATOR_CELL_MASK;
         fake_adbms_pec_masks[ic] = 0u;
     }
 
@@ -6178,6 +6188,137 @@ static void test_periods_and_driver_edge_cases(void){
 }
 
 
+#if AMS_HOST_ONLY_EVAL_PROFILE_TEST
+static void test_eval_profile_topology_and_monitor_only_init(void)
+{
+    accumulator_t acc;
+    SPI_HandleTypeDef spi = {0};
+    GPIO_TypeDef gpio_a = {0};
+    GPIO_TypeDef gpio_b = {0};
+    TIM_HandleTypeDef timer = {0};
+
+    CHECK(AMS_EVAL_ADBMS6830_BMSW == 1);
+    CHECK(AMS_HW_BRINGUP == 1);
+    CHECK(AMS_HW_BRINGUP_BMS_OK_RELEASED_DEFAULT == 0);
+    CHECK(AMS_HW_BRINGUP_BALANCE_INHIBIT_DEFAULT == 1);
+    CHECK(NSMBS == 1u);
+    CHECK(NCELLS == 16u);
+    CHECK(ACCUMULATOR_CELL_MASK == 0xFFFFu);
+    CHECK(AMS_ADBMS_FULL_CONFIG_ON_INIT == 0);
+    CHECK(AMS_ADBMS_TEMP_MUX_ENABLED == 0);
+    CHECK(AMS_ADBMS_BALANCE_WRITES_ENABLED == 0);
+    CHECK(AMS_ADBMS_OPEN_WIRE_ENABLED == 0);
+
+    fake_adbms_init_mode = ADBMS6830_INIT_FULL_CONFIG;
+    fake_adbms_sid_calls = 0u;
+    fake_adbms_wrcfgb_calls = 0u;
+    fake_adbms_wrpwm_calls = 0u;
+    memset(&acc, 0xA5, sizeof(acc));
+    accumulator_init(&acc,
+                     &spi,
+                     &gpio_a,
+                     &gpio_b,
+                     1u,
+                     2u,
+                     &timer);
+
+    CHECK(acc.smb.num_ics == 1);
+    CHECK(acc.smb.ics_capacity == 1u);
+    CHECK(acc.smb.ics == acc.smb_ics);
+    CHECK(fake_adbms_init_mode == ADBMS6830_INIT_MONITOR_ONLY);
+    CHECK(fake_adbms_sid_calls == 1u);
+    CHECK(fake_adbms_wrcfgb_calls == 0u);
+    CHECK(fake_adbms_wrpwm_calls == 0u);
+    CHECK(acc.delay_timer_ready == true);
+    CHECK(acc.smb_ready == true);
+
+    for(uint8_t cell = 0u; cell < NCELLS; cell++)
+    {
+        acc.smb_ics[0].cell.c_codes[cell] = code_for_volts(3.3f);
+    }
+    acc.smb.last_cell_updated_mask[0] = ACCUMULATOR_CELL_MASK;
+    acc.smb.last_cell_pec_mask[0] = 0u;
+    accumulator_update_voltage_stats_at(&acc, 100u);
+    CHECK(acc.updated_voltage_count == 16u);
+    CHECK(acc.usable_voltage_count == 16u);
+    CHECK(acc.voltage_full_updated == true);
+    CHECK(acc.voltage_full_usable == true);
+}
+
+static void test_eval_profile_blocks_actuating_paths(void)
+{
+    char *bms_release[] = {"bmsok", "release", NULL};
+    char *balance_release[] = {"balance", "release", NULL};
+    char *balance_clear[] = {"balance", "clear", NULL};
+    char *state_charge[] = {"state", "charge", NULL};
+    char *temp_sensor[] = {"tempsns", "0", "0", NULL};
+    char *open_wire[] = {"spi", "oweven", NULL};
+
+    init_fake_app();
+    sil_prepare_cli_capture();
+    app.bms_output_inhibit = true;
+    app.balance_inhibit = true;
+    fake_adbms_wrcfgb_calls = 0u;
+    fake_adbms_wrpwm_calls = 0u;
+    fake_adbms_open_wire_calls = 0u;
+    fake_mux_select_calls = 0u;
+    fake_mux_read_calls = 0u;
+
+    CHECK(accumulator_read_temp(&app.acc) == ACCUMULATOR_STATUS_UNAVAILABLE);
+    CHECK(accumulator_set_mux_ch(&app.acc, 0u, MUX_ADDR7_00) == ACCUMULATOR_STATUS_UNAVAILABLE);
+    CHECK(accumulator_set_balance(&app.acc) == ACCUMULATOR_STATUS_DISABLED);
+    CHECK(accumulator_clear_balance(&app.acc) == ACCUMULATOR_STATUS_DISABLED);
+    CHECK(fake_mux_select_calls == 0u);
+    CHECK(fake_mux_read_calls == 0u);
+    CHECK(fake_adbms_wrcfgb_calls == 0u);
+    CHECK(fake_adbms_wrpwm_calls == 0u);
+
+    CHECK(bmsok_control(2, bms_release) == 0);
+    CHECK(app.bms_output_inhibit == true);
+    CHECK(app.bms_state == false);
+    CHECK(strstr(cli_capture, "permanently output-inhibited") != NULL);
+
+    cli_capture_clear();
+    CHECK(balance_control(2, balance_release) == 0);
+    CHECK(balance_control(2, balance_clear) == 0);
+    CHECK(app.balance_inhibit == true);
+    CHECK(fake_adbms_wrcfgb_calls == 0u);
+    CHECK(fake_adbms_wrpwm_calls == 0u);
+
+    cli_capture_clear();
+    CHECK(set_state(2, state_charge) == 0);
+    CHECK(app.state == STATE_START);
+    CHECK(strstr(cli_capture, "START/monitor") != NULL);
+
+    cli_capture_clear();
+    CHECK(get_temperature_sensor(3, temp_sensor) == 0);
+    CHECK(fake_mux_select_calls == 0u);
+    CHECK(fake_mux_read_calls == 0u);
+
+    cli_capture_clear();
+    CHECK(get_spi_debug(2, open_wire) == 0);
+    CHECK(fake_adbms_open_wire_calls == 0u);
+    CHECK(strstr(cli_capture, "blocked") != NULL);
+
+    run_one_adbms_task_iteration(&app);
+    CHECK(fake_adbms_wrcfgb_calls == 0u);
+    CHECK(fake_adbms_wrpwm_calls == 0u);
+    CHECK(fake_adbms_open_wire_calls == 0u);
+    CHECK(fake_mux_select_calls == 0u);
+    CHECK(fake_mux_read_calls == 0u);
+
+    app.temp_valid = false;
+    app.temp_read_fault = true;
+    run_one_fan_task_iteration(&app);
+    CHECK(app.fan_command_percent == 0.0f);
+
+    run_one_estimator_task_iteration(&app);
+    CHECK(app.estimator.enabled == 0u);
+    CHECK(app.estimator.instance_count == 0u);
+    CHECK((app.estimator.fault_flags & AMS_EKF_FAULT_DISABLED) != 0u);
+}
+#endif
+
 #if AMS_HOST_PRODUCTION_GATE_TEST
 static void test_production_safety_gates(void)
 {
@@ -6288,7 +6429,14 @@ static void test_production_safety_gates(void)
 #endif
 
 int main(void){
-#if AMS_HOST_PRODUCTION_GATE_TEST
+#if AMS_HOST_ONLY_EVAL_PROFILE_TEST
+    test_eval_profile_topology_and_monitor_only_init();
+    puts("PASS eval topology/monitor-only initialization");
+    test_eval_profile_blocks_actuating_paths();
+    puts("PASS eval actuating-path lockouts");
+    puts("ALL EVAL-ADBMS6830BMSW PROFILE TESTS PASSED");
+    return 0;
+#elif AMS_HOST_PRODUCTION_GATE_TEST
     test_production_safety_gates();
     puts("PASS production HIL/service/IMD/supervisor gates");
     puts("ALL PRODUCTION SAFETY GATE TESTS PASSED");

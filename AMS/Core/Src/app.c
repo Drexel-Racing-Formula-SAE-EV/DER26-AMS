@@ -304,14 +304,18 @@ void app_create(void)
 	app.heartbeat_stale_mask = 0u;
 	app.heartbeat_seen_mask = 0u;
     app.bms_state     = false;
-#if AMS_HW_BRINGUP && !AMS_HW_BRINGUP_BMS_OK_RELEASED_DEFAULT
+#if AMS_EVAL_ADBMS6830_BMSW
+	app.bms_output_inhibit = true;
+#elif AMS_HW_BRINGUP && !AMS_HW_BRINGUP_BMS_OK_RELEASED_DEFAULT
 	app.bms_output_inhibit = true;
 #else
 	app.bms_output_inhibit = false;
 #endif
 	app.bms_output_block_count = 0u;
 	app.bms_supervisor_ready = false;
-#if AMS_HW_BRINGUP_BALANCE_INHIBIT_DEFAULT
+#if AMS_EVAL_ADBMS6830_BMSW
+	app.balance_inhibit = true;
+#elif AMS_HW_BRINGUP_BALANCE_INHIBIT_DEFAULT
 	app.balance_inhibit = true;
 #else
 	app.balance_inhibit = false;
@@ -386,8 +390,8 @@ void app_create(void)
 	if(!app.acc.delay_timer_ready || !app.acc.smb_ready)
 	{
 		/* ADBMS startup is not trustworthy without the microsecond timer and a
-		 * successful reset/config write/readback sequence. Keep the supervisor inhibited
-		 * even if a later undelayed transaction happens to return data. */
+		 * successful profile-specific initialization/readback sequence. Keep the
+		 * supervisor inhibited even if a later transaction returns data. */
 		app.adbms_status_fault = true;
 		app.adbms_diag_fault = true;
 		app.adbms_last_diag_status = !app.acc.smb_ready ?
@@ -453,6 +457,7 @@ void set_bms(bool state)
 	}
 
 	if(state && (!assertion_owner ||
+	             (AMS_EVAL_ADBMS6830_BMSW != 0) ||
 	             app.bms_output_inhibit ||
 	             ams_safety_panic_active()))
 	{

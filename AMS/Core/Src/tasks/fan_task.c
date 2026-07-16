@@ -17,6 +17,7 @@ void fan_task_fn(void *argument);
 #define FAN_CHARGE_WARM_PERCENT       35.0f
 #define FAN_OFF_HYSTERESIS_C           3.0f
 
+#if AMS_EVAL_FAN_OUTPUTS_ENABLED
 static float fan_temp_for_control(const app_data_t *data)
 {
     if(data == NULL)
@@ -129,6 +130,7 @@ static float fan_percent_from_temp(const app_data_t *data, uint8_t *reason_out)
     if(reason_out != NULL) *reason_out = FAN_CONTROL_REASON_RAMP;
     return percent;
 }
+#endif
 
 TaskHandle_t fan_task_start(app_data_t *data)
 {
@@ -160,7 +162,15 @@ void fan_task_fn(void *argument)
     {
         entry = osKernelGetTickCount();
 
+#if AMS_EVAL_FAN_OUTPUTS_ENABLED
         percent = fan_percent_from_temp(data, &reason);
+#else
+        /* This branch is an isolated ADBMS monitor test, not a vehicle
+         * thermal-control build.  Missing DER thermistors must not drive all
+         * six fan outputs to 100 percent during bench bring-up. */
+        percent = 0.0f;
+        reason = FAN_CONTROL_REASON_OFF_COOL;
+#endif
         data->fan_state = (percent > 0.5f);
         data->fan_command_percent = percent;
         data->fan_control_reason = reason;

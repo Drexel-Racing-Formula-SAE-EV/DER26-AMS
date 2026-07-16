@@ -22,6 +22,8 @@ UNIT_SRC := unit/ams_unit_test_runner.c
 UNIT_BIN = $(BUILD_DIR)/ams_unit_tests
 OWNER_SRC := production/bms_owner_test.c
 OWNER_BIN = $(BUILD_DIR)/bms_owner_test
+EVAL_OWNER_SRC := production/eval_bms_lock_test.c
+EVAL_OWNER_BIN = $(BUILD_DIR)/eval_bms_lock_test
 ESTIMATOR_SRC := \
 	$(AMS_ROOT)/Core/Src/estimator/ams_soc_ekf.c \
 	$(AMS_ROOT)/Core/Src/estimator/ams_estimator_lut.c
@@ -32,7 +34,8 @@ ADBMS2950_SRC := \
 COMMON_DEFS := \
 	-DSTM32F767xx \
 	-DUSE_HAL_DRIVER \
-	-DAMS_HOST_TEST=1
+	-DAMS_HOST_TEST=1 \
+	-DAMS_EVAL_ADBMS6830_BMSW=0
 
 HOST_EXERCISE_DEFS := \
 	-DAMS_ENABLE_HIL_CAN=1 \
@@ -63,7 +66,7 @@ WARN := \
 CFLAGS_COMMON := -std=c11 -g -O0 $(WARN) $(COMMON_DEFS) $(INC)
 LDLIBS := -lm
 
-.PHONY: help check-root compile unit test production-gates system-sil bringup-test hil-adbms-test imd-test safety-test stress ci asan ubsan analyze clang-analyze clean list make-build-dir
+.PHONY: help check-root compile unit test production-gates eval-adbms6830-test eval-adbms6830-sanitize eval-adbms6830-analyze system-sil bringup-test hil-adbms-test imd-test safety-test stress ci asan ubsan analyze clang-analyze clean list make-build-dir
 
 help:
 	@echo "DER26 AMS host test harness"
@@ -72,6 +75,9 @@ help:
 	@echo "  make unit          Build and run isolated unit tests"
 	@echo "  make test          Build and run comprehensive host tests"
 	@echo "  make production-gates Verify HIL/service CLI are disabled by default"
+	@echo "  make eval-adbms6830-test Verify the one-IC/16-cell monitor-only eval profile"
+	@echo "  make eval-adbms6830-sanitize Run eval profile with AddressSanitizer + UBSan"
+	@echo "  make eval-adbms6830-analyze Run GCC static analyzer on the eval profile"
 	@echo "  make system-sil    Alias for comprehensive system-level SIL/injection tests"
 	@echo "  make bringup-test  Run comprehensive tests with AMS_HW_BRINGUP=1"
 	@echo "  make hil-adbms-test Run focused CAN-fed ADBMS replacement tests"
@@ -109,7 +115,7 @@ unit: check-root make-build-dir
 	$(CC) $(CFLAGS_COMMON) $(UNIT_SRC) $(ESTIMATOR_SRC) $(ADBMS2950_SRC) -o $(UNIT_BIN) $(LDLIBS)
 	$(UNIT_BIN)
 
-ci: unit test production-gates analyze
+ci: unit test production-gates eval-adbms6830-test analyze
 
 # Normal run: catches logic regressions and compile/link problems.
 test: CFLAGS_COMMON += $(HOST_EXERCISE_DEFS)
@@ -126,6 +132,36 @@ production-gates: check-root
 		$(AMS_ROOT)/Core/Src/app.c $(OWNER_SRC) \
 		-Wl,--gc-sections -o $(OWNER_BIN) $(LDLIBS)
 	$(OWNER_BIN)
+
+eval-adbms6830-test: BUILD_DIR = build-eval-adbms6830
+eval-adbms6830-test: CFLAGS_COMMON += -UAMS_EVAL_ADBMS6830_BMSW -DAMS_EVAL_ADBMS6830_BMSW=1 -DAMS_HOST_ONLY_EVAL_PROFILE_TEST=1
+eval-adbms6830-test: check-root
+	@mkdir -p "$(BUILD_DIR)"
+	$(CC) $(CFLAGS_COMMON) $(SRC) -o $(BIN) $(LDLIBS)
+	$(BIN)
+	$(CC) $(CFLAGS_COMMON) -ffunction-sections -fdata-sections \
+		$(AMS_ROOT)/Core/Src/app.c $(EVAL_OWNER_SRC) \
+		-Wl,--gc-sections -o $(EVAL_OWNER_BIN) $(LDLIBS)
+	$(EVAL_OWNER_BIN)
+
+eval-adbms6830-sanitize: BUILD_DIR = build-eval-adbms6830-sanitize
+eval-adbms6830-sanitize: CFLAGS_COMMON += -UAMS_EVAL_ADBMS6830_BMSW -DAMS_EVAL_ADBMS6830_BMSW=1 -DAMS_HOST_ONLY_EVAL_PROFILE_TEST=1
+eval-adbms6830-sanitize: check-root
+	@mkdir -p "$(BUILD_DIR)"
+	$(CC) $(CFLAGS_COMMON) -fsanitize=address,undefined -fno-omit-frame-pointer \
+		$(SRC) -o $(BIN)-sanitize $(LDLIBS)
+	ASAN_OPTIONS=detect_leaks=0 $(BIN)-sanitize
+	$(CC) $(CFLAGS_COMMON) -fsanitize=address,undefined -fno-omit-frame-pointer \
+		-ffunction-sections -fdata-sections $(AMS_ROOT)/Core/Src/app.c $(EVAL_OWNER_SRC) \
+		-Wl,--gc-sections -o $(EVAL_OWNER_BIN)-sanitize $(LDLIBS)
+	ASAN_OPTIONS=detect_leaks=0 $(EVAL_OWNER_BIN)-sanitize
+
+eval-adbms6830-analyze: BUILD_DIR = build-eval-adbms6830-analyze
+eval-adbms6830-analyze: CFLAGS_COMMON += -UAMS_EVAL_ADBMS6830_BMSW -DAMS_EVAL_ADBMS6830_BMSW=1 -DAMS_HOST_ONLY_EVAL_PROFILE_TEST=1
+eval-adbms6830-analyze: check-root
+	@mkdir -p "$(BUILD_DIR)"
+	$(CC) $(CFLAGS_COMMON) -fanalyzer -fsyntax-only $(SRC)
+	$(CC) $(CFLAGS_COMMON) -fanalyzer -fsyntax-only $(AMS_ROOT)/Core/Src/app.c $(EVAL_OWNER_SRC)
 
 system-sil: test
 

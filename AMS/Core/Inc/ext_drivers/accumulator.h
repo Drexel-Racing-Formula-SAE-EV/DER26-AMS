@@ -10,14 +10,21 @@
 #define INC_EXT_DRIVERS_ACCUMULATOR_H_
 
 #include <stdbool.h>
+#include "ams_build_profile.h"
 #include "stm32f7xx_hal.h"
 #include "ext_drivers/adbms2950.h"
 #include "ext_drivers/adbms6830_functions.h"
 
 /* SMB Macros */
 #define NSEGS 1
-#define NCELLS 15
+#define NCELLS AMS_ADBMS_CELL_COUNT
 #define NTEMPS 24
+#define ACCUMULATOR_CELL_MASK ((uint16_t)((NCELLS == 16u) ? 0xFFFFu : ((1u << NCELLS) - 1u)))
+
+#define ACCUMULATOR_STATUS_OK           0
+#define ACCUMULATOR_STATUS_ERROR       -1
+#define ACCUMULATOR_STATUS_UNAVAILABLE -2
+#define ACCUMULATOR_STATUS_DISABLED    -3
 #define MUX_ADDR7_00 0x4C
 #define MUX_ADDR7_01 0x4D
 #define MUX_ADDR7_02 0x4E
@@ -54,11 +61,23 @@
 #define AMS_ENABLE_APM_2950_DEBUG 0
 #endif
 
+#if AMS_EVAL_ADBMS6830_BMSW && AMS_ENABLE_APM_2950_DEBUG
+#error "ADBMS2950/APM debug must remain disabled in the 6830 eval-board profile"
+#endif
+
 #define NAPMS 1
 #define HVEN1 GPO1
 #define HVEN2 GPO2
 
-#define NSMBS 5
+#define NSMBS AMS_ADBMS_MONITOR_COUNT
+
+#if (NSMBS < 1u) || (NSMBS > ADBMS6830_MAX_TRACKED_ICS)
+#error "NSMBS must fit the ADBMS6830 tracked-IC capacity"
+#endif
+
+#if (NCELLS < 1u) || (NCELLS > CELL)
+#error "NCELLS must fit the ADBMS6830 cell-channel capacity"
+#endif
 
 typedef struct
 {

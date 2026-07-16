@@ -84,6 +84,7 @@ static void adbms_task_run_periodic_diagnostics(app_data_t *data)
 
     if((data->adbms_scan_count % ADBMS_CONFIG_DIAG_PERIOD_CYCLES) == 0u)
     {
+#if AMS_ADBMS_FULL_CONFIG_ON_INIT
         const adbms6830_diag_health_t *health;
 
         status = adbms6830_verify_config_readback(smb);
@@ -95,8 +96,20 @@ static void adbms_task_run_periodic_diagnostics(app_data_t *data)
                                     ((health != NULL) &&
                                      (health->config_mismatch_mask != 0u)));
         taskEXIT_CRITICAL();
+#else
+        /* Eval-board monitor mode intentionally leaves reset-default CFGA/B
+         * in place.  Use a PEC/counter-checked RDCFGA probe as the periodic
+         * link-integrity check instead of comparing against the DER config. */
+        status = adbms6830_spi_probe_rdcfga(smb);
+        taskENTER_CRITICAL();
+        data->adbms_last_diag_status = status;
+        data->adbms_config_diag_count++;
+        data->adbms_config_fault = (status != HAL_OK);
+        taskEXIT_CRITICAL();
+#endif
     }
 
+#if AMS_ADBMS_OPEN_WIRE_ENABLED
     if(((data->adbms_scan_count % ADBMS_OPEN_WIRE_DIAG_PERIOD_CYCLES) == 0u) &&
        adbms_open_wire_auto_allowed(data))
     {
@@ -108,6 +121,7 @@ static void adbms_task_run_periodic_diagnostics(app_data_t *data)
         data->adbms_open_wire_fault = (status != HAL_OK);
         taskEXIT_CRITICAL();
     }
+#endif
 
     taskENTER_CRITICAL();
     data->adbms_diag_fault = (data->adbms_config_fault ||
@@ -362,7 +376,7 @@ void adbms_task_fn(void *argument)
 #endif
 
 	    /* Turn off balancing before reading so cell voltages recover from load. */
-#if !AMS_HIL_REPLACE_ADBMS
+#if !AMS_HIL_REPLACE_ADBMS && AMS_ADBMS_BALANCE_WRITES_ENABLED
 	    if(!adbms_record_balance_write_result(data, accumulator_clear_balance(acc)))
 	    {
             adbms_diag_was_faulted = true;
@@ -463,7 +477,7 @@ void adbms_task_fn(void *argument)
 	     * permitted to drive the output high. */
 
         /* Voltage charge-stop can still balance; hard faults/temp stop cannot. */
-#if !AMS_HIL_REPLACE_ADBMS
+#if !AMS_HIL_REPLACE_ADBMS && AMS_ADBMS_BALANCE_WRITES_ENABLED
 	        if((data->state == STATE_CHARGE) &&
 	           !data->balance_inhibit &&
 	           data->voltage_valid &&

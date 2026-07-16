@@ -32,6 +32,7 @@ int smb_read_temp(adbms6830_driver_t* dev);
 void apm_read_vbadc_viadc(adbms2950_driver_t* apm);
 void apm_read_temps(adbms2950_driver_t* apm);
 
+#if AMS_ADBMS_BALANCE_WRITES_ENABLED
 static void accumulator_clear_balance_shadow(adbms6830_asic *ic)
 {
     if(ic == NULL)
@@ -89,6 +90,7 @@ static void accumulator_best_effort_clear_balance_locked(adbms6830_driver_t *smb
     (void)adbms6830_wrcfgb_checked(smb);
     (void)adbms6830_write_pwm_checked(smb);
 }
+#endif
 
 void accumulator_init(accumulator_t *dev,
 				      SPI_HandleTypeDef *hspi,
@@ -217,9 +219,15 @@ void accumulator_init(accumulator_t *dev,
 	                                      cs_port_b,
 	                                      cs_pin_a,
 	                                      cs_pin_b,
-	                                      ready_timer);
+	                                      ready_timer,
+#if AMS_ADBMS_FULL_CONFIG_ON_INIT
+                                          ADBMS6830_INIT_FULL_CONFIG);
+#else
+                                          ADBMS6830_INIT_MONITOR_ONLY);
+#endif
 	if(dev->smb_init_status == HAL_OK)
 	{
+#if AMS_ADBMS_FULL_CONFIG_ON_INIT
 		const adbms6830_diag_health_t *health;
 
 		/* A successful write only proves that the MCU completed the SPI
@@ -234,6 +242,14 @@ void accumulator_init(accumulator_t *dev,
 			dev->smb_init_status = HAL_ERROR;
 		}
 		adbms_spi_unlock();
+#else
+        /* The eval profile does not write CFGA/CFGB.  Prove that the single
+         * monitor responds with a valid SID packet before declaring the link
+         * ready, without comparing against an unwritten DER configuration. */
+        adbms_spi_lock();
+        dev->smb_init_status = adbms6830_read_sid(&dev->smb);
+        adbms_spi_unlock();
+#endif
 	}
 	dev->smb_ready = (dev->smb_init_status == HAL_OK);
 }
@@ -414,9 +430,18 @@ int accumulator_read_temp(accumulator_t *dev)
 {
 	if(dev == NULL)
 	{
-		return -1;
+		return ACCUMULATOR_STATUS_ERROR;
 	}
 
+#if !AMS_ADBMS_TEMP_MUX_ENABLED
+    /* The ADI eval board has no DER SMB ADG728 thermistor network.  Clear the
+     * per-scan publication masks and make the unavailable source explicit;
+     * never send COMM/mux traffic to unrelated eval-board GPIOs. */
+    memset(dev->smb.last_temp_updated_mask,
+           0,
+           sizeof(dev->smb.last_temp_updated_mask));
+    return ACCUMULATOR_STATUS_UNAVAILABLE;
+#else
 //	apm_read_temps(&dev->apm);
 
 	adbms_spi_lock();
@@ -424,6 +449,7 @@ int accumulator_read_temp(accumulator_t *dev)
 	adbms_spi_unlock();
 
 	return status;
+#endif
 }
 
 void apm_read_temps(adbms2950_driver_t* apm)
@@ -478,6 +504,12 @@ int accumulator_set_temp_ch(accumulator_t *dev, uint8_t channel)
 
 int accumulator_set_mux_ch(accumulator_t *dev, uint8_t channel, uint8_t addr7)
 {
+#if !AMS_ADBMS_TEMP_MUX_ENABLED
+    (void)dev;
+    (void)channel;
+    (void)addr7;
+    return ACCUMULATOR_STATUS_UNAVAILABLE;
+#else
 	int status;
 
 	(void)addr7;
@@ -491,6 +523,7 @@ int accumulator_set_mux_ch(accumulator_t *dev, uint8_t channel, uint8_t addr7)
 	status = mux_set_channel(&dev->smb, channel);
 	adbms_spi_unlock();
 	return status;
+#endif
 }
 
 float NXFT15XV103FEAB050_convert(float ratio)
@@ -816,7 +849,7 @@ void accumulator_update_voltage_stats_at(accumulator_t *dev, uint32_t now_ms)
             read_pec_mask = dev->smb.last_cell_pec_mask[ic];
         }
 
-        dev->pec_fail_voltage_mask[ic] = (uint16_t)(read_pec_mask & ((1u << NCELLS) - 1u));
+        dev->pec_fail_voltage_mask[ic] = (uint16_t)(read_pec_mask & ACCUMULATOR_CELL_MASK);
         pec_fail_count += accumulator_count_bits(dev->pec_fail_voltage_mask[ic]);
 
         for(uint8_t cell = 0u; cell < NCELLS; cell++)
@@ -1344,6 +1377,10 @@ void accumulator_update_temp_stats_at(accumulator_t *dev, uint32_t now_ms)
 
 int accumulator_set_balance(accumulator_t *dev)
 {
+#if !AMS_ADBMS_BALANCE_WRITES_ENABLED
+    (void)dev;
+    return ACCUMULATOR_STATUS_DISABLED;
+#else
     if((dev == NULL) || !dev->voltage_full_usable || (dev->min_voltage_mv == 0u))
     {
         return -1;
@@ -1416,10 +1453,15 @@ int accumulator_set_balance(accumulator_t *dev)
 
     adbms_spi_unlock();
     return result;
+#endif
 }
 
 int accumulator_clear_balance(accumulator_t *dev)
 {
+#if !AMS_ADBMS_BALANCE_WRITES_ENABLED
+    (void)dev;
+    return ACCUMULATOR_STATUS_DISABLED;
+#else
     if(dev == NULL)
     {
         return -1;
@@ -1452,4 +1494,5 @@ int accumulator_clear_balance(accumulator_t *dev)
     }
     adbms_spi_unlock();
     return result;
+#endif
 }

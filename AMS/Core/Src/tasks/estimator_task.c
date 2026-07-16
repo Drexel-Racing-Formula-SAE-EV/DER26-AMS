@@ -209,6 +209,13 @@ void estimator_task_fn(void *argument)
     }
 
     ams_estimator_init_default(&data->estimator);
+#if !AMS_EVAL_ESTIMATOR_ENABLED
+    /* The production estimator is configured for the 75s6p DER pack.  Do not
+     * reinterpret a one-board 16-channel resistor ladder as that pack. */
+    data->estimator.enabled = 0u;
+    data->estimator.instance_count = 0u;
+    data->estimator.fault_flags = AMS_EKF_FAULT_DISABLED;
+#endif
 
     uint32_t last_entry = osKernelGetTickCount();
     uint32_t entry;

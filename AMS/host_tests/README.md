@@ -20,11 +20,20 @@ Then run:
 cd DER26-AMS-feature-canbus_charger/host_tests
 make test
 make system-sil
+make eval-adbms6830-test
+make eval-adbms6830-sanitize
+make eval-adbms6830-analyze
 make asan
 make analyze
 ```
 
 The harness compiles selected AMS production source files into a desktop executable and replaces board peripherals with fake host-side signals. It is useful before STM32CubeIDE/hardware testing because it catches logic regressions quickly.
+
+`make eval-adbms6830-test` explicitly selects the one-IC/16-cell
+EVAL-ADBMS6830BMSW profile and verifies its monitor-only lockouts. All normal,
+unit, sanitizer, and production-gate targets explicitly select
+`AMS_EVAL_ADBMS6830_BMSW=0` so the original five-SMB firmware remains a
+separate regression baseline.
 
 ## What this does
 

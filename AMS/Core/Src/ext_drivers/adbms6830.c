@@ -1485,7 +1485,8 @@ HAL_StatusTypeDef adBms6830_init(adbms6830_driver_t* dev,
 					   GPIO_TypeDef* cs_port_b,
 					   uint16_t cs_pin_a,
 					   uint16_t cs_pin_b,
-					   TIM_HandleTypeDef *htim)
+					   TIM_HandleTypeDef *htim,
+                       adbms6830_init_mode_t init_mode)
 {
 	HAL_StatusTypeDef status;
 
@@ -1519,7 +1520,9 @@ HAL_StatusTypeDef adBms6830_init(adbms6830_driver_t* dev,
 	   (cs_port_a == NULL) ||
 	   (cs_port_b == NULL) ||
 	   (cs_pin_a == 0u) ||
-	   (cs_pin_b == 0u))
+	   (cs_pin_b == 0u) ||
+       ((init_mode != ADBMS6830_INIT_MONITOR_ONLY) &&
+        (init_mode != ADBMS6830_INIT_FULL_CONFIG)))
 	{
 		return HAL_ERROR;
 	}
@@ -1575,6 +1578,14 @@ HAL_StatusTypeDef adBms6830_init(adbms6830_driver_t* dev,
 	}
 
 	adbms6830_reset_cfg(dev);
+
+    /* Monitor-only mode deliberately stops after SRST.  Reset defaults leave
+     * DCC/PWM inactive, while later wake/ADCV/read traffic is sufficient for
+     * a low-energy eval-board cell-voltage smoke test. */
+    if(init_mode == ADBMS6830_INIT_MONITOR_ONLY)
+    {
+        return HAL_OK;
+    }
 
 	status = adbms6830_wrcfga_checked(dev);
 	if(status != HAL_OK)

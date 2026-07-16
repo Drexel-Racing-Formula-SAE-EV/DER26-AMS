@@ -6,7 +6,27 @@ Updated: 6/23/2025
 
 ## Safety build profiles
 
-The default build is the production-safe profile:
+> **This package defaults to the isolated `EVAL-ADBMS6830BMSW` bench
+> profile. It is not a vehicle-release build.**
+
+The branch-ready eval profile is selected by
+`Core/Inc/ams_build_profile.h`:
+
+```c
+AMS_EVAL_ADBMS6830_BMSW=1
+```
+
+It configures one ADBMS6830B with 16 cell channels, selects the existing
+ADBMS6822 String B path, and permanently locks out BMS_OK assertion,
+balancing/config writes, the DER SMB temperature mux, open-wire stimulation,
+fan outputs, and the 75-series EKF. Startup sends a fail-safe SRST, reads SID,
+and then permits monitor-only wake, conversion, and read traffic.
+
+See [EVAL_ADBMS6830BMSW_BRINGUP.md](../EVAL_ADBMS6830BMSW_BRINGUP.md) before
+building or connecting hardware.
+
+The original five-SMB profile remains available for regression comparison by
+compiling with `AMS_EVAL_ADBMS6830_BMSW=0`:
 
 ```c
 AMS_ENABLE_HIL_CAN=0
@@ -46,6 +66,7 @@ Host verification:
 cd AMS/host_tests
 make test              # full feature exercise profile
 make production-gates  # default production gates remain closed
+make eval-adbms6830-test # one-IC/16-cell eval profile and real app.c lockout
 make unit
 make asan
 make analyze

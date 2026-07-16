@@ -12,6 +12,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "ams_build_profile.h"
 #include "stm32f7xx_hal.h"
 #include "main.h"
 #include "board.h"
@@ -67,6 +68,14 @@
 
 #if AMS_HIL_REPLACE_ADBMS && !AMS_ENABLE_HIL_CAN
 #error "AMS_HIL_REPLACE_ADBMS requires AMS_ENABLE_HIL_CAN=1"
+#endif
+
+#if AMS_EVAL_ADBMS6830_BMSW && AMS_HIL_REPLACE_ADBMS
+#error "The physical 6830 eval-board profile cannot replace ADBMS data with CAN HIL"
+#endif
+
+#if AMS_EVAL_ADBMS6830_BMSW && AMS_ENABLE_HIL_CAN
+#error "The physical 6830 eval-board profile cannot accept simulated ADBMS data over CAN"
 #endif
 
 #define AMS_HIL_ADBMS_IMAGE_TIMEOUT_MS 500u

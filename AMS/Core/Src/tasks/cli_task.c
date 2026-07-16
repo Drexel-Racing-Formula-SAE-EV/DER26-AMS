@@ -69,6 +69,13 @@ static int get_apm_debug_locked(int argc, char *argv[]);
 
 static int cli_clear_balance_recorded(void)
 {
+#if !AMS_ADBMS_BALANCE_WRITES_ENABLED
+    if(data != NULL)
+    {
+        data->balance_inhibit = true;
+    }
+    return ACCUMULATOR_STATUS_DISABLED;
+#else
     int result;
 
     if(data == NULL)
@@ -81,6 +88,7 @@ static int cli_clear_balance_recorded(void)
     adbms_spi_unlock();
     (void)adbms_record_balance_write_result(data, result);
     return result;
+#endif
 }
 
 static int cli_service_action_refused(const char *action)
@@ -344,13 +352,16 @@ void cli_task_fn(void *arg)
 	cli_printline(local_cli, outline);
     snprintf(outline, CLI_LINESZ,
              "Build:%s service_cli:%d hil_can:%d APM2950:%d BMS_OK_inhibit:%d",
-             AMS_HW_BRINGUP ? "hw-bringup" : "normal",
+             AMS_BUILD_PROFILE_NAME,
              AMS_ENABLE_SERVICE_CLI,
              AMS_ENABLE_HIL_CAN,
              AMS_ENABLE_APM_2950_DEBUG,
              data->bms_output_inhibit);
     cli_printline(local_cli, outline);
     cli_printline(local_cli, "ADBMS6822 SPI6 expected: mode3 CPOL HIGH CPHA 2EDGE");
+#if AMS_EVAL_ADBMS6830_BMSW
+    cli_printline(local_cli, "EVAL LOCK: 1x ADBMS6830B / 16 cells / String B; BMS_OK, balance, mux, open-wire and fans disabled");
+#endif
 	cli_printline(local_cli, "Type 'help' for list of commands");
 
 	for(;;)
@@ -448,7 +459,7 @@ int get_status(int argc, char *argv[])
 	             VER_MAJOR,
 	             VER_MINOR,
 	             VER_BUG,
-	             AMS_HW_BRINGUP ? "hw-bringup" : "normal",
+	             AMS_BUILD_PROFILE_NAME,
 	             AMS_ENABLE_SERVICE_CLI,
 	             AMS_ENABLE_HIL_CAN,
 	             ams_state_to_str(data->state),
@@ -522,7 +533,11 @@ int get_status(int argc, char *argv[])
         ret |= cli_printline(cli, "SPI6 handle unavailable");
     }
 
+#if AMS_EVAL_ADBMS6830_BMSW
+    ret |= cli_printline(cli, "Eval order: spi pins -> spi probeb -> spi sid -> spi stat -> volt; BMS_OK release is unavailable");
+#else
     ret |= cli_printline(cli, "Bring-up order: spi clear -> spi preset normal -> spi scope -> spi probe -> spi status -> volt -> current -> bmsok release");
+#endif
     return ret;
 }
 
@@ -888,6 +903,13 @@ int get_temperature_sensor(int argc, char *argv[])
 static int get_temperature_sensor_locked(int argc, char *argv[])
 {
     int ret = 0;
+#if !AMS_ADBMS_TEMP_MUX_ENABLED
+    (void)argc;
+    (void)argv;
+    ret |= cli_printline(cli,
+                         "tempsns unavailable: EVAL-ADBMS6830BMSW has no DER SMB thermistor mux");
+    return ret;
+#else
     adbms6830_driver_t *smb = &data->acc.smb;
 
     /* Validate argument count */
@@ -958,6 +980,7 @@ static int get_temperature_sensor_locked(int argc, char *argv[])
     ret |= cli_printline(cli, outline);
 
     return ret;
+#endif
 }
 
 
@@ -1531,6 +1554,48 @@ static int get_spi_debug_locked(int argc, char *argv[])
     }
 #endif
 
+#if AMS_ADBMS_RESTRICTED_BENCH_COMMANDS
+    if((argc >= 2) && (argv[1] != NULL))
+    {
+        const char *action = argv[1];
+        bool blocked = (!strcmp(action, "staterr") ||
+                        !strcmp(action, "clrflag") ||
+                        !strcmp(action, "cellst") ||
+                        !strcmp(action, "oweven") ||
+                        !strcmp(action, "owodd") ||
+                        !strcmp(action, "toggle"));
+
+        if(!strcmp(action, "preset") && (argc >= 3) && (argv[2] != NULL))
+        {
+            blocked = (!strcmp(argv[2], "cmd") ||
+                       !strcmp(argv[2], "pattern") ||
+                       !strcmp(argv[2], "toggle"));
+        }
+
+        if(!strcmp(action, "scope"))
+        {
+            adbms6830_scope_mode_t requested_mode = cli_adbms_scope_default_mode;
+            if((argc >= 4) && (argv[3] != NULL))
+            {
+                if(!cli_parse_scope_mode(argv[3], &requested_mode))
+                {
+                    requested_mode = ADBMS6830_SCOPE_PATTERN;
+                }
+            }
+            blocked = (requested_mode == ADBMS6830_SCOPE_CMD) ||
+                      (requested_mode == ADBMS6830_SCOPE_PATTERN);
+        }
+
+        if(blocked)
+        {
+            snprintf(outline, CLI_LINESZ,
+                     "spi %s blocked: eval profile permits monitor-only wake/conversion/read traffic",
+                     action);
+            return cli_printline(cli, outline);
+        }
+    }
+#endif
+
     adbms6830_driver_t *smb = &data->acc.smb;
     const adbms6830_spi_debug_t *dbg;
     const adbms6830_diag_health_t *health;
@@ -1772,8 +1837,15 @@ static int get_spi_debug_locked(int argc, char *argv[])
 	            {
 	                return ret;
 	            }
+#if AMS_ADBMS_FULL_CONFIG_ON_INIT
 	            probe_status = adbms6830_verify_config_readback(smb);
 	            snprintf(outline, CLI_LINESZ, "CFGA/CFGB readback check status: %s", cli_hal_status_str(probe_status));
+#else
+                probe_status = adbms6830_spi_probe_rdcfga(smb);
+                snprintf(outline, CLI_LINESZ,
+                         "RDCFGA integrity status: %s (eval reset-default config; no expected-byte compare)",
+                         cli_hal_status_str(probe_status));
+#endif
 	            ret |= cli_printline(cli, outline);
 	        }
 	        else if(!strcmp(argv[1], "cellst"))
@@ -2655,7 +2727,11 @@ int get_bringup(int argc, char *argv[])
         ret |= cli_printline(cli, "bringup apm2950        - ADBMS2950/APM debug-only summary");
         ret |= cli_printline(cli, "bringup charger-lv     - charger CAN low-voltage sniffer checklist");
         ret |= cli_printline(cli, "bringup charger-battery - stricter charger test once battery path is safe");
+#if AMS_EVAL_ADBMS6830_BMSW
+        ret |= cli_printline(cli, "bringup ready          - monitor-health checklist; BMS_OK is permanently locked low");
+#else
         ret |= cli_printline(cli, "bringup ready          - BMS_OK release checklist; does not release output");
+#endif
         ret |= cli_printline(cli, "bringup snapshot       - compact state snapshot");
         ret |= cli_printline(cli, "bringup evidence       - bench evidence to capture before changing phase");
         ret |= cli_printline(cli, "bench ADBMS start: spi pins -> spi cspins both 10 -> spi cs b pulse 10 -> spi scope b read 20");
@@ -2681,7 +2757,7 @@ int get_bringup(int argc, char *argv[])
 
         snprintf(outline, CLI_LINESZ,
                  "BRINGUP BOARD build:%s state:%s BMS_OK:%d inhibit:%d",
-                 AMS_HW_BRINGUP ? "hw-bringup" : "normal",
+                 AMS_BUILD_PROFILE_NAME,
                  ams_state_to_str(data->state),
                  data->bms_state,
                  data->bms_output_inhibit);
@@ -2981,7 +3057,11 @@ int get_bringup(int argc, char *argv[])
                  (unsigned)AMS_EXPECTED_TEMP_SENSOR_COUNT,
                  data->charge_voltage_stop);
         ret |= cli_printline(cli, outline);
+#if AMS_EVAL_ADBMS6830_BMSW
+        ret |= cli_printline(cli, "note: BMS_OK is permanently locked low in this eval profile");
+#else
         ret |= cli_printline(cli, "note: this command does not run bmsok release");
+#endif
         return ret;
     }
 
@@ -3010,7 +3090,7 @@ int get_version(int argc, char *argv[])
 	         VER_MAJOR,
 	         VER_MINOR,
 	         VER_BUG,
-	         AMS_HW_BRINGUP ? "hw-bringup" : "normal",
+	         AMS_BUILD_PROFILE_NAME,
 	         AMS_ENABLE_SERVICE_CLI,
 	         AMS_ENABLE_HIL_CAN);
 	ret |= cli_printline(cli, outline);
@@ -3025,7 +3105,11 @@ int bmsok_control(int argc, char *argv[])
     {
         if(!strcmp(argv[1], "release") || !strcmp(argv[1], "enable"))
         {
-#if AMS_ENABLE_SERVICE_CLI
+#if AMS_EVAL_ADBMS6830_BMSW
+            data->bms_output_inhibit = true;
+            set_bms(false);
+            ret |= cli_printline(cli, "BMS_OK release blocked: eval-board profile is permanently output-inhibited");
+#elif AMS_ENABLE_SERVICE_CLI
             data->bms_output_inhibit = false;
             ret |= cli_printline(cli, "BMS_OK output release enabled; safety gates still apply");
 #else
@@ -3078,15 +3162,22 @@ int balance_control(int argc, char *argv[])
         if(!strcmp(argv[1], "inhibit") || !strcmp(argv[1], "disable"))
         {
             data->balance_inhibit = true;
+#if AMS_ADBMS_BALANCE_WRITES_ENABLED
             int clear_ret = cli_clear_balance_recorded();
             ret |= cli_printline(cli,
                                  (clear_ret == 0) ?
                                  "Balancing inhibited and PWM/DCC cleared" :
                                  "Balancing inhibited; WARNING clear write failed");
+#else
+            ret |= cli_printline(cli, "Balancing remains compile-time disabled; no ADBMS write sent");
+#endif
         }
         else if(!strcmp(argv[1], "release") || !strcmp(argv[1], "enable"))
         {
-#if AMS_ENABLE_SERVICE_CLI
+#if !AMS_ADBMS_BALANCE_WRITES_ENABLED
+            data->balance_inhibit = true;
+            ret |= cli_printline(cli, "Balancing release blocked: eval-board profile has no balance-write path");
+#elif AMS_ENABLE_SERVICE_CLI
             data->balance_inhibit = false;
             ret |= cli_printline(cli, "Balancing release enabled; safety gates still apply");
 #else
@@ -3095,11 +3186,16 @@ int balance_control(int argc, char *argv[])
         }
         else if(!strcmp(argv[1], "clear"))
         {
+#if AMS_ADBMS_BALANCE_WRITES_ENABLED
             int clear_ret = cli_clear_balance_recorded();
             ret |= cli_printline(cli,
                                  (clear_ret == 0) ?
                                  "Balancing PWM/DCC cleared" :
                                  "WARNING balance clear write failed");
+#else
+            data->balance_inhibit = true;
+            ret |= cli_printline(cli, "Balance clear not sent: eval-board profile is monitor-only");
+#endif
         }
         else if(strcmp(argv[1], "status"))
         {
@@ -3128,7 +3224,10 @@ int set_state(int argc, char *argv[])
     }
     else if(argc == 2)
     {
-#if !AMS_ENABLE_SERVICE_CLI
+#if AMS_EVAL_ADBMS6830_BMSW
+        data->state = STATE_START;
+        return cli_printline(cli, "AMS state change blocked: eval-board profile remains in START/monitor mode");
+#elif !AMS_ENABLE_SERVICE_CLI
         return cli_service_action_refused("AMS state change");
 #else
         state_t requested_state;

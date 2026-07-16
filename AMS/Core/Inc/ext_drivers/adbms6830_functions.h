@@ -21,6 +21,16 @@ typedef enum
     ADBMS6830_SCOPE_PATTERN
 } adbms6830_scope_mode_t;
 
+typedef enum
+{
+    /* Establish a known, non-balancing reset state but do not write CFGA or
+     * CFGB.  Intended for isolated eval-board voltage-monitor bring-up. */
+    ADBMS6830_INIT_MONITOR_ONLY = 0,
+    /* Existing DER26 behavior: reset, build the expected configuration and
+     * write both configuration groups. */
+    ADBMS6830_INIT_FULL_CONFIG = 1
+} adbms6830_init_mode_t;
+
 HAL_StatusTypeDef adBms6830_init(adbms6830_driver_t* dev,
                     uint8_t num_ics,
                     adbms6830_asic* ics,
@@ -30,7 +40,8 @@ HAL_StatusTypeDef adBms6830_init(adbms6830_driver_t* dev,
 				    GPIO_TypeDef* cs_port_b,
 				    uint16_t cs_pin_a,
 				    uint16_t cs_pin_b,
-					TIM_HandleTypeDef *htim);
+					TIM_HandleTypeDef *htim,
+                    adbms6830_init_mode_t init_mode);
 
 void adbms6830_reset_cfg(adbms6830_driver_t *dev);
 void adbms6830_srst(adbms6830_driver_t *dev);
