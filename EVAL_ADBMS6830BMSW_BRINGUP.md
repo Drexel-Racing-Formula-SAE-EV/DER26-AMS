@@ -56,6 +56,23 @@ for the first manual probe and change the selected runtime string only after
 confirming the physical mapping. The automatic scan in this branch remains on
 String B.
 
+## Locked SPI6 configuration
+
+The AMS schematic ties both ADBMS6822 `PHAPOL` pins to 3.3 V, which selects
+SPI mode 3. The eval profile therefore validates the generated SPI6 settings
+before it permits any wake, reset, conversion or read transaction:
+
+```text
+controller / 2-wire full duplex / 8-bit / MSB first
+CPOL high / CPHA second edge (SPI mode 3)
+software NSS / prescaler 256 / TI mode off / hardware CRC off
+```
+
+With the present APB clock, Cube reports approximately 421.875 kbit/s. If any
+of these settings drift, initialization fails closed and `smb_ready` remains
+false. Do not copy an SPI mode from a different controller/adapter setup: the
+mode must match the physical `PHAPOL` straps on this AMS revision.
+
 ## Build and host verification
 
 The eval profile is already the default in this package; no CubeIDE symbol is
@@ -144,3 +161,5 @@ inhibited for the first stage.
   <https://www.analog.com/en/resources/evaluation-hardware-and-software/evaluation-boards-kits/eval-adbms6830bmsw.html>
 - ADI evaluation-board guide:
   <https://analogdevicesinc.github.io/documentation/solutions/reference-designs/eval-adbms6830bmsw/index.html>
+- ADI ADBMS6821/ADBMS6822 data sheet:
+  <https://www.analog.com/media/en/technical-documentation/data-sheets/adbms6821-adbms6822.pdf>

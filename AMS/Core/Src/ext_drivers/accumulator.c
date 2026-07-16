@@ -32,6 +32,27 @@ int smb_read_temp(adbms6830_driver_t* dev);
 void apm_read_vbadc_viadc(adbms2950_driver_t* apm);
 void apm_read_temps(adbms2950_driver_t* apm);
 
+#if AMS_EVAL_ADBMS6830_BMSW
+static bool accumulator_eval_spi_configuration_valid(const SPI_HandleTypeDef *hspi)
+{
+    /* PHAPOL/PHAPOL2 are tied to 3V3 on the DER26 AMS, selecting ADBMS6822
+     * SPI mode 3.  Pin the complete validated Cube configuration so an
+     * accidental project regeneration cannot put traffic on the eval link
+     * with the wrong clock edge, word size, bit order, or rate. */
+    return (hspi != NULL) &&
+           (hspi->Init.Mode == SPI_MODE_MASTER) &&
+           (hspi->Init.Direction == SPI_DIRECTION_2LINES) &&
+           (hspi->Init.DataSize == SPI_DATASIZE_8BIT) &&
+           (hspi->Init.CLKPolarity == SPI_POLARITY_HIGH) &&
+           (hspi->Init.CLKPhase == SPI_PHASE_2EDGE) &&
+           (hspi->Init.NSS == SPI_NSS_SOFT) &&
+           (hspi->Init.BaudRatePrescaler == SPI_BAUDRATEPRESCALER_256) &&
+           (hspi->Init.FirstBit == SPI_FIRSTBIT_MSB) &&
+           (hspi->Init.TIMode == SPI_TIMODE_DISABLE) &&
+           (hspi->Init.CRCCalculation == SPI_CRCCALCULATION_DISABLE);
+}
+#endif
+
 #if AMS_ADBMS_BALANCE_WRITES_ENABLED
 static void accumulator_clear_balance_shadow(adbms6830_asic *ic)
 {
@@ -200,16 +221,28 @@ void accumulator_init(accumulator_t *dev,
 		}
     }
 
+	/* Leave both driver objects in a known unusable state if a profile or
+	 * peripheral check below rejects initialization. */
+	memset(&dev->smb, 0, sizeof(dev->smb));
+	memset(dev->smb_ics, 0, sizeof(dev->smb_ics));
+	memset(&dev->apm, 0, sizeof(dev->apm));
+	memset(dev->apm_ics, 0, sizeof(dev->apm_ics));
+
+#if AMS_EVAL_ADBMS6830_BMSW
+	if(!accumulator_eval_spi_configuration_valid(hspi))
+	{
+		/* Fail before wake, reset, conversion, or read traffic. app_create()
+		 * converts smb_ready=false into a persistent BMS_OK inhibit. */
+		return;
+	}
+#endif
+
 	// Init pack monitor, just on port A. Disabled by default until ADBMS2950
 	// NDA documentation and board bring-up are complete.
 #if AMS_ENABLE_APM_2950_DEBUG
 	adbms2950_init(&dev->apm, NAPMS, dev->apm_ics, hspi, cs_port_a, cs_port_a, cs_pin_a, cs_pin_a, ready_timer);
-#else
-	memset(&dev->apm, 0, sizeof(dev->apm));
-	memset(dev->apm_ics, 0, sizeof(dev->apm_ics));
 #endif
 
-	memset(dev->smb_ics, 0, sizeof(dev->smb_ics));
 	dev->smb_init_status = adBms6830_init(&dev->smb,
 	                                      NSMBS,
 	                                      dev->smb_ics,

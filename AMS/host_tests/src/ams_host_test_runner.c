@@ -6214,6 +6214,34 @@ static void test_eval_profile_topology_and_monitor_only_init(void)
     fake_adbms_wrcfgb_calls = 0u;
     fake_adbms_wrpwm_calls = 0u;
     memset(&acc, 0xA5, sizeof(acc));
+
+    /* A Cube regeneration or wrong branch must fail before any ADBMS
+     * transaction if SPI6 no longer matches the AMS PHAPOL straps. */
+    accumulator_init(&acc,
+                     &spi,
+                     &gpio_a,
+                     &gpio_b,
+                     1u,
+                     2u,
+                     &timer);
+    CHECK(acc.smb_ready == false);
+    CHECK(acc.smb.num_ics == 0);
+    CHECK(acc.smb.ics == NULL);
+    CHECK(fake_adbms_sid_calls == 0u);
+    CHECK(fake_adbms_wrcfgb_calls == 0u);
+    CHECK(fake_adbms_wrpwm_calls == 0u);
+
+    spi.Init.Mode = SPI_MODE_MASTER;
+    spi.Init.Direction = SPI_DIRECTION_2LINES;
+    spi.Init.DataSize = SPI_DATASIZE_8BIT;
+    spi.Init.CLKPolarity = SPI_POLARITY_HIGH;
+    spi.Init.CLKPhase = SPI_PHASE_2EDGE;
+    spi.Init.NSS = SPI_NSS_SOFT;
+    spi.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_256;
+    spi.Init.FirstBit = SPI_FIRSTBIT_MSB;
+    spi.Init.TIMode = SPI_TIMODE_DISABLE;
+    spi.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
+    memset(&acc, 0xA5, sizeof(acc));
     accumulator_init(&acc,
                      &spi,
                      &gpio_a,
@@ -6243,6 +6271,31 @@ static void test_eval_profile_topology_and_monitor_only_init(void)
     CHECK(acc.usable_voltage_count == 16u);
     CHECK(acc.voltage_full_updated == true);
     CHECK(acc.voltage_full_usable == true);
+
+    /* Exercise the 16-cell logger boundary under ASan/UBSan. The final
+     * triplet contains cell index 15 followed by two deliberately absent
+     * channels; those must serialize as zero without indexing past NCELLS. */
+    init_fake_app();
+    app.board.canbus.hcan = &hil_fake_hcan;
+    for(uint8_t cell = 0u; cell < NCELLS; cell++)
+    {
+        app.acc.smb_ics[0].cell.c_codes[cell] = code_for_volts(3.3f);
+    }
+    app.acc.smb.last_cell_updated_mask[0] = ACCUMULATOR_CELL_MASK;
+    app.acc.smb.last_cell_pec_mask[0] = 0u;
+    accumulator_update_voltage_stats_at(&app.acc, 100u);
+    CHECK(cell_mv_for_logger(&app, 0u, 15u) == 3300u);
+    CHECK(cell_mv_for_logger(&app, 0u, 16u) == 0u);
+    tx_count = 0u;
+    memset(tx_log, 0, sizeof(tx_log));
+    CHECK(send_logger_details(&app.board.canbus, &app) == HAL_OK);
+    CHECK(tx_count >= 6u);
+    CHECK(tx_log[5].stdid == AMS_LOGGER_CAN_ID_CELL_DETAIL);
+    CHECK(tx_log[5].data[0] == 0u);
+    CHECK(tx_log[5].data[1] == 15u);
+    CHECK(word_at(5u, 1u) == 3300u);
+    CHECK(word_at(5u, 2u) == 0u);
+    CHECK(word_at(5u, 3u) == 0u);
 }
 
 static void test_eval_profile_blocks_actuating_paths(void)
