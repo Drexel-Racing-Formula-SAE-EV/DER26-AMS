@@ -63,6 +63,8 @@ static uint16_t fake_adbms_updated_masks[ADBMS6830_MAX_TRACKED_ICS];
 static uint16_t fake_adbms_pec_masks[ADBMS6830_MAX_TRACKED_ICS];
 static HAL_StatusTypeDef fake_adbms_diag_status = HAL_OK;
 static uint16_t fake_adbms_config_mismatch_mask = 0u;
+static uint16_t fake_adbms_delay_values_us[8];
+static uint32_t fake_adbms_delay_calls = 0u;
 static uint32_t fake_adbms_lock_depth = 0u;
 static uint32_t fake_adbms_lock_max_depth = 0u;
 static HAL_StatusTypeDef fake_tim_base_start_status = HAL_OK;
@@ -274,7 +276,25 @@ static HAL_StatusTypeDef fake_adbms_wrpwm_next_status(void)
 }
 void adbms6830_reset_cfg(adbms6830_driver_t *dev){(void)dev;} void adbms6830_srst(adbms6830_driver_t *dev){(void)dev;} void adbms6830_wrcfga(adbms6830_driver_t *dev){(void)dev;} void adbms6830_wrcfgb(adbms6830_driver_t *dev){(void)adbms6830_wrcfgb_checked(dev);} HAL_StatusTypeDef adbms6830_wrcfgb_checked(adbms6830_driver_t *dev){(void)dev; return fake_adbms_wrcfgb_status;} HAL_StatusTypeDef adbms6830_wrpwma_checked(adbms6830_driver_t *dev){(void)dev; return fake_adbms_wrpwm_next_status();} HAL_StatusTypeDef adbms6830_wrpwmb_checked(adbms6830_driver_t *dev){(void)dev; return fake_adbms_wrpwm_next_status();} HAL_StatusTypeDef adbms6830_write_pwm_checked(adbms6830_driver_t *dev){(void)dev; return fake_adbms_wrpwm_next_status();} void adbms6830_rdcfga(adbms6830_driver_t *dev){(void)dev;} void adbms6830_rdcfgb(adbms6830_driver_t *dev){(void)dev;}
 HAL_StatusTypeDef adbms6830_verify_balance_readback(adbms6830_driver_t *dev){(void)dev; return fake_adbms_balance_verify_status;}
-void adbms6830_adcv(adbms6830_driver_t *dev, RD rd, CONT cont, DCP dcp, RSTF rstf, OW_C_S owcs){(void)dev;(void)rd;(void)cont;(void)dcp;(void)rstf;(void)owcs;} void adbms6830_wakeup(adbms6830_driver_t* dev){(void)dev;} HAL_StatusTypeDef adbms6830_wakeup_checked(adbms6830_driver_t* dev){return (dev != NULL) ? HAL_OK : HAL_ERROR;} HAL_StatusTypeDef adbms6830_us_delay(adbms6830_driver_t* dev, uint16_t microseconds){(void)dev;(void)microseconds; return HAL_OK;} HAL_StatusTypeDef adbms6830_start_adc_cell_voltage_measurement(adbms6830_driver_t *dev){return (dev != NULL) ? HAL_OK : HAL_ERROR;} void adbms6830_parse_cell(adbms6830_driver_t *dev, uint8_t *data, GRP grp){(void)dev;(void)data;(void)grp;}
+void adbms6830_adcv(adbms6830_driver_t *dev, RD rd, CONT cont, DCP dcp, RSTF rstf, OW_C_S owcs){(void)dev;(void)rd;(void)cont;(void)dcp;(void)rstf;(void)owcs;}
+void adbms6830_wakeup(adbms6830_driver_t* dev){(void)dev;}
+HAL_StatusTypeDef adbms6830_wakeup_checked(adbms6830_driver_t* dev){return (dev != NULL) ? HAL_OK : HAL_ERROR;}
+HAL_StatusTypeDef adbms6830_us_delay(adbms6830_driver_t* dev, uint16_t microseconds)
+{
+    if(dev == NULL)
+    {
+        return HAL_ERROR;
+    }
+    if(fake_adbms_delay_calls < (sizeof(fake_adbms_delay_values_us) /
+                                  sizeof(fake_adbms_delay_values_us[0])))
+    {
+        fake_adbms_delay_values_us[fake_adbms_delay_calls] = microseconds;
+    }
+    fake_adbms_delay_calls++;
+    return HAL_OK;
+}
+HAL_StatusTypeDef adbms6830_start_adc_cell_voltage_measurement(adbms6830_driver_t *dev){return (dev != NULL) ? HAL_OK : HAL_ERROR;}
+void adbms6830_parse_cell(adbms6830_driver_t *dev, uint8_t *data, GRP grp){(void)dev;(void)data;(void)grp;}
 void adbms6830_wakeup_cold(adbms6830_driver_t* dev){ if(dev){ dev->spi_debug.last_op = ADBMS6830_SPI_OP_COLD_WAKE; } }
 HAL_StatusTypeDef adbms6830_read_cell_voltages(adbms6830_driver_t *dev){
     if(dev){
@@ -745,6 +765,21 @@ static void test_accumulator_stats_and_balance(void){
     CHECK(app.acc.valid_voltage_count == 0u);
     CHECK(app.acc.voltage_full_usable == false);
     CHECK(app.acc.max_volt == 0.0f && app.acc.min_volt == 0.0f);
+}
+
+static void test_adbms_voltage_scan_timing_contract(void)
+{
+    init_fake_app();
+    memset(fake_adbms_delay_values_us, 0, sizeof(fake_adbms_delay_values_us));
+    fake_adbms_delay_calls = 0u;
+
+    CHECK(smb_read_voltage(&app.acc.smb) == 0);
+    CHECK(fake_adbms_delay_calls == 2u);
+    CHECK(fake_adbms_delay_values_us[0] ==
+          ADBMS6830_REFERENCE_PRECONVERSION_WAIT_US);
+    CHECK(fake_adbms_delay_values_us[1] ==
+          ADBMS6830_REDUNDANT_CONVERSION_WAIT_US);
+    CHECK(fake_adbms_delay_values_us[1] >= 8000u);
 }
 
 static void test_temp_stats(void){
@@ -6300,6 +6335,7 @@ int main(void){
     return 0;
 #else
     test_accumulator_stats_and_balance(); puts("PASS accumulator stats/balance");
+    test_adbms_voltage_scan_timing_contract(); puts("PASS ADBMS wake/reference/conversion timing contract");
     test_voltage_stats_boundaries_and_fuzz(); puts("PASS voltage boundary/fuzz stats");
     test_voltage_fault_policy_and_strict_scan_freshness(); puts("PASS voltage fault strict scan freshness policy");
     test_system_sil_boot_ready_and_bms_conjunction(); puts("PASS system SIL boot/readiness/BMS conjunction");

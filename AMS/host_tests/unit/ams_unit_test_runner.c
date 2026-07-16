@@ -1212,6 +1212,17 @@ static void test_adbms_topology_and_delay_guards(void)
     unit_delay_timer_advances = true;
     unit_spi_reset();
 
+    /* Lock the documented wake/reference/conversion timing contract into
+     * the real driver translation unit. */
+    EXPECT_TRUE(WAKEUP_US_DELAY > ADBMS6830_CORE_WAKE_MAX_US);
+    EXPECT_TRUE(WAKEUP_BW_DELAY > ADBMS6830_CORE_WAKE_MAX_US);
+    EXPECT_TRUE(WAKEUP_US_DELAY < ADBMS_ISOSPI_IDLE_MIN_US);
+    EXPECT_TRUE(WAKEUP_BW_DELAY < ADBMS_ISOSPI_IDLE_MIN_US);
+    EXPECT_TRUE((ADBMS6830_REFERENCE_PRECONVERSION_WAIT_US +
+                 WAKEUP_US_DELAY + WAKEUP_BW_DELAY) >
+                ADBMS6830_REFERENCE_WAKE_MAX_US);
+    EXPECT_TRUE(ADBMS6830_REDUNDANT_CONVERSION_WAIT_US >= 8000u);
+
     EXPECT_TRUE(adBms6830_init(NULL,
                          1u,
                          ics,

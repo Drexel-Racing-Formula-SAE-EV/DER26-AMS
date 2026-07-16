@@ -30,8 +30,22 @@
 #define ALLVR_SIZE     22       /* ALL Voltage Reg. byte size         */
 #define ALLREDVR_SIZE  22       /* ALL Redundant Voltage Reg. byte size*/
 
-#define WAKEUP_US_DELAY 250
-#define WAKEUP_BW_DELAY 100
+/* A sleeping ADBMS6830B can require up to 500 us after an isoSPI wake
+ * pulse. Keep each edge-to-edge interval comfortably above that worst case
+ * and below the 4.3 ms minimum isoSPI idle timeout. Both independently
+ * reviewed ADBMS6830 reference implementations use a 1 ms interval. */
+#define ADBMS6830_CORE_WAKE_MAX_US                 500u
+#define ADBMS6830_REFERENCE_WAKE_MAX_US           4400u
+#define ADBMS_ISOSPI_IDLE_MIN_US                  4300u
+#define WAKEUP_US_DELAY                           1000u
+#define WAKEUP_BW_DELAY                           1000u
+
+/* The five-SMB configuration keeps REFON asserted. The first checked wake,
+ * this pre-conversion interval, and the checked wake inside ADCV together
+ * exceed the 4.4 ms worst-case reference wake time. Redundant C-ADC/S-ADC
+ * results are available 8 ms after the ADCV command. */
+#define ADBMS6830_REFERENCE_PRECONVERSION_WAIT_US 3000u
+#define ADBMS6830_REDUNDANT_CONVERSION_WAIT_US    8000u
 #define SPI_TIMEOUT 500
 #define BUFSZ 512
 

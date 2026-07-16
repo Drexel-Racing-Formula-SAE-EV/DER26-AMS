@@ -281,8 +281,10 @@ int smb_read_voltage(adbms6830_driver_t* dev)
 //	adbms6830_wrcfga(dev);
 //	adbms6830_wrcfgb(dev);
 
-	// Wait ~3ms for the precision voltage reference to warm up and settle
-	if(adbms6830_us_delay(dev, 3000u) != HAL_OK)
+	/* REFON is asserted in the verified production configuration. Together
+	 * with the checked wake inside the ADCV wrapper, this interval leaves
+	 * more than the 4.4 ms worst-case reference wake time before ADCV. */
+	if(adbms6830_us_delay(dev, ADBMS6830_REFERENCE_PRECONVERSION_WAIT_US) != HAL_OK)
 	{
 		return -1;
 	}
@@ -293,8 +295,9 @@ int smb_read_voltage(adbms6830_driver_t* dev)
 		return -1;
 	}
 
-	// 3. WAIT FOR THE FIRST CONVERSION CYCLE TO FINISH
-	if(adbms6830_us_delay(dev, 5000u) != HAL_OK)
+	/* RD_ON starts redundant C-ADC/S-ADC conversion. Do not read the result
+	 * before the complete 8 ms conversion interval has elapsed. */
+	if(adbms6830_us_delay(dev, ADBMS6830_REDUNDANT_CONVERSION_WAIT_US) != HAL_OK)
 	{
 		return -1;
 	}
