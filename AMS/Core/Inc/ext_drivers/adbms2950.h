@@ -16,6 +16,11 @@
 
 #define ADBMS2950_MAX_TRACKED_ICS 16u
 #define ADBMS2950_SPI_DEBUG_PREVIEW_BYTES 16u
+#define ADBMS2950B_DEVICE_ID 0x06u
+#define ADBMS2950_I1_RESET_CODE 0x03FFFFu
+#define ADBMS2950_I1_CLEAR_CODE 0xFC0000u
+#define ADBMS2950_VB1_RESET_CODE 0x7FFFu
+#define ADBMS2950_VB1_CLEAR_CODE 0x8000u
 
 typedef enum
 {
@@ -48,6 +53,39 @@ typedef struct
   uint8_t last_tx_preview[ADBMS2950_SPI_DEBUG_PREVIEW_BYTES];
   uint8_t last_rx_preview[ADBMS2950_SPI_DEBUG_PREVIEW_BYTES];
 } adbms2950_spi_debug_t;
+
+/* The APM path is intentionally advisory until its shunt polarity, divider
+ * ratio and fault response are validated on the final hardware.  Keeping its
+ * health separate prevents an unproven sensor from silently becoming a BMS_OK
+ * input while still making every transport and sample failure observable. */
+typedef struct
+{
+  bool initialized;
+  bool sid_valid;
+  bool config_valid;
+  bool sample_valid;
+  bool current_valid;
+  bool pack_voltage_valid;
+  bool i1_calibrated;
+  bool hv_dividers_enabled;
+  bool counter_seen;
+  bool counter_advanced;
+  HAL_StatusTypeDef last_status;
+  uint8_t device_id;
+  uint8_t revision;
+  uint8_t sid[RSID];
+  uint8_t last_cmd_counter;
+  uint32_t sample_count;
+  uint32_t sample_error_count;
+  uint32_t pec_error_count;
+  uint32_t counter_mismatch_count;
+  uint32_t counter_stall_count;
+  uint32_t last_update_ms;
+  int32_t i1_raw;
+  int16_t vb1_raw;
+  float current_a;
+  float pack_voltage_v;
+} adbms2950_health_t;
 
 /*!< ADBMS2950 IC main structure */
 typedef struct
@@ -118,8 +156,9 @@ typedef struct
 
 	float vbat_adc[NVBATS]; // VBAT ADC voltage
 	float vi_adc[NVIS]; // VI ADC voltage
-	float vtemp_adc[NAPMTEMPS];
+  float vtemp_adc[NAPMTEMPS];
   uint8_t num_ics;
+  uint8_t ics_capacity;
   adbms2950_asic *ics;
   loop_manager_2950_t loop_manager;
   pladc_manager_t pladc_manager;
@@ -129,9 +168,15 @@ typedef struct
 	uint16_t cs_pin[2];
 	adbms_string string;
 	TIM_HandleTypeDef *htim;
+	HAL_StatusTypeDef delay_last_status;
+	uint32_t delay_timeout_count;
 	adbms2950_spi_debug_t spi_debug;
+	adbms2950_health_t health;
 } adbms2950_driver_t;
 
+/* Legacy standalone initializer retained for source compatibility.  New AMS
+ * code must use adbms2950_init_mixed_chain() so reset ownership and chain
+ * direction are explicit. */
 void adbms2950_init(adbms2950_driver_t* dev,
 					uint8_t num_asics,
 					adbms2950_asic* ics,
@@ -141,6 +186,20 @@ void adbms2950_init(adbms2950_driver_t* dev,
 					uint16_t CSA_Pin,
 					uint16_t CSB_Pin,
 					TIM_HandleTypeDef* htim);
+
+HAL_StatusTypeDef adbms2950_init_mixed_chain(adbms2950_driver_t *dev,
+                                             uint8_t num_asics,
+                                             adbms2950_asic *ics,
+                                             uint8_t ics_capacity,
+                                             SPI_HandleTypeDef *hspi,
+                                             GPIO_TypeDef *CSA_Port,
+                                             GPIO_TypeDef *CSB_Port,
+                                             uint16_t CSA_Pin,
+                                             uint16_t CSB_Pin,
+                                             TIM_HandleTypeDef *htim,
+                                             adbms_string primary_string,
+                                             bool issue_chain_reset,
+                                             bool enable_hv_dividers);
 
 // Configuration
 void adbms2950_reset_cfg_regs(adbms2950_driver_t* dev);
@@ -161,19 +220,29 @@ void adbms2950_rdvb(adbms2950_driver_t* dev); //rd48, reads vb1adc, vb2adc
 void adbms2950_rdi(adbms2950_driver_t* dev); //rd48, reads i1adc, i2adc
 void adbms2950_rdv1d(adbms2950_driver_t* dev); //rd48, reads v1adc for v7a, v2adc for v9b
 
+HAL_StatusTypeDef adbms2950_read_sid(adbms2950_driver_t *dev);
+HAL_StatusTypeDef adbms2950_read_status(adbms2950_driver_t *dev);
+HAL_StatusTypeDef adbms2950_read_primary_sample(adbms2950_driver_t *dev,
+                                                uint32_t now_ms);
+HAL_StatusTypeDef adbms2950_verify_config_readback(adbms2950_driver_t *dev);
+const adbms2950_health_t *adbms2950_health_get(const adbms2950_driver_t *dev);
+void adbms2950_health_clear_counters(adbms2950_driver_t *dev);
+
 void adbms2950_gpo_set(adbms2950_driver_t* dev, GPO gpo, CFGA_GPO state);
 
 // Control
 void adbms2950_wakeup(adbms2950_driver_t *dev);
+HAL_StatusTypeDef adbms2950_wakeup_checked(adbms2950_driver_t *dev);
 void adbms2950_set_cs(adbms2950_driver_t *dev, uint8_t state);
 // Utility
-void adbms2950_us_delay(adbms2950_driver_t* dev, uint16_t microseconds);
+HAL_StatusTypeDef adbms2950_us_delay(adbms2950_driver_t* dev, uint16_t microseconds);
 
 void adbms2950_spi_debug_enable(adbms2950_driver_t *dev, bool enable);
 void adbms2950_spi_debug_clear(adbms2950_driver_t *dev);
 const adbms2950_spi_debug_t *adbms2950_spi_debug_get(const adbms2950_driver_t *dev);
 const char *adbms2950_spi_op_str(adbms2950_spi_op_t op);
 HAL_StatusTypeDef adbms2950_spi_probe_rdcfga(adbms2950_driver_t *dev);
+HAL_StatusTypeDef adbms2950_spi_probe_sid(adbms2950_driver_t *dev);
 
 /* Low-level SPI helpers are exposed for APM bring-up/debug and host tests. */
 HAL_StatusTypeDef adbms2950_spi_write(adbms2950_driver_t *dev, uint8_t *data, uint16_t len, uint8_t use_cs);

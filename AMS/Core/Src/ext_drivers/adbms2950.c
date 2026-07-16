@@ -17,6 +17,9 @@ static uint8_t adbms2950_spi_txrx_tx_buf[BUFSZ] = {0};
 static uint8_t adbms2950_spi_txrx_rx_buf[BUFSZ] = {0};
 
 #define ADBMS2950_SPI_DUMMY_BYTE 0xFFu
+#define ADBMS2950_DELAY_SPINS_PER_US 256u
+#define ADBMS2950_DELAY_BASE_SPINS 1024u
+#define ADBMS2950_I1_CAL_MASK 0x40u
 
 /*!< configuration registers commands */
 uint8_t WRCFGA[2]        = { 0x00, 0x01 };
@@ -140,6 +143,12 @@ void adbms2950_rd48(adbms2950_driver_t* dev, uint8_t cmd[CMDSZ], uint8_t* rx_dat
 static HAL_StatusTypeDef adbms2950_cmd_checked(adbms2950_driver_t* dev, uint8_t cmd[CMDSZ]);
 static HAL_StatusTypeDef adbms2950_wr48_checked(adbms2950_driver_t* dev, uint8_t cmd[CMDSZ], uint8_t* tx_data);
 static HAL_StatusTypeDef adbms2950_rd48_checked(adbms2950_driver_t* dev, uint8_t cmd[CMDSZ], uint8_t* rx_data);
+static HAL_StatusTypeDef adbms2950_wrcfga_checked(adbms2950_driver_t *dev);
+static HAL_StatusTypeDef adbms2950_wrcfgb_checked(adbms2950_driver_t *dev);
+static void adbms2950_force_dividers_off_best_effort(adbms2950_driver_t *dev);
+static bool adbms2950_topology_valid(const adbms2950_driver_t *dev);
+static void adbms2950_sat_inc_u32(uint32_t *value);
+static int32_t adbms2950_sign_extend_24(uint32_t raw);
 
 // SPI communication
 void adbms2950_set_cs(adbms2950_driver_t* dev, uint8_t state);
@@ -165,6 +174,39 @@ uint16_t pec10_calc(uint8_t rx_cmd, int len, uint8_t *data);
 uint16_t pec10_calc_modular(uint8_t * data, uint8_t PEC_Format);
 
 uint16_t pec10_calc_int(uint16_t remainder, uint8_t bit);
+
+static bool adbms2950_topology_valid(const adbms2950_driver_t *dev)
+{
+	return (dev != NULL) &&
+	       (dev->num_ics > 0u) &&
+	       (dev->num_ics <= ADBMS2950_MAX_TRACKED_ICS) &&
+	       (dev->ics != NULL) &&
+	       (dev->ics_capacity >= dev->num_ics) &&
+	       (dev->hspi != NULL) &&
+	       (dev->htim != NULL) &&
+	       ((int)dev->string >= (int)STRING_A) &&
+	       (dev->string <= STRING_B) &&
+	       (dev->cs_port[dev->string] != NULL) &&
+	       (dev->cs_pin[dev->string] != 0u);
+}
+
+static void adbms2950_sat_inc_u32(uint32_t *value)
+{
+	if((value != NULL) && (*value != UINT32_MAX))
+	{
+		(*value)++;
+	}
+}
+
+static int32_t adbms2950_sign_extend_24(uint32_t raw)
+{
+	raw &= 0x00FFFFFFu;
+	if((raw & 0x00800000u) != 0u)
+	{
+		raw |= 0xFF000000u;
+	}
+	return (int32_t)raw;
+}
 
 static uint16_t adbms2950_min_u16(uint16_t a, uint16_t b)
 {
@@ -202,6 +244,25 @@ void adbms2950_spi_debug_clear(adbms2950_driver_t *dev)
 const adbms2950_spi_debug_t *adbms2950_spi_debug_get(const adbms2950_driver_t *dev)
 {
 	return (dev == NULL) ? NULL : &dev->spi_debug;
+}
+
+const adbms2950_health_t *adbms2950_health_get(const adbms2950_driver_t *dev)
+{
+	return (dev == NULL) ? NULL : &dev->health;
+}
+
+void adbms2950_health_clear_counters(adbms2950_driver_t *dev)
+{
+	if(dev == NULL)
+	{
+		return;
+	}
+
+	dev->health.sample_count = 0u;
+	dev->health.sample_error_count = 0u;
+	dev->health.pec_error_count = 0u;
+	dev->health.counter_mismatch_count = 0u;
+	dev->health.counter_stall_count = 0u;
 }
 
 const char *adbms2950_spi_op_str(adbms2950_spi_op_t op)
@@ -294,19 +355,34 @@ HAL_StatusTypeDef adbms2950_spi_probe_rdcfga(adbms2950_driver_t *dev)
 	}
 
 	adbms2950_spi_debug_enable(dev, true);
-	adbms2950_wakeup(dev);
-
-	if(dev->spi_debug.enabled)
-	{
-		dev->spi_debug.last_op = ADBMS2950_SPI_OP_PROBE;
-	}
-
 	status = adbms2950_rd48_checked(dev, RDCFGA, buf);
 	if(status == HAL_OK)
 	{
 		adbms2950_parse_cfga(dev, buf);
 	}
+	if(dev->spi_debug.enabled)
+	{
+		dev->spi_debug.last_op = ADBMS2950_SPI_OP_PROBE;
+	}
 
+	return status;
+}
+
+HAL_StatusTypeDef adbms2950_spi_probe_sid(adbms2950_driver_t *dev)
+{
+	HAL_StatusTypeDef status;
+
+	if(dev == NULL)
+	{
+		return HAL_ERROR;
+	}
+
+	adbms2950_spi_debug_enable(dev, true);
+	status = adbms2950_read_sid(dev);
+	if(dev->spi_debug.enabled)
+	{
+		dev->spi_debug.last_op = ADBMS2950_SPI_OP_PROBE;
+	}
 	return status;
 }
 
@@ -320,68 +396,164 @@ void adbms2950_init(adbms2950_driver_t *dev,
 					uint16_t CSB_Pin,
 					TIM_HandleTypeDef *htim)
 {
-	dev->num_ics = num_asics;
-	dev->ics = ics;
-	dev->hspi = hspi;
-	dev->cs_port[0] = CSA_Port;
-	dev->cs_port[1] = CSB_Port;
-	dev->cs_pin[0] = CSA_Pin;
-	dev->cs_pin[1] = CSB_Pin;
-	dev->htim = htim;
+	(void)adbms2950_init_mixed_chain(dev,
+	                                 num_asics,
+	                                 ics,
+	                                 num_asics,
+	                                 hspi,
+	                                 CSA_Port,
+	                                 CSB_Port,
+	                                 CSA_Pin,
+	                                 CSB_Pin,
+	                                 htim,
+	                                 STRING_A,
+	                                 true,
+	                                 false);
+}
 
-	memset(&dev->spi_debug, 0, sizeof(dev->spi_debug));
-	dev->spi_debug.enabled = true;
-	dev->spi_debug.last_status = HAL_OK;
-	dev->spi_debug.last_tx_status = HAL_OK;
-	dev->spi_debug.last_rx_status = HAL_OK;
-	dev->spi_debug.last_xfer_status = HAL_OK;
+HAL_StatusTypeDef adbms2950_init_mixed_chain(adbms2950_driver_t *dev,
+											 uint8_t num_asics,
+											 adbms2950_asic *ics,
+											 uint8_t ics_capacity,
+											 SPI_HandleTypeDef *hspi,
+											 GPIO_TypeDef *CSA_Port,
+											 GPIO_TypeDef *CSB_Port,
+											 uint16_t CSA_Pin,
+											 uint16_t CSB_Pin,
+											 TIM_HandleTypeDef *htim,
+											 adbms_string primary_string,
+											 bool issue_chain_reset,
+											 bool enable_hv_dividers)
+{
+	HAL_StatusTypeDef status;
 
-	// Set CS pins high
-	dev->string = STRING_B;
-	adbms2950_set_cs(dev, 1);
-	dev->string = STRING_A;
-	adbms2950_set_cs(dev, 1);
-
-	adbms2950_wakeup(dev);
-	adbms2950_srst(dev);
-	// 8ms delay. DS and vendor code recommend
-	adbms2950_us_delay(dev, 8000);
-
-	adbms2950_reset_cfg_regs(dev);
-	for(uint8_t cic = 0; cic < dev->num_ics; cic++)
+	if(dev == NULL)
 	{
-		// GPO1 as PUSH-PULL, set to LOW
-		dev->ics[cic].tx_cfga.gpo1od = PUSH_PULL;
-		dev->ics[cic].tx_cfga.gpo1c = PULLED_DOWN;
-
-		// GPO2 as PUSH-PULL, set to LOW
-		dev->ics[cic].tx_cfga.gpo2od = PUSH_PULL;
-		dev->ics[cic].tx_cfga.gpo2c = PULLED_DOWN;
+		return HAL_ERROR;
 	}
 
-	adbms2950_wakeup(dev);
-	adbms2950_wrcfga(dev);
-	adbms2950_wrcfgb(dev);
-	adbms2950_rdcfga(dev);
-	adbms2950_rdcfgb(dev);
+	memset(dev, 0, sizeof(*dev));
+	dev->num_ics = num_asics;
+	dev->ics_capacity = ics_capacity;
+	dev->ics = ics;
+	dev->hspi = hspi;
+	dev->cs_port[STRING_A] = CSA_Port;
+	dev->cs_port[STRING_B] = CSB_Port;
+	dev->cs_pin[STRING_A] = CSA_Pin;
+	dev->cs_pin[STRING_B] = CSB_Pin;
+	dev->htim = htim;
+	dev->string = primary_string;
+	dev->delay_last_status = (htim != NULL) ? HAL_OK : HAL_ERROR;
+	dev->spi_debug.enabled = true;
+	dev->spi_debug.last_status = HAL_ERROR;
+	dev->spi_debug.last_tx_status = HAL_ERROR;
+	dev->spi_debug.last_rx_status = HAL_ERROR;
+	dev->spi_debug.last_xfer_status = HAL_ERROR;
+	dev->health.last_status = HAL_ERROR;
+	dev->health.hv_dividers_enabled = false;
 
-	// Using Redundant, Continuous measurement
-	// See Table 42 page 34
-	adi1_ adi1;
-	adi1.rd = RD_ON; // Redundant measurement on, starts VB2ADC and I2ADC as well
-	adi1.opt = OPT12_C; // Continuous measurement
-	adbms2950_wakeup(dev);
-	adbms2950_adi1(dev, &adi1);
+	if((num_asics == 0u) ||
+	   (num_asics > ADBMS2950_MAX_TRACKED_ICS) ||
+	   (ics == NULL) ||
+	   (ics_capacity < num_asics) ||
+	   (hspi == NULL) ||
+	   (htim == NULL) ||
+	   (CSA_Port == NULL) ||
+	   (CSB_Port == NULL) ||
+	   (CSA_Pin == 0u) ||
+	   (CSB_Pin == 0u) ||
+	   ((int)primary_string < (int)STRING_A) ||
+	   (primary_string > STRING_B))
+	{
+		return HAL_ERROR;
+	}
 
-	// Don't need this call since RD_ON starts VB2ADC and I2ADC above
-	/*adi2_ adi2;
-	adi2.opt = OPT12_C;
-	adbms2950_wakeup(dev);
-	adbms2950_adi2(dev, &adi2);
-	*/
+	memset(ics, 0, sizeof(*ics) * num_asics);
+	dev->string = STRING_A;
+	adbms2950_set_cs(dev, 1u);
+	dev->string = STRING_B;
+	adbms2950_set_cs(dev, 1u);
+	dev->string = primary_string;
 
-	// Add delay for device to start
-	adbms2950_us_delay(dev, 8000);
+	if(issue_chain_reset)
+	{
+		status = adbms2950_wakeup_checked(dev);
+		if(status == HAL_OK)
+		{
+			status = adbms2950_cmd_checked(dev, SRST);
+		}
+		if(status == HAL_OK)
+		{
+			status = adbms2950_us_delay(dev, 8000u);
+		}
+		if(status != HAL_OK)
+		{
+			dev->health.last_status = status;
+			return status;
+		}
+	}
+
+	/* RDCFGA cannot distinguish a 2950 from a compatible cell monitor.  SID
+	 * derivative bits must identify an ADBMS2950B before any APM-specific
+	 * configuration is written into the mixed chain. */
+	status = adbms2950_read_sid(dev);
+	if(status != HAL_OK)
+	{
+		dev->health.last_status = status;
+		return status;
+	}
+
+	adbms2950_reset_cfg_regs(dev);
+	for(uint8_t cic = 0u; cic < dev->num_ics; cic++)
+	{
+		dev->ics[cic].tx_cfga.gpo1od = PUSH_PULL;
+		dev->ics[cic].tx_cfga.gpo2od = PUSH_PULL;
+		dev->ics[cic].tx_cfga.gpo1c = enable_hv_dividers ? GPO_SET : GPO_CLR;
+		dev->ics[cic].tx_cfga.gpo2c = enable_hv_dividers ? GPO_SET : GPO_CLR;
+		dev->ics[cic].tx_cfga.commbk = COMMBK_OFF;
+	}
+
+	status = adbms2950_wrcfga_checked(dev);
+	if(status == HAL_OK)
+	{
+		status = adbms2950_wrcfgb_checked(dev);
+	}
+	if(status == HAL_OK)
+	{
+		status = adbms2950_verify_config_readback(dev);
+	}
+	if(status != HAL_OK)
+	{
+		/* The final-board divider enables are deliberately fail-low.  A failed
+		 * write or mismatched readback leaves the remote register state unknown,
+		 * so make one bounded best-effort attempt to drive both enables low.  The
+		 * original failure remains authoritative even if this cleanup succeeds. */
+		adbms2950_force_dividers_off_best_effort(dev);
+	}
+
+	dev->health.config_valid = (status == HAL_OK);
+	dev->health.initialized = (status == HAL_OK);
+	dev->health.hv_dividers_enabled = (status == HAL_OK) && enable_hv_dividers;
+	dev->health.last_status = status;
+	return status;
+}
+
+static void adbms2950_force_dividers_off_best_effort(adbms2950_driver_t *dev)
+{
+	if(!adbms2950_topology_valid(dev))
+	{
+		return;
+	}
+
+	for(uint8_t ic = 0u; ic < dev->num_ics; ic++)
+	{
+		dev->ics[ic].tx_cfga.gpo1od = PUSH_PULL;
+		dev->ics[ic].tx_cfga.gpo2od = PUSH_PULL;
+		dev->ics[ic].tx_cfga.gpo1c = GPO_CLR;
+		dev->ics[ic].tx_cfga.gpo2c = GPO_CLR;
+	}
+	dev->health.hv_dividers_enabled = false;
+	(void)adbms2950_wrcfga_checked(dev);
 }
 
 
@@ -428,8 +600,9 @@ static HAL_StatusTypeDef adbms2950_wr48_checked(adbms2950_driver_t* dev,
 	uint16_t cmd_index;
 	uint8_t src_addr = 0u;
 	uint8_t temp[TX_DATA];
+	HAL_StatusTypeDef status;
 
-	if((dev == NULL) || (cmd == NULL) || (tx_data == NULL) || (dev->num_ics == 0u))
+	if(!adbms2950_topology_valid(dev) || (cmd == NULL) || (tx_data == NULL))
 	{
 		return HAL_ERROR;
 	}
@@ -440,7 +613,11 @@ static HAL_StatusTypeDef adbms2950_wr48_checked(adbms2950_driver_t* dev,
 		return HAL_ERROR;
 	}
 
-	adbms2950_wakeup(dev);
+	status = adbms2950_wakeup_checked(dev);
+	if(status != HAL_OK)
+	{
+		return status;
+	}
 
 	wrbuf[0] = cmd[0];
 	wrbuf[1] = cmd[1];
@@ -493,8 +670,9 @@ static HAL_StatusTypeDef adbms2950_rd48_checked(adbms2950_driver_t* dev,
 	uint16_t calculated_pec;
 	uint8_t temp[RX_DATA];
 	HAL_StatusTypeDef status;
+	bool integrity_ok = true;
 
-	if((dev == NULL) || (cmd == NULL) || (rx_data == NULL) || (dev->num_ics == 0u))
+	if(!adbms2950_topology_valid(dev) || (cmd == NULL) || (rx_data == NULL))
 	{
 		return HAL_ERROR;
 	}
@@ -511,7 +689,11 @@ static HAL_StatusTypeDef adbms2950_rd48_checked(adbms2950_driver_t* dev,
 	wrcmd[2] = (uint8_t)(pec15 >> 8);
 	wrcmd[3] = (uint8_t)pec15;
 
-	adbms2950_wakeup(dev);
+	status = adbms2950_wakeup_checked(dev);
+	if(status != HAL_OK)
+	{
+		return status;
+	}
 
 	if(dev->spi_debug.enabled)
 	{
@@ -536,6 +718,11 @@ static HAL_StatusTypeDef adbms2950_rd48_checked(adbms2950_driver_t* dev,
 
       dev->ics[current_ic].rx_cmd_cntr = cmd_counter;
       dev->ics[current_ic].rx_pec_error = (received_pec != calculated_pec);
+	  if(dev->ics[current_ic].rx_pec_error)
+	  {
+		integrity_ok = false;
+		adbms2950_sat_inc_u32(&dev->health.pec_error_count);
+	  }
 
       if(dev->spi_debug.enabled && (current_ic < ADBMS2950_MAX_TRACKED_ICS))
       {
@@ -552,7 +739,13 @@ static HAL_StatusTypeDef adbms2950_rd48_checked(adbms2950_driver_t* dev,
       }
     }
 
-	return HAL_OK;
+	if(!integrity_ok && dev->spi_debug.enabled)
+	{
+		/* Preserve last_xfer_status as the underlying HAL transport result while
+		 * exposing the failed end-to-end transaction through last_status. */
+		dev->spi_debug.last_status = HAL_ERROR;
+	}
+	return integrity_ok ? HAL_OK : HAL_ERROR;
 }
 
 void adbms2950_reset_cfg_regs(adbms2950_driver_t* dev)
@@ -641,7 +834,17 @@ void adbms2950_srst(adbms2950_driver_t* dev)
 
 void adbms2950_wrcfga(adbms2950_driver_t* dev)
 {
+	(void)adbms2950_wrcfga_checked(dev);
+}
+
+static HAL_StatusTypeDef adbms2950_wrcfga_checked(adbms2950_driver_t *dev)
+{
 	uint8_t address;
+
+	if(!adbms2950_topology_valid(dev))
+	{
+		return HAL_ERROR;
+	}
 
 	adbms2950_pack_cfga(dev);
 	for(uint8_t cic = 0; cic < dev->num_ics; cic++)
@@ -652,12 +855,22 @@ void adbms2950_wrcfga(adbms2950_driver_t* dev)
 			buf[address + byte] = dev->ics[cic].configa.tx_data[byte];
 		}
 	}
-	adbms2950_wr48(dev, WRCFGA, buf);
+	return adbms2950_wr48_checked(dev, WRCFGA, buf);
 }
 
 void adbms2950_wrcfgb(adbms2950_driver_t* dev)
 {
+	(void)adbms2950_wrcfgb_checked(dev);
+}
+
+static HAL_StatusTypeDef adbms2950_wrcfgb_checked(adbms2950_driver_t *dev)
+{
 	uint8_t address;
+
+	if(!adbms2950_topology_valid(dev))
+	{
+		return HAL_ERROR;
+	}
 
 	adbms2950_pack_cfgb(dev);
 	for(uint8_t cic = 0; cic < dev->num_ics; cic++)
@@ -668,19 +881,245 @@ void adbms2950_wrcfgb(adbms2950_driver_t* dev)
 			buf[address + byte] = dev->ics[cic].configb.tx_data[byte];
 		}
 	}
-	adbms2950_wr48(dev, WRCFGB, buf);
+	return adbms2950_wr48_checked(dev, WRCFGB, buf);
 }
 
 void adbms2950_rdcfga(adbms2950_driver_t* dev)
 {
-	adbms2950_rd48(dev, RDCFGA, buf);
-	adbms2950_parse_cfga(dev, buf);
+	if(adbms2950_rd48_checked(dev, RDCFGA, buf) == HAL_OK)
+	{
+		adbms2950_parse_cfga(dev, buf);
+	}
 }
 
 void adbms2950_rdcfgb(adbms2950_driver_t* dev)
 {
-	adbms2950_rd48(dev, RDCFGB, buf);
+	if(adbms2950_rd48_checked(dev, RDCFGB, buf) == HAL_OK)
+	{
+		adbms2950_parse_cfgb(dev, buf);
+	}
+}
+
+HAL_StatusTypeDef adbms2950_verify_config_readback(adbms2950_driver_t *dev)
+{
+	HAL_StatusTypeDef status;
+
+	if(!adbms2950_topology_valid(dev))
+	{
+		return HAL_ERROR;
+	}
+
+	adbms2950_pack_cfga(dev);
+	status = adbms2950_rd48_checked(dev, RDCFGA, buf);
+	if(status != HAL_OK)
+	{
+		dev->health.config_valid = false;
+		return status;
+	}
+	for(uint8_t ic = 0u; ic < dev->num_ics; ic++)
+	{
+		if(memcmp(&buf[(uint16_t)ic * RX_DATA],
+		          dev->ics[ic].configa.tx_data,
+		          TX_DATA) != 0)
+		{
+			dev->health.config_valid = false;
+			return HAL_ERROR;
+		}
+	}
+	adbms2950_parse_cfga(dev, buf);
+
+	adbms2950_pack_cfgb(dev);
+	status = adbms2950_rd48_checked(dev, RDCFGB, buf);
+	if(status != HAL_OK)
+	{
+		dev->health.config_valid = false;
+		return status;
+	}
+	for(uint8_t ic = 0u; ic < dev->num_ics; ic++)
+	{
+		if(memcmp(&buf[(uint16_t)ic * RX_DATA],
+		          dev->ics[ic].configb.tx_data,
+		          TX_DATA) != 0)
+		{
+			dev->health.config_valid = false;
+			return HAL_ERROR;
+		}
+	}
 	adbms2950_parse_cfgb(dev, buf);
+	dev->health.config_valid = true;
+	return HAL_OK;
+}
+
+HAL_StatusTypeDef adbms2950_read_sid(adbms2950_driver_t *dev)
+{
+	HAL_StatusTypeDef status;
+
+	if(!adbms2950_topology_valid(dev))
+	{
+		return HAL_ERROR;
+	}
+
+	status = adbms2950_rd48_checked(dev, RDSID, buf);
+	if(status != HAL_OK)
+	{
+		dev->health.sid_valid = false;
+		dev->health.last_status = status;
+		return status;
+	}
+
+	for(uint8_t ic = 0u; ic < dev->num_ics; ic++)
+	{
+		uint8_t *packet = &buf[(uint16_t)ic * RX_DATA];
+		uint8_t device_id = (uint8_t)((packet[5] >> 1u) & 0x3Fu);
+
+		memcpy(dev->ics[ic].sid.sid, packet, RSID);
+		if(device_id != ADBMS2950B_DEVICE_ID)
+		{
+			dev->health.sid_valid = false;
+			dev->health.device_id = device_id;
+			dev->health.last_status = HAL_ERROR;
+			return HAL_ERROR;
+		}
+	}
+
+	memcpy(dev->health.sid, dev->ics[0].sid.sid, RSID);
+	dev->health.device_id = ADBMS2950B_DEVICE_ID;
+	dev->health.sid_valid = true;
+	dev->health.last_status = HAL_OK;
+	return HAL_OK;
+}
+
+HAL_StatusTypeDef adbms2950_read_status(adbms2950_driver_t *dev)
+{
+	HAL_StatusTypeDef status;
+
+	if(!adbms2950_topology_valid(dev))
+	{
+		return HAL_ERROR;
+	}
+
+	status = adbms2950_rd48_checked(dev, RDSTAT, buf);
+	if(status != HAL_OK)
+	{
+		dev->health.i1_calibrated = false;
+		dev->health.last_status = status;
+		return status;
+	}
+
+	dev->health.i1_calibrated = ((buf[1] & ADBMS2950_I1_CAL_MASK) != 0u);
+	dev->health.revision = (uint8_t)((buf[5] >> 4u) & 0x0Fu);
+	dev->health.last_status = HAL_OK;
+	return HAL_OK;
+}
+
+HAL_StatusTypeDef adbms2950_read_primary_sample(adbms2950_driver_t *dev,
+												 uint32_t now_ms)
+{
+	HAL_StatusTypeDef status;
+	uint32_t raw_i1;
+	uint16_t raw_vb1;
+	int32_t signed_i1;
+	int16_t signed_vb1;
+	uint8_t status_counter;
+	uint8_t counter;
+
+	if(!adbms2950_topology_valid(dev) || !dev->health.initialized)
+	{
+		return HAL_ERROR;
+	}
+
+	status = adbms2950_read_status(dev);
+	if((status != HAL_OK) || !dev->health.i1_calibrated)
+	{
+		dev->health.sample_valid = false;
+		dev->health.current_valid = false;
+		dev->health.pack_voltage_valid = false;
+		dev->health.last_status = (status == HAL_OK) ? HAL_ERROR : status;
+		adbms2950_sat_inc_u32(&dev->health.sample_error_count);
+		return dev->health.last_status;
+	}
+	status_counter = dev->ics[0].rx_cmd_cntr;
+
+	status = adbms2950_rd48_checked(dev, RDIVB1, buf);
+	if(status != HAL_OK)
+	{
+		dev->health.sample_valid = false;
+		dev->health.current_valid = false;
+		dev->health.pack_voltage_valid = false;
+		dev->health.last_status = status;
+		adbms2950_sat_inc_u32(&dev->health.sample_error_count);
+		return status;
+	}
+
+	/* Read commands do not advance the device command counter.  RDSTAT and
+	 * RDIVB1 are consecutive reads under the same driver lock, so a mismatch
+	 * proves the two packets are not one coherent sample. */
+	counter = dev->ics[0].rx_cmd_cntr;
+	if((counter == 0u) || (counter != status_counter))
+	{
+		dev->health.sample_valid = false;
+		dev->health.current_valid = false;
+		dev->health.pack_voltage_valid = false;
+		dev->health.counter_advanced = false;
+		dev->health.last_status = HAL_ERROR;
+		adbms2950_sat_inc_u32(&dev->health.counter_mismatch_count);
+		adbms2950_sat_inc_u32(&dev->health.sample_error_count);
+		return HAL_ERROR;
+	}
+
+	raw_i1 = (uint32_t)buf[0] |
+	         ((uint32_t)buf[1] << 8u) |
+	         ((uint32_t)buf[2] << 16u);
+	raw_vb1 = (uint16_t)((uint16_t)buf[4] | ((uint16_t)buf[5] << 8u));
+	if((raw_i1 == ADBMS2950_I1_RESET_CODE) ||
+	   (raw_i1 == ADBMS2950_I1_CLEAR_CODE) ||
+	   (raw_vb1 == ADBMS2950_VB1_RESET_CODE) ||
+	   (raw_vb1 == ADBMS2950_VB1_CLEAR_CODE))
+	{
+		dev->health.sample_valid = false;
+		dev->health.current_valid = false;
+		dev->health.pack_voltage_valid = false;
+		dev->health.last_status = HAL_ERROR;
+		adbms2950_sat_inc_u32(&dev->health.sample_error_count);
+		return HAL_ERROR;
+	}
+
+	signed_i1 = adbms2950_sign_extend_24(raw_i1);
+	signed_vb1 = (int16_t)raw_vb1;
+	if(dev->health.counter_seen)
+	{
+		dev->health.counter_advanced = (counter != 0u) &&
+		                               (counter != dev->health.last_cmd_counter);
+		if(!dev->health.counter_advanced)
+		{
+			adbms2950_sat_inc_u32(&dev->health.counter_stall_count);
+		}
+	}
+	else
+	{
+		dev->health.counter_seen = true;
+		dev->health.counter_advanced = (counter != 0u);
+	}
+	dev->health.last_cmd_counter = counter;
+
+	dev->ics[0].ivbat.i1 = (uint32_t)signed_i1;
+	dev->ics[0].ivbat.vbat1 = raw_vb1;
+	dev->vi_adc[0] = (float)signed_i1 * VI1_SCALE;
+	dev->current[0] = dev->vi_adc[0] * CURRENT_R_SCALE;
+	dev->vbat_adc[0] = (float)signed_vb1 * VBAT1_SCALE;
+	dev->vbat[0] = dev->vbat_adc[0] * VBAT_DIV_SCALE;
+
+	dev->health.i1_raw = signed_i1;
+	dev->health.vb1_raw = signed_vb1;
+	dev->health.current_a = dev->current[0];
+	dev->health.pack_voltage_v = dev->vbat[0];
+	dev->health.current_valid = true;
+	dev->health.pack_voltage_valid = dev->health.hv_dividers_enabled;
+	dev->health.sample_valid = true;
+	dev->health.last_update_ms = now_ms;
+	dev->health.last_status = HAL_OK;
+	adbms2950_sat_inc_u32(&dev->health.sample_count);
+	return HAL_OK;
 }
 
 void adbms2950_parse_cfga(adbms2950_driver_t* dev, uint8_t *data)
@@ -861,8 +1300,10 @@ void adbms2950_plv(adbms2950_driver_t* dev)
 
 void adbms2950_rdvb(adbms2950_driver_t* dev)
 {
-	adbms2950_rd48(dev, RDVB, buf);
-	adbms2950_parse_rdvb(dev, buf);
+	if(adbms2950_rd48_checked(dev, RDVB, buf) == HAL_OK)
+	{
+		adbms2950_parse_rdvb(dev, buf);
+	}
 }
 
 void adbms2950_parse_rdvb(adbms2950_driver_t* dev, uint8_t* vbat_data)
@@ -879,8 +1320,10 @@ void adbms2950_parse_rdvb(adbms2950_driver_t* dev, uint8_t* vbat_data)
 
 void adbms2950_rdi(adbms2950_driver_t* dev)
 {
-	adbms2950_rd48(dev, RDI, buf);
-	adbms2950_parse_rdi(dev, buf);
+	if(adbms2950_rd48_checked(dev, RDI, buf) == HAL_OK)
+	{
+		adbms2950_parse_rdi(dev, buf);
+	}
 }
 
 void adbms2950_parse_rdi(adbms2950_driver_t* dev, uint8_t* i_data)
@@ -900,8 +1343,10 @@ void adbms2950_parse_rdi(adbms2950_driver_t* dev, uint8_t* i_data)
 
 void adbms2950_rdv1d(adbms2950_driver_t* dev)
 {
-	adbms2950_rd48(dev, RDV1D, buf);
-	adbms2950_parse_rdv1d(dev, buf);
+	if(adbms2950_rd48_checked(dev, RDV1D, buf) == HAL_OK)
+	{
+		adbms2950_parse_rdv1d(dev, buf);
+	}
 }
 
 void adbms2950_parse_rdv1d(adbms2950_driver_t* dev, uint8_t* v_data)
@@ -950,13 +1395,35 @@ void adbms2950_gpo_set(adbms2950_driver_t* dev, GPO gpo, CFGA_GPO state)
 
 void adbms2950_wakeup(adbms2950_driver_t *dev)
 {
+	(void)adbms2950_wakeup_checked(dev);
+}
+
+HAL_StatusTypeDef adbms2950_wakeup_checked(adbms2950_driver_t *dev)
+{
+	HAL_StatusTypeDef status;
+
+	if(!adbms2950_topology_valid(dev))
+	{
+		return HAL_ERROR;
+	}
+
 	for(uint8_t i = 0; i < dev->num_ics; i++)
 	{
 		adbms2950_set_cs(dev, 0);
-		adbms2950_us_delay(dev, WAKEUP_US_DELAY);
+		status = adbms2950_us_delay(dev, WAKEUP_US_DELAY);
+		if(status != HAL_OK)
+		{
+			adbms2950_set_cs(dev, 1);
+			return status;
+		}
 		adbms2950_set_cs(dev, 1);
-		adbms2950_us_delay(dev, WAKEUP_BW_DELAY);
+		status = adbms2950_us_delay(dev, WAKEUP_BW_DELAY);
+		if(status != HAL_OK)
+		{
+			return status;
+		}
 	}
+	return HAL_OK;
 }
 
 void adbms2950_set_cs(adbms2950_driver_t* dev, uint8_t state)
@@ -973,16 +1440,40 @@ void adbms2950_set_cs(adbms2950_driver_t* dev, uint8_t state)
 	HAL_GPIO_WritePin(dev->cs_port[dev->string], dev->cs_pin[dev->string], state);
 }
 
-void adbms2950_us_delay(adbms2950_driver_t* dev, uint16_t microseconds)
+HAL_StatusTypeDef adbms2950_us_delay(adbms2950_driver_t* dev, uint16_t microseconds)
 {
-	if((dev == NULL) || (dev->htim == NULL))
+	uint32_t max_spins;
+	uint32_t spins = 0u;
+
+	if((dev == NULL) || (dev->htim == NULL) || (dev->htim->Instance == NULL))
 	{
-		return;
+		if(dev != NULL)
+		{
+			dev->delay_last_status = HAL_ERROR;
+		}
+		return HAL_ERROR;
 	}
 
 	__HAL_TIM_SET_COUNTER(dev->htim, 0);
-	while (__HAL_TIM_GET_COUNTER(dev->htim) < microseconds);
-	return;
+	max_spins = ADBMS2950_DELAY_BASE_SPINS +
+	            ((uint32_t)microseconds * ADBMS2950_DELAY_SPINS_PER_US);
+	while(__HAL_TIM_GET_COUNTER(dev->htim) < microseconds)
+	{
+#if AMS_HOST_TEST
+		/* The host HAL has no running timer peripheral.  Advance the fake CNT
+		 * explicitly so production timeout logic is still executed in tests. */
+		dev->htim->Instance->CNT++;
+#endif
+		spins++;
+		if(spins >= max_spins)
+		{
+			dev->delay_last_status = HAL_TIMEOUT;
+			adbms2950_sat_inc_u32(&dev->delay_timeout_count);
+			return HAL_TIMEOUT;
+		}
+	}
+	dev->delay_last_status = HAL_OK;
+	return HAL_OK;
 }
 
 

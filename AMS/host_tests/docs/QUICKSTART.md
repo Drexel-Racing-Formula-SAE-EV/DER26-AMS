@@ -70,4 +70,7 @@ bringup ready
 bmsok release
 ```
 
-Use `bmsok inhibit` to force BMS_OK low again. Keep `AMS_ENABLE_APM_2950_DEBUG=0` until ADBMS2950/APM probing is intentional; set it to `1` only for CLI-only APM bring-up.
+Use `bmsok inhibit` to force BMS_OK low again. The final ring builds with
+`AMS_ENABLE_APM_2950=1`, while `AMS_APM_ENABLE_HV_DIVIDERS=0` keeps the APM
+divider controls off for initial SPI/current testing. APM measurements remain
+advisory and non-gating.

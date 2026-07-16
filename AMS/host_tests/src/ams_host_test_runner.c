@@ -62,6 +62,14 @@ static bool fake_adbms_use_custom_voltage_masks = false;
 static uint16_t fake_adbms_updated_masks[ADBMS6830_MAX_TRACKED_ICS];
 static uint16_t fake_adbms_pec_masks[ADBMS6830_MAX_TRACKED_ICS];
 static HAL_StatusTypeDef fake_adbms_diag_status = HAL_OK;
+static HAL_StatusTypeDef fake_apm_init_status = HAL_OK;
+static HAL_StatusTypeDef fake_apm_sample_status = HAL_OK;
+static HAL_StatusTypeDef fake_apm_probe_status = HAL_OK;
+static int32_t fake_apm_i1_raw = 1234;
+static int16_t fake_apm_vb1_raw = 18000;
+static adbms_string fake_apm_init_string = STRING_A;
+static bool fake_apm_init_requested_reset = true;
+static bool fake_apm_init_enabled_dividers = true;
 static uint16_t fake_adbms_config_mismatch_mask = 0u;
 static uint16_t fake_adbms_delay_values_us[8];
 static uint32_t fake_adbms_delay_calls = 0u;
@@ -261,7 +269,7 @@ static HAL_StatusTypeDef fake_adbms_wrcfgb_status = HAL_OK;
 static HAL_StatusTypeDef fake_adbms_wrpwm_status = HAL_OK;
 static HAL_StatusTypeDef fake_adbms_balance_verify_status = HAL_OK;
 static int fake_adbms_wrpwm_fail_after_ok = -1;
-HAL_StatusTypeDef adBms6830_init(adbms6830_driver_t* dev, uint8_t num_ics, adbms6830_asic* ics, uint8_t ics_capacity, SPI_HandleTypeDef* hspi, GPIO_TypeDef* cs_port_a, GPIO_TypeDef* cs_port_b, uint16_t cs_pin_a, uint16_t cs_pin_b, TIM_HandleTypeDef *htim){ if((dev == NULL) || (num_ics == 0u) || (num_ics > ics_capacity) || (num_ics > ADBMS6830_MAX_TRACKED_ICS) || (ics == NULL)){ return HAL_ERROR; } dev->num_ics=num_ics; dev->ics_capacity=ics_capacity; dev->ics=ics; dev->hspi=hspi; dev->cs_port[0]=cs_port_a; dev->cs_port[1]=cs_port_b; dev->cs_pin[0]=cs_pin_a; dev->cs_pin[1]=cs_pin_b; dev->htim=htim; dev->string=STRING_B; memset(&dev->spi_debug, 0, sizeof(dev->spi_debug)); memset(&dev->health, 0, sizeof(dev->health)); dev->spi_debug.last_status=HAL_OK; dev->spi_debug.last_tx_status=HAL_OK; dev->spi_debug.last_rx_status=HAL_OK; dev->spi_debug.last_xfer_status=HAL_OK; dev->health.last_status=HAL_OK; for(uint8_t ic=0; ic<ADBMS6830_MAX_TRACKED_ICS; ic++){ dev->last_cell_updated_mask[ic]=0u; dev->last_cell_pec_mask[ic]=0u; dev->last_temp_updated_mask[ic]=0u; } return fake_adbms_init_status; }
+HAL_StatusTypeDef adBms6830_init(adbms6830_driver_t* dev, uint8_t num_ics, adbms6830_asic* ics, uint8_t ics_capacity, SPI_HandleTypeDef* hspi, GPIO_TypeDef* cs_port_a, GPIO_TypeDef* cs_port_b, uint16_t cs_pin_a, uint16_t cs_pin_b, TIM_HandleTypeDef *htim){ if((dev == NULL) || (num_ics == 0u) || (num_ics > ics_capacity) || (num_ics > ADBMS6830_MAX_TRACKED_ICS) || (ics == NULL)){ return HAL_ERROR; } dev->num_ics=num_ics; dev->ics_capacity=ics_capacity; dev->ics=ics; dev->hspi=hspi; dev->cs_port[0]=cs_port_a; dev->cs_port[1]=cs_port_b; dev->cs_pin[0]=cs_pin_a; dev->cs_pin[1]=cs_pin_b; dev->htim=htim; dev->string=STRING_A; memset(&dev->spi_debug, 0, sizeof(dev->spi_debug)); memset(&dev->health, 0, sizeof(dev->health)); dev->spi_debug.last_status=HAL_OK; dev->spi_debug.last_tx_status=HAL_OK; dev->spi_debug.last_rx_status=HAL_OK; dev->spi_debug.last_xfer_status=HAL_OK; dev->health.last_status=HAL_OK; for(uint8_t ic=0; ic<ADBMS6830_MAX_TRACKED_ICS; ic++){ dev->last_cell_updated_mask[ic]=0u; dev->last_cell_pec_mask[ic]=0u; dev->last_temp_updated_mask[ic]=0u; } return fake_adbms_init_status; }
 static HAL_StatusTypeDef fake_adbms_wrpwm_next_status(void)
 {
     if(fake_adbms_wrpwm_fail_after_ok == 0)
@@ -482,9 +490,62 @@ float voltage_to_temp(float raw){ float voltage = ((float)raw + 10000.0f) * 0.00
 int mux_set_channel(adbms6830_driver_t *dev, uint8_t sensor_num){ (void)dev; return sensor_num < 24 ? 0 : -1; }
 
 void adbms2950_gpo_set(adbms2950_driver_t *dev, GPO gp, CFGA_GPO state){(void)dev;(void)gp;(void)state;} void adbms2950_wakeup(adbms2950_driver_t *dev){(void)dev;} void adbms2950_wrcfga(adbms2950_driver_t *dev){(void)dev;} void adbms2950_rdcfga(adbms2950_driver_t *dev){(void)dev;} void adbms2950_rdvb(adbms2950_driver_t *dev){(void)dev;} void adbms2950_rdi(adbms2950_driver_t *dev){(void)dev;} void adbms2950_adv(adbms2950_driver_t *dev, adv_ *adv){(void)dev;(void)adv;} void adbms2950_plv(adbms2950_driver_t *dev){(void)dev;} void adbms2950_rdv1d(adbms2950_driver_t *dev){(void)dev;}
+HAL_StatusTypeDef adbms2950_init_mixed_chain(adbms2950_driver_t *dev,
+                                              uint8_t num_asics,
+                                              adbms2950_asic *ics,
+                                              uint8_t ics_capacity,
+                                              SPI_HandleTypeDef *hspi,
+                                              GPIO_TypeDef *cs_a,
+                                              GPIO_TypeDef *cs_b,
+                                              uint16_t pin_a,
+                                              uint16_t pin_b,
+                                              TIM_HandleTypeDef *htim,
+                                              adbms_string primary_string,
+                                              bool issue_chain_reset,
+                                              bool enable_hv_dividers)
+{
+    if((dev == NULL) || (ics == NULL) || (num_asics == 0u) ||
+       (num_asics > ics_capacity) || (num_asics > ADBMS2950_MAX_TRACKED_ICS) ||
+       (hspi == NULL) || (htim == NULL) || (cs_a == NULL) || (cs_b == NULL) ||
+       (pin_a == 0u) || (pin_b == 0u) || (primary_string > STRING_B))
+    {
+        return HAL_ERROR;
+    }
+    memset(dev, 0, sizeof(*dev));
+    memset(ics, 0, sizeof(*ics) * num_asics);
+    dev->num_ics = num_asics;
+    dev->ics_capacity = ics_capacity;
+    dev->ics = ics;
+    dev->hspi = hspi;
+    dev->cs_port[STRING_A] = cs_a;
+    dev->cs_port[STRING_B] = cs_b;
+    dev->cs_pin[STRING_A] = pin_a;
+    dev->cs_pin[STRING_B] = pin_b;
+    dev->htim = htim;
+    dev->string = primary_string;
+	fake_apm_init_string = primary_string;
+	fake_apm_init_requested_reset = issue_chain_reset;
+	fake_apm_init_enabled_dividers = enable_hv_dividers;
+    dev->spi_debug.enabled = true;
+    dev->health.hv_dividers_enabled = enable_hv_dividers;
+    dev->health.last_status = fake_apm_init_status;
+    if(fake_apm_init_status == HAL_OK)
+    {
+        dev->health.initialized = true;
+        dev->health.sid_valid = true;
+        dev->health.config_valid = true;
+        dev->health.device_id = ADBMS2950B_DEVICE_ID;
+        dev->health.sid[5] = (uint8_t)(ADBMS2950B_DEVICE_ID << 1u);
+    }
+    return fake_apm_init_status;
+}
+HAL_StatusTypeDef adbms2950_wakeup_checked(adbms2950_driver_t *dev){ return dev ? HAL_OK : HAL_ERROR; }
+HAL_StatusTypeDef adbms2950_us_delay(adbms2950_driver_t *dev, uint16_t us){ (void)us; return dev ? HAL_OK : HAL_ERROR; }
 void adbms2950_spi_debug_enable(adbms2950_driver_t *dev, bool enable){ if(dev) dev->spi_debug.enabled = enable; }
 void adbms2950_spi_debug_clear(adbms2950_driver_t *dev){ if(dev){ bool en = dev->spi_debug.enabled; memset(&dev->spi_debug, 0, sizeof(dev->spi_debug)); dev->spi_debug.enabled = en; } }
 const adbms2950_spi_debug_t *adbms2950_spi_debug_get(const adbms2950_driver_t *dev){ return dev ? &dev->spi_debug : NULL; }
+const adbms2950_health_t *adbms2950_health_get(const adbms2950_driver_t *dev){ return dev ? &dev->health : NULL; }
+void adbms2950_health_clear_counters(adbms2950_driver_t *dev){ if(dev){ dev->health.sample_count=0u; dev->health.sample_error_count=0u; dev->health.pec_error_count=0u; dev->health.counter_stall_count=0u; } }
 const char *adbms2950_spi_op_str(adbms2950_spi_op_t op){
     switch(op){
         case ADBMS2950_SPI_OP_NONE: return "none";
@@ -502,6 +563,24 @@ HAL_StatusTypeDef adbms2950_spi_probe_rdcfga(adbms2950_driver_t *dev){
     dev->spi_debug.rx_count++;
     return HAL_OK;
 }
+HAL_StatusTypeDef adbms2950_read_sid(adbms2950_driver_t *dev){
+    if(dev == NULL) return HAL_ERROR;
+    dev->health.last_status = fake_apm_probe_status;
+    dev->health.sid_valid = (fake_apm_probe_status == HAL_OK);
+    if(dev->health.sid_valid){ dev->health.device_id=ADBMS2950B_DEVICE_ID; dev->health.sid[5]=(uint8_t)(ADBMS2950B_DEVICE_ID<<1u); }
+    return fake_apm_probe_status;
+}
+HAL_StatusTypeDef adbms2950_spi_probe_sid(adbms2950_driver_t *dev){
+    HAL_StatusTypeDef s=adbms2950_read_sid(dev); if(dev){ dev->spi_debug.last_op=ADBMS2950_SPI_OP_PROBE; dev->spi_debug.last_status=s; dev->spi_debug.rx_count++; } return s;
+}
+HAL_StatusTypeDef adbms2950_read_status(adbms2950_driver_t *dev){ if(!dev) return HAL_ERROR; dev->health.i1_calibrated=(fake_apm_sample_status==HAL_OK); return fake_apm_sample_status; }
+HAL_StatusTypeDef adbms2950_read_primary_sample(adbms2950_driver_t *dev, uint32_t now_ms){
+    if((dev == NULL) || !dev->health.initialized) return HAL_ERROR;
+    dev->health.last_status=fake_apm_sample_status;
+    if(fake_apm_sample_status != HAL_OK){ dev->health.sample_valid=false; dev->health.current_valid=false; dev->health.pack_voltage_valid=false; if(dev->health.sample_error_count!=UINT32_MAX) dev->health.sample_error_count++; return fake_apm_sample_status; }
+    dev->health.i1_calibrated=true; dev->health.sample_valid=true; dev->health.current_valid=true; dev->health.pack_voltage_valid=dev->health.hv_dividers_enabled; dev->health.i1_raw=fake_apm_i1_raw; dev->health.vb1_raw=fake_apm_vb1_raw; dev->health.current_a=(float)fake_apm_i1_raw*0.01f; dev->health.pack_voltage_v=(float)fake_apm_vb1_raw*VBAT1_SCALE*VBAT_DIV_SCALE; dev->health.last_update_ms=now_ms; if(dev->health.sample_count!=UINT32_MAX) dev->health.sample_count++; return HAL_OK;
+}
+HAL_StatusTypeDef adbms2950_verify_config_readback(adbms2950_driver_t *dev){ return dev ? fake_apm_init_status : HAL_ERROR; }
 HAL_StatusTypeDef stm32f767z_adc_switch_channel(ADC_HandleTypeDef *hadc, uint32_t channel){ (void)channel; return hadc ? HAL_OK : HAL_ERROR; }
 stm32f767z_adc_read_result_t stm32f767z_adc_read_checked(ADC_HandleTypeDef *hadc, uint32_t timeout_ms){
     (void)timeout_ms;
@@ -654,7 +733,7 @@ static int16_t raw_for_temp_c(float temp_c){ return raw_for_ntc_voltage(ntc_volt
 
 static void sil_mark_all_heartbeats_alive(app_data_t *d);
 
-static void init_fake_app(void){ fake_tick = 0u; memset(&app,0,sizeof(app)); ams_safety_host_reset_state(); ams_rtos_host_reset_state(); ams_rtos_diag_init(&app); app.state = STATE_START; app.acc.smb.num_ics = NSMBS; app.acc.smb.ics_capacity = NSMBS; app.acc.smb.ics = app.acc.smb_ics; app.acc.delay_timer_ready = true; app.acc.delay_timer_status = HAL_OK; app.acc.smb_ready = true; app.acc.smb_init_status = HAL_OK; current_fault_init(&app.current_fault_state); voltage_fault_init(&app.voltage_fault_state); temperature_fault_init(&app.temp_fault_state); ams_heartbeat_init(&app, fake_tick); ams_safety_watchdog_boot_arm(&app); app.current_meas_reason = CURRENT_SENSOR_REASON_ADC_READ; app.current_fault_reason = CURRENT_FAULT_REASON_SENSOR_NOT_READY; app.voltage_fault_reason = VOLTAGE_FAULT_REASON_NOT_READY; app.temp_fault = true; app.temp_read_fault = true; app.temp_fan_max = true; app.temp_fault_reason = TEMPERATURE_FAULT_REASON_NOT_READY; app.imd_valid = true; app.imd_ok = true; app.imd_fault = false; app.imd_status = IMD_NORMAL; app.balance_inhibit = (AMS_HW_BRINGUP_BALANCE_INHIBIT_DEFAULT != 0); fake_adbms_voltage_masks_full_update(); fake_adc_read_index = 0u; fake_adbms_init_status = HAL_OK; fake_adbms_wrcfgb_status = HAL_OK; fake_adbms_wrpwm_status = HAL_OK; fake_adbms_balance_verify_status = HAL_OK; fake_adbms_wrpwm_fail_after_ok = -1; fake_adbms_diag_status = HAL_OK; fake_adbms_config_mismatch_mask = 0u; fake_can_add_tx_status = HAL_OK; fake_can_error = HAL_CAN_ERROR_NONE; fake_can_recover_status = HAL_OK; fake_can_notification_status = HAL_OK; fake_rx_status = HAL_OK; fake_tim_base_start_status = HAL_OK; fake_tim_pwm_start_status = HAL_OK; fake_tim_ic_start_it_status = HAL_OK; fake_tim_ic_start_status = HAL_OK; fake_tim_total_capture = 1000u; fake_tim_high_capture = 500u; memset(&fake_rx_hdr, 0, sizeof(fake_rx_hdr)); memset(fake_rx_data, 0, sizeof(fake_rx_data)); bms_pin_state = GPIO_PIN_RESET; }
+static void init_fake_app(void){ fake_tick = 0u; memset(&app,0,sizeof(app)); ams_safety_host_reset_state(); ams_rtos_host_reset_state(); ams_rtos_diag_init(&app); app.state = STATE_START; app.acc.smb.num_ics = NSMBS; app.acc.smb.ics_capacity = NSMBS; app.acc.smb.ics = app.acc.smb_ics; app.acc.smb.string = STRING_A; app.acc.delay_timer_ready = true; app.acc.delay_timer_status = HAL_OK; app.acc.smb_ready = true; app.acc.smb_init_status = HAL_OK; app.acc.apm.num_ics = NAPMS; app.acc.apm.ics_capacity = NAPMS; app.acc.apm.ics = app.acc.apm_ics; app.acc.apm.string = STRING_B; app.acc.apm_ready = true; app.acc.apm_init_status = HAL_OK; app.acc.apm.health.initialized = true; app.acc.apm.health.sid_valid = true; app.acc.apm.health.config_valid = true; app.acc.apm.health.device_id = ADBMS2950B_DEVICE_ID; app.acc.apm.health.sid[5] = (uint8_t)(ADBMS2950B_DEVICE_ID << 1u); current_fault_init(&app.current_fault_state); voltage_fault_init(&app.voltage_fault_state); temperature_fault_init(&app.temp_fault_state); ams_heartbeat_init(&app, fake_tick); ams_safety_watchdog_boot_arm(&app); app.current_meas_reason = CURRENT_SENSOR_REASON_ADC_READ; app.current_fault_reason = CURRENT_FAULT_REASON_SENSOR_NOT_READY; app.voltage_fault_reason = VOLTAGE_FAULT_REASON_NOT_READY; app.temp_fault = true; app.temp_read_fault = true; app.temp_fan_max = true; app.temp_fault_reason = TEMPERATURE_FAULT_REASON_NOT_READY; app.imd_valid = true; app.imd_ok = true; app.imd_fault = false; app.imd_status = IMD_NORMAL; app.balance_inhibit = (AMS_HW_BRINGUP_BALANCE_INHIBIT_DEFAULT != 0); fake_adbms_voltage_masks_full_update(); fake_adc_read_index = 0u; fake_adbms_init_status = HAL_OK; fake_apm_init_status = HAL_OK; fake_apm_sample_status = HAL_OK; fake_apm_probe_status = HAL_OK; fake_apm_i1_raw = 1234; fake_apm_vb1_raw = 18000; fake_apm_init_string = STRING_A; fake_apm_init_requested_reset = true; fake_apm_init_enabled_dividers = true; fake_adbms_wrcfgb_status = HAL_OK; fake_adbms_wrpwm_status = HAL_OK; fake_adbms_balance_verify_status = HAL_OK; fake_adbms_wrpwm_fail_after_ok = -1; fake_adbms_diag_status = HAL_OK; fake_adbms_config_mismatch_mask = 0u; fake_can_add_tx_status = HAL_OK; fake_can_error = HAL_CAN_ERROR_NONE; fake_can_recover_status = HAL_OK; fake_can_notification_status = HAL_OK; fake_rx_status = HAL_OK; fake_tim_base_start_status = HAL_OK; fake_tim_pwm_start_status = HAL_OK; fake_tim_ic_start_it_status = HAL_OK; fake_tim_ic_start_status = HAL_OK; fake_tim_total_capture = 1000u; fake_tim_high_capture = 500u; memset(&fake_rx_hdr, 0, sizeof(fake_rx_hdr)); memset(fake_rx_data, 0, sizeof(fake_rx_data)); bms_pin_state = GPIO_PIN_RESET; }
 
 static void host_mark_updated_cells(app_data_t *d)
 {
@@ -2903,23 +2982,121 @@ static void test_system_sil_regen_and_charge_current_placeholders(void)
     CHECK(app.bms_state == false);
 }
 
-static void test_system_sil_2950_debug_non_safety_until_integrated(void)
+static void test_system_sil_2950_advisory_sampling_and_cli(void)
 {
+    static SPI_HandleTypeDef hspi;
+    char *status[] = {"apm", "status"};
+    char *sample[] = {"apm", "sample"};
+    char *sid[] = {"apm", "sid"};
+	char *config[] = {"apm", "config"};
+	char *scope[] = {"apm", "scope", "3"};
+	char *scope_bad[] = {"apm", "scope", "0"};
+
     sil_prepare_ready_system(STATE_DISCARGE, 0.0f, 3.700f);
+    hspi.Init.CLKPolarity = SPI_POLARITY_HIGH;
+    hspi.Init.CLKPhase = SPI_PHASE_2EDGE;
+    hspi.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_256;
+    hspi.Init.FirstBit = SPI_FIRSTBIT_MSB;
+    app.acc.apm.hspi = &hspi;
 
-    app.acc.apm.spi_debug.enabled = true;
-    app.acc.apm.spi_debug.error_count = 1234u;
-    app.acc.apm.spi_debug.last_status = HAL_TIMEOUT;
-    app.acc.apm.spi_debug.last_xfer_status = HAL_TIMEOUT;
+    fake_apm_i1_raw = -250;
+    fake_apm_vb1_raw = 18000;
+    fake_tick = 1000u;
+    CHECK(accumulator_read_apm(&app.acc, fake_tick) == 0);
+    CHECK(app.acc.apm.health.sample_valid == true);
+    CHECK(app.acc.apm.health.current_valid == true);
+    CHECK(app.acc.apm.health.pack_voltage_valid == false);
+    CHECK(fabsf(app.acc.apm.health.current_a - (-2.5f)) < 0.001f);
+    CHECK(app.acc.apm.health.last_update_ms == 1000u);
+    CHECK(app.bms_state == true);
 
+    /* APM failure is visible but deliberately cannot become a safety input
+     * until final-board scaling/polarity/fault validation is complete. */
+    fake_apm_sample_status = HAL_TIMEOUT;
+    CHECK(accumulator_read_apm(&app.acc, 2000u) == -1);
+    CHECK(app.acc.apm.health.sample_valid == false);
+    CHECK(app.acc.apm.health.sample_error_count == 1u);
+    CHECK(app.adbms_diag_fault == false);
+    CHECK(app.bms_state == true);
     fake_adbms_voltage_masks_full_update();
     sil_run_voltage_sample(&app);
     CHECK(app.voltage_valid == true);
-    CHECK(app.voltage_fault == false);
     CHECK(app.current_valid == true);
-    CHECK(app.current_fault == false);
     CHECK(app.bms_state == true);
-    CHECK(app.acc.apm.spi_debug.error_count == 1234u);
+
+    fake_apm_sample_status = HAL_OK;
+    sil_prepare_cli_capture();
+    CHECK(get_apm_debug(2, status) == 0);
+    CHECK(strstr(cli_capture, "APM topology A:5x6830 B:1x2950 selected:CS_B") != NULL);
+    CHECK(strstr(cli_capture, "ADVISORY_NON_GATING") != NULL);
+    CHECK(strstr(cli_capture, "dividers:OFF") != NULL);
+
+    sil_prepare_cli_capture();
+    CHECK(get_apm_debug(2, sample) == 0);
+    CHECK(strstr(cli_capture, "RDSTAT+RDIVB1 sample: OK") != NULL);
+    CHECK(strstr(cli_capture, "current:-2.500A") != NULL);
+
+    fake_apm_probe_status = HAL_OK;
+    sil_prepare_cli_capture();
+    CHECK(get_apm_debug(2, sid) == 0);
+    CHECK(strstr(cli_capture, "RDSID identity probe: OK") != NULL);
+    CHECK(app.acc.apm.health.device_id == ADBMS2950B_DEVICE_ID);
+
+	sil_prepare_cli_capture();
+	CHECK(get_apm_debug(2, config) == 0);
+	CHECK(strstr(cli_capture, "RDCFGA/RDCFGB readback: OK") != NULL);
+
+	sil_prepare_cli_capture();
+	CHECK(get_apm_debug(3, scope) == 0);
+	CHECK(strstr(cli_capture, "scope requested:3 completed:3 status:OK") != NULL);
+
+	sil_prepare_cli_capture();
+	CHECK(get_apm_debug(3, scope_bad) == 0);
+	CHECK(strstr(cli_capture, "Usage: apm scope [1-100]") != NULL);
+
+    app.adbms_scan_active = true;
+    sil_prepare_cli_capture();
+    CHECK(get_apm_debug(2, sample) == 0);
+    CHECK(strstr(cli_capture, "apm sample refused") != NULL);
+    app.adbms_scan_active = false;
+}
+
+static void test_system_sil_2950_final_ring_init_ownership(void)
+{
+    accumulator_t acc;
+    SPI_HandleTypeDef hspi;
+    GPIO_TypeDef cs_a;
+    GPIO_TypeDef cs_b;
+    TIM_HandleTypeDef timer;
+
+    init_fake_app();
+    memset(&acc, 0, sizeof(acc));
+    memset(&hspi, 0, sizeof(hspi));
+    memset(&cs_a, 0, sizeof(cs_a));
+    memset(&cs_b, 0, sizeof(cs_b));
+    memset(&timer, 0, sizeof(timer));
+    accumulator_init(&acc, &hspi, &cs_a, &cs_b, 0x0002u, 0x0004u, &timer);
+
+    CHECK(acc.smb_ready == true);
+    CHECK(acc.smb.string == STRING_A);
+    CHECK(acc.apm_ready == true);
+    CHECK(acc.apm.string == STRING_B);
+    CHECK(fake_apm_init_string == STRING_B);
+    CHECK(fake_apm_init_requested_reset == false);
+    CHECK(fake_apm_init_enabled_dividers == false);
+    CHECK(acc.apm.health.hv_dividers_enabled == false);
+
+    /* APM startup failure does not erase a verified SMB chain or become a
+     * hidden BMS_OK gate while the path is advisory. */
+    fake_apm_init_status = HAL_TIMEOUT;
+    memset(&acc, 0, sizeof(acc));
+    accumulator_init(&acc, &hspi, &cs_a, &cs_b, 0x0002u, 0x0004u, &timer);
+    CHECK(acc.smb_ready == true);
+    CHECK(acc.apm_ready == false);
+    CHECK(acc.apm_init_status == HAL_TIMEOUT);
+    CHECK(fake_apm_init_requested_reset == false);
+
+    fake_apm_init_status = HAL_OK;
 }
 
 static void test_system_sil_combined_fault_precedence_and_reset_path(void)
@@ -4028,11 +4205,11 @@ static void test_adbms_cli_scan_guard_and_cs_probe_commands(void)
     CHECK(app.acc.smb.cs_port[STRING_B] == &cs_b);
     CHECK(app.acc.smb.cs_pin[STRING_A] == 0x0002u);
     CHECK(app.acc.smb.cs_pin[STRING_B] == 0x0004u);
-    CHECK(app.acc.smb.string == STRING_B);
+	CHECK(app.acc.smb.string == STRING_A);
     app.acc.smb.hspi = &hspi;
     app.acc.smb.num_ics = NSMBS;
     app.acc.smb.ics = app.acc.smb_ics;
-    app.acc.smb.string = STRING_B;
+	app.acc.smb.string = STRING_A;
 
     app.adbms_scan_active = true;
     sil_prepare_cli_capture();
@@ -4067,13 +4244,13 @@ static void test_adbms_cli_scan_guard_and_cs_probe_commands(void)
     CHECK(get_spi_debug(2, probea) == 0);
     CHECK(strstr(cli_capture, "CS_A/stringA probe status: OK") != NULL);
     CHECK(app.acc.smb.spi_debug.last_string == STRING_A);
-    CHECK(app.acc.smb.string == STRING_B);
+	CHECK(app.acc.smb.string == STRING_A);
 
     sil_prepare_cli_capture();
     CHECK(get_spi_debug(2, probeb) == 0);
     CHECK(strstr(cli_capture, "CS_B/stringB probe status: OK") != NULL);
     CHECK(app.acc.smb.spi_debug.last_string == STRING_B);
-    CHECK(app.acc.smb.string == STRING_B);
+	CHECK(app.acc.smb.string == STRING_A);
 
     adbms6830_spi_debug_clear(&app.acc.smb);
     sil_prepare_cli_capture();
@@ -4083,28 +4260,28 @@ static void test_adbms_cli_scan_guard_and_cs_probe_commands(void)
     CHECK(app.acc.smb.spi_debug.last_op == ADBMS6830_SPI_OP_SCOPE);
     CHECK(app.acc.smb.spi_debug.last_string == STRING_B);
     CHECK(app.acc.smb.spi_debug.rx_count == 20u);
-    CHECK(app.acc.smb.string == STRING_B);
+	CHECK(app.acc.smb.string == STRING_A);
 
     sil_prepare_cli_capture();
     CHECK(get_spi_debug(3, preset_status) == 0);
-    CHECK(strstr(cli_capture, "scope preset string:CS_B mode:read repeat:20") != NULL);
+	CHECK(strstr(cli_capture, "scope preset string:CS_A mode:read repeat:20") != NULL);
 
     sil_prepare_cli_capture();
     CHECK(get_spi_debug(3, preset_cmd) == 0);
-    CHECK(strstr(cli_capture, "scope preset string:CS_B mode:cmd repeat:50") != NULL);
+	CHECK(strstr(cli_capture, "scope preset string:CS_A mode:cmd repeat:50") != NULL);
 
     adbms6830_spi_debug_clear(&app.acc.smb);
     sil_prepare_cli_capture();
     CHECK(get_spi_debug(2, scope_default) == 0);
-    CHECK(strstr(cli_capture, "scope string:CS_B mode:cmd repeat:50 status:OK") != NULL);
+	CHECK(strstr(cli_capture, "scope string:CS_A mode:cmd repeat:50 status:OK") != NULL);
     CHECK(app.acc.smb.spi_debug.last_op == ADBMS6830_SPI_OP_SCOPE);
-    CHECK(app.acc.smb.spi_debug.last_string == STRING_B);
+	CHECK(app.acc.smb.spi_debug.last_string == STRING_A);
     CHECK(app.acc.smb.spi_debug.tx_count == 50u);
     CHECK(app.acc.smb.spi_debug.rx_count == 0u);
 
     sil_prepare_cli_capture();
     CHECK(get_spi_debug(2, preset_toggle) == 0);
-    CHECK(strstr(cli_capture, "scope preset string:CS_B mode:pattern repeat:20") != NULL);
+	CHECK(strstr(cli_capture, "scope preset string:CS_A mode:pattern repeat:20") != NULL);
 
     app.state = STATE_DISCARGE;
     sil_prepare_cli_capture();
@@ -4414,11 +4591,14 @@ static void test_bringup_cli_apm_and_charger_phase_split(void)
     char *charger_battery_argv[] = {"bringup", "charger-battery", NULL};
 
     init_fake_app();
+	app.acc.apm_ready = false;
+	app.acc.apm_init_status = HAL_ERROR;
+	app.acc.apm.health.initialized = false;
     sil_prepare_cli_capture();
     CHECK(get_bringup(2, apm_argv) == 0);
-    CHECK(strstr(cli_capture, "BRINGUP APM2950") != NULL);
+    CHECK(strstr(cli_capture, "FINAL_RING APM2950") != NULL);
     CHECK(strstr(cli_capture, "initialized:0") != NULL);
-    CHECK(strstr(cli_capture, "DEBUG_ONLY_NON_GATING") != NULL);
+    CHECK(strstr(cli_capture, "ADVISORY_NON_GATING") != NULL);
 
     hspi.Init.CLKPolarity = SPI_POLARITY_HIGH;
     hspi.Init.CLKPhase = SPI_PHASE_2EDGE;
@@ -4426,6 +4606,11 @@ static void test_bringup_cli_apm_and_charger_phase_split(void)
     hspi.Init.FirstBit = SPI_FIRSTBIT_MSB;
     app.acc.apm.hspi = &hspi;
     app.acc.apm.num_ics = 1u;
+	app.acc.apm_ready = true;
+	app.acc.apm_init_status = HAL_OK;
+	app.acc.apm.health.initialized = true;
+	app.acc.apm.health.sid_valid = true;
+	app.acc.apm.health.config_valid = true;
     app.acc.apm.spi_debug.rx_count = 1u;
     app.acc.apm.spi_debug.last_status = HAL_OK;
     memset(app.acc.apm.spi_debug.last_rx_preview, 0xFF, sizeof(app.acc.apm.spi_debug.last_rx_preview));
@@ -4436,6 +4621,7 @@ static void test_bringup_cli_apm_and_charger_phase_split(void)
     CHECK(strstr(cli_capture, "mode=PASS") != NULL);
     CHECK(strstr(cli_capture, "response=FAIL all_ff") != NULL);
     CHECK(strstr(cli_capture, "scaling=UNPROVEN") != NULL);
+	CHECK(strstr(cli_capture, "sid:1 cfg:1 dividers:OFF") != NULL);
 
     init_fake_app();
     charger_init(&app.board.charger, &app.board.canbus);
@@ -6351,7 +6537,8 @@ int main(void){
     test_system_sil_current_warning_fast_trip_and_latch_persistence(); puts("PASS system SIL current warning/fast-trip/latch");
     test_system_sil_current_stale_adc_pair_fails_safe(); puts("PASS system SIL current stale ADC pair fail-safe");
     test_system_sil_regen_and_charge_current_placeholders(); puts("PASS system SIL regen/charge current placeholder behavior");
-    test_system_sil_2950_debug_non_safety_until_integrated(); puts("PASS system SIL 2950 debug non-safety behavior");
+    test_system_sil_2950_advisory_sampling_and_cli(); puts("PASS system SIL 2950 advisory sampling/CLI");
+    test_system_sil_2950_final_ring_init_ownership(); puts("PASS system SIL 2950 final-ring init/reset ownership");
     test_system_sil_combined_fault_precedence_and_reset_path(); puts("PASS system SIL combined fault precedence/reset path");
     test_system_sil_harsh_timeline_no_false_enable(); puts("PASS system SIL harsh timeline/no false enable");
     test_system_sil_current_invalid_immediate_bms_drop_and_recovery(); puts("PASS system SIL current-invalid immediate BMS drop/recovery");

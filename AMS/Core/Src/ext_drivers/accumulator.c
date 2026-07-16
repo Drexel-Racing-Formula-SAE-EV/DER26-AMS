@@ -172,6 +172,8 @@ void accumulator_init(accumulator_t *dev,
 	dev->delay_timer_status = HAL_ERROR;
 	dev->smb_ready = false;
 	dev->smb_init_status = HAL_ERROR;
+	dev->apm_ready = false;
+	dev->apm_init_status = HAL_ERROR;
 	memset(dev->cell_voltage_mv, 0, sizeof(dev->cell_voltage_mv));
 	memset(dev->cell_voltage_valid, 0, sizeof(dev->cell_voltage_valid));
 	memset(dev->cell_voltage_last_update_ms, 0, sizeof(dev->cell_voltage_last_update_ms));
@@ -198,15 +200,9 @@ void accumulator_init(accumulator_t *dev,
 		}
     }
 
-	// Init pack monitor, just on port A. Disabled by default until ADBMS2950
-	// NDA documentation and board bring-up are complete.
-#if AMS_ENABLE_APM_2950_DEBUG
-	adbms2950_init(&dev->apm, NAPMS, dev->apm_ics, hspi, cs_port_a, cs_port_a, cs_pin_a, cs_pin_a, ready_timer);
-#else
-	memset(&dev->apm, 0, sizeof(dev->apm));
-	memset(dev->apm_ics, 0, sizeof(dev->apm_ics));
-#endif
-
+	/* String A owns the one global chain reset.  The five SMB monitors are the
+	 * leading devices from that end, so their five-packet transactions stop at
+	 * the SMB/APM boundary. */
 	memset(dev->smb_ics, 0, sizeof(dev->smb_ics));
 	dev->smb_init_status = adBms6830_init(&dev->smb,
 	                                      NSMBS,
@@ -236,6 +232,31 @@ void accumulator_init(accumulator_t *dev,
 		adbms_spi_unlock();
 	}
 	dev->smb_ready = (dev->smb_init_status == HAL_OK);
+
+	/* The APM is the leading device from String B.  Never issue a second soft
+	 * reset here: doing so would erase the SMB configuration just verified
+	 * above.  APM failure remains observable but advisory/non-gating. */
+	memset(&dev->apm, 0, sizeof(dev->apm));
+	memset(dev->apm_ics, 0, sizeof(dev->apm_ics));
+#if AMS_ENABLE_APM_2950 && !AMS_HIL_REPLACE_ADBMS
+	if(dev->smb_ready)
+	{
+		dev->apm_init_status = adbms2950_init_mixed_chain(&dev->apm,
+		                                                   NAPMS,
+		                                                   dev->apm_ics,
+		                                                   NAPMS,
+		                                                   hspi,
+		                                                   cs_port_a,
+		                                                   cs_port_b,
+		                                                   cs_pin_a,
+		                                                   cs_pin_b,
+		                                                   ready_timer,
+		                                                   STRING_B,
+		                                                   false,
+		                                                   AMS_APM_ENABLE_HV_DIVIDERS != 0);
+	}
+#endif
+	dev->apm_ready = (dev->apm_init_status == HAL_OK);
 }
 
 int accumulator_read_volt(accumulator_t *dev)
@@ -255,6 +276,21 @@ int accumulator_read_volt(accumulator_t *dev)
 	adbms_spi_unlock();
 
 	return status;
+}
+
+int accumulator_read_apm(accumulator_t *dev, uint32_t now_ms)
+{
+	HAL_StatusTypeDef status;
+
+	if((dev == NULL) || !dev->apm_ready)
+	{
+		return -1;
+	}
+
+	adbms_spi_lock();
+	status = adbms2950_read_primary_sample(&dev->apm, now_ms);
+	adbms_spi_unlock();
+	return (status == HAL_OK) ? 0 : -1;
 }
 
 int smb_read_voltage(adbms6830_driver_t* dev)
@@ -388,29 +424,9 @@ void apm_read_vbadc_viadc(adbms2950_driver_t* apm)
         return;
     }
 
-	// Set GPO to enabled to read VBAT voltage
-	adbms2950_gpo_set(apm, HVEN1, GPO_SET);
-	adbms2950_gpo_set(apm, HVEN2, GPO_SET);
-	adbms2950_wakeup(apm);
-	adbms2950_wrcfga(apm);
-	adbms2950_rdcfga(apm);
-
-	// Read VBxADC results (ADCs are in continuous mode)
-	adbms2950_wakeup(apm);
-	adbms2950_rdvb(apm);
-	apm->vbat_adc[0] = (int16_t)(apm->ics[0].vbat.vbat1) * VBAT1_SCALE;
-	apm->vbat_adc[1] = (int16_t)(apm->ics[0].vbat.vbat2) * VBAT2_SCALE;
-	apm->vbat[0] = apm->vbat_adc[0] * VBAT_DIV_SCALE;
-	apm->vbat[1] = apm->vbat_adc[1] * VBAT_DIV_SCALE;
-
-	// Read VxADC results (ADCs are in continuous mode)
-	adbms2950_wakeup(apm);
-	adbms2950_rdi(apm);
-	// TODO: These values seem off. Verify in DS and hardware
-	apm->vi_adc[0] = (int32_t)(apm->ics[0].i.i1) * VI1_SCALE;
-	apm->vi_adc[1] = (int32_t)(apm->ics[0].i.i2) * VI2_SCALE;
-	apm->current[0] = apm->vi_adc[0] * CURRENT_R_SCALE;
-	apm->current[1] = apm->vi_adc[1] * CURRENT_R_SCALE;
+	/* Legacy helper retained for source compatibility.  It no longer changes
+	 * the HV-divider GPOs; final-ring sampling uses the checked RDIVB1 path. */
+	(void)adbms2950_read_primary_sample(apm, 0u);
 }
 
 int accumulator_read_temp(accumulator_t *dev)

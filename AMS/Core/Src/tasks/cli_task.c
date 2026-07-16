@@ -58,7 +58,7 @@ int cause_fault(int argc, char *argv[]);
 char outline[CLI_LINESZ];
 app_data_t *data;
 cli_device_t *cli;
-static adbms_string cli_adbms_scope_default_string = STRING_B;
+static adbms_string cli_adbms_scope_default_string = STRING_A;
 static adbms6830_scope_mode_t cli_adbms_scope_default_mode = ADBMS6830_SCOPE_READ;
 static uint16_t cli_adbms_scope_default_repeat = 20u;
 static uint8_t cli_adbms_scope_preset_index = 0u;
@@ -112,7 +112,7 @@ command_t cmds[] =
 	{"rtos", &get_rtos_diag, "RTOS stack/heap diagnostics: rtos"},
 	{"uart", &get_uart_diag, "CLI UART diagnostics/recovery: uart [status|recover|clear]"},
 	{"spi", &get_spi_debug, "ADBMS6830 SPI debug: spi [status|pins|cspins|cs|preset|toggle|probe|probea|probeb|scope|sid|stat|staterr|cfgchk|cellst|oweven|owodd|auxdiag|wake|coldwake|clrflag|clear|diagclear|enable|disable]"},
-	{"apm", &get_apm_debug, "ADBMS2950/APM debug: apm [status|probe|clear|enable|disable]"},
+	{"apm", &get_apm_debug, "ADBMS2950/APM: apm [status|health|probe|sid|config|sample|scope [1-100]|clear|enable|disable]"},
 	{"bringup", &get_bringup, "bench bring-up summaries: bringup [help|board|adbms6830|apm2950|charger-lv|charger-battery|ready|snapshot|evidence]"},
 	{"bmsok", &bmsok_control, "BMS_OK control: bmsok [status|release|inhibit]"},
 	{"balance", &balance_control, "balancing control: balance [status|inhibit|release|clear]"},
@@ -347,7 +347,7 @@ void cli_task_fn(void *arg)
              AMS_HW_BRINGUP ? "hw-bringup" : "normal",
              AMS_ENABLE_SERVICE_CLI,
              AMS_ENABLE_HIL_CAN,
-             AMS_ENABLE_APM_2950_DEBUG,
+             AMS_ENABLE_APM_2950,
              data->bms_output_inhibit);
     cli_printline(local_cli, outline);
     cli_printline(local_cli, "ADBMS6822 SPI6 expected: mode3 CPOL HIGH CPHA 2EDGE");
@@ -510,11 +510,11 @@ int get_status(int argc, char *argv[])
     if(hspi != NULL)
     {
         snprintf(outline, CLI_LINESZ,
-                 "SPI6 CPOL:%s CPHA:%s prescaler:%lu APM2950_debug:%d",
+                 "SPI6 CPOL:%s CPHA:%s prescaler:%lu APM2950:%d",
                  cli_spi_polarity_str(hspi->Init.CLKPolarity),
                  cli_spi_phase_str(hspi->Init.CLKPhase),
                  (unsigned long)hspi->Init.BaudRatePrescaler,
-                 AMS_ENABLE_APM_2950_DEBUG);
+                 AMS_ENABLE_APM_2950);
         ret |= cli_printline(cli, outline);
     }
     else
@@ -1469,22 +1469,22 @@ static void cli_adbms_scope_apply_preset(uint8_t preset)
     switch(cli_adbms_scope_preset_index)
     {
     case 0u:
-        cli_adbms_scope_default_string = STRING_B;
+		cli_adbms_scope_default_string = STRING_A;
         cli_adbms_scope_default_mode = ADBMS6830_SCOPE_READ;
         cli_adbms_scope_default_repeat = 20u;
         break;
     case 1u:
-        cli_adbms_scope_default_string = STRING_B;
+		cli_adbms_scope_default_string = STRING_A;
         cli_adbms_scope_default_mode = ADBMS6830_SCOPE_CMD;
         cli_adbms_scope_default_repeat = 50u;
         break;
     case 2u:
-        cli_adbms_scope_default_string = STRING_B;
+		cli_adbms_scope_default_string = STRING_A;
         cli_adbms_scope_default_mode = ADBMS6830_SCOPE_PATTERN;
         cli_adbms_scope_default_repeat = 20u;
         break;
     default:
-        cli_adbms_scope_default_string = STRING_A;
+		cli_adbms_scope_default_string = STRING_B;
         cli_adbms_scope_default_mode = ADBMS6830_SCOPE_READ;
         cli_adbms_scope_default_repeat = 20u;
         break;
@@ -1586,7 +1586,7 @@ static int get_spi_debug_locked(int argc, char *argv[])
             {
                 ret |= cli_print_adbms_scope_preset();
             }
-            else if(!strcmp(argv[2], "normal") || !strcmp(argv[2], "b"))
+			else if(!strcmp(argv[2], "normal") || !strcmp(argv[2], "a"))
             {
                 cli_adbms_scope_apply_preset(0u);
                 ret |= cli_print_adbms_scope_preset();
@@ -1601,7 +1601,7 @@ static int get_spi_debug_locked(int argc, char *argv[])
                 cli_adbms_scope_apply_preset(2u);
                 ret |= cli_print_adbms_scope_preset();
             }
-            else if(!strcmp(argv[2], "a"))
+			else if(!strcmp(argv[2], "b"))
             {
                 cli_adbms_scope_apply_preset(3u);
                 ret |= cli_print_adbms_scope_preset();
@@ -2020,7 +2020,8 @@ static int get_apm_debug_locked(int argc, char *argv[])
     int ret = 0;
 
 #if !AMS_ENABLE_SERVICE_CLI
-    if((argc >= 2) && (argv[1] != NULL) && strcmp(argv[1], "status"))
+    if((argc >= 2) && (argv[1] != NULL) &&
+       strcmp(argv[1], "status") && strcmp(argv[1], "health"))
     {
         return cli_service_action_refused("ADBMS2950 service action");
     }
@@ -2028,25 +2029,17 @@ static int get_apm_debug_locked(int argc, char *argv[])
 
     adbms2950_driver_t *apm = &data->acc.apm;
     const adbms2950_spi_debug_t *dbg;
-    HAL_StatusTypeDef probe_status;
+    const adbms2950_health_t *health;
+    HAL_StatusTypeDef action_status = HAL_OK;
     SPI_HandleTypeDef *hspi = apm->hspi;
 
-    if((apm->hspi == NULL) || (apm->num_ics == 0u))
-    {
-        ret |= cli_printline(cli, "ADBMS2950/APM not initialized");
-        ret |= cli_printline(cli, "Build with AMS_ENABLE_APM_2950_DEBUG=1 for CLI-only APM probing");
-        dbg = adbms2950_spi_debug_get(apm);
-        if(dbg == NULL)
-        {
-            return ret;
-        }
-    }
-    else if((argc >= 2) && (argv[1] != NULL))
+    if((argc >= 2) && (argv[1] != NULL))
     {
         if(!strcmp(argv[1], "clear"))
         {
             adbms2950_spi_debug_clear(apm);
-            ret |= cli_printline(cli, "ADBMS2950 SPI debug counters cleared");
+            adbms2950_health_clear_counters(apm);
+            ret |= cli_printline(cli, "ADBMS2950 SPI and health counters cleared");
         }
         else if(!strcmp(argv[1], "enable"))
         {
@@ -2058,29 +2051,136 @@ static int get_apm_debug_locked(int argc, char *argv[])
             adbms2950_spi_debug_enable(apm, false);
             ret |= cli_printline(cli, "ADBMS2950 SPI debug disabled");
         }
-	        else if(!strcmp(argv[1], "probe"))
-	        {
-	            if(cli_adbms_refuse_active_scan("apm probe"))
-	            {
-	                return ret;
-	            }
-	            probe_status = adbms2950_spi_probe_rdcfga(apm);
-	            snprintf(outline, CLI_LINESZ, "ADBMS2950 RDCFGA probe status: %s", cli_hal_status_str(probe_status));
-	            ret |= cli_printline(cli, outline);
-	        }
-        else if(strcmp(argv[1], "status"))
+        else if(!strcmp(argv[1], "probe") || !strcmp(argv[1], "sid"))
         {
-            ret |= cli_printline(cli, "Usage: apm [status|probe|clear|enable|disable]");
+            if(cli_adbms_refuse_active_scan("apm probe"))
+            {
+                return ret;
+            }
+            action_status = adbms2950_spi_probe_sid(apm);
+            snprintf(outline, CLI_LINESZ,
+                     "ADBMS2950 RDSID identity probe: %s",
+                     cli_hal_status_str(action_status));
+            ret |= cli_printline(cli, outline);
+        }
+		else if(!strcmp(argv[1], "config"))
+		{
+			if(cli_adbms_refuse_active_scan("apm config"))
+			{
+				return ret;
+			}
+			action_status = adbms2950_verify_config_readback(apm);
+			snprintf(outline, CLI_LINESZ,
+			         "ADBMS2950 RDCFGA/RDCFGB readback: %s",
+			         cli_hal_status_str(action_status));
+			ret |= cli_printline(cli, outline);
+		}
+        else if(!strcmp(argv[1], "sample"))
+        {
+            if(cli_adbms_refuse_active_scan("apm sample"))
+            {
+                return ret;
+            }
+            action_status = adbms2950_read_primary_sample(apm,
+                                                          osKernelGetTickCount());
+            snprintf(outline, CLI_LINESZ,
+                     "ADBMS2950 RDSTAT+RDIVB1 sample: %s",
+                     cli_hal_status_str(action_status));
+            ret |= cli_printline(cli, outline);
+        }
+		else if(!strcmp(argv[1], "scope"))
+		{
+			uint16_t repeat = 20u;
+			uint16_t completed = 0u;
+
+			if(cli_adbms_refuse_active_scan("apm scope"))
+			{
+				return ret;
+			}
+			if((argc >= 3) && !cli_parse_scope_repeat(argv[2], &repeat))
+			{
+				ret |= cli_printline(cli, "Usage: apm scope [1-100]");
+				return ret;
+			}
+			for(completed = 0u; completed < repeat; completed++)
+			{
+				action_status = adbms2950_spi_probe_sid(apm);
+				if(action_status != HAL_OK)
+				{
+					break;
+				}
+			}
+			snprintf(outline, CLI_LINESZ,
+			         "ADBMS2950 RDSID scope requested:%u completed:%u status:%s",
+			         (unsigned)repeat,
+			         (unsigned)completed,
+			         cli_hal_status_str(action_status));
+			ret |= cli_printline(cli, outline);
+		}
+        else if(strcmp(argv[1], "status") && strcmp(argv[1], "health"))
+        {
+            ret |= cli_printline(cli, "Usage: apm [status|health|probe|sid|config|sample|scope [1-100]|clear|enable|disable]");
             return ret;
         }
     }
 
     dbg = adbms2950_spi_debug_get(apm);
-    if(dbg == NULL)
+    health = adbms2950_health_get(apm);
+    if((dbg == NULL) || (health == NULL))
     {
-        ret |= cli_printline(cli, "ADBMS2950 SPI debug unavailable");
+        ret |= cli_printline(cli, "ADBMS2950 diagnostics unavailable");
         return ret;
     }
+
+    snprintf(outline, CLI_LINESZ,
+             "APM topology A:5x6830 B:1x2950 selected:%s enabled:%d ready:%d init:%s",
+             (apm->string == STRING_B) ? "CS_B" : "CS_A",
+             AMS_ENABLE_APM_2950,
+             data->acc.apm_ready,
+             cli_hal_status_str(data->acc.apm_init_status));
+    ret |= cli_printline(cli, outline);
+
+    ret |= cli_printline(cli,
+                         "APM safety: ADVISORY_NON_GATING; current/voltage do not affect BMS_OK");
+    snprintf(outline, CLI_LINESZ,
+             "identity sid:%d devid:0x%02X expected:0x%02X cfg:%d dividers:%s",
+             health->sid_valid,
+             health->device_id,
+             ADBMS2950B_DEVICE_ID,
+             health->config_valid,
+             health->hv_dividers_enabled ? "ON" : "OFF");
+    ret |= cli_printline(cli, outline);
+    snprintf(outline, CLI_LINESZ,
+             "SID:%02X %02X %02X %02X %02X %02X rev:%u I1CAL:%d",
+             health->sid[0], health->sid[1], health->sid[2],
+             health->sid[3], health->sid[4], health->sid[5],
+             (unsigned)health->revision,
+             health->i1_calibrated);
+    ret |= cli_printline(cli, outline);
+
+    snprintf(outline, CLI_LINESZ,
+             "sample valid:%d Ivalid:%d Vvalid:%d rawI:%ld current:%.3fA rawVB:%d pack:%.2fV age:%lums",
+             health->sample_valid,
+             health->current_valid,
+             health->pack_voltage_valid,
+             (long)health->i1_raw,
+             (double)health->current_a,
+             (int)health->vb1_raw,
+             (double)health->pack_voltage_v,
+             (unsigned long)(health->sample_count ?
+                 (osKernelGetTickCount() - health->last_update_ms) : 0u));
+    ret |= cli_printline(cli, outline);
+    snprintf(outline, CLI_LINESZ,
+             "health status:%s samples:%lu fail:%lu pec:%lu cc:%u advanced:%d mismatch:%lu stalls:%lu",
+             cli_hal_status_str(health->last_status),
+             (unsigned long)health->sample_count,
+             (unsigned long)health->sample_error_count,
+             (unsigned long)health->pec_error_count,
+             (unsigned)health->last_cmd_counter,
+             health->counter_advanced,
+			 (unsigned long)health->counter_mismatch_count,
+             (unsigned long)health->counter_stall_count);
+    ret |= cli_printline(cli, outline);
 
     if(hspi != NULL)
     {
@@ -2098,7 +2198,7 @@ static int get_apm_debug_locked(int argc, char *argv[])
     }
 
 	    snprintf(outline, CLI_LINESZ,
-	             "apm dbg en:%d op:%s string:%u status:%s tx:%lu rx:%lu err:%lu ics:%u",
+	             "spi dbg en:%d op:%s string:%u status:%s tx:%lu rx:%lu err:%lu ics:%u",
              dbg->enabled,
              adbms2950_spi_op_str(dbg->last_op),
              (unsigned)dbg->last_string,
@@ -2108,7 +2208,6 @@ static int get_apm_debug_locked(int argc, char *argv[])
              (unsigned long)dbg->error_count,
              (unsigned)apm->num_ics);
 	    ret |= cli_printline(cli, outline);
-	    ret |= cli_printline(cli, "APM safety: debug-only, non-gating until bench CS/SPI/PEC/scaling/shunt polarity are proven");
 
     snprintf(outline, CLI_LINESZ,
              "cmd:%02X %02X len tx:%u rx:%u total:%u",
@@ -2138,6 +2237,8 @@ static int get_apm_debug_locked(int argc, char *argv[])
 
     ret |= cli_print_hex_preview("APM TX:", dbg->last_tx_preview, ADBMS2950_SPI_DEBUG_PREVIEW_BYTES);
     ret |= cli_print_hex_preview("APM RX:", dbg->last_rx_preview, ADBMS2950_SPI_DEBUG_PREVIEW_BYTES);
+	ret |= cli_printline(cli,
+	                    "Scaling configured for 100uOhm shunt; polarity and divider accuracy require final-board validation");
 
     return ret;
 }
@@ -2652,13 +2753,13 @@ int get_bringup(int argc, char *argv[])
     {
         ret |= cli_printline(cli, "bringup board          - LV board-only checklist, no accumulator required");
         ret |= cli_printline(cli, "bringup adbms6830      - SMB chain SPI/CS/PEC/SID/status summary");
-        ret |= cli_printline(cli, "bringup apm2950        - ADBMS2950/APM debug-only summary");
+		ret |= cli_printline(cli, "bringup apm2950        - final-ring ADBMS2950/APM advisory summary");
         ret |= cli_printline(cli, "bringup charger-lv     - charger CAN low-voltage sniffer checklist");
         ret |= cli_printline(cli, "bringup charger-battery - stricter charger test once battery path is safe");
         ret |= cli_printline(cli, "bringup ready          - BMS_OK release checklist; does not release output");
         ret |= cli_printline(cli, "bringup snapshot       - compact state snapshot");
         ret |= cli_printline(cli, "bringup evidence       - bench evidence to capture before changing phase");
-        ret |= cli_printline(cli, "bench ADBMS start: spi pins -> spi cspins both 10 -> spi cs b pulse 10 -> spi scope b read 20");
+        ret |= cli_printline(cli, "final ring start: SMB spi cs a/scope a; APM apm sid/sample on CS_B");
         return ret;
     }
 
@@ -2724,7 +2825,7 @@ int get_bringup(int argc, char *argv[])
         ret |= cli_printline(cli, outline);
 
         ret |= cli_printline(cli, "pin_check: run spi pins; use spi cspins both 10 to compare PE4 vs PF4");
-        ret |= cli_printline(cli, "scope_check: run spi cs b pulse 10, then spi scope b read 20");
+        ret |= cli_printline(cli, "scope_check: run spi cs a pulse 10, then spi scope a read 20");
 
         if(!strcmp(mode, "snapshot"))
         {
@@ -2823,14 +2924,14 @@ int get_bringup(int argc, char *argv[])
             ret |= cli_printline(cli, outline);
         }
 
-        ret |= cli_printline(cli, "next: spi pins -> spi cspins both 10 -> spi cs b pulse 10 -> spi preset normal -> spi scope b read 20");
-        ret |= cli_printline(cli, "then: spi probeb -> spi sid -> spi stat; use probea only to validate string-A wiring");
+        ret |= cli_printline(cli, "next: spi pins -> spi cspins both 10 -> spi cs a pulse 10 -> spi preset normal -> spi scope a read 20");
+		ret |= cli_printline(cli, "then: spi probea -> spi sid -> spi stat; use apm sid for the String-B ADBMS2950");
         return ret;
     }
 
     if(!strcmp(mode, "apm2950") || !strcmp(mode, "apm"))
     {
-        bool initialized = (apm->hspi != NULL) && (apm->num_ics > 0u);
+        bool initialized = data->acc.apm_ready && apm->health.initialized;
         bool rx_all_zero = (apm_dbg != NULL) &&
                            cli_preview_all_value(apm_dbg->last_rx_preview,
                                                  ADBMS2950_SPI_DEBUG_PREVIEW_BYTES,
@@ -2841,10 +2942,18 @@ int get_bringup(int argc, char *argv[])
                                                0xFFu);
 
         snprintf(outline, CLI_LINESZ,
-                 "BRINGUP APM2950 initialized:%d build_debug:%d DEBUG_ONLY_NON_GATING",
+                 "FINAL_RING APM2950 initialized:%d build_enabled:%d ADVISORY_NON_GATING",
                  initialized,
-                 AMS_ENABLE_APM_2950_DEBUG);
+                 AMS_ENABLE_APM_2950);
         ret |= cli_printline(cli, outline);
+
+		snprintf(outline, CLI_LINESZ,
+		         "init:%s sid:%d cfg:%d dividers:%s",
+		         cli_hal_status_str(data->acc.apm_init_status),
+		         apm->health.sid_valid,
+		         apm->health.config_valid,
+		         apm->health.hv_dividers_enabled ? "ON" : "OFF");
+		ret |= cli_printline(cli, outline);
 
         snprintf(outline, CLI_LINESZ,
                  "mode=%s op:%s status:%s tx:%lu rx:%lu err:%lu ics:%u",
@@ -2864,7 +2973,7 @@ int get_bringup(int argc, char *argv[])
                  (apm_dbg != NULL) ? apm_dbg->last_read_pec_pass_mask : 0u,
                  (apm_dbg != NULL) ? apm_dbg->last_read_pec_fail_mask : 0u);
         ret |= cli_printline(cli, outline);
-        ret |= cli_printline(cli, "next: enable AMS_ENABLE_APM_2950_DEBUG only for intentional APM probing");
+		ret |= cli_printline(cli, "next: apm status -> apm sid -> apm config -> apm sample -> apm scope 20; keep HV dividers disabled");
         return ret;
     }
 
@@ -2989,9 +3098,9 @@ int get_bringup(int argc, char *argv[])
     {
         ret |= cli_printline(cli, "BRINGUP EVIDENCE capture before phase changes:");
         ret |= cli_printline(cli, "1 status; bringup board; bmsok status; fault");
-        ret |= cli_printline(cli, "2 spi pins; spi cspins both 10; scope PE4 and PF4 candidate CS_B pins");
-        ret |= cli_printline(cli, "3 spi clear; spi enable; spi cs b pulse 10; spi preset normal; spi scope b read 20");
-        ret |= cli_printline(cli, "4 spi probeb; spi sid; spi stat; bringup adbms6830");
+        ret |= cli_printline(cli, "2 spi pins; spi cspins both 10; scope CS_A/PE2 and candidate CS_B PE4/PF4 pins");
+        ret |= cli_printline(cli, "3 spi clear; spi enable; spi cs a pulse 10; spi preset normal; spi scope a read 20");
+		ret |= cli_printline(cli, "4 spi probea; spi sid; spi stat; apm sid; apm sample");
         ret |= cli_printline(cli, "5 current; volt; temp; bringup ready");
         ret |= cli_printline(cli, "6 charger; bringup charger-lv plus CAN sniffer frame screenshots/logs");
         ret |= cli_printline(cli, "7 for battery/charger only: bringup charger-battery after approved safe setup");

@@ -46,13 +46,26 @@
 #define ACCUMULATOR_CELL_STUCK_SAME_COUNT     120u
 
 
-/* APM Macros */
-/* Keep the ADBMS2950/APM off the normal AMS loop until board bring-up is
- * complete. Set to 1 locally to initialize the APM path for CLI-only probing.
- */
-#ifndef AMS_ENABLE_APM_2950_DEBUG
-#define AMS_ENABLE_APM_2950_DEBUG 0
+/* Final-ring topology:
+ *   String A -> five ADBMS6830 SMBs -> one ADBMS2950 APM -> String B.
+ * The APM is initialized and sampled by default, but remains advisory and
+ * cannot affect BMS_OK until its scaling, polarity and fault policy are
+ * validated on final hardware. */
+#ifndef AMS_ENABLE_APM_2950
+#define AMS_ENABLE_APM_2950 1
 #endif
+
+#ifndef AMS_HIL_REPLACE_ADBMS
+#define AMS_HIL_REPLACE_ADBMS 0
+#endif
+
+/* GPO1/GPO2 drive the APM high-voltage divider enables.  Leave them forced
+ * low for first hardware tests; current measurement does not require them. */
+#ifndef AMS_APM_ENABLE_HV_DIVIDERS
+#define AMS_APM_ENABLE_HV_DIVIDERS 0
+#endif
+
+#define ACCUMULATOR_APM_SAMPLE_STALE_TIMEOUT_MS 2500u
 
 #define NAPMS 1
 #define HVEN1 GPO1
@@ -154,6 +167,8 @@ typedef struct
 	HAL_StatusTypeDef delay_timer_status;
 	bool smb_ready;
 	HAL_StatusTypeDef smb_init_status;
+	bool apm_ready;
+	HAL_StatusTypeDef apm_init_status;
 
 	adbms2950_asic apm_ics[NAPMS];
 	adbms2950_driver_t apm;
@@ -171,6 +186,7 @@ void accumulator_init(accumulator_t *dev,
 					  TIM_HandleTypeDef* htim
 					  );
 int accumulator_read_volt(accumulator_t *dev);
+int accumulator_read_apm(accumulator_t *dev, uint32_t now_ms);
 int accumulator_read_temp(accumulator_t *dev);
 int accumulator_set_temp_ch(accumulator_t *dev, uint8_t channel);
 int accumulator_stat_temp(accumulator_t *dev);

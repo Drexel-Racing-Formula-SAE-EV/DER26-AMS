@@ -20,6 +20,7 @@ Then run:
 cd DER26-AMS-feature-canbus_charger/host_tests
 make test
 make system-sil
+make apm-sil
 make asan
 make analyze
 ```
@@ -71,7 +72,7 @@ real ADBMS PEC behavior
 real cell voltage scaling against the board
 real AUX/temp-channel mapping
 thermistor calibration
-ADBMS2950 current/APM scaling
+ADBMS2950 current polarity/APM scaling or divider accuracy
 charger byte polarity on the actual charger
 IMD PWM behavior on the actual input capture pin
 FreeRTOS scheduling on STM32F767
@@ -187,11 +188,11 @@ make AMS_ROOT=/absolute/path/to/DER26-AMS-feature-canbus_charger asan
 | CAN TX timeout | no free mailbox | HAL timeout returned, no infinite loop |
 | Fan driver | valid, out-of-range, NaN, Inf | duty clamping and no unsafe cast behavior |
 | System SIL boot/readiness | fake current ADC + fake ADBMS scan masks | BMS_OK requires current-valid and voltage-valid together, no false enable before startup scan |
-| System SIL voltage degradation | single and repeated fake PEC/missed-cell scans | one miss tolerated while fresh, persistent stale scan drops BMS_OK, full scan recovers |
+| System SIL voltage degradation | single and repeated fake PEC/missed-cell scans | one missed/PEC-failed cell invalidates the scan and drops BMS_OK; a later full scan recovers |
 | System SIL voltage thresholds | fake per-cell OV/UV values through ADBMS task | charge-stop vs hard OV, soft/hard/severe UV/OV, latched diagnostic reasons |
 | System SIL current faults | fake DHAB current ADC sequences through current task | warning-only behavior, fast-trip debounce, latch persistence, stale ADC fail-safe |
 | System SIL combined faults | current latch + voltage latch + reset calls | BMS_OK stays low until all relevant latches are cleared and data is healthy |
-| System SIL ADBMS2950/APM | fake APM debug error state | APM debug is observable but non-safety-critical until intentionally integrated |
+| System SIL ADBMS2950/APM | final-ring init, sample failures, identity/config and CLI actions | APM is observable, bounded and non-safety-gating until final-board validation |
 | Current sensor | fake timer capture | current conversion path and fault flag behavior |
 | Task loops | one-iteration task runs via fake RTOS delay | state transitions and periodic behavior |
 | Error task | hard/soft fault combinations | `BMS_OK` gating and aggregate fault flags |

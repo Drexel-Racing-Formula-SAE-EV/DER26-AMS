@@ -14,7 +14,7 @@ override normal safety gating.
 |---|---|---|
 | `bringup board` | LV board-only | Did the firmware boot, is SPI6 mode 3, is BMS_OK inhibited, and is DHAB zero-current alive if powered? |
 | `bringup adbms6830` | SMB/ADBMS6830 chain | Are SPI mode, CS path, response bytes, PEC, SID, status, and diagnostic health moving in the right direction? |
-| `bringup apm2950` | APM debug-only | Is the ADBMS2950/APM probe observable while remaining explicitly non-safety-gating? |
+| `bringup apm2950` | Final-ring APM | Is the String-B ADBMS2950 identity/config/sample path observable while remaining explicitly non-safety-gating? |
 | `bringup charger-lv` | Charger low-voltage CAN | Are the charger CAN IDs, command frame, and `BYTE5/data[4]` polarity clear for sniffer validation? |
 | `bringup charger-battery` | Charger with safe battery path | Are BMS_OK, fresh charger RX, voltage, current, temp, and charger gates clean enough for a battery-connected charger test? |
 | `bringup ready` | BMS_OK release review | Would the normal safety gates allow release? This command does not run `bmsok release`. |
@@ -198,14 +198,18 @@ Only use this after the ADBMS6830 chain is understood.
 ```text
 apm clear
 apm enable
-apm probe
+apm sid
+apm config
+apm sample
+apm scope 20
 apm status
 bringup apm2950
 ```
 
-`bringup apm2950` must continue to say `DEBUG_ONLY_NON_GATING` until CS routing,
-SPI response, PEC, current sign, shunt value, VBAT divider, and scaling are
-bench-proven and intentionally integrated into safety logic.
+`bringup apm2950` must say `FINAL_RING` and `ADVISORY_NON_GATING`. Do not make
+APM data authoritative until CS routing, PEC/counter integrity, current sign,
+shunt value, VBAT divider, scaling and fault policy are bench-proven and
+intentionally integrated into safety logic.
 
 ## Charger Split
 

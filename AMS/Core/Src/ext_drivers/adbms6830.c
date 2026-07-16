@@ -1555,7 +1555,10 @@ HAL_StatusTypeDef adBms6830_init(adbms6830_driver_t* dev,
 	adbms6830_set_cs(dev, 1);
 	dev->string = STRING_A;
 	adbms6830_set_cs(dev, 1);
-	dev->string = STRING_B;
+	/* Final mixed ring order is String A -> five SMB monitors -> APM ->
+	 * String B.  Keeping the SMBs as the leading String-A subset allows their
+	 * 5-packet reads and writes to stop before the ADBMS2950. */
+	dev->string = STRING_A;
 
 	status = adbms6830_wakeup_checked(dev);
 	if(status == HAL_OK)

@@ -376,6 +376,10 @@ void adbms_task_fn(void *argument)
                                              AMS_HIL_ADBMS_IMAGE_TIMEOUT_MS);
 #else
         (void)accumulator_read_volt(acc);
+		/* The compatible ADCV command also starts the ADBMS2950 conversion.
+		 * Read the one-device String-B APM subset after the SMB conversion/read
+		 * sequence.  Results are diagnostic only and never enter BMS_OK. */
+		(void)accumulator_read_apm(acc, osKernelGetTickCount());
 #endif
         accumulator_update_voltage_stats_at(acc, osKernelGetTickCount());
 

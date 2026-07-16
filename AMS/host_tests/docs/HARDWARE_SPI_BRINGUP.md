@@ -3,8 +3,15 @@
 
 Authored by Mahad Faisal, 2026.
 This guide is for first bench tests of the AMS board ADBMS SPI/isoSPI path.
-It assumes the ADBMS6822 is on the AMS board, the ADBMS6830 devices are on the
-SMBs, and the ADBMS2950/APM path is debug-only until verified.
+It assumes the final reversible ring is wired as:
+
+```text
+AMS String A -> 5 x ADBMS6830 SMB -> 1 x ADBMS2950 APM -> AMS String B
+```
+
+The ADBMS2950 is initialized and sampled in the final firmware, but its values
+remain advisory and cannot affect BMS_OK until final-board scaling, polarity,
+divider accuracy and fault policy are physically validated.
 
 ## Safety Setup
 
@@ -15,7 +22,8 @@ Build first hardware firmware with:
 
 ```text
 AMS_HW_BRINGUP=1
-AMS_ENABLE_APM_2950_DEBUG=0
+AMS_ENABLE_APM_2950=1
+AMS_APM_ENABLE_HV_DIVIDERS=0
 ```
 
 `AMS_HW_BRINGUP=1` keeps BMS_OK physically inhibited until the CLI command
@@ -26,8 +34,9 @@ cell-simulator tests cannot accidentally turn on discharge PWM. Use
 `balance status`, `balance inhibit`, `balance clear`, and `balance release` from
 the UART CLI.
 
-Keep `AMS_ENABLE_APM_2950_DEBUG=0` for the first SMB/ADBMS6830 tests. Set it to
-`1` only when intentionally probing the ADBMS2950/APM path.
+Keep `AMS_APM_ENABLE_HV_DIVIDERS=0` for initial current/SPI testing. This forces
+the APM GPO1/GPO2 divider controls low; do not enable pack-voltage dividers until
+their final-board wiring and scale have been verified.
 
 ## Expected SPI Configuration
 
@@ -53,8 +62,8 @@ Start on the STM32-side SPI signals:
 SPI6_SCK
 SPI6_MOSI
 SPI6_MISO
-CS_B / SMB chip-select path
-CS_A / APM chip-select path, only when testing APM
+CS_A / five-SMB path
+CS_B / one-APM path
 GND
 ```
 
@@ -142,7 +151,7 @@ Expected useful signs:
 
 ```text
 spi status shows CPOL:HIGH CPHA:2EDGE
-spi preset normal; spi scope produces repeated CS_B/SCK/MOSI/readback activity
+spi preset normal; spi scope produces repeated CS_A/SCK/MOSI/readback activity
 spi probe returns OK or at least records a non-OK HAL status
 spi probea/probeb explicitly exercise CS_A and CS_B so the AMS-side
 chip-select and ADBMS6822 channel routing can be confirmed on the scope
@@ -184,17 +193,18 @@ diagnostics:
 | Command | What it does | Use it for |
 |---|---|---|
 | `spi preset status` | Prints the selected scope preset. | Confirming what plain `spi scope` will do. |
-| `spi preset normal` then `spi scope` | Repeats real RDCFGA command + readback clocks on CS_B. | First full-path capture: MCU SPI6, ADBMS6822, isoSPI transformer, and MISO response. |
+| `spi preset normal` then `spi scope` | Repeats real RDCFGA command + readback clocks on CS_A. | First five-SMB-path capture: MCU SPI6, ADBMS6822, isoSPI transformer, and MISO response. |
 | `spi preset cmd` then `spi scope` | Repeats valid RDCFGA command frames without readback clocks. | Proving CS/SCK/MOSI and ADBMS6822 IP/IM output when the SMB response path may be dead. |
 | `spi preset pattern` then `spi scope` | Repeats `AA 55 FF 00 69 96 12 34` on MOSI. | Signal integrity / pin mapping only. Treat as invalid ADBMS traffic. |
-| `spi preset a` then `spi scope` | Repeats real RDCFGA command + readback clocks on CS_A. | Checking alternate CS_A route without changing the normal CS_B default. |
-| `spi toggle` | Cycles normal -> command-only -> pattern -> CS_A readback. | Quick scope comparisons while moving probes. |
-| `spi scope b read 20` | Repeats real RDCFGA command + readback clocks on CS_B. | First full-path capture: MCU SPI6, ADBMS6822, isoSPI transformer, and MISO response. |
-| `spi scope b cmd 50` | Repeats valid RDCFGA command frames without readback clocks. | Proving CS/SCK/MOSI and ADBMS6822 IP/IM output when the SMB response path may be dead. |
-| `spi scope b pattern 20` | Repeats `AA 55 FF 00 69 96 12 34` on MOSI. | Signal integrity / pin mapping only. Treat as invalid ADBMS traffic. |
-| `spi scope a wake 20` | Repeats wake pulses on CS_A, no SCK. | Confirming the unused/alternate CS_A route without touching the normal CS_B SMB path. |
+| `spi preset a` then `spi scope` | Repeats the normal five-SMB RDCFGA traffic on CS_A. | Explicitly selecting the production SMB side. |
+| `spi preset b` then `spi scope` | Repeats RDCFGA-shaped scope traffic on CS_B. | Electrical routing evidence only; use `apm sid` for real APM identity. |
+| `spi toggle` | Cycles normal -> command-only -> pattern -> CS_B readback. | Quick scope comparisons while moving probes. |
+| `spi scope a read 20` | Repeats real RDCFGA command + readback clocks on CS_A. | Five-SMB full-path capture. |
+| `spi scope a cmd 50` | Repeats valid RDCFGA command frames without readback clocks. | Proving CS/SCK/MOSI and ADBMS6822 IP/IM output when the SMB response path may be dead. |
+| `spi scope a pattern 20` | Repeats `AA 55 FF 00 69 96 12 34` on MOSI. | Signal integrity / pin mapping only. Treat as invalid ADBMS traffic. |
+| `spi scope b wake 20` | Repeats wake pulses on CS_B, no SCK. | Confirming the one-APM route before an APM identity read. |
 
-For the normal SMB chain, start with CS_B:
+For the normal five-SMB subset, start with CS_A:
 
 ```text
 spi clear
@@ -239,7 +249,7 @@ On `spi preset normal; spi scope`, MOSI should begin each transaction with:
 00 02 2B 0A
 ```
 
-That is RDCFGA plus command PEC. CS_B should stay low for the command and dummy
+That is RDCFGA plus command PEC. CS_A should stay low for the command and dummy
 readback clocks. If the MCU-side signals are correct but ADBMS6822 IP/IM or the
 SMB transformer pins do not move, focus on 6822 power/straps, transformer
 orientation/part/install, isolation passives, and harness continuity before
@@ -250,12 +260,12 @@ chasing firmware.
 For `spi probe`, verify:
 
 ```text
-CS_B goes low once for the full command + dummy readback transaction
+CS_A goes low once for the full command + dummy readback transaction
 SCK idles high
 data changes on MOSI with MSB-first command bytes
 dummy bytes continue clocking during the readback phase
 MISO is not stuck low/high if the ADBMS chain responds
-CS_B returns high after the transaction
+CS_A returns high after the transaction
 ```
 
 Use `spi probea` and `spi probeb` when validating hardware routing:
@@ -265,9 +275,10 @@ spi probea  -> only CS_A / STRINGA_CS should pulse
 spi probeb  -> only CS_B / STRINGB_CS should pulse
 ```
 
-The normal SMB/ADBMS6830 chain is expected on CS_B. The APM/ADBMS2950 path uses
-CS_A and remains debug-only until CS, SPI, PEC, scaling, and shunt polarity are
-bench-proven.
+The normal SMB/ADBMS6830 subset is read from CS_A. The APM/ADBMS2950 is the
+nearest device to CS_B and is read as a one-device subset. Do not interchange
+these defaults: the ADBMS6830 driver intentionally clocks five response packets,
+while the APM driver clocks one.
 
 The driver uses one full-duplex transfer for reads:
 
@@ -340,7 +351,8 @@ datasheet procedure and the actual SMB wiring.
 |---|---|---|
 | No UART banner | MCU boot/clock/UART | Check power, reset, flash, UART pins |
 | CLI works, no SCK | SPI init or command path | Run `spi coldwake`/`spi probe`; confirm hspi6 handle |
-| SCK/MOSI works, CS_B never toggles | CS pin mapping | Check `CS_B_GPIO_Port` / `CS_B_Pin` wiring |
+| SCK/MOSI works, CS_A never toggles during SMB test | CS pin mapping | Check `CS_A_GPIO_Port` / `CS_A_Pin` wiring |
+| SMB tests pass but APM commands never toggle CS_B | APM-side CS mapping | Check `CS_B_GPIO_Port` / `CS_B_Pin` wiring |
 | CS/SCK/MOSI works, MISO stuck | ADBMS6822/isoSPI/SMB path | Check ADBMS6822 power, isoSPI pair, transformer, SMB power |
 | RX changes but PEC always fails | SPI mode, bit alignment, chain order, noise | Confirm mode 3, sample point, SMB count, isoSPI wiring |
 | SID reads but order changes | Daisy-chain instability or mixed string routing | Repeat `spi sid`; check SMB order, harnessing, and CS string selection |
@@ -351,11 +363,12 @@ datasheet procedure and the actual SMB wiring.
 
 ## ADBMS2950 / APM Test Order
 
-Only after SMB/ADBMS6830 communication is understood, build with:
+Only after SMB/ADBMS6830 communication is understood, keep the final build at:
 
 ```text
 AMS_HW_BRINGUP=1
-AMS_ENABLE_APM_2950_DEBUG=1
+AMS_ENABLE_APM_2950=1
+AMS_APM_ENABLE_HV_DIVIDERS=0
 ```
 
 Then run:
@@ -363,8 +376,10 @@ Then run:
 ```text
 apm clear
 apm enable
-apm status
-apm probe
+apm sid
+apm config
+apm sample
+apm scope 20
 apm status
 bringup apm2950
 ```
@@ -372,15 +387,21 @@ bringup apm2950
 Expected:
 
 ```text
-APM debug counters update
+APM SID identifies the expected device
+CFGA/CFGB read back byte-for-byte
+RDSTAT/RDIVB1 PEC and command-counter checks pass
+APM SPI/health counters update
 APM TX/RX previews are visible
-bringup apm2950 says DEBUG_ONLY_NON_GATING
+bringup apm2950 says FINAL_RING and ADVISORY_NON_GATING
+divider controls remain OFF
 APM failures do not change BMS_OK
-normal current/voltage/fault logic still ignores APM
+the production DHAB path remains the authoritative current input
 ```
 
-Do not use ADBMS2950/APM for safety gating until command behavior, PEC, scaling,
-current sign, shunt value, and VBAT divider values are confirmed on the bench.
+Do not use ADBMS2950/APM for safety gating until command behavior, scaling,
+current sign, shunt value, VBAT divider values and fault thresholds are confirmed
+on the final board. The CLI and SIL tests validate software behavior, not those
+electrical assumptions.
 
 ## Releasing BMS_OK
 

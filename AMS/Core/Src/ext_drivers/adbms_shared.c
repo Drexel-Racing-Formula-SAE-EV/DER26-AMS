@@ -8,6 +8,9 @@
 
 #include "ext_drivers/adbms_shared.h"
 
+#include <stdbool.h>
+#include <stddef.h>
+
 static const uint16_t Crc15Table[256] =
 {
   0x0000,0xc599, 0xceab, 0xb32, 0xd8cf, 0x1d56, 0x1664, 0xd3fd, 0xf407, 0x319e, 0x3aac,
@@ -53,8 +56,13 @@ uint16_t pec10_calc(uint8_t rx_cmd, int len, uint8_t *data)
   uint16_t remainder = 16u; /*!< PEC_SEED;   0000010000 */
   uint16_t polynom = 0x8F; /*!< x10 + x7 + x3 + x2 + x + 1 <- the CRC10 polynomial         100 1000 1111   48F */
 
+  if((data == NULL) || (len < 0))
+  {
+    return 0xFFFFu;
+  }
+
   /*!< Perform modulo-2 division, a byte at a time. */
-  for (uint8_t pbyte = 0; pbyte < len; ++pbyte)
+  for (int pbyte = 0; pbyte < len; ++pbyte)
   {
     /*!< Bring the next byte into the remainder. */
     remainder ^= (uint16_t)((uint16_t)data[pbyte] << 2u);
@@ -119,11 +127,19 @@ uint16_t pec10_calc_modular(uint8_t * data, uint8_t PEC_Format)
 {
     uint16_t remainder = 16u; // PEC_SEED;
     uint16_t len;
+    bool force_zero_counter = false;
+
+    if(data == NULL)
+    {
+        return 0xFFFFu;
+    }
+
     switch (PEC_Format)
     {
 		case PEC10_WRITE:
-			data[6] = 0; // for write commands the command counter is all zero
-			// step through
+			len = 6;
+			force_zero_counter = true;
+			break;
 		case PEC10_READ:
 			len = 6;
 			break;
@@ -134,8 +150,9 @@ uint16_t pec10_calc_modular(uint8_t * data, uint8_t PEC_Format)
 			len = 512;
 			break;
 		case PEC10_WRITE2:
-			data[2] = 0;
-			// step through
+			len = 2;
+			force_zero_counter = true;
+			break;
 		case PEC10_READ2:
 			len = 2;
 			break;
@@ -144,7 +161,7 @@ uint16_t pec10_calc_modular(uint8_t * data, uint8_t PEC_Format)
 			break;
     }
     //Perform modulo-2 division, a byte at a time.
-    for (uint8_t pbyte = 0; pbyte < len; ++pbyte)
+    for (uint16_t pbyte = 0u; pbyte < len; ++pbyte)
     {
         // Bring the next byte into the remainder.
         remainder ^= (uint16_t)(data[pbyte]) << 2u;
@@ -152,7 +169,7 @@ uint16_t pec10_calc_modular(uint8_t * data, uint8_t PEC_Format)
     }
     // the last byte is different as it holds the 6-bit command counter
     // Note: for write commands, those bits are zero!
-    remainder ^= (uint16_t)((data[len] & 0xFC) << 2u);
+    remainder ^= (uint16_t)(((force_zero_counter ? 0u : data[len]) & 0xFCu) << 2u);
     remainder = pec10_calc_int(remainder, 6u);
     return ((uint16_t)(remainder & 0x3FF));
 }
@@ -164,4 +181,3 @@ __attribute__((weak)) void adbms_spi_lock(void)
 __attribute__((weak)) void adbms_spi_unlock(void)
 {
 }
-
