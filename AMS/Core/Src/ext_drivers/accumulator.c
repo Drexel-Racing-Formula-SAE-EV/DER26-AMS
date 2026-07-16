@@ -342,8 +342,10 @@ int smb_read_voltage(adbms6830_driver_t* dev)
 		return -1;
 	}
 
-	// 3. WAIT FOR THE FIRST CONVERSION CYCLE TO FINISH
-	if(adbms6830_us_delay(dev, 5000u) != HAL_OK)
+	/* Wait for a complete result.  In the eval profile REFON remains at its
+	 * reset default, so this interval includes worst-case reference startup
+	 * plus the redundant C-ADC/S-ADC conversion. */
+	if(adbms6830_us_delay(dev, AMS_ADBMS_CELL_CONVERSION_WAIT_US) != HAL_OK)
 	{
 		return -1;
 	}

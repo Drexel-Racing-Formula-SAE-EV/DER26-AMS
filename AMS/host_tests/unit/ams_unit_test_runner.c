@@ -1213,6 +1213,13 @@ static void test_adbms_topology_and_delay_guards(void)
     unit_delay_timer_advances = true;
     unit_spi_reset();
 
+    /* A robust isoSPI wake train must outlast the monitor's worst-case
+     * core wake time without allowing the link to fall back into idle. */
+    EXPECT_TRUE(WAKEUP_US_DELAY > ADBMS6830_CORE_WAKE_MAX_US);
+    EXPECT_TRUE(WAKEUP_BW_DELAY > ADBMS6830_CORE_WAKE_MAX_US);
+    EXPECT_TRUE(WAKEUP_US_DELAY < ADBMS_ISOSPI_IDLE_MIN_US);
+    EXPECT_TRUE(WAKEUP_BW_DELAY < ADBMS_ISOSPI_IDLE_MIN_US);
+
     EXPECT_TRUE(adBms6830_init(NULL,
                          1u,
                          ics,

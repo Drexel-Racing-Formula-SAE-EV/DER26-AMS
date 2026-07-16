@@ -51,6 +51,11 @@
 #define AMS_EVAL_FAN_OUTPUTS_ENABLED         0
 #define AMS_EVAL_ESTIMATOR_ENABLED           0
 
+/* Reset-default REFON=0 adds up to 4.4 ms of reference start-up before the
+ * 8 ms redundant cell conversion.  Use a conservative fixed wait because
+ * continuous ADC polling never reports a terminal "done" state. */
+#define AMS_ADBMS_CELL_CONVERSION_WAIT_US     15000u
+
 #define AMS_BUILD_PROFILE_NAME "eval-6830bmsw"
 
 #else
@@ -64,6 +69,10 @@
 #define AMS_ADBMS_RESTRICTED_BENCH_COMMANDS  0
 #define AMS_EVAL_FAN_OUTPUTS_ENABLED         1
 #define AMS_EVAL_ESTIMATOR_ENABLED           1
+
+/* Full configuration keeps the reference powered; retain the complete
+ * 8 ms C-ADC/S-ADC redundant-conversion interval. */
+#define AMS_ADBMS_CELL_CONVERSION_WAIT_US     8000u
 
 #define AMS_BUILD_PROFILE_NAME "der26-five-smb"
 

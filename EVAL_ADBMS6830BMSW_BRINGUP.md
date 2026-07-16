@@ -41,7 +41,9 @@ guide and your AMS schematic:
 1. Keep HV vehicle wiring, AIRs, charger, fan loads and actuators disconnected.
 2. Physically isolate or inhibit `BMS_OK`; do not rely only on firmware.
 3. Power the EVAL board from its J1 cell-stack/resistor-ladder interface using
-   the ADI-approved setup. isoSPI does not power the monitor board.
+   the ADI-approved setup. isoSPI does not power the monitor board. For the
+   16-cell ladder, J1 position 1 is `C0/stack-`, positions 2 through 17 are
+   `C1` through `C16/stack+`; verify this physically before applying power.
 4. Use a current-limited source and an approved lab procedure. The official
    16-channel resistor-ladder example is a multi-tens-of-volts setup, not a
    casual 3.3 V logic test.
@@ -49,7 +51,7 @@ guide and your AMS schematic:
    the default firmware path. Preserve pair polarity and the documented
    termination/jumper configuration.
 6. Do not connect a logic ground between the isolated isoSPI cable ends.
-7. Leave EVAL Port B / J4 in the user-guide-prescribed end-of-chain state.
+7. For a single-board test, leave EVAL Port B / J4 disconnected.
 
 If you intentionally wire the AMS String A output instead, use `spi probea`
 for the first manual probe and change the selected runtime string only after
@@ -72,6 +74,18 @@ With the present APB clock, Cube reports approximately 421.875 kbit/s. If any
 of these settings drift, initialization fails closed and `smb_ready` remains
 false. Do not copy an SPI mode from a different controller/adapter setup: the
 mode must match the physical `PHAPOL` straps on this AMS revision.
+
+The normal and cold-wake paths use 1 ms low/high CS intervals. This exceeds
+the ADBMS6830B's 500 us worst-case wake time and remains below the 4.3 ms
+minimum isoSPI idle timeout. Do not shorten these delays based only on the
+240 ns wake-detector dwell specification; that value detects a pulse but does
+not cover regulator/core startup from sleep.
+
+Because monitor-only mode leaves `REFON=0`, the eval profile waits 15 ms after
+each redundant ADCV command before reading cells. This covers the specified
+4.4 ms maximum reference startup plus the 8 ms redundant conversion interval
+with margin; the shorter timing used after a configured, continuously powered
+reference is not assumed here.
 
 ## Build and host verification
 

@@ -30,8 +30,14 @@
 #define ALLVR_SIZE     22       /* ALL Voltage Reg. byte size         */
 #define ALLREDVR_SIZE  22       /* ALL Redundant Voltage Reg. byte size*/
 
-#define WAKEUP_US_DELAY 250
-#define WAKEUP_BW_DELAY 100
+/* A sleeping ADBMS6830B can require up to 500 us after a long isoSPI
+ * wake pulse.  Keep each edge-to-edge interval comfortably above that
+ * worst case, while remaining below the 4.3 ms minimum isoSPI idle timeout.
+ * The 1 ms timing also matches ADI's ADBMS6830 reference wake sequence. */
+#define ADBMS6830_CORE_WAKE_MAX_US 500u
+#define ADBMS_ISOSPI_IDLE_MIN_US   4300u
+#define WAKEUP_US_DELAY            1000u
+#define WAKEUP_BW_DELAY            1000u
 #define SPI_TIMEOUT 500
 #define BUFSZ 512
 

@@ -6208,6 +6208,7 @@ static void test_eval_profile_topology_and_monitor_only_init(void)
     CHECK(AMS_ADBMS_TEMP_MUX_ENABLED == 0);
     CHECK(AMS_ADBMS_BALANCE_WRITES_ENABLED == 0);
     CHECK(AMS_ADBMS_OPEN_WIRE_ENABLED == 0);
+    CHECK(AMS_ADBMS_CELL_CONVERSION_WAIT_US >= 12400u);
 
     fake_adbms_init_mode = ADBMS6830_INIT_FULL_CONFIG;
     fake_adbms_sid_calls = 0u;

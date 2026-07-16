@@ -1970,13 +1970,13 @@ void adbms6830_wakeup_cold(adbms6830_driver_t* dev)
         for(uint8_t i = 0u; i < (uint8_t)dev->num_ics; i++)
         {
             adbms6830_set_cs(dev, 0);
-            if(adbms6830_us_delay(dev, 500u) != HAL_OK)
+            if(adbms6830_us_delay(dev, WAKEUP_US_DELAY) != HAL_OK)
             {
                 adbms6830_set_cs(dev, 1);
                 return;
             }
             adbms6830_set_cs(dev, 1);
-            if(adbms6830_us_delay(dev, 500u) != HAL_OK)
+            if(adbms6830_us_delay(dev, WAKEUP_BW_DELAY) != HAL_OK)
             {
                 return;
             }
