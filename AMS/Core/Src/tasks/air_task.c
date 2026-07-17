@@ -71,7 +71,7 @@ void air_task_fn(void *argument)
 
 #if AMS_ENABLE_AIR_AUX_FEEDBACK
     ams_air_monitor_config_t config = {0};
-    bool config_available = ams_air_board_get_config(&config);
+    bool config_available = false;
 #endif
 
 	for(;;)
@@ -82,9 +82,36 @@ void air_task_fn(void *argument)
         ams_air_monitor_inputs_t inputs = {0};
         ams_air_monitor_t next;
         uint32_t previous_latched_mask;
+        bool inputs_available;
+
+        /* Accept exactly one reviewed valid configuration. Retrying only until
+         * the first valid result supports deterministic board-startup ordering;
+         * runtime configuration changes are intentionally ignored. */
+        if(!config_available)
+        {
+            ams_air_monitor_config_t candidate = {0};
+            if(ams_air_board_get_config(&candidate) &&
+               ams_air_monitor_schedule_valid(
+                   &candidate,
+                   AMS_AIR_MONITOR_PERIOD_MS,
+                   AMS_AIR_MONITOR_PUBLICATION_TIMEOUT_MS))
+            {
+                config = candidate;
+                config_available = true;
+            }
+        }
 
         inputs.now_tick = entry;
-        (void)ams_air_board_read_inputs(&inputs, entry);
+        inputs_available = ams_air_board_read_inputs(&inputs, entry);
+        if(!inputs_available)
+        {
+            /* A failed/partial board acquisition must not leave valid bits or
+             * fresh timestamps from a partially populated/stale object. */
+            inputs = (ams_air_monitor_inputs_t){0};
+        }
+        /* The scheduler owns evaluator time. A board adapter may timestamp the
+         * individual samples, but it may not override the evaluation clock. */
+        inputs.now_tick = entry;
 
         /* Preserve the evaluator's debounce/transition history, update a local
          * copy, then publish it atomically for the high-priority supervisor. */

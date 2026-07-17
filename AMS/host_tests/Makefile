@@ -108,7 +108,7 @@ make-build-dir:
 	@mkdir -p "$(BUILD_DIR)"
 
 compile: check-root make-build-dir
-	$(CC) $(CFLAGS_COMMON) $(SRC) -o $(BIN) $(LDLIBS)
+	$(CC) $(CFLAGS_COMMON) $(SRC) $(AIR_MONITOR_SRC) -o $(BIN) $(LDLIBS)
 
 unit: check-root make-build-dir
 	$(CC) $(CFLAGS_COMMON) $(UNIT_SRC) $(ESTIMATOR_SRC) $(ADBMS2950_SRC) $(AIR_MONITOR_SRC) -o $(UNIT_BIN) $(LDLIBS)
@@ -125,7 +125,7 @@ production-gates: BUILD_DIR = build-production
 production-gates: CFLAGS_COMMON += -DAMS_HOST_PRODUCTION_GATE_TEST=1
 production-gates: check-root
 	@mkdir -p "$(BUILD_DIR)"
-	$(CC) $(CFLAGS_COMMON) $(SRC) -o $(BIN) $(LDLIBS)
+	$(CC) $(CFLAGS_COMMON) $(SRC) $(AIR_MONITOR_SRC) -o $(BIN) $(LDLIBS)
 	$(BIN)
 	$(CC) $(CFLAGS_COMMON) -ffunction-sections -fdata-sections \
 		$(AMS_ROOT)/Core/Src/app.c $(OWNER_SRC) \
@@ -145,7 +145,7 @@ apm-sil: check-root
 	"$(BUILD_DIR)-apm/ams_apm_unit_tests"
 	$(CC) $(CFLAGS_COMMON) $(HOST_EXERCISE_DEFS) \
 		-DAMS_ENABLE_APM_2950=1 -DAMS_APM_ENABLE_HV_DIVIDERS=0 \
-		$(SRC) -o "$(BUILD_DIR)-apm/ams_apm_sil_tests" $(LDLIBS)
+		$(SRC) $(AIR_MONITOR_SRC) -o "$(BUILD_DIR)-apm/ams_apm_sil_tests" $(LDLIBS)
 	"$(BUILD_DIR)-apm/ams_apm_sil_tests"
 
 bringup-test: CFLAGS_COMMON += -DAMS_HW_BRINGUP=1
@@ -178,7 +178,8 @@ asan: check-root
 	$(CC) $(CFLAGS_COMMON) -fsanitize=address,undefined -fno-omit-frame-pointer \
 		$(UNIT_SRC) $(ESTIMATOR_SRC) $(ADBMS2950_SRC) $(AIR_MONITOR_SRC) -o $(UNIT_BIN)-asan $(LDLIBS)
 	ASAN_OPTIONS=detect_leaks=0 $(UNIT_BIN)-asan
-	$(CC) $(CFLAGS_COMMON) -fsanitize=address,undefined -fno-omit-frame-pointer $(SRC) -o $(BIN)-asan $(LDLIBS)
+	$(CC) $(CFLAGS_COMMON) -fsanitize=address,undefined -fno-omit-frame-pointer \
+		$(SRC) $(AIR_MONITOR_SRC) -o $(BIN)-asan $(LDLIBS)
 	ASAN_OPTIONS=detect_leaks=0 $(BIN)-asan
 
 ubsan: CFLAGS_COMMON += $(HOST_EXERCISE_DEFS)
@@ -187,7 +188,8 @@ ubsan: check-root
 	$(CC) $(CFLAGS_COMMON) -fsanitize=undefined -fno-omit-frame-pointer \
 		$(UNIT_SRC) $(ESTIMATOR_SRC) $(ADBMS2950_SRC) $(AIR_MONITOR_SRC) -o $(UNIT_BIN)-ubsan $(LDLIBS)
 	$(UNIT_BIN)-ubsan
-	$(CC) $(CFLAGS_COMMON) -fsanitize=undefined -fno-omit-frame-pointer $(SRC) -o $(BIN)-ubsan $(LDLIBS)
+	$(CC) $(CFLAGS_COMMON) -fsanitize=undefined -fno-omit-frame-pointer \
+		$(SRC) $(AIR_MONITOR_SRC) -o $(BIN)-ubsan $(LDLIBS)
 	$(BIN)-ubsan
 
 # GCC static analyzer. Useful for null/bounds/uninitialized regressions.

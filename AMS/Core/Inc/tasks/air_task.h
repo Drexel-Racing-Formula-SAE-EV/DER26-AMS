@@ -16,7 +16,13 @@ TaskHandle_t air_task_start(app_data_t *data);
 
 /* Future board adapter hooks. The weak fail-closed implementations in
  * air_task.c return false. A target may set AMS_AIR_AUX_BOARD_ADAPTER_READY=1
- * only after providing reviewed strong definitions for both hooks. */
+ * only after providing reviewed strong definitions for both hooks.
+ *
+ * get_config() must return one immutable configuration whose evaluation and
+ * publication schedule passes ams_air_monitor_schedule_valid(). read_inputs()
+ * is all-or-nothing: false invalidates every sample for that evaluation; true
+ * means every required valid bit/timestamp accurately represents the same
+ * acquisition cycle. The task, not the adapter, owns inputs->now_tick. */
 bool ams_air_board_get_config(ams_air_monitor_config_t *config);
 bool ams_air_board_read_inputs(ams_air_monitor_inputs_t *inputs,
                                uint32_t now);

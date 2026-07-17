@@ -62,7 +62,10 @@ typedef enum
     AMS_AIR_FAULT_CONTACT_DISAGREEMENT,
     AMS_AIR_FAULT_LINE_SUPERVISION,
     AMS_AIR_FAULT_BUS_VOLTAGE_PLAUSIBILITY,
-    AMS_AIR_FAULT_PRECHARGE_TIMEOUT
+    AMS_AIR_FAULT_PRECHARGE_TIMEOUT,
+    /* Appended to preserve the numeric values of the existing diagnostics. */
+    AMS_AIR_FAULT_REARM_REQUIRED,
+    AMS_AIR_FAULT_SAMPLE_INCOHERENT
 } ams_air_fault_reason_t;
 
 typedef enum
@@ -80,7 +83,8 @@ typedef enum
     AMS_AIR_FAULT_BIT_CONTACT_DISAGREE    = (1u << 10),
     AMS_AIR_FAULT_BIT_LINE_SUPERVISION    = (1u << 11),
     AMS_AIR_FAULT_BIT_BUS_VOLTAGE         = (1u << 12),
-    AMS_AIR_FAULT_BIT_PRECHARGE_TIMEOUT   = (1u << 13)
+    AMS_AIR_FAULT_BIT_PRECHARGE_TIMEOUT   = (1u << 13),
+    AMS_AIR_FAULT_BIT_SAMPLE_INCOHERENT   = (1u << 14)
 } ams_air_fault_bit_t;
 
 typedef struct
@@ -123,6 +127,7 @@ typedef struct
     uint32_t command_timeout_ms;
     uint32_t contact_sample_timeout_ms;
     uint32_t voltage_sample_timeout_ms;
+    uint32_t max_sample_skew_ms;
     uint32_t debounce_ms;
 
     uint32_t pos_make_timeout_ms;
@@ -220,12 +225,26 @@ static inline bool ams_air_monitor_ready(const ams_air_monitor_t *monitor)
            monitor->configuration_valid &&
            monitor->command_valid &&
            monitor->feedback_valid &&
+           monitor->boot_open_verified &&
+           ((monitor->phase == AMS_AIR_PHASE_OFF) ||
+            (monitor->phase == AMS_AIR_PHASE_PRECHARGE) ||
+            (monitor->phase == AMS_AIR_PHASE_RUN)) &&
+           monitor->transition_authorized &&
+           (monitor->steady_state_valid || monitor->transition_pending) &&
            monitor->permit &&
            !monitor->fault &&
-           !monitor->fault_latched;
+           !monitor->fault_latched &&
+           (monitor->active_fault_mask == 0u) &&
+           (monitor->latched_fault_mask == 0u);
 }
 
 bool ams_air_monitor_config_valid(const ams_air_monitor_config_t *config);
+
+/* Validate that task evaluation and supervisor publication-liveness timing
+ * cannot outlive any safety-relevant input or contact-transition deadline. */
+bool ams_air_monitor_schedule_valid(const ams_air_monitor_config_t *config,
+                                    uint32_t evaluation_period_ms,
+                                    uint32_t publication_timeout_ms);
 
 void ams_air_monitor_step(ams_air_monitor_t *monitor,
                           const ams_air_monitor_config_t *config,
@@ -292,6 +311,8 @@ static inline const char *ams_air_fault_reason_str(ams_air_fault_reason_t reason
     case AMS_AIR_FAULT_LINE_SUPERVISION:         return "line_supervision";
     case AMS_AIR_FAULT_BUS_VOLTAGE_PLAUSIBILITY: return "bus_voltage_plausibility";
     case AMS_AIR_FAULT_PRECHARGE_TIMEOUT:         return "precharge_timeout";
+    case AMS_AIR_FAULT_REARM_REQUIRED:            return "rearm_required";
+    case AMS_AIR_FAULT_SAMPLE_INCOHERENT:          return "sample_incoherent";
     default:                                      return "unknown";
     }
 }

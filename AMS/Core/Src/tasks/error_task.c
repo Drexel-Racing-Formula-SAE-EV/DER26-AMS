@@ -56,7 +56,9 @@ static bool error_task_air_feedback_fault(const app_data_t *data,
 #if AMS_ENABLE_AIR_AUX_FEEDBACK
     return !error_task_air_publication_fresh(data, now) ||
            data->air_monitor.fault ||
-           data->air_monitor.fault_latched;
+           data->air_monitor.fault_latched ||
+           (data->air_monitor.active_fault_mask != 0u) ||
+           (data->air_monitor.latched_fault_mask != 0u);
 #else
     (void)data;
     (void)now;

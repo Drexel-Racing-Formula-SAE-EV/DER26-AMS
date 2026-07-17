@@ -17,6 +17,11 @@ static bool air_interval_valid(uint32_t interval)
     return (interval > 0u) && (interval <= AMS_AIR_MAX_INTERVAL_MS);
 }
 
+static uint32_t air_min_u32(uint32_t left, uint32_t right)
+{
+    return (left < right) ? left : right;
+}
+
 static bool air_phase_valid(ams_air_phase_t phase)
 {
     return (phase == AMS_AIR_PHASE_OFF) ||
@@ -38,6 +43,69 @@ static bool air_sample_fresh(bool valid,
                              uint32_t timeout)
 {
     return valid && (air_elapsed(now, update_tick) <= timeout);
+}
+
+static void air_age_range_include(uint32_t age,
+                                  uint32_t *minimum_age,
+                                  uint32_t *maximum_age)
+{
+    if((minimum_age == NULL) || (maximum_age == NULL))
+    {
+        return;
+    }
+    if(age < *minimum_age)
+    {
+        *minimum_age = age;
+    }
+    if(age > *maximum_age)
+    {
+        *maximum_age = age;
+    }
+}
+
+static bool air_samples_coherent(const ams_air_monitor_config_t *config,
+                                 const ams_air_monitor_inputs_t *inputs)
+{
+    uint32_t minimum_age = UINT32_MAX;
+    uint32_t maximum_age = 0u;
+    uint32_t now;
+
+    if((config == NULL) || (inputs == NULL))
+    {
+        return false;
+    }
+
+    now = inputs->now_tick;
+    air_age_range_include(air_elapsed(now, inputs->command.update_tick),
+                          &minimum_age,
+                          &maximum_age);
+    air_age_range_include(air_elapsed(now, inputs->pos_aux.update_tick),
+                          &minimum_age,
+                          &maximum_age);
+    air_age_range_include(air_elapsed(now, inputs->neg_aux.update_tick),
+                          &minimum_age,
+                          &maximum_age);
+    if(config->require_precharge_aux)
+    {
+        air_age_range_include(air_elapsed(now,
+                                          inputs->precharge_aux.update_tick),
+                              &minimum_age,
+                              &maximum_age);
+    }
+    if(config->require_bus_voltage)
+    {
+        air_age_range_include(air_elapsed(now,
+                                          inputs->pack_voltage.update_tick),
+                              &minimum_age,
+                              &maximum_age);
+        air_age_range_include(air_elapsed(now,
+                                          inputs->load_voltage.update_tick),
+                              &minimum_age,
+                              &maximum_age);
+    }
+
+    return (minimum_age != UINT32_MAX) &&
+           ((maximum_age - minimum_age) <= config->max_sample_skew_ms);
 }
 
 static void air_filter_update(ams_air_debounce_state_t *filter,
@@ -85,7 +153,7 @@ static bool air_transition_allowed(ams_air_phase_t from,
         return false;
     }
 
-    if(((from == AMS_AIR_PHASE_OFF) || (from == AMS_AIR_PHASE_SHUTDOWN)) &&
+    if((from == AMS_AIR_PHASE_OFF) &&
        (to == AMS_AIR_PHASE_PRECHARGE))
     {
         return true;
@@ -226,6 +294,59 @@ static bool air_ratio_at_most(uint32_t numerator_mv,
            ((uint64_t)denominator_mv * threshold_permille);
 }
 
+static bool air_energized_phase(ams_air_phase_t phase)
+{
+    return (phase == AMS_AIR_PHASE_PRECHARGE) ||
+           (phase == AMS_AIR_PHASE_RUN);
+}
+
+static bool air_latch_supervision_loss(const ams_air_monitor_t *monitor)
+{
+    return (monitor != NULL) &&
+           monitor->boot_open_verified &&
+           air_energized_phase(monitor->phase);
+}
+
+static bool air_current_precharge_proof_valid(
+    const ams_air_monitor_config_t *config,
+    const ams_air_monitor_inputs_t *inputs)
+{
+    uint32_t pack_mv;
+    uint32_t load_mv;
+
+    if((config == NULL) || (inputs == NULL))
+    {
+        return false;
+    }
+
+    if(!config->require_bus_voltage)
+    {
+        return true;
+    }
+
+    if(!air_sample_fresh(inputs->pack_voltage.valid,
+                         inputs->now_tick,
+                         inputs->pack_voltage.update_tick,
+                         config->voltage_sample_timeout_ms) ||
+       !air_sample_fresh(inputs->load_voltage.valid,
+                         inputs->now_tick,
+                         inputs->load_voltage.update_tick,
+                         config->voltage_sample_timeout_ms))
+    {
+        return false;
+    }
+
+    pack_mv = inputs->pack_voltage.millivolts;
+    load_mv = inputs->load_voltage.millivolts;
+    return (pack_mv >= config->minimum_pack_voltage_mv) &&
+           air_ratio_at_least(load_mv,
+                              pack_mv,
+                              config->precharge_complete_min_permille) &&
+           air_ratio_at_most(load_mv,
+                             pack_mv,
+                             config->run_bus_max_permille);
+}
+
 bool ams_air_monitor_config_valid(const ams_air_monitor_config_t *config)
 {
     if(config == NULL)
@@ -235,6 +356,9 @@ bool ams_air_monitor_config_valid(const ams_air_monitor_config_t *config)
 
     if(!air_interval_valid(config->command_timeout_ms) ||
        !air_interval_valid(config->contact_sample_timeout_ms) ||
+       !air_interval_valid(config->max_sample_skew_ms) ||
+       (config->max_sample_skew_ms > config->command_timeout_ms) ||
+       (config->max_sample_skew_ms > config->contact_sample_timeout_ms) ||
        (config->debounce_ms > AMS_AIR_MAX_INTERVAL_MS) ||
        !air_interval_valid(config->pos_make_timeout_ms) ||
        !air_interval_valid(config->pos_release_timeout_ms) ||
@@ -275,6 +399,7 @@ bool ams_air_monitor_config_valid(const ams_air_monitor_config_t *config)
     if(config->require_bus_voltage)
     {
         if(!air_interval_valid(config->voltage_sample_timeout_ms) ||
+           (config->max_sample_skew_ms > config->voltage_sample_timeout_ms) ||
            !air_interval_valid(config->run_voltage_settle_ms) ||
            !air_interval_valid(config->bus_discharge_timeout_ms) ||
            (config->minimum_pack_voltage_mv == 0u) ||
@@ -293,6 +418,79 @@ bool ams_air_monitor_config_valid(const ams_air_monitor_config_t *config)
     }
 
     return true;
+}
+
+bool ams_air_monitor_schedule_valid(const ams_air_monitor_config_t *config,
+                                    uint32_t evaluation_period_ms,
+                                    uint32_t publication_timeout_ms)
+{
+    uint64_t debounce_observation_ms;
+    uint32_t shortest_deadline;
+
+    if(!ams_air_monitor_config_valid(config) ||
+       !air_interval_valid(evaluation_period_ms) ||
+       !air_interval_valid(publication_timeout_ms) ||
+       (publication_timeout_ms < evaluation_period_ms))
+    {
+        return false;
+    }
+
+    shortest_deadline = config->command_timeout_ms;
+    shortest_deadline = air_min_u32(shortest_deadline,
+                                    config->contact_sample_timeout_ms);
+    shortest_deadline = air_min_u32(shortest_deadline,
+                                    config->pos_make_timeout_ms);
+    shortest_deadline = air_min_u32(shortest_deadline,
+                                    config->pos_release_timeout_ms);
+    shortest_deadline = air_min_u32(shortest_deadline,
+                                    config->neg_make_timeout_ms);
+    shortest_deadline = air_min_u32(shortest_deadline,
+                                    config->neg_release_timeout_ms);
+    shortest_deadline = air_min_u32(shortest_deadline,
+                                    config->precharge_max_ms);
+
+    if(config->require_precharge_aux)
+    {
+        shortest_deadline = air_min_u32(shortest_deadline,
+                                        config->precharge_make_timeout_ms);
+        shortest_deadline = air_min_u32(shortest_deadline,
+                                        config->precharge_release_timeout_ms);
+    }
+
+    if(config->require_bus_voltage)
+    {
+        shortest_deadline = air_min_u32(shortest_deadline,
+                                        config->voltage_sample_timeout_ms);
+        shortest_deadline = air_min_u32(shortest_deadline,
+                                        config->run_voltage_settle_ms);
+        shortest_deadline = air_min_u32(shortest_deadline,
+                                        config->bus_discharge_timeout_ms);
+    }
+
+    /* A newly changed raw contact may be observed almost one full task period
+     * after the physical edge. The debounce interval then expires between task
+     * evaluations and is observed on a later evaluation. Reject a schedule
+     * that cannot possibly debounce even an immediate physical transition
+     * before the shortest configured make/release deadline. */
+    debounce_observation_ms = evaluation_period_ms;
+    if(config->debounce_ms != 0u)
+    {
+        debounce_observation_ms +=
+            ((((uint64_t)config->debounce_ms + evaluation_period_ms - 1u) /
+              evaluation_period_ms) * evaluation_period_ms);
+    }
+
+    /* The evaluator must run at least once, and a frozen publication must be
+     * rejected, within the shortest reviewed safety deadline. */
+    return (evaluation_period_ms <= shortest_deadline) &&
+           (publication_timeout_ms <= shortest_deadline) &&
+           (debounce_observation_ms <= config->pos_make_timeout_ms) &&
+           (debounce_observation_ms <= config->pos_release_timeout_ms) &&
+           (debounce_observation_ms <= config->neg_make_timeout_ms) &&
+           (debounce_observation_ms <= config->neg_release_timeout_ms) &&
+           (!config->require_precharge_aux ||
+            ((debounce_observation_ms <= config->precharge_make_timeout_ms) &&
+             (debounce_observation_ms <= config->precharge_release_timeout_ms)));
 }
 
 void ams_air_monitor_step(ams_air_monitor_t *monitor,
@@ -321,7 +519,10 @@ void ams_air_monitor_step(ams_air_monitor_t *monitor,
         return;
     }
 
-    prior_permit = monitor->permit && !monitor->fault;
+    /* Closing-transition authority is inherited only from a complete healthy
+     * snapshot. Do not reconstruct a weaker approximation from a few booleans:
+     * that could accept an inconsistent/corrupted nonzero fault mask. */
+    prior_permit = ams_air_monitor_ready(monitor);
     prior_steady_state = monitor->steady_state_valid;
     prior_precharge_complete = monitor->precharge_complete;
     monitor->configuration_valid = false;
@@ -343,7 +544,7 @@ void ams_air_monitor_step(ams_air_monitor_t *monitor,
         air_mark_fault(monitor,
                        AMS_AIR_FAULT_BIT_CONFIG,
                        AMS_AIR_FAULT_CONFIG_INVALID,
-                       false);
+                       air_latch_supervision_loss(monitor));
         air_finalize(monitor);
         return;
     }
@@ -356,7 +557,7 @@ void ams_air_monitor_step(ams_air_monitor_t *monitor,
         air_mark_fault(monitor,
                        AMS_AIR_FAULT_BIT_COMMAND,
                        AMS_AIR_FAULT_COMMAND_INVALID,
-                       false);
+                       air_latch_supervision_loss(monitor));
         air_finalize(monitor);
         return;
     }
@@ -368,7 +569,7 @@ void ams_air_monitor_step(ams_air_monitor_t *monitor,
         air_mark_fault(monitor,
                        AMS_AIR_FAULT_BIT_COMMAND,
                        AMS_AIR_FAULT_COMMAND_STALE,
-                       false);
+                       air_latch_supervision_loss(monitor));
         air_finalize(monitor);
         return;
     }
@@ -387,6 +588,9 @@ void ams_air_monitor_step(ams_air_monitor_t *monitor,
         bool allowed = air_transition_allowed(monitor->phase,
                                               inputs->command.phase,
                                               monitor->boot_open_verified);
+        bool closing_transition =
+            (inputs->command.phase == AMS_AIR_PHASE_PRECHARGE) ||
+            (inputs->command.phase == AMS_AIR_PHASE_RUN);
         ams_air_fault_reason_t transition_reason =
             AMS_AIR_FAULT_INVALID_TRANSITION;
 
@@ -397,10 +601,17 @@ void ams_air_monitor_step(ams_air_monitor_t *monitor,
             allowed = false;
         }
 
+        if(closing_transition && !prior_permit)
+        {
+            allowed = false;
+            transition_reason = AMS_AIR_FAULT_REARM_REQUIRED;
+        }
+
         if((monitor->phase == AMS_AIR_PHASE_PRECHARGE) &&
            (inputs->command.phase == AMS_AIR_PHASE_RUN) &&
            config->require_bus_voltage &&
-           !prior_precharge_complete)
+           (!prior_precharge_complete ||
+            !air_current_precharge_proof_valid(config, inputs)))
         {
             allowed = false;
             transition_reason = AMS_AIR_FAULT_PRECHARGE_INCOMPLETE;
@@ -416,8 +627,7 @@ void ams_air_monitor_step(ams_air_monitor_t *monitor,
         monitor->transition_authorized =
             prior_permit &&
             allowed &&
-            (inputs->command.phase != AMS_AIR_PHASE_OFF) &&
-            (inputs->command.phase != AMS_AIR_PHASE_SHUTDOWN);
+            closing_transition;
         if(!allowed)
         {
             air_mark_fault(monitor,
@@ -449,7 +659,7 @@ void ams_air_monitor_step(ams_air_monitor_t *monitor,
         air_mark_fault(monitor,
                        AMS_AIR_FAULT_BIT_FEEDBACK_STALE,
                        AMS_AIR_FAULT_INPUT_STALE,
-                       false);
+                       air_latch_supervision_loss(monitor));
         air_finalize(monitor);
         return;
     }
@@ -547,7 +757,7 @@ void ams_air_monitor_step(ams_air_monitor_t *monitor,
             air_mark_fault(monitor,
                            AMS_AIR_FAULT_BIT_VOLTAGE_STALE,
                            AMS_AIR_FAULT_VOLTAGE_STALE,
-                           false);
+                           air_latch_supervision_loss(monitor));
         }
         else
         {
@@ -557,6 +767,19 @@ void ams_air_monitor_step(ams_air_monitor_t *monitor,
     else
     {
         monitor->bus_plausible = true;
+    }
+
+    /* Diagnose an actually stale source before reporting cross-source skew;
+     * coherence is meaningful only after every required sample is fresh. */
+    if((monitor->active_fault_mask == 0u) &&
+       !air_samples_coherent(config, inputs))
+    {
+        air_mark_fault(monitor,
+                       AMS_AIR_FAULT_BIT_SAMPLE_INCOHERENT,
+                       AMS_AIR_FAULT_SAMPLE_INCOHERENT,
+                       air_latch_supervision_loss(monitor));
+        air_finalize(monitor);
+        return;
     }
 
     expected = air_expected_contacts(monitor->phase);
@@ -717,9 +940,20 @@ void ams_air_monitor_step(ams_air_monitor_t *monitor,
         if(monitor->steady_state_valid)
         {
             monitor->transition_pending = false;
-            monitor->transition_authorized = true;
-            monitor->permit = monitor->boot_open_verified;
-            monitor->reason = AMS_AIR_FAULT_NONE;
+            if(monitor->phase == AMS_AIR_PHASE_SHUTDOWN)
+            {
+                /* SHUTDOWN is deliberately terminal/non-permitting. A fresh
+                 * explicit OFF phase is the controlled re-arm boundary. */
+                monitor->transition_authorized = false;
+                monitor->permit = false;
+                monitor->reason = AMS_AIR_FAULT_REARM_REQUIRED;
+            }
+            else
+            {
+                monitor->transition_authorized = true;
+                monitor->permit = monitor->boot_open_verified;
+                monitor->reason = AMS_AIR_FAULT_NONE;
+            }
         }
         else
         {
@@ -766,8 +1000,19 @@ bool ams_air_monitor_request_clear(ams_air_monitor_t *monitor,
     monitor->latched_reason = AMS_AIR_FAULT_NONE;
     monitor->fault_latched = false;
     monitor->fault = false;
-    monitor->reason = AMS_AIR_FAULT_NONE;
-    monitor->permit = true;
-    monitor->transition_authorized = true;
+    if(monitor->phase == AMS_AIR_PHASE_OFF)
+    {
+        monitor->reason = AMS_AIR_FAULT_NONE;
+        monitor->permit = true;
+        monitor->transition_authorized = true;
+    }
+    else
+    {
+        /* Clearing evidence while safely open in SHUTDOWN is allowed, but it
+         * never doubles as permission to re-energize the shutdown circuit. */
+        monitor->reason = AMS_AIR_FAULT_REARM_REQUIRED;
+        monitor->permit = false;
+        monitor->transition_authorized = false;
+    }
     return true;
 }

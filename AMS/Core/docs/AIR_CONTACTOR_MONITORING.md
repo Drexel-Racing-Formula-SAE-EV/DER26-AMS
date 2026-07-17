@@ -108,6 +108,10 @@ The pure evaluator is implemented by:
 ```c
 bool ams_air_monitor_config_valid(const ams_air_monitor_config_t *config);
 
+bool ams_air_monitor_schedule_valid(const ams_air_monitor_config_t *config,
+                                    uint32_t evaluation_period_ms,
+                                    uint32_t publication_timeout_ms);
+
 void ams_air_monitor_step(ams_air_monitor_t *monitor,
                           const ams_air_monitor_config_t *config,
                           const ams_air_monitor_inputs_t *inputs);
@@ -124,6 +128,8 @@ use unsigned tick subtraction and are tested across the 32-bit tick rollover.
 `ams_air_monitor_config_t` requires the board integration to provide:
 
 - command, contact-sample and voltage-sample freshness limits;
+- maximum permitted timestamp skew across the command/contact/voltage samples
+  used in one decision;
 - contact debounce time;
 - separate AIR+/AIR-/precharge make and release limits;
 - maximum permitted precharge duration;
@@ -137,6 +143,16 @@ use unsigned tick subtraction and are tested across the 32-bit tick rollover.
 There are deliberately no target defaults. A zeroed configuration is rejected,
 and every configured interval is bounded to at most `INT32_MAX` milliseconds so
 tick-wrap comparisons remain unambiguous.
+
+The enabled task also rejects a configuration whose schedule fails
+`ams_air_monitor_schedule_valid()`. The evaluation period and supervisor
+publication timeout must both fit inside the shortest applicable command,
+sample, contact make/release, Run-settle, open-bus-discharge or
+maximum-precharge deadline. The validator also proves that the selected task
+period can observe a new raw contact state and complete its configured debounce
+before every applicable make/release deadline. This is important during an
+authorized closing transition: a frozen AIR task must not leave its last
+permitting snapshot authoritative beyond the physical deadline.
 
 The evaluator exposes separate meanings that must not be collapsed:
 
@@ -163,14 +179,27 @@ inherit permission from Run; permission remains low until all required contacts
 and the load-side bus have reached their verified open state. This prevents a
 recovering transient fault from reasserting BMS_OK midway through opening.
 
+`Shutdown` remains non-permitting even after all contacts and the bus are proven
+safe. A controlled clear in Shutdown may erase a diagnostic latch, but it does
+not re-arm `BMS_OK`. The command owner must explicitly transition to `Off`, and
+the monitor must re-evaluate the fresh open/bus-safe proof there before another
+close sequence can begin.
+
 The implemented transition policy is:
 
-- initial boot must establish Off/Shutdown with all required contacts open;
-- Off/Shutdown -> Precharge is allowed only after that boot-open proof;
+- initial boot must establish Off or Shutdown with all required contacts open;
+- only Off -> Precharge is allowed after that boot-open proof;
+- Shutdown -> Off is the explicit re-arm path; Shutdown -> Precharge/Run is
+  rejected and latched;
 - Precharge -> Run is allowed only after the Precharge contact state is steady
-  and, when bus-voltage proof is configured, the completion ratio is met;
+  and, when bus-voltage proof is configured, both the prior and the **current
+  transition snapshot** meet the completion ratio;
 - a transition to Off or Shutdown is always allowed;
 - direct Off -> Run and Run -> Precharge bypasses are rejected and latched.
+
+A closing transition also requires the prior monitor snapshot to hold valid
+permission. Reaching the requested closed contact pattern later does not turn an
+unauthorized close into a valid state.
 
 Contact mismatches are evaluated against per-contact make/release deadlines.
 Multiple simultaneous failures are preserved in `active_fault_mask` and
@@ -194,7 +223,7 @@ voltage sample timeouts evaluated inside the AIR task.
 | Command closed, AUX remains open after make deadline | Coil, driver, harness or contactor failure; latch/inhibit |
 | AIR+ and AIR- disagree outside an allowed transition | Contact mismatch; latch/inhibit |
 | Precharge AUX closed in Run or Off | Precharge contact possible weld; latch/inhibit |
-| Feedback missing, stale or line-faulted | Invalid; keep `BMS_OK` low when feature is enabled |
+| Feedback missing, stale, mutually incoherent in time, or line-faulted | Invalid; keep `BMS_OK` low. If already in Precharge/Run, latch so recovery cannot reassert permission while contacts may be opening |
 | AUX says open but load-side voltage remains high | Possible welded main contact or external backfeed; latch/inhibit |
 | AUX says closed but expected bus response is absent | Main contact not conducting, voltage-sense fault or wiring problem; inhibit |
 | Command source becomes stale | Enter shutdown/unknown expectation and inhibit |
@@ -213,6 +242,9 @@ the supplied samples and refuses to clear unless:
 - no active fault remains;
 - the load-side bus is below the reviewed open-state threshold when voltage
   proof is required.
+
+If the clear is performed in Shutdown, the fault evidence is cleared but
+permission remains low. A fresh explicit Off phase is still required to re-arm.
 
 ## Precharge validation
 
@@ -236,7 +268,8 @@ filled with generic placeholder values.
 2. Assign pins and confirm polarity/line-supervision thresholds.
 3. Implement a single board-specific raw-input producer. It must classify the
    protected inputs, timestamp every sample and publish the command source; it
-   must not write `ams_air_monitor_t` fields individually.
+   must not write `ams_air_monitor_t` fields individually. Its read result is
+   all-or-nothing: returning false invalidates the complete acquisition.
 4. Populate `ams_air_monitor_config_t` from reviewed component and system
    values, then call the existing pure evaluator from one task owner.
 5. Add CLI and versioned CAN diagnostics without renaming command sense as
@@ -269,14 +302,43 @@ publish local_monitor inside a short critical section
 ```
 
 The supplied feature-enabled task already follows that local compute / atomic
-publish pattern through two weak board hooks. The hardware revision must supply
-strong implementations of `ams_air_board_get_config()` and
-`ams_air_board_read_inputs()`, set `AMS_AIR_AUX_BOARD_ADAPTER_READY=1`, and set
-reviewed nonzero `AMS_AIR_MONITOR_PERIOD_MS` and
-`AMS_AIR_MONITOR_PUBLICATION_TIMEOUT_MS` values. A target build refuses to
-enable the feature without those declarations.
+publish pattern through two weak board hooks. It retries configuration only
+until the first valid schedule-compatible configuration is accepted, then keeps
+that configuration immutable. A false input-read result clears every valid bit,
+and the task overwrites `inputs.now_tick` with the scheduler-owned evaluation
+time so a partial adapter result cannot appear healthy.
+
+The hardware revision must supply strong implementations of
+`ams_air_board_get_config()` and `ams_air_board_read_inputs()`, set
+`AMS_AIR_AUX_BOARD_ADAPTER_READY=1`, and set reviewed nonzero
+`AMS_AIR_MONITOR_PERIOD_MS` and `AMS_AIR_MONITOR_PUBLICATION_TIMEOUT_MS` values.
+A target build refuses to enable the feature without those declarations, and
+the task refuses to accept a configuration whose deadlines are incompatible
+with the selected schedule.
 
 The producer must build the input object locally and call the evaluator once.
 The high-priority safety supervisor remains the sole normal owner of `BMS_OK`.
 No ISR should directly assert `BMS_OK`; EXTI may only timestamp/wake and may
 force an already-authorized output low through the existing panic-safe path.
+
+## Host verification included in this package
+
+The host suite compiles `air_monitor.c` as a separate translation unit and
+checks:
+
+- all 16 edges in the Off/Precharge/Run/Shutdown transition matrix;
+- boot-open proof, closing/opening asymmetry and explicit Shutdown -> Off re-arm;
+- current-snapshot precharge proof at the Run transition;
+- exact deadline and freshness boundaries, stale/invalid inputs and tick wrap;
+- bounded cross-sample timestamp skew so individually fresh but mixed-age data
+  cannot authorize a transition;
+- welded, failed-close, line-supervision, disagreement, voltage and precharge
+  timeout faults plus controlled-clear restrictions;
+- publication freeze, inconsistent snapshot/mask rejection and fail-closed
+  feature enablement;
+- deterministic randomized invariants, extended stress, sanitizers and static
+  analysis.
+
+These checks validate host-exercised logic only. They do not establish GPIO
+polarity, analog thresholds, real contactor timing, task jitter/stack margin or
+physical opening under fault; those remain target/HIL exit gates.
