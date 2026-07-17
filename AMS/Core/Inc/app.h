@@ -20,6 +20,7 @@
 #include "ext_drivers/current_fault.h"
 #include "ext_drivers/voltage_fault.h"
 #include "ext_drivers/temperature_fault.h"
+#include "ext_drivers/air_monitor.h"
 #include "ext_drivers/ams_safety.h"
 
 #define VER_MAJOR 0
@@ -65,6 +66,52 @@
 #define AMS_ENABLE_IMD 0
 #endif
 
+/*
+ * Future AIR+/AIR-/precharge auxiliary-contact supervision.  The current PCB
+ * only provides AIR_CONTROL_MCU, which senses voltage on the common control net
+ * and is not physical contactor feedback.  Keep this gate disabled until the
+ * protected auxiliary inputs, pin mappings, polarities, line supervision and
+ * manufacturer timing limits have been reviewed and physically validated.
+ *
+ * Enabling this flag before one board adapter supplies fresh classified inputs
+ * to ams_air_monitor_step() is deliberately fail-closed: BMS_OK remains low.
+ * The target profile must also supply reviewed ams_air_monitor_config_t values;
+ * there are intentionally no generic timing or voltage defaults.
+ */
+#ifndef AMS_ENABLE_AIR_AUX_FEEDBACK
+#define AMS_ENABLE_AIR_AUX_FEEDBACK 0
+#endif
+
+/* A target build must explicitly assert that the board adapter, schematic,
+ * pin polarity and monitor period have been reviewed. Host/SIL builds may
+ * enable the logic gate without claiming that physical inputs exist. */
+#ifndef AMS_AIR_AUX_BOARD_ADAPTER_READY
+#define AMS_AIR_AUX_BOARD_ADAPTER_READY 0
+#endif
+
+#ifndef AMS_AIR_MONITOR_PERIOD_MS
+#define AMS_AIR_MONITOR_PERIOD_MS 0u
+#endif
+
+#ifndef AMS_AIR_MONITOR_PUBLICATION_TIMEOUT_MS
+#define AMS_AIR_MONITOR_PUBLICATION_TIMEOUT_MS 0u
+#endif
+
+#if AMS_ENABLE_AIR_AUX_FEEDBACK && !defined(AMS_HOST_TEST)
+#if !AMS_AIR_AUX_BOARD_ADAPTER_READY
+#error "AIR auxiliary feedback requires a reviewed board adapter"
+#endif
+#if AMS_AIR_MONITOR_PERIOD_MS == 0u
+#error "AIR auxiliary feedback requires a reviewed nonzero monitor period"
+#endif
+#if AMS_AIR_MONITOR_PUBLICATION_TIMEOUT_MS < AMS_AIR_MONITOR_PERIOD_MS
+#error "AIR publication timeout must be at least one monitor period"
+#endif
+#if AMS_AIR_MONITOR_PUBLICATION_TIMEOUT_MS > 0x7FFFFFFFu
+#error "AIR publication timeout must be tick-wrap safe"
+#endif
+#endif
+
 #if AMS_HIL_REPLACE_ADBMS && !AMS_ENABLE_HIL_CAN
 #error "AMS_HIL_REPLACE_ADBMS requires AMS_ENABLE_HIL_CAN=1"
 #endif
@@ -73,7 +120,7 @@
 
 #define ERR_FREQ 20
 #define CLI_FREQ 20
-#define AIR_FREQ 2 // used to be 10
+#define AIR_FREQ 2 /* legacy control-sense path; future monitor uses its period macro */
 #define CURRENT_FREQ 50
 #define ADBMS_FREQ 1 // was 10, testing with 1
 #define IMD_FREQ 10
@@ -361,7 +408,10 @@ struct app_data_t
 	uint8_t voltage_max_delta_cell;
 	bool estimator_fault;
 
+	/* Legacy telemetry name: this is the conditioned AIR_CONTROL_MCU voltage
+	 * sense, not proof of AIR+, AIR- or precharge contact position. */
 	bool air_state;
+	ams_air_monitor_t air_monitor;
 	bool imd_ok;
 	bool imd_valid;
 	bool imd_fault;

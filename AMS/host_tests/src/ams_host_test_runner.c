@@ -607,6 +607,7 @@ uint16_t stm32f767z_adc_read(ADC_HandleTypeDef *hadc){ return stm32f767z_adc_rea
 #include "Core/Src/ext_drivers/voltage_fault.c"
 #include "Core/Src/ext_drivers/temperature_fault.c"
 #include "Core/Src/ext_drivers/imd.c"
+#include "Core/Src/ext_drivers/air_monitor.c"
 #include "Core/Src/ext_drivers/accumulator.c"
 #include "Core/Src/ext_drivers/ams_safety.c"
 #include "Core/Src/ext_drivers/ams_rtos_diag.c"
@@ -1696,6 +1697,531 @@ static void test_current_task_threshold_faults(void)
     CHECK(app.bms_state == false);
 }
 
+static ams_air_monitor_config_t air_test_config(void)
+{
+    ams_air_monitor_config_t config = {
+        .command_timeout_ms = 50u,
+        .contact_sample_timeout_ms = 25u,
+        .voltage_sample_timeout_ms = 25u,
+        .debounce_ms = 2u,
+        .pos_make_timeout_ms = 10u,
+        .pos_release_timeout_ms = 10u,
+        .neg_make_timeout_ms = 10u,
+        .neg_release_timeout_ms = 10u,
+        .precharge_make_timeout_ms = 10u,
+        .precharge_release_timeout_ms = 10u,
+        .precharge_max_ms = 40u,
+        .run_voltage_settle_ms = 5u,
+        .bus_discharge_timeout_ms = 5u,
+        .minimum_pack_voltage_mv = 100000u,
+        .open_bus_max_mv = 5000u,
+        .precharge_complete_min_permille = 850u,
+        .run_bus_min_permille = 850u,
+        .run_bus_max_permille = 1100u,
+        .require_precharge_aux = true,
+        .require_bus_voltage = true
+    };
+    return config;
+}
+
+static ams_air_monitor_inputs_t air_test_inputs(uint32_t now,
+                                                ams_air_phase_t phase,
+                                                ams_air_contact_state_t pos,
+                                                ams_air_contact_state_t neg,
+                                                ams_air_contact_state_t precharge,
+                                                uint32_t load_mv)
+{
+    ams_air_monitor_inputs_t inputs = {0};
+    inputs.now_tick = now;
+    inputs.command.valid = true;
+    inputs.command.phase = phase;
+    inputs.command.update_tick = now;
+    inputs.pos_aux.valid = true;
+    inputs.pos_aux.state = pos;
+    inputs.pos_aux.update_tick = now;
+    inputs.neg_aux.valid = true;
+    inputs.neg_aux.state = neg;
+    inputs.neg_aux.update_tick = now;
+    inputs.precharge_aux.valid = true;
+    inputs.precharge_aux.state = precharge;
+    inputs.precharge_aux.update_tick = now;
+    inputs.pack_voltage.valid = true;
+    inputs.pack_voltage.millivolts = 400000u;
+    inputs.pack_voltage.update_tick = now;
+    inputs.load_voltage.valid = true;
+    inputs.load_voltage.millivolts = load_mv;
+    inputs.load_voltage.update_tick = now;
+    return inputs;
+}
+
+static void air_test_refresh(ams_air_monitor_inputs_t *inputs, uint32_t now)
+{
+    CHECK(inputs != NULL);
+    inputs->now_tick = now;
+    inputs->command.update_tick = now;
+    inputs->pos_aux.update_tick = now;
+    inputs->neg_aux.update_tick = now;
+    inputs->precharge_aux.update_tick = now;
+    inputs->pack_voltage.update_tick = now;
+    inputs->load_voltage.update_tick = now;
+}
+
+static void test_air_feedback_scaffold(void)
+{
+    ams_air_monitor_t monitor;
+    ams_air_monitor_config_t config = air_test_config();
+    ams_air_monitor_inputs_t inputs;
+
+    memset(&monitor, 0xA5, sizeof(monitor));
+    ams_air_monitor_init(&monitor, false);
+    CHECK(monitor.feature_enabled == false);
+    CHECK(monitor.feedback_valid == false);
+    CHECK(monitor.fault == false);
+    CHECK(monitor.reason == AMS_AIR_FAULT_FEATURE_DISABLED);
+    CHECK(!ams_air_monitor_ready(&monitor));
+
+    ams_air_monitor_init(&monitor, true);
+    CHECK(monitor.feature_enabled == true);
+    CHECK(monitor.feedback_valid == false);
+    CHECK(monitor.fault == true);
+    CHECK(monitor.reason == AMS_AIR_FAULT_WAITING_FOR_INPUTS);
+    CHECK(!ams_air_monitor_ready(&monitor));
+
+    CHECK(ams_air_monitor_config_valid(&config));
+    CHECK(!ams_air_monitor_config_valid(NULL));
+    config.command_timeout_ms = 0u;
+    CHECK(!ams_air_monitor_config_valid(&config));
+
+    /* A GPIO-only two-contactor revision is representable without fabricating
+     * precharge-AUX or voltage samples. Precharge duration remains mandatory. */
+    config = air_test_config();
+    config.require_precharge_aux = false;
+    config.require_bus_voltage = false;
+    config.precharge_make_timeout_ms = 0u;
+    config.precharge_release_timeout_ms = 0u;
+    config.voltage_sample_timeout_ms = 0u;
+    config.run_voltage_settle_ms = 0u;
+    config.bus_discharge_timeout_ms = 0u;
+    config.minimum_pack_voltage_mv = 0u;
+    config.open_bus_max_mv = 0u;
+    config.precharge_complete_min_permille = 0u;
+    config.run_bus_min_permille = 0u;
+    config.run_bus_max_permille = 0u;
+    CHECK(ams_air_monitor_config_valid(&config));
+
+    inputs = air_test_inputs(100u,
+                             AMS_AIR_PHASE_OFF,
+                             AMS_AIR_CONTACT_OPEN,
+                             AMS_AIR_CONTACT_OPEN,
+                             AMS_AIR_CONTACT_OPEN,
+                             0u);
+    ams_air_monitor_step(&monitor, &config, &inputs);
+    air_test_refresh(&inputs, 102u);
+    ams_air_monitor_step(&monitor, &config, &inputs);
+    CHECK(monitor.feedback_valid == true);
+    CHECK(monitor.boot_open_verified == true);
+    CHECK(ams_air_monitor_ready(&monitor));
+
+    config.command_timeout_ms = 0u;
+    ams_air_monitor_step(&monitor, &config, &inputs);
+    CHECK(monitor.fault == true);
+    CHECK(monitor.reason == AMS_AIR_FAULT_CONFIG_INVALID);
+    CHECK(!ams_air_monitor_ready(&monitor));
+    CHECK(strcmp(ams_air_phase_str(AMS_AIR_PHASE_PRECHARGE), "precharge") == 0);
+    CHECK(strcmp(ams_air_contact_state_str(AMS_AIR_CONTACT_LINE_FAULT), "line_fault") == 0);
+    CHECK(strcmp(ams_air_fault_reason_str(AMS_AIR_FAULT_POS_WELDED), "air_pos_welded") == 0);
+    CHECK(!ams_air_monitor_ready(NULL));
+    ams_air_monitor_init(NULL, true);
+    ams_air_monitor_step(NULL, NULL, NULL);
+    CHECK(!ams_air_monitor_request_clear(NULL, NULL, NULL));
+}
+
+static void test_air_monitor_nominal_sequence_and_weld_clear(void)
+{
+    ams_air_monitor_t monitor;
+    ams_air_monitor_config_t config = air_test_config();
+    ams_air_monitor_inputs_t inputs = air_test_inputs(100u,
+                                                      AMS_AIR_PHASE_OFF,
+                                                      AMS_AIR_CONTACT_OPEN,
+                                                      AMS_AIR_CONTACT_OPEN,
+                                                      AMS_AIR_CONTACT_OPEN,
+                                                      0u);
+
+    ams_air_monitor_init(&monitor, true);
+    ams_air_monitor_step(&monitor, &config, &inputs);
+    CHECK(monitor.transition_pending == true);
+    CHECK(monitor.permit == false);
+    CHECK(monitor.boot_open_verified == false);
+
+    air_test_refresh(&inputs, 102u);
+    ams_air_monitor_step(&monitor, &config, &inputs);
+    CHECK(monitor.feedback_valid == true);
+    CHECK(monitor.transition_pending == true); /* bus-discharge proof pending */
+    CHECK(monitor.boot_open_verified == false);
+
+    air_test_refresh(&inputs, 105u);
+    ams_air_monitor_step(&monitor, &config, &inputs);
+    CHECK(monitor.steady_state_valid == true);
+    CHECK(monitor.boot_open_verified == true);
+    CHECK(ams_air_monitor_ready(&monitor));
+
+    inputs.command.phase = AMS_AIR_PHASE_PRECHARGE;
+    air_test_refresh(&inputs, 110u);
+    ams_air_monitor_step(&monitor, &config, &inputs);
+    CHECK(monitor.transition_pending == true);
+    CHECK(monitor.permit == true);
+    CHECK(monitor.fault == false);
+
+    inputs.neg_aux.state = AMS_AIR_CONTACT_CLOSED;
+    inputs.precharge_aux.state = AMS_AIR_CONTACT_CLOSED;
+    inputs.load_voltage.millivolts = 100000u;
+    air_test_refresh(&inputs, 111u);
+    ams_air_monitor_step(&monitor, &config, &inputs);
+    air_test_refresh(&inputs, 113u);
+    ams_air_monitor_step(&monitor, &config, &inputs);
+    CHECK(monitor.steady_state_valid == true);
+    CHECK(monitor.precharge_complete == false);
+    CHECK(ams_air_monitor_ready(&monitor));
+
+    inputs.load_voltage.millivolts = 360000u;
+    air_test_refresh(&inputs, 120u);
+    ams_air_monitor_step(&monitor, &config, &inputs);
+    CHECK(monitor.precharge_complete == true);
+    CHECK(ams_air_monitor_ready(&monitor));
+
+    inputs.command.phase = AMS_AIR_PHASE_RUN;
+    air_test_refresh(&inputs, 121u);
+    ams_air_monitor_step(&monitor, &config, &inputs);
+    CHECK(monitor.transition_pending == true);
+    CHECK(monitor.permit == true);
+
+    inputs.pos_aux.state = AMS_AIR_CONTACT_CLOSED;
+    inputs.precharge_aux.state = AMS_AIR_CONTACT_OPEN;
+    air_test_refresh(&inputs, 122u);
+    ams_air_monitor_step(&monitor, &config, &inputs);
+    air_test_refresh(&inputs, 124u);
+    ams_air_monitor_step(&monitor, &config, &inputs);
+    CHECK(monitor.transition_pending == true); /* RUN voltage settle time */
+    CHECK(monitor.permit == true);
+    air_test_refresh(&inputs, 126u);
+    ams_air_monitor_step(&monitor, &config, &inputs);
+    CHECK(monitor.steady_state_valid == true);
+    CHECK(monitor.bus_plausible == true);
+    CHECK(ams_air_monitor_ready(&monitor));
+
+    /* A shutdown transition does not fault while the manufacturer-qualified
+     * release interval is still open. */
+    inputs.command.phase = AMS_AIR_PHASE_SHUTDOWN;
+    inputs.load_voltage.millivolts = 0u;
+    air_test_refresh(&inputs, 130u);
+    ams_air_monitor_step(&monitor, &config, &inputs);
+    air_test_refresh(&inputs, 139u);
+    ams_air_monitor_step(&monitor, &config, &inputs);
+    CHECK(monitor.fault == false);
+    CHECK(monitor.transition_pending == true);
+    CHECK(monitor.permit == false);
+    CHECK(!ams_air_monitor_ready(&monitor));
+
+    air_test_refresh(&inputs, 140u);
+    ams_air_monitor_step(&monitor, &config, &inputs);
+    CHECK(monitor.fault == true);
+    CHECK(monitor.fault_latched == true);
+    CHECK((monitor.latched_fault_mask & AMS_AIR_FAULT_BIT_POS_CONTACT) != 0u);
+    CHECK((monitor.latched_fault_mask & AMS_AIR_FAULT_BIT_NEG_CONTACT) != 0u);
+    CHECK(monitor.reason == AMS_AIR_FAULT_POS_WELDED);
+    CHECK(!ams_air_monitor_ready(&monitor));
+
+    /* Latches cannot be cleared while either contact remains closed. */
+    CHECK(!ams_air_monitor_request_clear(&monitor, &config, &inputs));
+
+    inputs.pos_aux.state = AMS_AIR_CONTACT_OPEN;
+    inputs.neg_aux.state = AMS_AIR_CONTACT_OPEN;
+    inputs.load_voltage.millivolts = 200000u;
+    air_test_refresh(&inputs, 141u);
+    ams_air_monitor_step(&monitor, &config, &inputs);
+    air_test_refresh(&inputs, 143u);
+    ams_air_monitor_step(&monitor, &config, &inputs);
+    CHECK((monitor.active_fault_mask & AMS_AIR_FAULT_BIT_BUS_VOLTAGE) != 0u);
+    CHECK(!ams_air_monitor_request_clear(&monitor, &config, &inputs));
+
+    inputs.load_voltage.millivolts = 0u;
+    air_test_refresh(&inputs, 144u);
+    ams_air_monitor_step(&monitor, &config, &inputs);
+    CHECK(monitor.active_fault_mask == 0u);
+    CHECK(monitor.fault_latched == true);
+    CHECK(ams_air_monitor_request_clear(&monitor, &config, &inputs));
+    CHECK(monitor.fault == false);
+    CHECK(monitor.fault_latched == false);
+    CHECK(monitor.latched_fault_mask == 0u);
+    CHECK(ams_air_monitor_ready(&monitor));
+}
+
+static void test_air_monitor_faults_freshness_and_tick_wrap(void)
+{
+    ams_air_monitor_t monitor;
+    ams_air_monitor_config_t config = air_test_config();
+    ams_air_monitor_inputs_t inputs = air_test_inputs(10u,
+                                                      AMS_AIR_PHASE_RUN,
+                                                      AMS_AIR_CONTACT_CLOSED,
+                                                      AMS_AIR_CONTACT_CLOSED,
+                                                      AMS_AIR_CONTACT_OPEN,
+                                                      400000u);
+
+    /* A reboot into RUN cannot trust already-closed contacts. A verified
+     * all-open state is mandatory before the close sequence is authorized. */
+    ams_air_monitor_init(&monitor, true);
+    ams_air_monitor_step(&monitor, &config, &inputs);
+    air_test_refresh(&inputs, 12u);
+    ams_air_monitor_step(&monitor, &config, &inputs);
+    CHECK(monitor.reason == AMS_AIR_FAULT_BOOT_OPEN_NOT_VERIFIED);
+    CHECK((monitor.active_fault_mask & AMS_AIR_FAULT_BIT_BOOT_OPEN) != 0u);
+    CHECK(!ams_air_monitor_ready(&monitor));
+
+    /* Stale command and contact samples are immediate, recoverable inhibits. */
+    inputs.command.phase = AMS_AIR_PHASE_OFF;
+    inputs.pos_aux.state = AMS_AIR_CONTACT_OPEN;
+    inputs.neg_aux.state = AMS_AIR_CONTACT_OPEN;
+    inputs.load_voltage.millivolts = 0u;
+    air_test_refresh(&inputs, 20u);
+    ams_air_monitor_step(&monitor, &config, &inputs);
+    air_test_refresh(&inputs, 22u);
+    ams_air_monitor_step(&monitor, &config, &inputs);
+    air_test_refresh(&inputs, 25u);
+    ams_air_monitor_step(&monitor, &config, &inputs);
+    CHECK(monitor.boot_open_verified == true);
+
+    inputs.now_tick = 76u;
+    ams_air_monitor_step(&monitor, &config, &inputs);
+    CHECK(monitor.reason == AMS_AIR_FAULT_COMMAND_STALE);
+    CHECK(monitor.fault_latched == false);
+
+    air_test_refresh(&inputs, 77u);
+    inputs.pos_aux.update_tick = 51u;
+    ams_air_monitor_step(&monitor, &config, &inputs);
+    CHECK(monitor.reason == AMS_AIR_FAULT_INPUT_STALE);
+    CHECK(monitor.fault_latched == false);
+
+    air_test_refresh(&inputs, 78u);
+    ams_air_monitor_step(&monitor, &config, &inputs);
+    CHECK(ams_air_monitor_ready(&monitor));
+
+    inputs.now_tick = 79u;
+    inputs.command.update_tick = 79u;
+    inputs.pos_aux.update_tick = 79u;
+    inputs.neg_aux.update_tick = 79u;
+    inputs.precharge_aux.update_tick = 79u;
+    inputs.pack_voltage.update_tick = 53u;
+    inputs.load_voltage.update_tick = 79u;
+    ams_air_monitor_step(&monitor, &config, &inputs);
+    CHECK(monitor.reason == AMS_AIR_FAULT_VOLTAGE_STALE);
+    CHECK(monitor.fault_latched == false);
+
+    air_test_refresh(&inputs, 79u);
+    ams_air_monitor_step(&monitor, &config, &inputs);
+    CHECK(ams_air_monitor_ready(&monitor));
+
+    /* A direct OFF -> RUN command bypasses precharge and is latched. */
+    inputs.command.phase = AMS_AIR_PHASE_RUN;
+    air_test_refresh(&inputs, 80u);
+    ams_air_monitor_step(&monitor, &config, &inputs);
+    CHECK(monitor.reason == AMS_AIR_FAULT_INVALID_TRANSITION);
+    CHECK((monitor.latched_fault_mask & AMS_AIR_FAULT_BIT_TRANSITION) != 0u);
+
+    /* Return to a proven all-open state before an explicit clear. */
+    inputs.command.phase = AMS_AIR_PHASE_OFF;
+    air_test_refresh(&inputs, 81u);
+    ams_air_monitor_step(&monitor, &config, &inputs);
+    air_test_refresh(&inputs, 86u);
+    ams_air_monitor_step(&monitor, &config, &inputs);
+    CHECK(ams_air_monitor_request_clear(&monitor, &config, &inputs));
+
+    /* Missing close feedback after the configured deadline is latched. */
+    inputs.command.phase = AMS_AIR_PHASE_PRECHARGE;
+    air_test_refresh(&inputs, 90u);
+    ams_air_monitor_step(&monitor, &config, &inputs);
+    air_test_refresh(&inputs, 100u);
+    ams_air_monitor_step(&monitor, &config, &inputs);
+    CHECK((monitor.latched_fault_mask & AMS_AIR_FAULT_BIT_NEG_CONTACT) != 0u);
+    CHECK((monitor.latched_fault_mask & AMS_AIR_FAULT_BIT_PRECHARGE_CONTACT) != 0u);
+
+    /* RUN cannot bypass completion of the preceding steady Precharge state. */
+    ams_air_monitor_init(&monitor, true);
+    inputs = air_test_inputs(110u,
+                             AMS_AIR_PHASE_OFF,
+                             AMS_AIR_CONTACT_OPEN,
+                             AMS_AIR_CONTACT_OPEN,
+                             AMS_AIR_CONTACT_OPEN,
+                             0u);
+    ams_air_monitor_step(&monitor, &config, &inputs);
+    air_test_refresh(&inputs, 112u);
+    ams_air_monitor_step(&monitor, &config, &inputs);
+    air_test_refresh(&inputs, 115u);
+    ams_air_monitor_step(&monitor, &config, &inputs);
+    inputs.command.phase = AMS_AIR_PHASE_PRECHARGE;
+    inputs.neg_aux.state = AMS_AIR_CONTACT_CLOSED;
+    inputs.precharge_aux.state = AMS_AIR_CONTACT_CLOSED;
+    inputs.load_voltage.millivolts = 100000u;
+    air_test_refresh(&inputs, 120u);
+    ams_air_monitor_step(&monitor, &config, &inputs);
+    air_test_refresh(&inputs, 122u);
+    ams_air_monitor_step(&monitor, &config, &inputs);
+    CHECK(monitor.steady_state_valid == true);
+    CHECK(monitor.precharge_complete == false);
+    inputs.command.phase = AMS_AIR_PHASE_RUN;
+    air_test_refresh(&inputs, 123u);
+    ams_air_monitor_step(&monitor, &config, &inputs);
+    CHECK(monitor.reason == AMS_AIR_FAULT_PRECHARGE_INCOMPLETE);
+    CHECK((monitor.latched_fault_mask & AMS_AIR_FAULT_BIT_TRANSITION) != 0u);
+    CHECK(!ams_air_monitor_ready(&monitor));
+
+    /* A supervised line fault has its own persistent diagnostic. */
+    ams_air_monitor_init(&monitor, true);
+    inputs = air_test_inputs(200u,
+                             AMS_AIR_PHASE_OFF,
+                             AMS_AIR_CONTACT_LINE_FAULT,
+                             AMS_AIR_CONTACT_OPEN,
+                             AMS_AIR_CONTACT_OPEN,
+                             0u);
+    ams_air_monitor_step(&monitor, &config, &inputs);
+    air_test_refresh(&inputs, 202u);
+    ams_air_monitor_step(&monitor, &config, &inputs);
+    CHECK(monitor.reason == AMS_AIR_FAULT_LINE_SUPERVISION);
+    CHECK((monitor.latched_fault_mask & AMS_AIR_FAULT_BIT_LINE_SUPERVISION) != 0u);
+
+    /* Unsafely high load-side voltage after the discharge deadline is latched
+     * even when every auxiliary contact reports open. */
+    ams_air_monitor_init(&monitor, true);
+    inputs = air_test_inputs(300u,
+                             AMS_AIR_PHASE_OFF,
+                             AMS_AIR_CONTACT_OPEN,
+                             AMS_AIR_CONTACT_OPEN,
+                             AMS_AIR_CONTACT_OPEN,
+                             200000u);
+    ams_air_monitor_step(&monitor, &config, &inputs);
+    air_test_refresh(&inputs, 302u);
+    ams_air_monitor_step(&monitor, &config, &inputs);
+    air_test_refresh(&inputs, 305u);
+    ams_air_monitor_step(&monitor, &config, &inputs);
+    CHECK(monitor.reason == AMS_AIR_FAULT_BUS_VOLTAGE_PLAUSIBILITY);
+    CHECK((monitor.latched_fault_mask & AMS_AIR_FAULT_BIT_BUS_VOLTAGE) != 0u);
+
+    /* Remaining in PRECHARGE beyond the reviewed maximum is a latched
+     * sequencing fault even if the bus has reached the completion ratio. */
+    ams_air_monitor_init(&monitor, true);
+    inputs = air_test_inputs(400u,
+                             AMS_AIR_PHASE_OFF,
+                             AMS_AIR_CONTACT_OPEN,
+                             AMS_AIR_CONTACT_OPEN,
+                             AMS_AIR_CONTACT_OPEN,
+                             0u);
+    ams_air_monitor_step(&monitor, &config, &inputs);
+    air_test_refresh(&inputs, 402u);
+    ams_air_monitor_step(&monitor, &config, &inputs);
+    air_test_refresh(&inputs, 405u);
+    ams_air_monitor_step(&monitor, &config, &inputs);
+    CHECK(monitor.boot_open_verified == true);
+    inputs.command.phase = AMS_AIR_PHASE_PRECHARGE;
+    inputs.neg_aux.state = AMS_AIR_CONTACT_CLOSED;
+    inputs.precharge_aux.state = AMS_AIR_CONTACT_CLOSED;
+    inputs.load_voltage.millivolts = 360000u;
+    air_test_refresh(&inputs, 410u);
+    ams_air_monitor_step(&monitor, &config, &inputs);
+    air_test_refresh(&inputs, 412u);
+    ams_air_monitor_step(&monitor, &config, &inputs);
+    CHECK(monitor.precharge_complete == true);
+    air_test_refresh(&inputs, 449u);
+    ams_air_monitor_step(&monitor, &config, &inputs);
+    CHECK(monitor.fault == false);
+    air_test_refresh(&inputs, 450u);
+    ams_air_monitor_step(&monitor, &config, &inputs);
+    CHECK(monitor.reason == AMS_AIR_FAULT_PRECHARGE_TIMEOUT);
+    CHECK((monitor.latched_fault_mask & AMS_AIR_FAULT_BIT_PRECHARGE_TIMEOUT) != 0u);
+
+    /* All ages and deadlines use unsigned subtraction and survive tick wrap. */
+    ams_air_monitor_init(&monitor, true);
+    inputs = air_test_inputs(UINT32_MAX - 2u,
+                             AMS_AIR_PHASE_OFF,
+                             AMS_AIR_CONTACT_OPEN,
+                             AMS_AIR_CONTACT_OPEN,
+                             AMS_AIR_CONTACT_OPEN,
+                             0u);
+    ams_air_monitor_step(&monitor, &config, &inputs);
+    air_test_refresh(&inputs, 0u);
+    ams_air_monitor_step(&monitor, &config, &inputs);
+    CHECK(monitor.feedback_valid == true);
+    CHECK(monitor.boot_open_verified == false);
+    air_test_refresh(&inputs, 2u);
+    ams_air_monitor_step(&monitor, &config, &inputs);
+    CHECK(monitor.boot_open_verified == true);
+    CHECK(ams_air_monitor_ready(&monitor));
+}
+
+static uint32_t air_test_rng_next(uint32_t *state)
+{
+    *state = (*state * 1664525u) + 1013904223u;
+    return *state;
+}
+
+static void test_air_monitor_seeded_invariants(void)
+{
+    ams_air_monitor_t monitor;
+    ams_air_monitor_config_t config = air_test_config();
+    ams_air_monitor_inputs_t inputs = air_test_inputs(0u,
+                                                      AMS_AIR_PHASE_OFF,
+                                                      AMS_AIR_CONTACT_OPEN,
+                                                      AMS_AIR_CONTACT_OPEN,
+                                                      AMS_AIR_CONTACT_OPEN,
+                                                      0u);
+    uint32_t rng = 0xA17C0DEu;
+
+    ams_air_monitor_init(&monitor, true);
+    for(unsigned int cycle = 0u; cycle < 10000u; cycle++)
+    {
+        uint32_t r = air_test_rng_next(&rng);
+        inputs.now_tick += (r & 0x0Fu);
+        inputs.command.valid = ((r & (1u << 4)) == 0u);
+        inputs.command.phase = (ams_air_phase_t)((r >> 5) % 6u);
+        inputs.pos_aux.valid = ((r & (1u << 8)) == 0u);
+        inputs.neg_aux.valid = ((r & (1u << 9)) == 0u);
+        inputs.precharge_aux.valid = ((r & (1u << 10)) == 0u);
+        inputs.pos_aux.state = (ams_air_contact_state_t)((r >> 11) % 5u);
+        inputs.neg_aux.state = (ams_air_contact_state_t)((r >> 14) % 5u);
+        inputs.precharge_aux.state = (ams_air_contact_state_t)((r >> 17) % 5u);
+        inputs.pack_voltage.valid = ((r & (1u << 20)) == 0u);
+        inputs.load_voltage.valid = ((r & (1u << 21)) == 0u);
+        inputs.pack_voltage.millivolts = 300000u + (r % 150001u);
+        inputs.load_voltage.millivolts = (r >> 3) % 500001u;
+
+        inputs.command.update_tick = inputs.now_tick - ((r >> 22) & 0x3Fu);
+        inputs.pos_aux.update_tick = inputs.now_tick - ((r >> 12) & 0x1Fu);
+        inputs.neg_aux.update_tick = inputs.now_tick - ((r >> 15) & 0x1Fu);
+        inputs.precharge_aux.update_tick = inputs.now_tick - ((r >> 18) & 0x1Fu);
+        inputs.pack_voltage.update_tick = inputs.now_tick - ((r >> 7) & 0x1Fu);
+        inputs.load_voltage.update_tick = inputs.now_tick - ((r >> 2) & 0x1Fu);
+
+        ams_air_monitor_step(&monitor, &config, &inputs);
+
+        CHECK(monitor.fault_latched == (monitor.latched_fault_mask != 0u));
+        CHECK(monitor.fault == ((monitor.active_fault_mask != 0u) ||
+                                (monitor.latched_fault_mask != 0u)));
+        CHECK(!monitor.permit || !monitor.fault);
+        CHECK(ams_air_monitor_ready(&monitor) ==
+              (monitor.feature_enabled &&
+               monitor.configuration_valid &&
+               monitor.command_valid &&
+               monitor.feedback_valid &&
+               monitor.permit &&
+               !monitor.fault &&
+               !monitor.fault_latched));
+        CHECK(!monitor.precharge_complete ||
+              (monitor.phase == AMS_AIR_PHASE_PRECHARGE));
+        CHECK(!monitor.feedback_valid ||
+              (monitor.pos_filter.debounced_valid &&
+               monitor.neg_filter.debounced_valid &&
+               monitor.precharge_filter.debounced_valid));
+    }
+}
+
 static void test_fan_current_and_null_guards(void){
     fan_t fan={0}; uint32_t ccr=999; static TIM_HandleTypeDef htim; CHECK(fan_init(NULL,NULL,NULL,0,NULL,1) != 0); CHECK(fan_init(&fan,NULL,&htim,1000,&ccr,1)==0); CHECK(ccr==0u); CHECK(set_fan_percent(&fan,120.0f)==0 && ccr==1000u && fabsf(fan.duty_cycle-100.0f)<0.01f); CHECK(set_fan_percent(&fan,-10.0f)==0 && ccr==0u && fabsf(fan.duty_cycle)<0.01f);
     CHECK(current_sensor_convert(NULL) == 0.0f);
@@ -1900,6 +2426,8 @@ static void test_safety_panic_reset_watchdog_and_log(void)
     ams_fault_log_event(AMS_FAULT_LOG_CAN_RECOVERED, 4u, 5u, 6u);
     CHECK(snapshot.count == 1u);
     CHECK(ams_fault_log_get()->count == 2u);
+    CHECK(strcmp(ams_fault_log_event_str(AMS_FAULT_LOG_AIR_FAULT_LATCH),
+                 "AIR_FAULT_LATCH") == 0);
     CHECK(!ams_fault_log_snapshot(NULL));
 }
 
@@ -6406,6 +6934,10 @@ static void test_production_safety_gates(void)
 
     CHECK(AMS_ENABLE_HIL_CAN == 0);
     CHECK(AMS_ENABLE_SERVICE_CLI == 0);
+    CHECK(AMS_ENABLE_AIR_AUX_FEEDBACK == 0);
+    CHECK(AMS_AIR_AUX_BOARD_ADAPTER_READY == 0);
+    CHECK(AMS_AIR_MONITOR_PERIOD_MS == 0u);
+    CHECK(AMS_AIR_MONITOR_PUBLICATION_TIMEOUT_MS == 0u);
 
     /* Production CAN builds must record the frame for diagnostics without
      * allowing HIL IDs to overwrite authoritative accumulator measurements. */
@@ -6508,11 +7040,100 @@ static void test_production_safety_gates(void)
 }
 #endif
 
+#if AMS_HOST_AIR_FEEDBACK_GATE_TEST
+static void test_air_feedback_future_gate_is_fail_closed(void)
+{
+    init_fake_app();
+    sil_make_measurement_gates_ready(&app);
+    sil_mark_all_heartbeats_alive(&app);
+    ams_air_monitor_init(&app.air_monitor, true);
+    app.bms_state = true;
+    bms_pin_state = GPIO_PIN_SET;
+
+    /* Enabling the future gate without a published feedback snapshot cannot
+     * accidentally inherit the old AIR_CONTROL_MCU signal as "healthy". */
+    error_task_update(&app, fake_tick);
+    CHECK(app.air_state == true);
+    CHECK(app.air_monitor.feedback_valid == false);
+    CHECK(app.air_monitor.reason == AMS_AIR_FAULT_WAITING_FOR_INPUTS);
+    CHECK(app.hard_fault == true);
+    CHECK(app.bms_supervisor_ready == false);
+    CHECK(app.bms_state == false);
+    CHECK(bms_pin_state == GPIO_PIN_RESET);
+
+    /* Synthetic future steady-state snapshot: AIR- and AIR+ closed, precharge
+     * open. This only proves the software gate contract; no pin/timing values
+     * are claimed by this host test. */
+    app.air_monitor.configuration_valid = true;
+    app.air_monitor.command_valid = true;
+    app.air_monitor.feedback_valid = true;
+    app.air_monitor.steady_state_valid = true;
+    app.air_monitor.boot_open_verified = true;
+    app.air_monitor.permit = true;
+    app.air_monitor.fault = false;
+    app.air_monitor.fault_latched = false;
+    app.air_monitor.phase = AMS_AIR_PHASE_RUN;
+    app.air_monitor.pos_aux = AMS_AIR_CONTACT_CLOSED;
+    app.air_monitor.neg_aux = AMS_AIR_CONTACT_CLOSED;
+    app.air_monitor.precharge_aux = AMS_AIR_CONTACT_OPEN;
+    app.air_monitor.reason = AMS_AIR_FAULT_NONE;
+    app.air_monitor.last_update_tick = fake_tick;
+    error_task_update(&app, fake_tick);
+    CHECK(app.hard_fault == false);
+    CHECK(app.bms_supervisor_ready == true);
+    CHECK(app.bms_state == true);
+    CHECK(bms_pin_state == GPIO_PIN_SET);
+
+    /* The supervisor independently ages the publication itself. A frozen AIR
+     * task cannot leave its last healthy snapshot authoritative forever. */
+    fake_tick += AMS_AIR_MONITOR_PUBLICATION_TIMEOUT_MS + 1u;
+    error_task_update(&app, fake_tick);
+    CHECK(app.hard_fault == true);
+    CHECK(app.bms_supervisor_ready == false);
+    CHECK(app.bms_state == false);
+    app.air_monitor.last_update_tick = fake_tick;
+    error_task_update(&app, fake_tick);
+    CHECK(app.hard_fault == false);
+    CHECK(app.bms_supervisor_ready == true);
+    CHECK(app.bms_state == true);
+
+    /* A validated closing transition may retain permission while the contact
+     * moves inside its deadline; it is not yet a fault. */
+    app.air_monitor.steady_state_valid = false;
+    app.air_monitor.transition_pending = true;
+    app.air_monitor.reason = AMS_AIR_FAULT_TRANSITION_PENDING;
+    error_task_update(&app, fake_tick);
+    CHECK(app.hard_fault == false);
+    CHECK(app.bms_supervisor_ready == true);
+    CHECK(app.bms_state == true);
+
+    /* Opening transitions deliberately do not retain that permission. */
+    app.air_monitor.permit = false;
+    error_task_update(&app, fake_tick);
+    CHECK(app.hard_fault == false);
+    CHECK(app.bms_supervisor_ready == false);
+    CHECK(app.bms_state == false);
+
+    app.air_monitor.fault = true;
+    app.air_monitor.fault_latched = true;
+    app.air_monitor.reason = AMS_AIR_FAULT_POS_WELDED;
+    error_task_update(&app, fake_tick);
+    CHECK(app.hard_fault == true);
+    CHECK(app.bms_supervisor_ready == false);
+    CHECK(app.bms_state == false);
+    CHECK(bms_pin_state == GPIO_PIN_RESET);
+}
+#endif
+
 int main(void){
 #if AMS_HOST_PRODUCTION_GATE_TEST
     test_production_safety_gates();
-    puts("PASS production HIL/service/IMD/supervisor gates");
+    puts("PASS production HIL/service/IMD/AIR/supervisor gates");
     puts("ALL PRODUCTION SAFETY GATE TESTS PASSED");
+    return 0;
+#elif AMS_HOST_AIR_FEEDBACK_GATE_TEST
+    test_air_feedback_future_gate_is_fail_closed();
+    puts("PASS future AIR auxiliary-feedback fail-closed gate");
     return 0;
 #elif AMS_HOST_ONLY_HIL_ADBMS_TEST
     test_hil_adbms_image_replaces_raw_reads(); puts("PASS HIL ADBMS image replacement");
@@ -6594,6 +7215,10 @@ int main(void){
     test_current_sensor_measurement_model(); puts("PASS current sensor measurement model");
     test_current_task_measurement_state(); puts("PASS current task measurement state");
     test_current_task_threshold_faults(); puts("PASS current task threshold faults");
+    test_air_feedback_scaffold(); puts("PASS AIR feedback disabled/fail-closed scaffold");
+    test_air_monitor_nominal_sequence_and_weld_clear(); puts("PASS AIR monitor nominal sequence/weld clear");
+    test_air_monitor_faults_freshness_and_tick_wrap(); puts("PASS AIR monitor fault/freshness/tick-wrap policy");
+    test_air_monitor_seeded_invariants(); puts("PASS AIR monitor seeded invariants");
     test_fan_current_and_null_guards(); puts("PASS fan/current/null guards");
     test_imd_capture_validation(); puts("PASS IMD capture validation");
     test_periods_and_driver_edge_cases(); puts("PASS periods and driver edge cases");

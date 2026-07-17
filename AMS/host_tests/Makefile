@@ -29,6 +29,9 @@ ESTIMATOR_SRC := \
 ADBMS2950_SRC := \
 	$(AMS_ROOT)/Core/Src/ext_drivers/adbms2950.c
 
+AIR_MONITOR_SRC := \
+	$(AMS_ROOT)/Core/Src/ext_drivers/air_monitor.c
+
 COMMON_DEFS := \
 	-DSTM32F767xx \
 	-DUSE_HAL_DRIVER \
@@ -63,7 +66,7 @@ WARN := \
 CFLAGS_COMMON := -std=c11 -g -O0 $(WARN) $(COMMON_DEFS) $(INC)
 LDLIBS := -lm
 
-.PHONY: help check-root compile unit test production-gates system-sil apm-sil bringup-test hil-adbms-test imd-test safety-test stress ci asan ubsan analyze clang-analyze clean list make-build-dir
+.PHONY: help check-root compile unit test production-gates system-sil apm-sil bringup-test hil-adbms-test imd-test air-feedback-stub-test safety-test stress ci asan ubsan analyze clang-analyze clean list make-build-dir
 
 help:
 	@echo "DER26 AMS host test harness"
@@ -77,6 +80,7 @@ help:
 	@echo "  make bringup-test  Run comprehensive tests with AMS_HW_BRINGUP=1"
 	@echo "  make hil-adbms-test Run focused CAN-fed ADBMS replacement tests"
 	@echo "  make imd-test       Run comprehensive tests with AMS_ENABLE_IMD=1"
+	@echo "  make air-feedback-stub-test Verify future AUX enablement starts and faults fail-closed"
 	@echo "  make safety-test    Run comprehensive tests with AMS_ENABLE_IWDG=1"
 	@echo "  make stress        Run comprehensive SIL with extended seeded fuzz cycles"
 	@echo "  make ci            Run unit, comprehensive, and analyzer targets"
@@ -107,7 +111,7 @@ compile: check-root make-build-dir
 	$(CC) $(CFLAGS_COMMON) $(SRC) -o $(BIN) $(LDLIBS)
 
 unit: check-root make-build-dir
-	$(CC) $(CFLAGS_COMMON) $(UNIT_SRC) $(ESTIMATOR_SRC) $(ADBMS2950_SRC) -o $(UNIT_BIN) $(LDLIBS)
+	$(CC) $(CFLAGS_COMMON) $(UNIT_SRC) $(ESTIMATOR_SRC) $(ADBMS2950_SRC) $(AIR_MONITOR_SRC) -o $(UNIT_BIN) $(LDLIBS)
 	$(UNIT_BIN)
 
 ci: unit test apm-sil production-gates analyze
@@ -136,7 +140,7 @@ system-sil: test
 apm-sil: check-root
 	@mkdir -p "$(BUILD_DIR)-apm"
 	$(CC) $(CFLAGS_COMMON) -DAMS_ENABLE_APM_2950=1 -DAMS_APM_ENABLE_HV_DIVIDERS=0 \
-		$(UNIT_SRC) $(ESTIMATOR_SRC) $(ADBMS2950_SRC) \
+		$(UNIT_SRC) $(ESTIMATOR_SRC) $(ADBMS2950_SRC) $(AIR_MONITOR_SRC) \
 		-o "$(BUILD_DIR)-apm/ams_apm_unit_tests" $(LDLIBS)
 	"$(BUILD_DIR)-apm/ams_apm_unit_tests"
 	$(CC) $(CFLAGS_COMMON) $(HOST_EXERCISE_DEFS) \
@@ -153,6 +157,14 @@ hil-adbms-test: test
 imd-test: CFLAGS_COMMON += -DAMS_ENABLE_IMD=1
 imd-test: test
 
+air-feedback-stub-test: CFLAGS_COMMON += -DAMS_ENABLE_AIR_AUX_FEEDBACK=1 -DAMS_HOST_AIR_FEEDBACK_GATE_TEST=1 -DAMS_AIR_MONITOR_PUBLICATION_TIMEOUT_MS=50u
+air-feedback-stub-test: compile
+	$(BIN)
+	$(CC) $(CFLAGS_COMMON) -Werror \
+		-DAMS_AIR_AUX_BOARD_ADAPTER_READY=1 -DAMS_AIR_MONITOR_PERIOD_MS=10u \
+		-fsyntax-only $(AMS_ROOT)/Core/Src/app.c \
+		$(AMS_ROOT)/Core/Src/tasks/air_task.c $(AIR_MONITOR_SRC)
+
 safety-test: CFLAGS_COMMON += -DAMS_ENABLE_IWDG=1
 safety-test: test
 
@@ -164,7 +176,7 @@ asan: CFLAGS_COMMON += $(HOST_EXERCISE_DEFS)
 asan: check-root
 	@mkdir -p "$(BUILD_DIR)"
 	$(CC) $(CFLAGS_COMMON) -fsanitize=address,undefined -fno-omit-frame-pointer \
-		$(UNIT_SRC) $(ESTIMATOR_SRC) $(ADBMS2950_SRC) -o $(UNIT_BIN)-asan $(LDLIBS)
+		$(UNIT_SRC) $(ESTIMATOR_SRC) $(ADBMS2950_SRC) $(AIR_MONITOR_SRC) -o $(UNIT_BIN)-asan $(LDLIBS)
 	ASAN_OPTIONS=detect_leaks=0 $(UNIT_BIN)-asan
 	$(CC) $(CFLAGS_COMMON) -fsanitize=address,undefined -fno-omit-frame-pointer $(SRC) -o $(BIN)-asan $(LDLIBS)
 	ASAN_OPTIONS=detect_leaks=0 $(BIN)-asan
@@ -173,7 +185,7 @@ ubsan: CFLAGS_COMMON += $(HOST_EXERCISE_DEFS)
 ubsan: check-root
 	@mkdir -p "$(BUILD_DIR)"
 	$(CC) $(CFLAGS_COMMON) -fsanitize=undefined -fno-omit-frame-pointer \
-		$(UNIT_SRC) $(ESTIMATOR_SRC) $(ADBMS2950_SRC) -o $(UNIT_BIN)-ubsan $(LDLIBS)
+		$(UNIT_SRC) $(ESTIMATOR_SRC) $(ADBMS2950_SRC) $(AIR_MONITOR_SRC) -o $(UNIT_BIN)-ubsan $(LDLIBS)
 	$(UNIT_BIN)-ubsan
 	$(CC) $(CFLAGS_COMMON) -fsanitize=undefined -fno-omit-frame-pointer $(SRC) -o $(BIN)-ubsan $(LDLIBS)
 	$(BIN)-ubsan
@@ -183,13 +195,13 @@ analyze: CFLAGS_COMMON += $(HOST_EXERCISE_DEFS)
 analyze: check-root
 	@mkdir -p "$(BUILD_DIR)"
 	$(CC) $(CFLAGS_COMMON) -fanalyzer -fsyntax-only $(SRC)
-	$(CC) $(CFLAGS_COMMON) -fanalyzer -fsyntax-only $(UNIT_SRC) $(ADBMS2950_SRC)
+	$(CC) $(CFLAGS_COMMON) -fanalyzer -fsyntax-only $(UNIT_SRC) $(ADBMS2950_SRC) $(AIR_MONITOR_SRC)
 
 clang-analyze: CFLAGS_COMMON += $(HOST_EXERCISE_DEFS)
 clang-analyze: check-root
 	@mkdir -p "$(BUILD_DIR)"
 	$(CLANG) $(CFLAGS_COMMON) --analyze $(SRC)
-	$(CLANG) $(CFLAGS_COMMON) --analyze $(UNIT_SRC) $(ADBMS2950_SRC)
+	$(CLANG) $(CFLAGS_COMMON) --analyze $(UNIT_SRC) $(ADBMS2950_SRC) $(AIR_MONITOR_SRC)
 
 list:
 	@grep -E '^static void test_' $(SRC) | sed -E 's/static void (test_[^(]+).*/\1/'

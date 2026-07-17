@@ -440,6 +440,11 @@ int get_status(int argc, char *argv[])
     int max_temp_whole;
     int max_temp_decimal;
     SPI_HandleTypeDef *hspi = data->acc.smb.hspi;
+    ams_air_monitor_t air_monitor;
+
+    taskENTER_CRITICAL();
+    air_monitor = data->air_monitor;
+    taskEXIT_CRITICAL();
 
     cli_fixed1(data->max_temp, &max_temp_whole, &max_temp_decimal);
 
@@ -471,6 +476,41 @@ int get_status(int argc, char *argv[])
              data->imd_ok,
              data->imd_fault,
              data->hard_fault);
+    ret |= cli_printline(cli, outline);
+
+    snprintf(outline, CLI_LINESZ,
+             "AIR control_sense:%d aux_feature:%d cfg:%d command:%d input:%d",
+             data->air_state,
+             AMS_ENABLE_AIR_AUX_FEEDBACK,
+             air_monitor.configuration_valid,
+             air_monitor.command_valid,
+             air_monitor.feedback_valid);
+    ret |= cli_printline(cli, outline);
+
+    snprintf(outline, CLI_LINESZ,
+             "AIR phase:%s permit:%d steady:%d pending:%d boot_open:%d",
+             ams_air_phase_str(air_monitor.phase),
+             air_monitor.permit,
+             air_monitor.steady_state_valid,
+             air_monitor.transition_pending,
+             air_monitor.boot_open_verified);
+    ret |= cli_printline(cli, outline);
+
+    snprintf(outline, CLI_LINESZ,
+             "AIR AUX pos:%s neg:%s precharge:%s precharge_done:%d",
+             ams_air_contact_state_str(air_monitor.pos_aux),
+             ams_air_contact_state_str(air_monitor.neg_aux),
+             ams_air_contact_state_str(air_monitor.precharge_aux),
+             air_monitor.precharge_complete);
+    ret |= cli_printline(cli, outline);
+
+    snprintf(outline, CLI_LINESZ,
+             "AIR fault:%d latched:%d reason:%s active:0x%04lX latched_mask:0x%04lX",
+             air_monitor.fault,
+             air_monitor.fault_latched,
+             ams_air_fault_reason_str(air_monitor.reason),
+             (unsigned long)air_monitor.active_fault_mask,
+             (unsigned long)air_monitor.latched_fault_mask);
     ret |= cli_printline(cli, outline);
 
     snprintf(outline, CLI_LINESZ,

@@ -21,6 +21,12 @@ Out of scope for this contract right now:
 The hardwired shutdown path remains the authority for safety items that are not yet owned
 by AMS firmware.
 
+`AIR_CONTROL_MCU` is currently command/control-voltage sense only. Any legacy/logger
+field named `AIR_STATE` carries that raw control-net indication; it does not prove AIR+,
+AIR- or precharge physical contact state. Future auxiliary-contact supervision is defined
+in `AIR_CONTACTOR_MONITORING.md` and must receive a versioned CAN assignment before the
+ECU consumes it as physical feedback.
+
 ## CAN format
 
 - CAN type: Standard 11-bit identifiers

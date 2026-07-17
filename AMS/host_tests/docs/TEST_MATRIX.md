@@ -66,6 +66,10 @@ Unit-only additions:
 | `test_current_sensor_requires_fresh_pair_and_channel_mapping` | Regression test for the stale-channel bug: conversion requires both ADC channels fresh and preserves C_SENSE_L=50A / C_SENSE_H=800A mapping. |
 | `test_current_sensor_read_adc_status_path` | Verifies checked ADC status propagation for normal reads, timeout/error reads, and null ADC handles. |
 | `test_current_fault_policy` | Verifies discharge debounce, precharge fast trip, persistent sensor-fault confirmation, and placeholder regen-unexpected warning policy. |
+| `test_air_feedback_scaffold` | Verifies the absent-hardware profile never reports auxiliary feedback healthy and that an enabled-but-uninitialized future monitor starts fail-closed. |
+| `test_air_monitor_nominal_sequence_and_weld_clear` | Exercises boot-open proof, the complete Off -> Precharge -> Run -> Shutdown sequence, authorized transition permission, voltage-settle checks, simultaneous welded AIR+/AIR- detection, persistent latching, and verified all-open controlled clear. |
+| `test_air_monitor_faults_freshness_and_tick_wrap` | Exercises boot into Run rejection, stale command/contact recovery, direct Off -> Run rejection, failed-close deadlines, line-supervision faults, open-state bus-voltage plausibility, multiple fault masks, and 32-bit tick rollover. |
+| `test_air_monitor_seeded_invariants` | Runs 10,000 deterministic malformed/stale/transition/contact/voltage combinations and proves permit, readiness, active-fault and latched-fault invariants remain internally consistent. |
 | `test_current_fault_threshold_edges_and_recovery` | Verifies warning-only recovery, fast-trip debounce/latch timing, latch reset behavior, charge overcurrent, and regen-disabled placeholder behavior. |
 | `test_voltage_fault_thresholds_latch_and_reset` | Verifies voltage threshold boundaries for OV warning, charge stop, hard/severe OV, soft/hard/severe UV, latched reasons, and cell location propagation. |
 | `test_voltage_fault_read_failure_precedence_and_strings` | Verifies not-ready, partial/stale/PEC read-fault precedence, strict full-fresh-scan validity, and voltage fault reason strings. |

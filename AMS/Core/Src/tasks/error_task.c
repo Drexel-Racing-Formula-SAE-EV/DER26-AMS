@@ -22,7 +22,49 @@
  */
 void error_task_fn(void *arg);
 
-static bool error_task_bms_ready(const app_data_t *data)
+static bool error_task_air_publication_fresh(const app_data_t *data,
+                                             uint32_t now)
+{
+#if AMS_ENABLE_AIR_AUX_FEEDBACK
+    return (data != NULL) &&
+           (AMS_AIR_MONITOR_PUBLICATION_TIMEOUT_MS > 0u) &&
+           ((uint32_t)(now - data->air_monitor.last_update_tick) <=
+            AMS_AIR_MONITOR_PUBLICATION_TIMEOUT_MS);
+#else
+    (void)data;
+    (void)now;
+    return true;
+#endif
+}
+
+static bool error_task_air_feedback_ready(const app_data_t *data,
+                                          uint32_t now)
+{
+#if AMS_ENABLE_AIR_AUX_FEEDBACK
+    return error_task_air_publication_fresh(data, now) &&
+           ams_air_monitor_ready(&data->air_monitor);
+#else
+    (void)data;
+    (void)now;
+    return true;
+#endif
+}
+
+static bool error_task_air_feedback_fault(const app_data_t *data,
+                                          uint32_t now)
+{
+#if AMS_ENABLE_AIR_AUX_FEEDBACK
+    return !error_task_air_publication_fresh(data, now) ||
+           data->air_monitor.fault ||
+           data->air_monitor.fault_latched;
+#else
+    (void)data;
+    (void)now;
+    return false;
+#endif
+}
+
+static bool error_task_bms_ready(const app_data_t *data, uint32_t now)
 {
     if(data == NULL)
     {
@@ -52,6 +94,7 @@ static bool error_task_bms_ready(const app_data_t *data)
            !data->task_heartbeat_fault &&
            !data->fuse_fault &&
            !data->charger_fault &&
+           error_task_air_feedback_ready(data, now) &&
            data->imd_valid &&
            data->imd_ok &&
            !data->imd_fault &&
@@ -78,7 +121,13 @@ void error_task_update(app_data_t *data, uint32_t now)
         return;
     }
 
-    data->air_state = HAL_GPIO_ReadPin(AIR_CTRL_GPIO_Port, AIR_CTRL_Pin);
+	/* AIR_CONTROL_MCU reports voltage on the existing common contactor-control
+	 * net.  It is retained for telemetry only and must not be interpreted as an
+	 * auxiliary/mirror-contact result. The future board adapter must construct
+	 * one local ams_air_monitor_inputs_t and call ams_air_monitor_step(); it must
+	 * not publish individual AIR monitor fields piecemeal. */
+	data->air_state = (HAL_GPIO_ReadPin(AIR_CTRL_GPIO_Port, AIR_CTRL_Pin) ==
+	                   GPIO_PIN_SET);
     (void)ams_heartbeat_update(data, now);
     ams_rtos_diag_update(data);
 
@@ -98,6 +147,7 @@ void error_task_update(app_data_t *data, uint32_t now)
     }
 
     data->hard_fault = (data->fuse_fault ||
+                        error_task_air_feedback_fault(data, now) ||
                         data->temp_fault ||
                         data->voltage_fault ||
                         data->imd_fault ||
@@ -123,7 +173,7 @@ void error_task_update(app_data_t *data, uint32_t now)
     /* This task is the sole normal owner allowed to assert BMS_OK.
      * Measurement/communication tasks may still force the output low for
      * immediate response, but they cannot reassert it. */
-    data->bms_supervisor_ready = error_task_bms_ready(data);
+    data->bms_supervisor_ready = error_task_bms_ready(data, now);
     set_bms(data->bms_supervisor_ready);
 
     taskEXIT_CRITICAL();

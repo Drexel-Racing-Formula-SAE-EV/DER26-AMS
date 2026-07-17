@@ -317,7 +317,13 @@ void app_create(void)
 	app.balance_inhibit = false;
 #endif
 
+	/* AIR_CONTROL_MCU is only a command/control-voltage sense.  It must never be
+	 * presented as physical contactor feedback.  The auxiliary monitor remains
+	 * disabled in this hardware revision; if a build enables its safety gate
+	 * before a validated producer exists, initialization holds it fail-closed. */
 	app.air_state = false;
+	ams_air_monitor_init(&app.air_monitor,
+	                     (AMS_ENABLE_AIR_AUX_FEEDBACK != 0));
 	/* Fail closed until the IMD driver and capture path have produced a
 	 * validated result.  The IMD task is currently disabled on this board, so
 	 * treating the value as healthy here would be unsafe. */
@@ -401,7 +407,15 @@ void app_create(void)
 	app.fan_task = fan_task_start(&app);
 	app.error_task = error_task_start(&app);
 	app.canbus_task = canbus_task_start(&app);
-//	app.air_task = air_task_start(&app);
+#if AMS_ENABLE_AIR_AUX_FEEDBACK
+	/* The target build guards above require a reviewed board adapter and period.
+	 * The task computes locally and atomically publishes the monitor snapshot. */
+	app.air_task = air_task_start(&app);
+#else
+	/* Do not start the legacy task: AIR_CONTROL_MCU is already sampled by the
+	 * supervisor and cannot determine physical contactor position. */
+	app.air_task = NULL;
+#endif
 #if AMS_ENABLE_IMD
 	app.imd_task = imd_task_start(&app);
 #endif
@@ -413,6 +427,9 @@ void app_create(void)
 	   (app.fan_task == NULL) ||
 	   (app.error_task == NULL) ||
 	   (app.canbus_task == NULL) ||
+#if AMS_ENABLE_AIR_AUX_FEEDBACK
+	   (app.air_task == NULL) ||
+#endif
 #if AMS_ENABLE_IMD
 	   (app.imd_task == NULL) ||
 #endif

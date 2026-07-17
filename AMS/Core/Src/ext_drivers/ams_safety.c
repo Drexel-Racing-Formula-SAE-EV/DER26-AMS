@@ -266,6 +266,7 @@ const char *ams_fault_log_event_str(uint16_t event)
     case AMS_FAULT_LOG_RTOS_LOW_HEAP_WARN: return "RTOS_LOW_HEAP_WARN";
     case AMS_FAULT_LOG_FAULT_CLEAR_ACCEPTED: return "FAULT_CLEAR_ACCEPTED";
     case AMS_FAULT_LOG_FAULT_CLEAR_REJECTED: return "FAULT_CLEAR_REJECTED";
+    case AMS_FAULT_LOG_AIR_FAULT_LATCH: return "AIR_FAULT_LATCH";
     default: return "UNKNOWN";
     }
 }

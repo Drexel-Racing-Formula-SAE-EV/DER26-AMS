@@ -40,12 +40,32 @@ remain low until the real IMD capture path is enabled and validated. Do not
 replace this with a default-healthy value; use an explicit controlled bench
 configuration if temporary bypass testing is required.
 
+## AIR contactor supervision
+
+`AIR_CONTROL_MCU` is only a sense of the existing common control-voltage net;
+it is not AIR+, AIR- or precharge physical feedback. The legacy AIR task is not
+started in the current hardware profile.
+
+The hardware-independent monitor in `Core/Src/ext_drivers/air_monitor.c` is
+fully implemented and SIL-tested, but `AMS_ENABLE_AIR_AUX_FEEDBACK` remains `0`
+until protected auxiliary-contact inputs and load-side voltage proof exist. It
+implements fresh command/input checks, debounce, boot-open proof, ordered
+Off/Precharge/Run/Shutdown transitions, make/release deadlines, precharge and
+bus-voltage plausibility, persistent fault masks, and verified-open clearing.
+See `Core/docs/AIR_CONTACTOR_MONITORING.md` for the board-adapter contract.
+
+A target build cannot enable the feature without explicitly declaring a
+reviewed board adapter, monitor period, and supervisor publication timeout. If
+the future task starts without valid configuration/samples—or stops publishing
+afterward—the monitor remains fail-closed and the supervisor keeps BMS_OK low.
+
 Host verification:
 
 ```sh
 cd AMS/host_tests
 make test              # full feature exercise profile
 make production-gates  # default production gates remain closed
+make air-feedback-stub-test # future AIR gate and task-adapter syntax
 make unit
 make asan
 make analyze

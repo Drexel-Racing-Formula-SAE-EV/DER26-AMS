@@ -373,6 +373,8 @@ static HAL_StatusTypeDef send_ecu_ams_status(canbus_device_t *canbus, const app_
     ret |= send_ams_packet(canbus,
                            0u,
                            (uint16_t)data->state,
+                           /* Legacy field: AIR_CONTROL_MCU control-net sense,
+                            * not physical contactor auxiliary feedback. */
                            (uint16_t)data->air_state,
                            (uint16_t)sat_i16_scaled(data->current, 10.0f));
 
@@ -700,6 +702,7 @@ static HAL_StatusTypeDef send_logger_summaries(canbus_device_t *canbus,
     payload[1] = sequence;
     payload[2] = (uint8_t)data->state;
     payload[3] = logger_bool_bit(data->bms_state, AMS_LOGGER_HEARTBEAT_FLAG_BMS_OK) |
+                 /* Legacy AIR_STATE means AIR_CONTROL_MCU control-net sense. */
                  logger_bool_bit(data->air_state, AMS_LOGGER_HEARTBEAT_FLAG_AIR_STATE) |
                  logger_bool_bit(data->imd_ok, AMS_LOGGER_HEARTBEAT_FLAG_IMD_OK) |
                  logger_bool_bit(data->hard_fault, AMS_LOGGER_HEARTBEAT_FLAG_HARD_FAULT) |
