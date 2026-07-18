@@ -23,6 +23,7 @@ typedef enum
 
 HAL_StatusTypeDef adBms6830_init(adbms6830_driver_t* dev,
                     uint8_t num_ics,
+                    uint8_t physical_chain_count,
                     adbms6830_asic* ics,
                     uint8_t ics_capacity,
 				    SPI_HandleTypeDef* hspi,
@@ -69,6 +70,9 @@ HAL_StatusTypeDef adbms6830_scope_activity(adbms6830_driver_t *dev,
                                            uint16_t repeat_count);
 HAL_StatusTypeDef adbms6830_read_sid(adbms6830_driver_t *dev);
 HAL_StatusTypeDef adbms6830_read_status(adbms6830_driver_t *dev, bool inject_spiflt);
+HAL_StatusTypeDef adbms6830_refresh_diagnostics(adbms6830_driver_t *dev);
+HAL_StatusTypeDef adbms6830_establish_diagnostic_baseline(adbms6830_driver_t *dev);
+bool adbms6830_safety_diagnostics_ok(const adbms6830_driver_t *dev);
 HAL_StatusTypeDef adbms6830_clear_all_flags(adbms6830_driver_t *dev);
 const adbms6830_diag_health_t *adbms6830_diag_health_get(const adbms6830_driver_t *dev);
 void adbms6830_diag_health_clear(adbms6830_driver_t *dev);
@@ -78,6 +82,12 @@ HAL_StatusTypeDef adbms6830_run_cell_adc_self_test(adbms6830_driver_t *dev);
 HAL_StatusTypeDef adbms6830_run_open_wire_check(adbms6830_driver_t *dev, bool odd_channels);
 HAL_StatusTypeDef adbms6830_run_open_wire_diagnostic(adbms6830_driver_t *dev);
 HAL_StatusTypeDef adbms6830_run_aux_gpio_diagnostic(adbms6830_driver_t *dev);
+/* Commands sent from the other end of a reversible mixed chain still advance
+ * every compatible device's command counter. Record a known count, or discard
+ * the prediction after an ambiguous transport failure. */
+void adbms6830_note_external_counter_increments(adbms6830_driver_t *dev,
+                                                 uint8_t increment_count);
+void adbms6830_resync_command_counter_tracking(adbms6830_driver_t *dev);
 
 ///* I2C COMM primitives */
 //void adbms6830_i2c_write(adbms6830_driver_t *dev, uint8_t slave_addr, uint8_t data);

@@ -27,10 +27,64 @@ uint8_t accumulator_configured_smb_count(const accumulator_t *dev)
     return (uint8_t)dev->smb.num_ics;
 }
 
+bool accumulator_final_ring_topology_valid(const accumulator_t *dev)
+{
+    if((dev == NULL) ||
+       (dev->smb.num_ics != NSMBS) ||
+       (dev->smb.physical_chain_count != (uint8_t)(NSMBS + NAPMS)) ||
+       (dev->smb.ics_capacity != NSMBS) ||
+       (dev->smb.ics != dev->smb_ics) ||
+       (dev->smb.string != STRING_A) ||
+       (dev->smb.write_string != STRING_A) ||
+       (dev->smb.hspi == NULL) ||
+       (dev->smb.htim == NULL) ||
+       (dev->smb.cs_port[STRING_A] == NULL) ||
+       (dev->smb.cs_port[STRING_B] == NULL) ||
+       (dev->smb.cs_pin[STRING_A] == 0u) ||
+       (dev->smb.cs_pin[STRING_B] == 0u))
+    {
+        return false;
+    }
+
+#if AMS_ENABLE_APM_2950 && !AMS_HIL_REPLACE_ADBMS
+    if((dev->apm.num_ics != NAPMS) ||
+       (dev->apm.ics_capacity != NAPMS) ||
+       (dev->apm.ics != dev->apm_ics) ||
+       (dev->apm.string != STRING_B) ||
+       (dev->apm.write_string != STRING_B) ||
+       (dev->apm.hspi != dev->smb.hspi) ||
+       (dev->apm.htim != dev->smb.htim) ||
+       (dev->apm.cs_port[STRING_A] != dev->smb.cs_port[STRING_A]) ||
+       (dev->apm.cs_port[STRING_B] != dev->smb.cs_port[STRING_B]) ||
+       (dev->apm.cs_pin[STRING_A] != dev->smb.cs_pin[STRING_A]) ||
+       (dev->apm.cs_pin[STRING_B] != dev->smb.cs_pin[STRING_B]))
+    {
+        return false;
+    }
+#endif
+
+    return true;
+}
+
 int smb_read_voltage(adbms6830_driver_t* dev);
+static int smb_read_voltage_checked(adbms6830_driver_t *dev,
+                                    bool *compatible_adi1_sent);
 int smb_read_temp(adbms6830_driver_t* dev);
-void apm_read_vbadc_viadc(adbms2950_driver_t* apm);
-void apm_read_temps(adbms2950_driver_t* apm);
+
+static void accumulator_invalidate_apm_sample(accumulator_t *dev)
+{
+	if(dev == NULL)
+	{
+		return;
+	}
+
+	/* Preserve the last numeric sample and timestamp for post-fault analysis,
+	 * but never leave them advertised as belonging to the current scan. */
+	dev->apm.health.sample_valid = false;
+	dev->apm.health.current_valid = false;
+	dev->apm.health.pack_voltage_valid = false;
+	dev->apm.health.counter_advanced = false;
+}
 
 static void accumulator_clear_balance_shadow(adbms6830_asic *ic)
 {
@@ -174,6 +228,7 @@ void accumulator_init(accumulator_t *dev,
 	dev->smb_init_status = HAL_ERROR;
 	dev->apm_ready = false;
 	dev->apm_init_status = HAL_ERROR;
+	dev->apm_full_ring_awake_token = false;
 	memset(dev->cell_voltage_mv, 0, sizeof(dev->cell_voltage_mv));
 	memset(dev->cell_voltage_valid, 0, sizeof(dev->cell_voltage_valid));
 	memset(dev->cell_voltage_last_update_ms, 0, sizeof(dev->cell_voltage_last_update_ms));
@@ -206,6 +261,7 @@ void accumulator_init(accumulator_t *dev,
 	memset(dev->smb_ics, 0, sizeof(dev->smb_ics));
 	dev->smb_init_status = adBms6830_init(&dev->smb,
 	                                      NSMBS,
+	                                      (uint8_t)(NSMBS + NAPMS),
 	                                      dev->smb_ics,
 	                                      NSMBS,
 	                                      hspi,
@@ -224,7 +280,8 @@ void accumulator_init(accumulator_t *dev,
 		const adbms6830_diag_health_t *health;
 
 		/* A successful write only proves that the MCU completed the SPI
-		 * transfer. Read both configuration groups back before declaring the
+		 * transfer. Read both configuration groups back, clear power-on flags,
+		 * then require a fresh clean Status A-E image before declaring the
 		 * monitor chain ready for safety use. */
 		adbms_spi_lock();
 		dev->smb_init_status = adbms6830_verify_config_readback(&dev->smb);
@@ -233,6 +290,11 @@ void accumulator_init(accumulator_t *dev,
 		   ((health == NULL) || (health->config_mismatch_mask != 0u)))
 		{
 			dev->smb_init_status = HAL_ERROR;
+		}
+		if(dev->smb_init_status == HAL_OK)
+		{
+			dev->smb_init_status =
+				adbms6830_establish_diagnostic_baseline(&dev->smb);
 		}
 		adbms_spi_unlock();
 	}
@@ -259,6 +321,12 @@ void accumulator_init(accumulator_t *dev,
 		                                                   STRING_B,
 		                                                   false,
 		                                                   AMS_APM_ENABLE_HV_DIVIDERS != 0);
+		/* APM initialization uses a mandatory OPT=0000 ADI1 followed by
+		 * OPT=1100.  The first is compatible with ADCV while the second is
+		 * intentionally invalid on the 6830s.  A failure also cannot establish
+		 * how many devices accepted each command.  In either case, seed each SMB
+		 * prediction from its next valid packet instead of guessing. */
+		adbms6830_resync_command_counter_tracking(&dev->smb);
 	}
 #endif
 	dev->apm_ready = (dev->apm_init_status == HAL_OK);
@@ -266,18 +334,40 @@ void accumulator_init(accumulator_t *dev,
 
 int accumulator_read_volt(accumulator_t *dev)
 {
-	if(dev == NULL)
+	bool compatible_adi1_sent = false;
+	int status;
+
+	if((dev == NULL) || !dev->smb_ready ||
+	   !accumulator_final_ring_topology_valid(dev))
 	{
+		if(dev != NULL)
+		{
+			dev->apm_full_ring_awake_token = false;
+		}
 		return -1;
 	}
+	dev->apm_full_ring_awake_token = false;
 
 	/* Serialize the complete wake/convert/read/parse sequence.  The ADBMS
 	 * driver uses shared scratch buffers, so locking only the final HAL
 	 * transfer is not sufficient. */
 	adbms_spi_lock();
-	int status = smb_read_voltage(&dev->smb);
-//	apm_read_vbadc_viadc(&dev->apm);
-//	adbms6830_us_delay(&dev->smb, 5000);
+	status = smb_read_voltage_checked(&dev->smb, &compatible_adi1_sent);
+	if(compatible_adi1_sent && dev->apm_ready)
+	{
+		/* The ADBMS6830 ADCV encoding is a compatible ADI1 command on the
+		 * ADBMS2950.  It resets I1CNT/I1PHA even if a later cell-voltage read
+		 * fails, so start the new freshness epoch immediately after the command
+		 * was accepted rather than conditioning it on the complete scan. */
+		adbms2950_note_compatible_adi1(&dev->apm);
+	}
+	else if((status != 0) && dev->apm_ready)
+	{
+		/* No compatible ADI1 reached the APM, but the coordinated scan still
+		 * failed. Do not carry a prior-cycle advisory sample forward as valid. */
+		accumulator_invalidate_apm_sample(dev);
+	}
+	dev->apm_full_ring_awake_token = (status == 0) && dev->apm_ready;
 	adbms_spi_unlock();
 
 	return status;
@@ -287,19 +377,53 @@ int accumulator_read_apm(accumulator_t *dev, uint32_t now_ms)
 {
 	HAL_StatusTypeDef status;
 
-	if((dev == NULL) || !dev->apm_ready)
+	if((dev == NULL) || !dev->smb_ready || !dev->apm_ready ||
+	   !accumulator_final_ring_topology_valid(dev))
 	{
 		return -1;
 	}
 
 	adbms_spi_lock();
+	if(!dev->apm_full_ring_awake_token)
+	{
+		accumulator_invalidate_apm_sample(dev);
+		adbms_spi_unlock();
+		return -1;
+	}
+	/* Consume before issuing any command: retries must first re-prove that the
+	 * complete physical ring is awake. */
+	dev->apm_full_ring_awake_token = false;
 	status = adbms2950_read_primary_sample(&dev->apm, now_ms);
+	if(status == HAL_OK)
+	{
+		/* This production path follows a successful SMB scan, so the complete
+		 * ring is awake. UNSNAP + SNAP + UNSNAP are compatible broadcast
+		 * commands and advance all five SMB command-counter predictions. */
+		adbms6830_note_external_counter_increments(
+			&dev->smb,
+			ADBMS2950_SHARED_COUNTER_INCREMENTS_PER_SAMPLE);
+	}
+	else
+	{
+		adbms6830_resync_command_counter_tracking(&dev->smb);
+	}
 	adbms_spi_unlock();
 	return (status == HAL_OK) ? 0 : -1;
 }
 
 int smb_read_voltage(adbms6830_driver_t* dev)
 {
+	return smb_read_voltage_checked(dev, NULL);
+}
+
+static int smb_read_voltage_checked(adbms6830_driver_t *dev,
+                                    bool *compatible_adi1_sent)
+{
+    if(compatible_adi1_sent != NULL)
+    {
+        *compatible_adi1_sent = false;
+    }
+
     if(dev == NULL)
     {
         return -1;
@@ -335,9 +459,13 @@ int smb_read_voltage(adbms6830_driver_t* dev)
 	{
 		return -1;
 	}
+	if(compatible_adi1_sent != NULL)
+	{
+		*compatible_adi1_sent = true;
+	}
 
-	/* RD_ON starts redundant C-ADC/S-ADC conversion. Do not read the result
-	 * before the complete 8 ms conversion interval has elapsed. */
+	/* RD_ON starts redundant C-ADC/S-ADC conversion. Depending on C-ADC
+	 * synchronization the documented result time is 8 ms to 16 ms. */
 	if(adbms6830_us_delay(dev, ADBMS6830_REDUNDANT_CONVERSION_WAIT_US) != HAL_OK)
 	{
 		return -1;
@@ -422,61 +550,19 @@ int smb_read_temp(adbms6830_driver_t* dev)
 	return 0;
 }
 
-void apm_read_vbadc_viadc(adbms2950_driver_t* apm)
-{
-    if(apm == NULL)
-    {
-        return;
-    }
-
-	/* Legacy helper retained for source compatibility.  It no longer changes
-	 * the HV-divider GPOs; final-ring sampling uses the checked RDIVB1 path. */
-	(void)adbms2950_read_primary_sample(apm, 0u);
-}
-
 int accumulator_read_temp(accumulator_t *dev)
 {
-	if(dev == NULL)
+	if((dev == NULL) || !dev->smb_ready ||
+	   !accumulator_final_ring_topology_valid(dev))
 	{
 		return -1;
 	}
-
-//	apm_read_temps(&dev->apm);
 
 	adbms_spi_lock();
 	int status = smb_read_temp(&dev->smb);
 	adbms_spi_unlock();
 
 	return status;
-}
-
-void apm_read_temps(adbms2950_driver_t* apm)
-{
-    if(apm == NULL)
-    {
-        return;
-    }
-
-	adv_ adv;
-	adv.ow = OW_OFF; // Open wire detection disabled
-	adv.ch = SM_V7_V9; // Single measurement, V7 and V9
-	// Start aux ADC
-	adbms2950_wakeup(apm);
-	adbms2950_adv(apm, &adv);
-
-	// Poll aux ADC
-	adbms2950_wakeup(apm);
-	adbms2950_plv(apm);
-
-	// Read aux ADC
-	adbms2950_wakeup(apm);
-	adbms2950_rdv1d(apm);
-
-	apm->vtemp_adc[0] = (int16_t)(apm->ics[0].vr.v_codes[9]) * VxA_SCALE; // V7A
-	apm->vtemp_adc[1] = (int16_t)(apm->ics[0].vr.v_codes[11]) * VxB_SCALE; // V9B
-	// TODO: calibrate NTCs on APM and set 'dev->apm.temps[]' values. this just copies the voltage for now
-	apm->temps[0] = apm->vtemp_adc[0];
-	apm->temps[1] = apm->vtemp_adc[1];
 }
 
 int accumulator_stat_temp(accumulator_t *dev)
@@ -506,7 +592,9 @@ int accumulator_set_mux_ch(accumulator_t *dev, uint8_t channel, uint8_t addr7)
 
 	(void)addr7;
 
-	if((dev == NULL) || (channel >= NTEMPS))
+	if((dev == NULL) || !dev->smb_ready ||
+	   !accumulator_final_ring_topology_valid(dev) ||
+	   (channel >= NTEMPS))
 	{
 		return -1;
 	}
@@ -1368,7 +1456,9 @@ void accumulator_update_temp_stats_at(accumulator_t *dev, uint32_t now_ms)
 
 int accumulator_set_balance(accumulator_t *dev)
 {
-    if((dev == NULL) || !dev->voltage_full_usable || (dev->min_voltage_mv == 0u))
+    if((dev == NULL) || !dev->smb_ready ||
+       !accumulator_final_ring_topology_valid(dev) ||
+       !dev->voltage_full_usable || (dev->min_voltage_mv == 0u))
     {
         return -1;
     }
@@ -1444,7 +1534,8 @@ int accumulator_set_balance(accumulator_t *dev)
 
 int accumulator_clear_balance(accumulator_t *dev)
 {
-    if(dev == NULL)
+    if((dev == NULL) || !dev->smb_ready ||
+       !accumulator_final_ring_topology_valid(dev))
     {
         return -1;
     }

@@ -153,9 +153,10 @@ Expected useful signs:
 spi status shows CPOL:HIGH CPHA:2EDGE
 spi preset normal; spi scope produces repeated CS_A/SCK/MOSI/readback activity
 spi probe returns OK or at least records a non-OK HAL status
-spi probea/probeb explicitly exercise CS_A and CS_B so the AMS-side
-chip-select and ADBMS6822 channel routing can be confirmed on the scope
-spi sid shows valid 48-bit serial IDs for each responding IC
+spi probea exercises the five-device ADBMS6830 RDCFGA path on CS_A
+spi probeb uses the one-device ADBMS2950 RDSID path on CS_B; it is an alias
+for the correct final-ring APM-side identity probe, not a five-SMB read
+spi sid shows valid 48-bit serial IDs and device_id:0x03 for all five SMB ICs
 spi stat exposes SLEEP/SPIFLT/THSD/OSCCHK and OV/UV status flags
 TX preview shows command bytes plus PEC
 RX preview changes from all-zero/all-FF when the chain responds
@@ -178,12 +179,18 @@ PEC fail mask set for all ICs
 updated cell count stays 0
 voltage reason remains not_ready or stale_scan
 SID validity stays false
+SID identity mismatch is nonzero or a device_id differs from 0x03
 status flags remain invalid
 command-counter mismatch appears after missed/corrupt transactions
 ```
 
 Those results mean the debug path is working, even if hardware communication is
 not yet fixed.
+
+Startup itself performs this five-device String-A identity read after the one
+global reset and before either SMB configuration write. A wrong product ID,
+bad PEC, counter mismatch, or missing packet leaves `smb_ready=0`; do not work
+around that guard by forcing configuration writes from the CLI.
 
 ## Scope / Logic Analyzer Mode
 
@@ -271,14 +278,16 @@ CS_A returns high after the transaction
 Use `spi probea` and `spi probeb` when validating hardware routing:
 
 ```text
-spi probea  -> only CS_A / STRINGA_CS should pulse
-spi probeb  -> only CS_B / STRINGB_CS should pulse
+spi probea  -> five-packet ADBMS6830 RDCFGA read; only CS_A should pulse
+spi probeb  -> one-packet ADBMS2950 RDSID read; only CS_B should pulse
 ```
 
 The normal SMB/ADBMS6830 subset is read from CS_A. The APM/ADBMS2950 is the
 nearest device to CS_B and is read as a one-device subset. Do not interchange
 these defaults: the ADBMS6830 driver intentionally clocks five response packets,
-while the APM driver clocks one.
+while the APM driver clocks one. Standalone probe/scope commands invalidate the
+SMB command-counter prediction; firmware seeds each IC again from its next
+valid packet.
 
 The driver uses one full-duplex transfer for reads:
 

@@ -15,6 +15,8 @@
 #include "stm32f7xx_hal.h"
 
 #define ADBMS6830_MAX_TRACKED_ICS 16u
+#define ADBMS6830_MAX_PHYSICAL_DEVICES 16u
+#define ADBMS6830B_DEVICE_ID 0x03u
 #define ADBMS6830_MUX_COUNT 3u
 #define ADBMS6830_TEMP_SENSOR_COUNT 24u
 
@@ -25,6 +27,29 @@
  * C16 input is never reported as an open wire. */
 #define ADBMS6830_OPEN_WIRE_THRESHOLD_MV 2000u
 #define ADBMS6830_OPEN_WIRE_CONVERSION_WAIT_US 9000u
+/* The ADBMS6830B S-ADC is specified at 85% to 95% gain while the open-wire
+ * switch is active.  Compare each stimulated sample with a fresh unstimulated
+ * S-ADC baseline and require the corresponding 5% to 15% attenuation. */
+#define ADBMS6830_OPEN_WIRE_MIN_ATTENUATION_PERMILLE 50u
+#define ADBMS6830_OPEN_WIRE_MAX_ATTENUATION_PERMILLE 150u
+
+/* Status A/B plausibility limits.  The VREF2 limit deliberately includes
+ * margin around the datasheet's normal 2.988 V to 3.012 V range.  These are
+ * safety-screening limits, not calibration constants. */
+#define ADBMS6830_VREF2_MIN_MV 2980
+#define ADBMS6830_VREF2_MAX_MV 3020
+#define ADBMS6830_VD_MIN_MV 2700
+#define ADBMS6830_VD_MAX_MV 3600
+#define ADBMS6830_VA_MIN_MV 4500
+#define ADBMS6830_VA_MAX_MV 5500
+#define ADBMS6830_VRES_MAX_DELTA_MV 50
+#define ADBMS6830_DIE_TEMP_MIN_DECI_C (-500)
+#define ADBMS6830_DIE_TEMP_MAX_DECI_C 1500
+#define ADBMS6830_OSC_COUNTER_MIN 52u
+#define ADBMS6830_OSC_COUNTER_MAX 71u
+/* ADAX AUX_ALL performs 18 sequential 1 ms conversions.  Keep enough margin
+ * for the complete sequence before any Status/AUX result is accepted. */
+#define ADBMS6830_AUX_CONVERSION_WAIT_US 20000u
 
 #define ADBMS6830_SPI_DEBUG_PREVIEW_BYTES 16u
 
@@ -40,10 +65,13 @@ typedef enum
   ADBMS6830_SPI_OP_COLD_WAKE,
   ADBMS6830_SPI_OP_READ_SID,
   ADBMS6830_SPI_OP_READ_STATUS,
+  ADBMS6830_SPI_OP_DIAGNOSTIC_REFRESH,
+  ADBMS6830_SPI_OP_STARTUP_BASELINE,
   ADBMS6830_SPI_OP_CLEAR_FLAGS,
   ADBMS6830_SPI_OP_CONFIG_CHECK,
   ADBMS6830_SPI_OP_BALANCE_CHECK,
   ADBMS6830_SPI_OP_CELL_ADC_SELF_TEST,
+  ADBMS6830_SPI_OP_OPEN_WIRE_BASELINE,
   ADBMS6830_SPI_OP_OPEN_WIRE_EVEN,
   ADBMS6830_SPI_OP_OPEN_WIRE_ODD,
   ADBMS6830_SPI_OP_OPEN_WIRE_FULL,
@@ -82,11 +110,26 @@ typedef struct
 typedef struct
 {
   bool sid_valid;
+  bool stata_valid;
+  bool statb_valid;
   bool statc_valid;
   bool statd_valid;
   bool state_valid;
+  bool reference_values_valid;
 
   uint8_t sid[RSID];
+  uint8_t device_id;
+
+  int16_t vref2_raw;
+  int16_t itmp_raw;
+  int16_t vd_raw;
+  int16_t va_raw;
+  int16_t vres_raw;
+  int16_t vref2_mv;
+  int16_t die_temp_deci_c;
+  int16_t vd_mv;
+  int16_t va_mv;
+  int16_t vres_mv;
 
   uint16_t cs_flt_mask;
   uint16_t cadc_counter;
@@ -117,9 +160,13 @@ typedef struct
 
   bool open_wire_even_valid;
   bool open_wire_odd_valid;
+  bool open_wire_baseline_valid;
   uint16_t open_wire_even_fault_mask;
   uint16_t open_wire_odd_fault_mask;
+  uint16_t open_wire_even_attenuation_fault_mask;
+  uint16_t open_wire_odd_attenuation_fault_mask;
   uint16_t open_wire_fault_mask;
+  uint16_t open_wire_baseline_mv[CELL];
 } adbms6830_ic_diag_t;
 
 typedef struct
@@ -132,6 +179,13 @@ typedef struct
   uint16_t sticky_pec_fail_mask;
   uint16_t last_cmd_counter_mismatch_mask;
   uint16_t sticky_cmd_counter_mismatch_mask;
+
+  /* RDSID byte 1 bits [6:1] identify an ADBMS6830B as 0x03.  Keep
+   * transport validity separate from product identity so a PEC-valid packet
+   * from the ADBMS2950 at the wrong end cannot establish SMB readiness. */
+  uint16_t sid_valid_ic_mask;
+  uint16_t sid_identity_mismatch_ic_mask;
+  uint16_t sticky_sid_identity_mismatch_ic_mask;
 
   uint16_t configa_mismatch_mask;
   uint16_t configb_mismatch_mask;
@@ -150,12 +204,30 @@ typedef struct
 
   uint32_t config_readback_count;
   uint32_t balance_readback_count;
+  uint32_t diagnostic_refresh_count;
+  uint32_t startup_baseline_count;
   uint32_t cell_adc_self_test_count;
+  uint32_t open_wire_baseline_count;
   uint32_t open_wire_even_count;
   uint32_t open_wire_odd_count;
   uint32_t open_wire_full_count;
   uint32_t aux_gpio_diag_count;
 
+  bool startup_baseline_passed;
+  uint16_t status_invalid_ic_mask;
+  uint16_t status_fault_ic_mask;
+  uint16_t reference_invalid_ic_mask;
+  uint16_t reference_fault_ic_mask;
+  uint16_t cs_fault_ic_mask;
+  uint16_t supply_flag_fault_ic_mask;
+  uint16_t memory_fault_ic_mask;
+  uint16_t digital_fault_ic_mask;
+  uint16_t oscillator_counter_fault_ic_mask;
+  uint16_t cell_ovuv_fault_ic_mask;
+  uint16_t sticky_status_fault_ic_mask;
+  uint16_t sticky_reference_fault_ic_mask;
+
+  uint16_t open_wire_baseline_valid_ic_mask;
   uint16_t open_wire_even_valid_ic_mask;
   uint16_t open_wire_odd_valid_ic_mask;
   uint16_t open_wire_incomplete_ic_mask;
@@ -206,10 +278,15 @@ typedef struct
 typedef struct
 {
   int num_ics;
+  uint8_t physical_chain_count;
   uint8_t ics_capacity;
   adbms6830_asic *ics;
   uint8_t monitored_cell_count;
   adbms_string string;
+  /* Register writes may intentionally stop after the leading five devices.
+   * write_string records which physical end owns that leading subset; read
+   * probes may temporarily use the other end, but writes must never do so. */
+  adbms_string write_string;
   SPI_HandleTypeDef *hspi;
   GPIO_TypeDef *cs_port[2];
   uint16_t cs_pin[2];

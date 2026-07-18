@@ -17,6 +17,7 @@ Authored by Mahad Faisal, 2026.
 | `test_system_sil_regen_and_charge_current_placeholders` | System-level SIL: verifies low regen is warning-only while regen/charge overcurrent levels latch and drop BMS_OK. This caught and fixed the regen-warning masking bug. |
 | `test_system_sil_2950_advisory_sampling_and_cli` | System-level SIL: verifies ADBMS2950 sample success/failure, stale-value handling, non-gating behavior, scan exclusion, and the `status`, `sid`, `config`, `sample`, and bounded `scope` CLI paths. |
 | `test_system_sil_2950_final_ring_init_ownership` | System-level SIL: verifies String A owns the five SMBs and only global reset, String B owns the one APM, divider controls default off, and APM init failure remains observable without erasing SMB readiness. |
+| `test_system_sil_final_ring_topology_corruption_fails_closed` | Corrupts SMB/APM active and write strings and verifies physical scans, balancing and APM sampling stop without reusing a full-ring token. |
 | `test_system_sil_combined_fault_precedence_and_reset_path` | System-level SIL: verifies current and voltage latches can coexist, reset independently, and BMS_OK only reasserts after both are cleared and healthy. |
 | `test_system_sil_harsh_timeline_no_false_enable` | System-level SIL: runs a harsh multi-phase timeline through precharge, voltage read loss, PEC miss fail-closed behavior, precharge current fault, recovery, and persistent voltage loss without false BMS_OK enable. |
 | `test_system_sil_current_invalid_immediate_bms_drop_and_recovery` | System-level SIL: verifies a current ADC/status failure immediately drops BMS_OK, holds it low until current recovers, and only reasserts after the next healthy voltage/current conjunction. |
@@ -77,7 +78,7 @@ Unit-only additions:
 | `test_adbms_spi_debug_write_and_full_duplex_paths` | Verifies SPI debug state for write and full-duplex read paths, CS wrapping, dummy-byte TX padding, RX extraction, HAL error propagation, and debug counters/previews. |
 | `test_adbms_spi_debug_rd48_pec_masks_and_clear` | Verifies `rd48` debug command capture, PEC pass/fail masks across multiple ICs, command-counter capture, debug clear/enable behavior, and SPI op strings. |
 | `test_adbms_spi_scope_activity` | Verifies the bench scope traffic helper preserves the selected string, emits the visible MOSI pattern, repeats valid RDCFGA command bursts, and rejects invalid repeat counts. |
-| `test_adbms_spi_sid_status_and_counter_mismatch` | Verifies ADBMS6830 RDSID parsing, RDSTATC/RDSTATD/RDSTATE diagnostic parsing, and command-counter mismatch detection. |
+| `test_adbms_spi_sid_status_and_counter_mismatch` | Verifies ADBMS6830 RDSID product-ID validation, valid/identity-mismatch masks, RDSTATC/RDSTATD/RDSTATE parsing, and command-counter mismatch detection. |
 | `test_adbms_spi_coldwake_and_clear_flags` | Verifies conservative cold-wake pulse generation and CLRFLAG all-flag packing/command dispatch. |
 | `test_adbms6830_diagnostic_commands_and_cli_health` | Verifies ADBMS6830 config readback, cell ADC diagnostic hook, full open-wire command hooks, AUX/GPIO diagnostic hook, sticky health counters, and CLI visibility. |
 | `test_adbms_periodic_diagnostics_and_safe_open_wire` | Verifies real-time status/config/open-wire scheduling, config mismatch fail-closed behavior, and automatic full open-wire evaluation in charge/discharge/balance states. |
@@ -88,6 +89,8 @@ Unit-only additions:
 | `test_adbms2950_spi_probe_pec_masks_and_clear` | Verifies ADBMS2950/APM RDCFGA probe debug capture, PEC pass/fail masks, command-counter capture, debug clear/enable behavior, and SPI op strings. |
 | `test_adbms2950_mixed_chain_init_identity_and_readback` | Verifies bounded one-device topology, String-B identity before writes, no second chain reset, byte-for-byte config readback, wrong-product rejection, divider-off defaults, and fail-low cleanup after a configuration write failure. |
 | `test_adbms2950_sid_probe_and_primary_sample_integrity` | Verifies RDSID identity, RDSTAT calibration, RDIVB1 signed scaling, PEC rejection, coherent command-counter pairs, reset/clear sentinel rejection, and preservation of the last good sample on failure. |
+| `test_adbms6830_final_ring_subset_write_owner` | Verifies the five-device String-A subset is exactly 44 bytes and that the same register write from String B is rejected before GPIO/SPI activity. |
+| `test_adbms2950_final_ring_subset_write_owner` | Verifies the one-device String-B subset is exactly 12 bytes and that an APM register write from String A is rejected before GPIO/SPI activity. |
 
 Add every hardware-discovered bug as a new host regression case when possible.
 

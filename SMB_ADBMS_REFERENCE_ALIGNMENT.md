@@ -26,6 +26,20 @@ timing corrections:
 - compile-time constants and host regressions guard the wake, reference and
   conversion timing assumptions.
 
+A later public-repository cross-check confirmed historical 6830/2950 mixed
+chain bring-up but was not used as a code source. ADI documentation resolves
+the important boundary rule: leading-device reads and writes may end at an
+eight-byte device boundary. The final implementation now also:
+
+- requires all five String-A RDSID packets to identify an ADBMS6830B as
+  device ID `0x03` before configuration;
+- binds five-device writes to String A and one-device APM writes to String B;
+- validates the complete final-ring structure before physical scan, mux, or
+  balance operations;
+- locks the 44-byte SMB and 12-byte APM subset frames into real-driver tests.
+
+See `PUBLIC_G474_BMS_CROSSCHECK.md` for the source boundary and comparison.
+
 No separate eval-board branch is included. The final firmware retains the full
 five-SMB thermistor/balancing behavior and adds one advisory APM path without
 giving APM measurements authority over BMS_OK.

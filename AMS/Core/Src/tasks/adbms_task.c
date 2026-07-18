@@ -28,27 +28,7 @@ static TaskHandle_t adbms_task_handle = NULL;
 
 static bool adbms_status_diag_has_safety_fault(const adbms6830_driver_t *smb)
 {
-    if(smb == NULL)
-    {
-        return true;
-    }
-
-    for(uint8_t ic = 0u; (ic < (uint8_t)smb->num_ics) && (ic < ADBMS6830_MAX_TRACKED_ICS); ic++)
-    {
-        const adbms6830_ic_diag_t *diag = &smb->diag[ic];
-        if(!diag->statc_valid || !diag->statd_valid || !diag->state_valid)
-        {
-            return true;
-        }
-        if((diag->spiflt != 0u) || (diag->sleep != 0u) ||
-           (diag->thsd != 0u) || (diag->tmodchk != 0u) ||
-           (diag->oscchk != 0u))
-        {
-            return true;
-        }
-    }
-
-    return false;
+    return !adbms6830_safety_diagnostics_ok(smb);
 }
 
 static bool adbms_open_wire_auto_allowed(const app_data_t *data)
@@ -84,7 +64,7 @@ static void adbms_task_run_periodic_diagnostics(app_data_t *data)
     {
         bool status_fault;
 
-        status = adbms6830_read_status(smb, false);
+        status = adbms6830_refresh_diagnostics(smb);
         status_fault = (!acc->delay_timer_ready ||
                         !acc->smb_ready ||
                         (status != HAL_OK) ||
@@ -406,11 +386,15 @@ void adbms_task_fn(void *argument)
                                              osKernelGetTickCount(),
                                              AMS_HIL_ADBMS_IMAGE_TIMEOUT_MS);
 #else
-        (void)accumulator_read_volt(acc);
-		/* The compatible ADCV command also starts the ADBMS2950 conversion.
-		 * Read the one-device String-B APM subset after the SMB conversion/read
-		 * sequence.  Results are diagnostic only and never enter BMS_OK. */
-		(void)accumulator_read_apm(acc, osKernelGetTickCount());
+		if(accumulator_read_volt(acc) == 0)
+		{
+			/* The compatible ADCV command also starts the ADBMS2950 conversion.
+			 * Read the one-device String-B APM subset only after the successful
+			 * SMB transaction has proven the complete ring was awake.  This makes
+			 * the three shared SNAP/UNSNAP counter increments deterministic.
+			 * Results remain diagnostic only and never enter BMS_OK. */
+			(void)accumulator_read_apm(acc, osKernelGetTickCount());
+		}
 #endif
         accumulator_update_voltage_stats_at(acc, osKernelGetTickCount());
 

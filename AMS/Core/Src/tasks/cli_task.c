@@ -1693,6 +1693,7 @@ static int get_spi_debug_locked(int argc, char *argv[])
 	                return ret;
 	            }
 	            probe_status = adbms6830_spi_probe_rdcfga(smb);
+	            adbms6830_resync_command_counter_tracking(smb);
 	            snprintf(outline, CLI_LINESZ, "RDCFGA probe status: %s", cli_hal_status_str(probe_status));
 	            ret |= cli_printline(cli, outline);
 	        }
@@ -1703,6 +1704,7 @@ static int get_spi_debug_locked(int argc, char *argv[])
 	                return ret;
 	            }
 	            probe_status = adbms6830_spi_probe_rdcfga_on_string(smb, STRING_A);
+	            adbms6830_resync_command_counter_tracking(smb);
 	            snprintf(outline, CLI_LINESZ, "RDCFGA CS_A/stringA probe status: %s", cli_hal_status_str(probe_status));
 	            ret |= cli_printline(cli, outline);
 	        }
@@ -1712,8 +1714,16 @@ static int get_spi_debug_locked(int argc, char *argv[])
 	            {
 	                return ret;
 	            }
-	            probe_status = adbms6830_spi_probe_rdcfga_on_string(smb, STRING_B);
-	            snprintf(outline, CLI_LINESZ, "RDCFGA CS_B/stringB probe status: %s", cli_hal_status_str(probe_status));
+	            /* The final-ring leading device from String B is the ADBMS2950,
+	             * not an SMB.  Use its one-packet identity path so this service
+	             * probe cannot parse APM-plus-SMB packets into the five-SMB
+	             * image.  Any standalone String-B command makes the next SMB
+	             * packet the only safe command-counter synchronization point. */
+	            probe_status = adbms2950_spi_probe_sid(&data->acc.apm);
+	            adbms6830_resync_command_counter_tracking(smb);
+	            snprintf(outline, CLI_LINESZ,
+	                     "ADBMS2950 RDSID CS_B/stringB probe status: %s",
+	                     cli_hal_status_str(probe_status));
 	            ret |= cli_printline(cli, outline);
 	        }
 	        else if(!strcmp(argv[1], "scope"))
@@ -1749,6 +1759,10 @@ static int get_spi_debug_locked(int argc, char *argv[])
 	            }
 
 	            probe_status = adbms6830_scope_activity(smb, string, scope_mode, repeat);
+	            /* Scope traffic intentionally runs outside the coordinated scan
+	             * and may contain command-only or invalid pattern frames.  Never
+	             * predict which remote devices consumed it. */
+	            adbms6830_resync_command_counter_tracking(smb);
 	            snprintf(outline, CLI_LINESZ,
 	                     "scope string:%s mode:%s repeat:%u status:%s",
 	                     (string == STRING_A) ? "CS_A" : "CS_B",
@@ -1775,8 +1789,8 @@ static int get_spi_debug_locked(int argc, char *argv[])
 	            {
 	                return ret;
 	            }
-	            probe_status = adbms6830_read_status(smb, false);
-	            snprintf(outline, CLI_LINESZ, "RDSTATC/D/E status: %s", cli_hal_status_str(probe_status));
+	            probe_status = adbms6830_refresh_diagnostics(smb);
+	            snprintf(outline, CLI_LINESZ, "ADAX + RDSTATA-E safety status: %s", cli_hal_status_str(probe_status));
 	            ret |= cli_printline(cli, outline);
 	        }
 	        else if(!strcmp(argv[1], "staterr"))
@@ -1847,7 +1861,7 @@ static int get_spi_debug_locked(int argc, char *argv[])
 	                return ret;
 	            }
 	            probe_status = adbms6830_run_cell_adc_self_test(smb);
-	            snprintf(outline, CLI_LINESZ, "Cell ADC diagnostic hook status: %s", cli_hal_status_str(probe_status));
+	            snprintf(outline, CLI_LINESZ, "Cell ADC conversion diagnostic status: %s", cli_hal_status_str(probe_status));
 	            ret |= cli_printline(cli, outline);
 	        }
 	        else if(!strcmp(argv[1], "owcheck"))
@@ -1989,6 +2003,16 @@ static int get_spi_debug_locked(int argc, char *argv[])
 	    ret |= cli_printline(cli, outline);
 
     snprintf(outline, CLI_LINESZ,
+             "topology logical:%u physical:%u monitored_cells:%u string:%u write_string:%u final_ring:%d",
+             (unsigned)smb->num_ics,
+             (unsigned)smb->physical_chain_count,
+             (unsigned)smb->monitored_cell_count,
+             (unsigned)smb->string,
+             (unsigned)smb->write_string,
+             accumulator_final_ring_topology_valid(&data->acc));
+    ret |= cli_printline(cli, outline);
+
+    snprintf(outline, CLI_LINESZ,
              "cmd:%02X %02X len tx:%u rx:%u total:%u",
              dbg->last_cmd[0],
              dbg->last_cmd[1],
@@ -2044,20 +2068,66 @@ static int get_spi_debug_locked(int argc, char *argv[])
         ret |= cli_printline(cli, outline);
 
         snprintf(outline, CLI_LINESZ,
-                 "diag counts cfg:%lu cell:%lu owfull:%lu owe:%lu owo:%lu aux:%lu",
+                 "diag SID valid:0x%04X identity_mismatch:0x%04X sticky:0x%04X expected_id:0x%02X",
+                 health->sid_valid_ic_mask,
+                 health->sid_identity_mismatch_ic_mask,
+                 health->sticky_sid_identity_mismatch_ic_mask,
+                 ADBMS6830B_DEVICE_ID);
+        ret |= cli_printline(cli, outline);
+
+        snprintf(outline, CLI_LINESZ,
+                 "diag startup:%d refresh:%lu start:%lu status invalid:0x%04X fault:0x%04X",
+                 health->startup_baseline_passed,
+                 (unsigned long)health->diagnostic_refresh_count,
+                 (unsigned long)health->startup_baseline_count,
+                 health->status_invalid_ic_mask,
+                 health->status_fault_ic_mask);
+        ret |= cli_printline(cli, outline);
+
+        snprintf(outline, CLI_LINESZ,
+                 "diag reference invalid:0x%04X fault:0x%04X sticky status:0x%04X ref:0x%04X",
+                 health->reference_invalid_ic_mask,
+                 health->reference_fault_ic_mask,
+                 health->sticky_status_fault_ic_mask,
+                 health->sticky_reference_fault_ic_mask);
+        ret |= cli_printline(cli, outline);
+
+        snprintf(outline, CLI_LINESZ,
+                 "diag classes cs:0x%04X supply:0x%04X memory:0x%04X digital:0x%04X osc:0x%04X cell:0x%04X",
+                 health->cs_fault_ic_mask,
+                 health->supply_flag_fault_ic_mask,
+                 health->memory_fault_ic_mask,
+                 health->digital_fault_ic_mask,
+                 health->oscillator_counter_fault_ic_mask,
+                 health->cell_ovuv_fault_ic_mask);
+        ret |= cli_printline(cli, outline);
+
+        snprintf(outline, CLI_LINESZ,
+                 "diag counts cfg:%lu cell:%lu owfull:%lu owbase:%lu owe:%lu owo:%lu",
                  (unsigned long)health->config_readback_count,
                  (unsigned long)health->cell_adc_self_test_count,
                  (unsigned long)health->open_wire_full_count,
+                 (unsigned long)health->open_wire_baseline_count,
                  (unsigned long)health->open_wire_even_count,
-                 (unsigned long)health->open_wire_odd_count,
+                 (unsigned long)health->open_wire_odd_count);
+        ret |= cli_printline(cli, outline);
+
+        snprintf(outline, CLI_LINESZ,
+                 "diag counts balance:%lu aux:%lu",
+                 (unsigned long)health->balance_readback_count,
                  (unsigned long)health->aux_gpio_diag_count);
         ret |= cli_printline(cli, outline);
 
         snprintf(outline, CLI_LINESZ,
-                 "openwire cells:%u even_valid:0x%04X odd_valid:0x%04X incomplete:0x%04X fault_ic:0x%04X sticky:0x%04X",
+                 "openwire cells:%u base_valid:0x%04X even_valid:0x%04X odd_valid:0x%04X",
                  (unsigned)smb->monitored_cell_count,
+                 health->open_wire_baseline_valid_ic_mask,
                  health->open_wire_even_valid_ic_mask,
-                 health->open_wire_odd_valid_ic_mask,
+                 health->open_wire_odd_valid_ic_mask);
+        ret |= cli_printline(cli, outline);
+
+        snprintf(outline, CLI_LINESZ,
+                 "openwire incomplete:0x%04X fault_ic:0x%04X sticky:0x%04X",
                  health->open_wire_incomplete_ic_mask,
                  health->open_wire_fault_ic_mask,
                  health->sticky_open_wire_fault_ic_mask);
@@ -2080,39 +2150,83 @@ static int get_spi_debug_locked(int argc, char *argv[])
         }
 
         snprintf(outline, CLI_LINESZ,
-                 "IC%u SID:%s %02X%02X%02X%02X%02X%02X STATC:%d csflt:0x%04X sleep:%u spi:%u thsd:%u osc:%u",
+                 "IC%u SID:%s device_id:0x%02X %02X%02X%02X%02X%02X%02X",
                  (unsigned)ic,
                  diag->sid_valid ? "ok" : "--",
+                 diag->device_id,
                  diag->sid[5], diag->sid[4], diag->sid[3],
-                 diag->sid[2], diag->sid[1], diag->sid[0],
-                 diag->statc_valid,
-                 diag->cs_flt_mask,
-                 diag->sleep,
-                 diag->spiflt,
-                 diag->thsd,
-                 diag->oscchk);
+                 diag->sid[2], diag->sid[1], diag->sid[0]);
         ret |= cli_printline(cli, outline);
 
         snprintf(outline, CLI_LINESZ,
-                 "IC%u STATD:%d ov:0x%04X uv:0x%04X osc_cnt:%u STATE:%d gpi:0x%03X rev:%u",
+                 "IC%u refs A:%d B:%d valid:%d VREF2:%dmV VD:%dmV VA:%dmV VRES:%dmV die:%ddC",
                  (unsigned)ic,
+                 diag->stata_valid,
+                 diag->statb_valid,
+                 diag->reference_values_valid,
+                 (int)diag->vref2_mv,
+                 (int)diag->vd_mv,
+                 (int)diag->va_mv,
+                 (int)diag->vres_mv,
+                 (int)diag->die_temp_deci_c);
+        ret |= cli_printline(cli, outline);
+
+        snprintf(outline, CLI_LINESZ,
+                 "IC%u status C:%d D:%d E:%d cs:0x%04X ov:0x%04X uv:0x%04X osc:%u gpi:0x%03X rev:%u",
+                 (unsigned)ic,
+                 diag->statc_valid,
                  diag->statd_valid,
+                 diag->state_valid,
+                 diag->cs_flt_mask,
                  diag->cell_ov_mask,
                  diag->cell_uv_mask,
                  diag->osc_counter,
-                 diag->state_valid,
                  diag->gpi_mask,
                  diag->revision);
         ret |= cli_printline(cli, outline);
 
         snprintf(outline, CLI_LINESZ,
-                 "IC%u openwire even:%d/0x%04X odd:%d/0x%04X combined:0x%04X",
+                 "IC%u supply VA:%u/%u VD:%u/%u memory C:%u CM:%u S:%u SM:%u",
                  (unsigned)ic,
+                 diag->va_ov,
+                 diag->va_uv,
+                 diag->vd_ov,
+                 diag->vd_uv,
+                 diag->ced,
+                 diag->cmed,
+                 diag->sed,
+                 diag->smed);
+        ret |= cli_printline(cli, outline);
+
+        snprintf(outline, CLI_LINESZ,
+                 "IC%u digital VDE:%u VDEL:%u comp:%u spi:%u sleep:%u thsd:%u tmod:%u osc:%u",
+                 (unsigned)ic,
+                 diag->vde,
+                 diag->vdel,
+                 diag->comp,
+                 diag->spiflt,
+                 diag->sleep,
+                 diag->thsd,
+                 diag->tmodchk,
+                 diag->oscchk);
+        ret |= cli_printline(cli, outline);
+
+        snprintf(outline, CLI_LINESZ,
+                 "IC%u openwire base:%d even:%d/0x%04X odd:%d/0x%04X combined:0x%04X",
+                 (unsigned)ic,
+                 diag->open_wire_baseline_valid,
                  diag->open_wire_even_valid,
                  diag->open_wire_even_fault_mask,
                  diag->open_wire_odd_valid,
                  diag->open_wire_odd_fault_mask,
                  diag->open_wire_fault_mask);
+        ret |= cli_printline(cli, outline);
+
+        snprintf(outline, CLI_LINESZ,
+                 "IC%u openwire attenuation even:0x%04X odd:0x%04X",
+                 (unsigned)ic,
+                 diag->open_wire_even_attenuation_fault_mask,
+                 diag->open_wire_odd_attenuation_fault_mask);
         ret |= cli_printline(cli, outline);
     }
 
@@ -2177,6 +2291,10 @@ static int get_apm_debug_locked(int argc, char *argv[])
                 return ret;
             }
             action_status = adbms2950_spi_probe_sid(apm);
+			/* A standalone String-B transaction cannot prove which sleeping SMBs
+			 * observed a compatible command. Seed each SMB counter independently
+			 * from its next valid packet instead of guessing. */
+			adbms6830_resync_command_counter_tracking(&data->acc.smb);
             snprintf(outline, CLI_LINESZ,
                      "ADBMS2950 RDSID identity probe: %s",
                      cli_hal_status_str(action_status));
@@ -2189,6 +2307,7 @@ static int get_apm_debug_locked(int argc, char *argv[])
 				return ret;
 			}
 			action_status = adbms2950_verify_config_readback(apm);
+			adbms6830_resync_command_counter_tracking(&data->acc.smb);
 			snprintf(outline, CLI_LINESZ,
 			         "ADBMS2950 RDCFGA/RDCFGB readback: %s",
 			         cli_hal_status_str(action_status));
@@ -2200,10 +2319,11 @@ static int get_apm_debug_locked(int argc, char *argv[])
             {
                 return ret;
             }
-            action_status = adbms2950_read_primary_sample(apm,
-                                                          osKernelGetTickCount());
+			action_status = adbms2950_read_primary_sample(apm,
+			                                                 osKernelGetTickCount());
+			adbms6830_resync_command_counter_tracking(&data->acc.smb);
             snprintf(outline, CLI_LINESZ,
-                     "ADBMS2950 RDSTAT+RDIVB1 sample: %s",
+                     "ADBMS2950 SNAP+RDSTAT+RDIVB1+RDFLAG sample: %s",
                      cli_hal_status_str(action_status));
             ret |= cli_printline(cli, outline);
         }
@@ -2229,6 +2349,7 @@ static int get_apm_debug_locked(int argc, char *argv[])
 					break;
 				}
 			}
+			adbms6830_resync_command_counter_tracking(&data->acc.smb);
 			snprintf(outline, CLI_LINESZ,
 			         "ADBMS2950 RDSID scope requested:%u completed:%u status:%s",
 			         (unsigned)repeat,
@@ -2270,11 +2391,12 @@ static int get_apm_debug_locked(int argc, char *argv[])
              health->hv_dividers_enabled ? "ON" : "OFF");
     ret |= cli_printline(cli, outline);
     snprintf(outline, CLI_LINESZ,
-             "SID:%02X %02X %02X %02X %02X %02X rev:%u I1CAL:%d",
+             "SID:%02X %02X %02X %02X %02X %02X rev:%u I1CAL:%d continuous:%d",
              health->sid[0], health->sid[1], health->sid[2],
              health->sid[3], health->sid[4], health->sid[5],
              (unsigned)health->revision,
-             health->i1_calibrated);
+             health->i1_calibrated,
+             health->i1_continuous_ready);
     ret |= cli_printline(cli, outline);
 
     snprintf(outline, CLI_LINESZ,
@@ -2290,15 +2412,22 @@ static int get_apm_debug_locked(int argc, char *argv[])
                  (osKernelGetTickCount() - health->last_update_ms) : 0u));
     ret |= cli_printline(cli, outline);
     snprintf(outline, CLI_LINESZ,
-             "health status:%s samples:%lu fail:%lu pec:%lu cc:%u advanced:%d mismatch:%lu stalls:%lu",
+             "health status:%s samples:%lu fail:%lu pec:%lu cc:%u mismatch:%lu stalls:%lu",
              cli_hal_status_str(health->last_status),
              (unsigned long)health->sample_count,
              (unsigned long)health->sample_error_count,
              (unsigned long)health->pec_error_count,
              (unsigned)health->last_cmd_counter,
-             health->counter_advanced,
 			 (unsigned long)health->counter_mismatch_count,
              (unsigned long)health->counter_stall_count);
+    ret |= cli_printline(cli, outline);
+    snprintf(outline, CLI_LINESZ,
+             "I1 freshness count:%u phase:%u combined:%u seen:%d advanced:%d",
+             (unsigned)health->i1_conversion_count,
+             (unsigned)health->i1_conversion_phase,
+             (unsigned)health->last_i1cntpha,
+             health->counter_seen,
+             health->counter_advanced);
     ret |= cli_printline(cli, outline);
 
     if(hspi != NULL)

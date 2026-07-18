@@ -42,10 +42,11 @@
 
 /* The five-SMB configuration keeps REFON asserted. The first checked wake,
  * this pre-conversion interval, and the checked wake inside ADCV together
- * exceed the 4.4 ms worst-case reference wake time. Redundant C-ADC/S-ADC
- * results are available 8 ms after the ADCV command. */
+ * exceed the 4.4 ms worst-case reference wake time. The documented redundant
+ * C-ADC/S-ADC sequence takes 8 ms to 16 ms depending on synchronization with
+ * the running C-ADC; use one additional millisecond of margin. */
 #define ADBMS6830_REFERENCE_PRECONVERSION_WAIT_US 3000u
-#define ADBMS6830_REDUNDANT_CONVERSION_WAIT_US    8000u
+#define ADBMS6830_REDUNDANT_CONVERSION_WAIT_US    17000u
 #define SPI_TIMEOUT 500
 #define BUFSZ 512
 

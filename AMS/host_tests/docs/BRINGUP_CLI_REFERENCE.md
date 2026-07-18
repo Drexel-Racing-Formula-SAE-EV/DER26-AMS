@@ -154,6 +154,10 @@ spi cfgchk
 bringup adbms6830
 ```
 
+`spi probea` performs the five-device ADBMS6830 RDCFGA read from String A.
+`spi probeb` is intentionally routed through the one-device ADBMS2950 RDSID
+reader on String B; it does not run the five-packet SMB parser backwards.
+
 Use `spi pins; spi cspins both 10; spi cs b pulse 10` first when the goal is
 pin diagnosis. `spi pins` prints the compiled GPIO mapping. `spi cspins both
 10` pulses PE4 and PF4 as separate candidate CS_B pins so the schematic-note

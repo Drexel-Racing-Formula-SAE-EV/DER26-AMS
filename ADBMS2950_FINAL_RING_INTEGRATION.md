@@ -17,18 +17,41 @@ String A is the production five-SMB view. String B is the one-device APM view.
 The two drivers share the same SPI6 transaction lock and never publish a mixed
 SMB/APM response buffer.
 
+## Device-boundary transaction rule
+
+ADI permits a read or write to end at a device boundary. After the four-byte
+command and command PEC, each accessed device contributes six data bytes and a
+two-byte data PEC. Devices beyond the leading subset are not accessed and do
+not increment their command counters.
+
+For the fixed final order this means:
+
+| Operation | End | Devices accessed | Total frame |
+|---|---:|---:|---:|
+| SMB configuration/balance write | String A | five leading ADBMS6830B devices | 44 bytes |
+| APM configuration write | String B | one leading ADBMS2950B device | 12 bytes |
+
+`write_string` is immutable after initialization. A subset write is rejected
+before wake or SPI activity if its active string is not the recorded owner.
+Read-only service probes may temporarily use the opposite end and must restore
+the production string before returning.
+
 ## Initialization Ownership
 
-1. The ADBMS6830 driver selects String A, performs the one global chain reset,
-   configures the five SMBs, and verifies both configuration groups.
-2. Only after the SMB subset is ready, the ADBMS2950 driver selects String B.
-3. The APM driver does not issue a second reset.
-4. RDSID must identify the expected ADBMS2950 derivative before any APM-specific
+1. The ADBMS6830 driver selects String A and performs the one global chain
+   reset.
+2. Before either SMB configuration write, RDSID must identify all five leading
+   devices as ADBMS6830B (`device_id=0x03`). A PEC-valid response from a
+   different product is rejected.
+3. The five SMBs are configured and both configuration groups are verified.
+4. Only after the SMB subset is ready, the ADBMS2950 driver selects String B.
+5. The APM driver does not issue a second reset.
+6. RDSID must identify the expected ADBMS2950 derivative before any APM-specific
    write is sent.
-5. CFGA and CFGB are written and read back byte-for-byte.
-6. GPO1/GPO2, which control the APM high-voltage dividers, default to push-pull
+7. CFGA and CFGB are written and read back byte-for-byte.
+8. GPO1/GPO2, which control the APM high-voltage dividers, default to push-pull
    low through `AMS_APM_ENABLE_HV_DIVIDERS=0`.
-7. A failed configuration write or readback leaves initialization failed and
+9. A failed configuration write or readback leaves initialization failed and
    triggers one bounded best-effort divider-off write. Cleanup success cannot
    hide the original failure.
 
@@ -83,6 +106,11 @@ bringup apm2950
 periodic ADBMS scan owns the bus. `apm scope` repeats a read-only RDSID identity
 transaction and bounds the repeat count from 1 through 100.
 
+`spi status` additionally reports the String-A write owner, final-ring
+structural validity, all five 6830 product IDs, and current/sticky SID identity
+masks. `spi sid` returns an error unless every leading device identifies as an
+ADBMS6830B.
+
 ## Host Verification
 
 Run from `AMS/host_tests`:
@@ -98,8 +126,8 @@ matrix should also pass before target testing.
 
 Validated on the delivered source tree:
 
-- 38 actual-driver/unit tests passed;
-- 88 comprehensive system SIL/injection tests passed;
+- 43 actual-driver/unit tests passed;
+- 96 comprehensive system SIL/injection tests passed;
 - the dedicated `apm-sil` gate passed;
 - production feature and BMS_OK ownership gates passed;
 - bring-up, CAN-fed ADBMS HIL, IMD-enabled and IWDG-enabled profiles passed;
@@ -125,6 +153,11 @@ Covered APM faults include:
 - stale-value preservation;
 - scan/CLI collision prevention;
 - APM failure remaining non-gating.
+
+The public Manchester Stinger Motorsports `g474-bms` history was used only as
+an independent mixed-chain reference. The protocol decisions above are based
+on ADI documentation; no third-party source is included. See
+`PUBLIC_G474_BMS_CROSSCHECK.md`.
 
 ## Hardware Validation Still Required
 

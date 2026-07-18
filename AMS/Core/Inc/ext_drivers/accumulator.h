@@ -169,6 +169,10 @@ typedef struct
 	HAL_StatusTypeDef smb_init_status;
 	bool apm_ready;
 	HAL_StatusTypeDef apm_init_status;
+	/* One-shot proof that the immediately preceding SMB scan completed while
+	 * the complete mixed ring was awake.  accumulator_read_apm() consumes this
+	 * token before broadcasting SNAP/UNSNAP commands. */
+	bool apm_full_ring_awake_token;
 
 	adbms2950_asic apm_ics[NAPMS];
 	adbms2950_driver_t apm;
@@ -186,6 +190,10 @@ void accumulator_init(accumulator_t *dev,
 					  TIM_HandleTypeDef* htim
 					  );
 int accumulator_read_volt(accumulator_t *dev);
+/* Read the String-B APM after a successful accumulator_read_volt() has woken
+ * the complete mixed ring.  The one-shot readiness token is consumed even if
+ * the APM transaction fails.  Standalone service reads must use the driver
+ * API and resynchronize SMB counter tracking after their transaction. */
 int accumulator_read_apm(accumulator_t *dev, uint32_t now_ms);
 int accumulator_read_temp(accumulator_t *dev);
 int accumulator_set_temp_ch(accumulator_t *dev, uint8_t channel);
@@ -201,6 +209,11 @@ void accumulator_update_temp_stats_at(accumulator_t *dev, uint32_t now_ms);
 bool accumulator_temp_sensor_usable(const accumulator_t *dev, uint8_t seg, uint8_t sensor);
 int16_t accumulator_temp_deci_c(const accumulator_t *dev, uint8_t seg, uint8_t sensor);
 uint8_t accumulator_configured_smb_count(const accumulator_t *dev);
+/* Validate the immutable assumptions that make leading-subset transactions
+ * safe in the final mixed ring.  This is deliberately independent of APM
+ * sample health: the APM remains advisory, but a corrupted device order,
+ * pointer, shared-bus binding or write-end assignment must stop all writes. */
+bool accumulator_final_ring_topology_valid(const accumulator_t *dev);
 int accumulator_set_balance(accumulator_t *dev);
 int accumulator_clear_balance(accumulator_t *dev);
 int accumulator_hil_ingest_cell_triplet(accumulator_t *dev,

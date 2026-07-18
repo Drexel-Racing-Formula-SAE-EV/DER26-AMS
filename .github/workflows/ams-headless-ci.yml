@@ -133,7 +133,7 @@ jobs:
 
       - name: Check firmware size limits
         run: |
-          python3 ci/scripts/check_firmware_size.py --elf AMS/build/DER26-AMS.elf --max-text 252200 --max-data 8192 --max-bss 65536
+          python3 ci/scripts/check_firmware_size.py --elf AMS/build/DER26-AMS.elf --max-text 196608 --max-data 8192 --max-bss 65536
 
       - name: Print firmware build outputs
         if: always()

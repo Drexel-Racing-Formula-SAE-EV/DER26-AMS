@@ -20,6 +20,12 @@ static uint8_t adbms2950_spi_txrx_rx_buf[BUFSZ] = {0};
 #define ADBMS2950_DELAY_SPINS_PER_US 256u
 #define ADBMS2950_DELAY_BASE_SPINS 1024u
 #define ADBMS2950_I1_CAL_MASK 0x40u
+#define ADBMS2950_I1_INITIALIZE_OPT 0x00u
+#define ADBMS2950_I1_CONTINUOUS_MIXED_OPT 0x0Cu
+#define ADBMS2950_I1_INIT_WAIT_US 160000u
+#define ADBMS2950_I1_INIT_MIN_COUNT 136u
+#define ADBMS2950_I1_CONTINUOUS_VERIFY_WAIT_US 2000u
+#define ADBMS2950_LONG_DELAY_CHUNK_US 60000u
 
 /*!< configuration registers commands */
 uint8_t WRCFGA[2]        = { 0x00, 0x01 };
@@ -149,6 +155,15 @@ static void adbms2950_force_dividers_off_best_effort(adbms2950_driver_t *dev);
 static bool adbms2950_topology_valid(const adbms2950_driver_t *dev);
 static void adbms2950_sat_inc_u32(uint32_t *value);
 static int32_t adbms2950_sign_extend_24(uint32_t raw);
+static HAL_StatusTypeDef adbms2950_delay_long_checked(adbms2950_driver_t *dev,
+                                                       uint32_t microseconds);
+static HAL_StatusTypeDef adbms2950_start_i1_continuous_checked(adbms2950_driver_t *dev);
+static HAL_StatusTypeDef adbms2950_read_i1_counter_checked(adbms2950_driver_t *dev,
+                                                           uint16_t *i1cntpha,
+                                                           uint8_t *cmd_counter);
+static void adbms2950_invalidate_sample(adbms2950_driver_t *dev,
+                                        HAL_StatusTypeDef status,
+                                        bool count_error);
 
 // SPI communication
 void adbms2950_set_cs(adbms2950_driver_t* dev, uint8_t state);
@@ -186,6 +201,10 @@ static bool adbms2950_topology_valid(const adbms2950_driver_t *dev)
 	       (dev->htim != NULL) &&
 	       ((int)dev->string >= (int)STRING_A) &&
 	       (dev->string <= STRING_B) &&
+	       ((int)dev->write_string >= (int)STRING_A) &&
+	       (dev->write_string <= STRING_B) &&
+	       (dev->cs_port[dev->write_string] != NULL) &&
+	       (dev->cs_pin[dev->write_string] != 0u) &&
 	       (dev->cs_port[dev->string] != NULL) &&
 	       (dev->cs_pin[dev->string] != 0u);
 }
@@ -206,6 +225,186 @@ static int32_t adbms2950_sign_extend_24(uint32_t raw)
 		raw |= 0xFF000000u;
 	}
 	return (int32_t)raw;
+}
+
+static HAL_StatusTypeDef adbms2950_delay_long_checked(adbms2950_driver_t *dev,
+                                                       uint32_t microseconds)
+{
+	while(microseconds > 0u)
+	{
+		uint16_t chunk = (microseconds > ADBMS2950_LONG_DELAY_CHUNK_US) ?
+		                 (uint16_t)ADBMS2950_LONG_DELAY_CHUNK_US :
+		                 (uint16_t)microseconds;
+		HAL_StatusTypeDef status = adbms2950_us_delay(dev, chunk);
+		if(status != HAL_OK)
+		{
+			return status;
+		}
+		microseconds -= chunk;
+	}
+	return HAL_OK;
+}
+
+static HAL_StatusTypeDef adbms2950_read_i1_counter_checked(adbms2950_driver_t *dev,
+                                                            uint16_t *i1cntpha,
+                                                            uint8_t *cmd_counter)
+{
+	HAL_StatusTypeDef status;
+	uint16_t count;
+	uint8_t phase;
+
+	if((i1cntpha == NULL) || (cmd_counter == NULL))
+	{
+		return HAL_ERROR;
+	}
+
+	status = adbms2950_rd48_checked(dev, RDFLAG, buf);
+	if(status != HAL_OK)
+	{
+		return status;
+	}
+
+	/* FLAG bytes 2 and 3 contain I1CNT[10:6], I1CNT[5:0] and
+	 * I1PHA[1:0], respectively.  Treating them as a 13-bit counter is the
+	 * datasheet-defined way to distinguish a fresh continuous conversion. */
+	count = (uint16_t)(((uint16_t)(buf[2] & 0x1Fu) << 6u) |
+	                   ((uint16_t)(buf[3] >> 2u) & 0x3Fu));
+	phase = (uint8_t)(buf[3] & 0x03u);
+	*i1cntpha = (uint16_t)((count << 2u) | phase);
+	*cmd_counter = dev->ics[0].rx_cmd_cntr;
+	dev->health.i1_conversion_count = count;
+	dev->health.i1_conversion_phase = phase;
+	return HAL_OK;
+}
+
+static HAL_StatusTypeDef adbms2950_start_i1_continuous_checked(adbms2950_driver_t *dev)
+{
+	uint8_t initialize_cmd[CMDSZ];
+	uint8_t continuous_cmd[CMDSZ];
+	uint16_t initialization_counter;
+	uint16_t continuous_counter;
+	uint8_t status_cmd_counter;
+	uint8_t flag_cmd_counter;
+	HAL_StatusTypeDef status;
+
+	/* The first ADI1 after power-up/reset must use OPT=0000 while the IxADC
+	 * performs its 136-cycle initialization.  Only after I1CAL and I1CNT prove
+	 * completion do we select OPT=1100 continuous operation.  OPT=1100 is
+	 * intentionally invalid on an ADBMS6830B, so it does not disturb the cell
+	 * monitors' existing C/S conversion mode. */
+	initialize_cmd[0] = sADI1[0]; /* RD=0: initialize the primary path only. */
+	initialize_cmd[1] = (uint8_t)(sADI1[1] |
+	                     ((ADBMS2950_I1_INITIALIZE_OPT & 0x08u) << 4u) |
+	                     ((ADBMS2950_I1_INITIALIZE_OPT & 0x04u) << 2u) |
+	                     (ADBMS2950_I1_INITIALIZE_OPT & 0x03u));
+	continuous_cmd[0] = sADI1[0];
+	continuous_cmd[1] = (uint8_t)(sADI1[1] |
+	                     ((ADBMS2950_I1_CONTINUOUS_MIXED_OPT & 0x08u) << 4u) |
+	                     ((ADBMS2950_I1_CONTINUOUS_MIXED_OPT & 0x04u) << 2u) |
+	                     (ADBMS2950_I1_CONTINUOUS_MIXED_OPT & 0x03u));
+
+	dev->health.i1_continuous_ready = false;
+	dev->health.counter_seen = false;
+	dev->health.counter_advanced = false;
+	status = adbms2950_wakeup_checked(dev);
+	if(status == HAL_OK)
+	{
+		status = adbms2950_cmd_checked(dev, initialize_cmd);
+	}
+	if(status == HAL_OK)
+	{
+		/* tREFUP + tIxADC_STARTUP + tIxADC_INIT is at most about 155 ms.
+		 * The 160 ms bounded wait leaves margin before checking I1CAL and
+		 * the documented minimum conversion count of 136. */
+		status = adbms2950_delay_long_checked(dev, ADBMS2950_I1_INIT_WAIT_US);
+	}
+	if(status == HAL_OK)
+	{
+		status = adbms2950_read_status(dev);
+		status_cmd_counter = dev->ics[0].rx_cmd_cntr;
+	}
+	else
+	{
+		status_cmd_counter = 0u;
+	}
+	if(status == HAL_OK)
+	{
+		status = adbms2950_read_i1_counter_checked(dev,
+		                                          &initialization_counter,
+		                                          &flag_cmd_counter);
+	}
+	else
+	{
+		initialization_counter = 0u;
+		flag_cmd_counter = 0u;
+	}
+	if((status == HAL_OK) &&
+	   ((!dev->health.i1_calibrated) ||
+	    (dev->health.i1_conversion_count < ADBMS2950_I1_INIT_MIN_COUNT) ||
+	    (status_cmd_counter != flag_cmd_counter)))
+	{
+		status = HAL_ERROR;
+	}
+
+	if(status == HAL_OK)
+	{
+		status = adbms2950_cmd_checked(dev, continuous_cmd);
+	}
+	if(status == HAL_OK)
+	{
+		/* One conversion is produced every 1 ms.  Require a nonzero counter
+		 * after two periods so a transport-successful command that did not
+		 * actually start continuous conversion cannot pass initialization. */
+		status = adbms2950_delay_long_checked(
+			dev, ADBMS2950_I1_CONTINUOUS_VERIFY_WAIT_US);
+	}
+	if(status == HAL_OK)
+	{
+		status = adbms2950_read_status(dev);
+		status_cmd_counter = dev->ics[0].rx_cmd_cntr;
+	}
+	if(status == HAL_OK)
+	{
+		status = adbms2950_read_i1_counter_checked(dev,
+		                                          &continuous_counter,
+		                                          &flag_cmd_counter);
+	}
+	else
+	{
+		continuous_counter = 0u;
+		flag_cmd_counter = 0u;
+	}
+	if((status == HAL_OK) &&
+	   ((!dev->health.i1_calibrated) ||
+	    (dev->health.i1_conversion_count == 0u) ||
+	    (status_cmd_counter != flag_cmd_counter)))
+	{
+		status = HAL_ERROR;
+	}
+
+	if(status == HAL_OK)
+	{
+		dev->health.i1_continuous_ready = true;
+		dev->health.counter_seen = true;
+		dev->health.counter_advanced = true;
+		dev->health.last_i1cntpha = continuous_counter;
+		dev->health.last_cmd_counter = flag_cmd_counter;
+	}
+	return status;
+}
+
+static void adbms2950_invalidate_sample(adbms2950_driver_t *dev,
+                                         HAL_StatusTypeDef status,
+                                         bool count_error)
+{
+	dev->health.sample_valid = false;
+	dev->health.current_valid = false;
+	dev->health.pack_voltage_valid = false;
+	dev->health.last_status = status;
+	if(count_error)
+	{
+		adbms2950_sat_inc_u32(&dev->health.sample_error_count);
+	}
 }
 
 static uint16_t adbms2950_min_u16(uint16_t a, uint16_t b)
@@ -443,6 +642,7 @@ HAL_StatusTypeDef adbms2950_init_mixed_chain(adbms2950_driver_t *dev,
 	dev->cs_pin[STRING_B] = CSB_Pin;
 	dev->htim = htim;
 	dev->string = primary_string;
+	dev->write_string = primary_string;
 	dev->delay_last_status = (htim != NULL) ? HAL_OK : HAL_ERROR;
 	dev->spi_debug.enabled = true;
 	dev->spi_debug.last_status = HAL_ERROR;
@@ -521,6 +721,13 @@ HAL_StatusTypeDef adbms2950_init_mixed_chain(adbms2950_driver_t *dev,
 	if(status == HAL_OK)
 	{
 		status = adbms2950_verify_config_readback(dev);
+	}
+	if(status == HAL_OK)
+	{
+		/* Establish I1ADC accuracy before the 10 Hz cell-monitor loop begins.
+		 * Otherwise each compatible ADCV/ADI1 can arrive before the 136-cycle
+		 * initialization window completes and I1CAL may never become valid. */
+		status = adbms2950_start_i1_continuous_checked(dev);
 	}
 	if(status != HAL_OK)
 	{
@@ -602,7 +809,10 @@ static HAL_StatusTypeDef adbms2950_wr48_checked(adbms2950_driver_t* dev,
 	uint8_t temp[TX_DATA];
 	HAL_StatusTypeDef status;
 
-	if(!adbms2950_topology_valid(dev) || (cmd == NULL) || (tx_data == NULL))
+	if(!adbms2950_topology_valid(dev) ||
+	   (dev->string != dev->write_string) ||
+	   (cmd == NULL) ||
+	   (tx_data == NULL))
 	{
 		return HAL_ERROR;
 	}
@@ -1016,91 +1226,139 @@ HAL_StatusTypeDef adbms2950_read_primary_sample(adbms2950_driver_t *dev,
 												 uint32_t now_ms)
 {
 	HAL_StatusTypeDef status;
+	HAL_StatusTypeDef unsnap_status;
 	uint32_t raw_i1;
 	uint16_t raw_vb1;
 	int32_t signed_i1;
 	int16_t signed_vb1;
 	uint8_t status_counter;
-	uint8_t counter;
+	uint8_t sample_counter;
+	uint8_t flag_counter;
+	uint16_t i1cntpha;
+	bool snapshot_active = false;
 
-	if(!adbms2950_topology_valid(dev) || !dev->health.initialized)
+	if(dev == NULL)
 	{
 		return HAL_ERROR;
 	}
-
-	status = adbms2950_read_status(dev);
-	if((status != HAL_OK) || !dev->health.i1_calibrated)
+	if(!adbms2950_topology_valid(dev) ||
+	   !dev->health.initialized ||
+	   !dev->health.i1_continuous_ready)
 	{
-		dev->health.sample_valid = false;
-		dev->health.current_valid = false;
-		dev->health.pack_voltage_valid = false;
-		dev->health.last_status = (status == HAL_OK) ? HAL_ERROR : status;
-		adbms2950_sat_inc_u32(&dev->health.sample_error_count);
-		return dev->health.last_status;
+		adbms2950_invalidate_sample(dev, HAL_ERROR, true);
+		return HAL_ERROR;
+	}
+
+	/* Recover from a prior interrupted snapshot, then freeze I1CNTPHA,
+	 * I1/VB1 and status into one coherent read epoch. */
+	status = adbms2950_wakeup_checked(dev);
+	if(status == HAL_OK)
+	{
+		status = adbms2950_cmd_checked(dev, UNSNAP);
+	}
+	if(status == HAL_OK)
+	{
+		status = adbms2950_cmd_checked(dev, SNAP);
+		snapshot_active = (status == HAL_OK);
+	}
+	if(status == HAL_OK)
+	{
+		status = adbms2950_read_status(dev);
+	}
+	if((status == HAL_OK) && !dev->health.i1_calibrated)
+	{
+		status = HAL_ERROR;
 	}
 	status_counter = dev->ics[0].rx_cmd_cntr;
 
-	status = adbms2950_rd48_checked(dev, RDIVB1, buf);
+	if(status == HAL_OK)
+	{
+		status = adbms2950_rd48_checked(dev, RDIVB1, buf);
+	}
+	if(status == HAL_OK)
+	{
+		sample_counter = dev->ics[0].rx_cmd_cntr;
+		raw_i1 = (uint32_t)buf[0] |
+		         ((uint32_t)buf[1] << 8u) |
+		         ((uint32_t)buf[2] << 16u);
+		raw_vb1 = (uint16_t)((uint16_t)buf[4] | ((uint16_t)buf[5] << 8u));
+	}
+	else
+	{
+		sample_counter = 0u;
+		raw_i1 = 0u;
+		raw_vb1 = 0u;
+	}
+
+	if(status == HAL_OK)
+	{
+		status = adbms2950_read_i1_counter_checked(dev, &i1cntpha, &flag_counter);
+	}
+	else
+	{
+		i1cntpha = 0u;
+		flag_counter = 0u;
+	}
+
+	if(snapshot_active)
+	{
+		unsnap_status = adbms2950_cmd_checked(dev, UNSNAP);
+		if((status == HAL_OK) && (unsnap_status != HAL_OK))
+		{
+			status = unsnap_status;
+		}
+	}
+
+	/* Read commands do not advance CCNT.  All three packets must therefore
+	 * report the same command-counter epoch established by SNAP.  CCNT may
+	 * legitimately roll through zero, so equality—not a nonzero test—is the
+	 * integrity condition. */
+	if((status == HAL_OK) &&
+	   ((status_counter != sample_counter) ||
+	    (status_counter != flag_counter)))
+	{
+		adbms2950_sat_inc_u32(&dev->health.counter_mismatch_count);
+		status = HAL_ERROR;
+	}
+
+	if((status == HAL_OK) &&
+	   ((raw_i1 == ADBMS2950_I1_RESET_CODE) ||
+	    (raw_i1 == ADBMS2950_I1_CLEAR_CODE) ||
+	    (raw_vb1 == ADBMS2950_VB1_RESET_CODE) ||
+	    (raw_vb1 == ADBMS2950_VB1_CLEAR_CODE)))
+	{
+		status = HAL_ERROR;
+	}
+
 	if(status != HAL_OK)
 	{
-		dev->health.sample_valid = false;
-		dev->health.current_valid = false;
-		dev->health.pack_voltage_valid = false;
-		dev->health.last_status = status;
-		adbms2950_sat_inc_u32(&dev->health.sample_error_count);
+		dev->health.counter_advanced = false;
+		adbms2950_invalidate_sample(dev, status, true);
 		return status;
 	}
 
-	/* Read commands do not advance the device command counter.  RDSTAT and
-	 * RDIVB1 are consecutive reads under the same driver lock, so a mismatch
-	 * proves the two packets are not one coherent sample. */
-	counter = dev->ics[0].rx_cmd_cntr;
-	if((counter == 0u) || (counter != status_counter))
+	if(dev->health.counter_seen)
 	{
-		dev->health.sample_valid = false;
-		dev->health.current_valid = false;
-		dev->health.pack_voltage_valid = false;
-		dev->health.counter_advanced = false;
-		dev->health.last_status = HAL_ERROR;
-		adbms2950_sat_inc_u32(&dev->health.counter_mismatch_count);
-		adbms2950_sat_inc_u32(&dev->health.sample_error_count);
-		return HAL_ERROR;
+		dev->health.counter_advanced = (i1cntpha != dev->health.last_i1cntpha);
 	}
-
-	raw_i1 = (uint32_t)buf[0] |
-	         ((uint32_t)buf[1] << 8u) |
-	         ((uint32_t)buf[2] << 16u);
-	raw_vb1 = (uint16_t)((uint16_t)buf[4] | ((uint16_t)buf[5] << 8u));
-	if((raw_i1 == ADBMS2950_I1_RESET_CODE) ||
-	   (raw_i1 == ADBMS2950_I1_CLEAR_CODE) ||
-	   (raw_vb1 == ADBMS2950_VB1_RESET_CODE) ||
-	   (raw_vb1 == ADBMS2950_VB1_CLEAR_CODE))
+	else
 	{
-		dev->health.sample_valid = false;
-		dev->health.current_valid = false;
-		dev->health.pack_voltage_valid = false;
-		dev->health.last_status = HAL_ERROR;
-		adbms2950_sat_inc_u32(&dev->health.sample_error_count);
+		/* A successful compatible ADI1 resets I1CNTPHA.  A nonzero value
+		 * proves at least one new conversion phase completed in that epoch. */
+		dev->health.counter_advanced = (i1cntpha != 0u);
+	}
+	if(!dev->health.counter_advanced)
+	{
+		adbms2950_sat_inc_u32(&dev->health.counter_stall_count);
+		adbms2950_invalidate_sample(dev, HAL_ERROR, true);
 		return HAL_ERROR;
 	}
 
 	signed_i1 = adbms2950_sign_extend_24(raw_i1);
 	signed_vb1 = (int16_t)raw_vb1;
-	if(dev->health.counter_seen)
-	{
-		dev->health.counter_advanced = (counter != 0u) &&
-		                               (counter != dev->health.last_cmd_counter);
-		if(!dev->health.counter_advanced)
-		{
-			adbms2950_sat_inc_u32(&dev->health.counter_stall_count);
-		}
-	}
-	else
-	{
-		dev->health.counter_seen = true;
-		dev->health.counter_advanced = (counter != 0u);
-	}
-	dev->health.last_cmd_counter = counter;
+	dev->health.counter_seen = true;
+	dev->health.last_i1cntpha = i1cntpha;
+	dev->health.last_cmd_counter = flag_counter;
 
 	dev->ics[0].ivbat.i1 = (uint32_t)signed_i1;
 	dev->ics[0].ivbat.vbat1 = raw_vb1;
@@ -1120,6 +1378,23 @@ HAL_StatusTypeDef adbms2950_read_primary_sample(adbms2950_driver_t *dev,
 	dev->health.last_status = HAL_OK;
 	adbms2950_sat_inc_u32(&dev->health.sample_count);
 	return HAL_OK;
+}
+
+void adbms2950_note_compatible_adi1(adbms2950_driver_t *dev)
+{
+	if(dev == NULL)
+	{
+		return;
+	}
+
+	dev->health.counter_seen = false;
+	dev->health.counter_advanced = false;
+	/* The compatible command starts a new conversion epoch. Keep the previous
+	 * values and timestamp for diagnostics, but withdraw their validity until a
+	 * coherent SNAP/RDSTAT/RDIVB1/RDFLAG transaction succeeds. */
+	dev->health.sample_valid = false;
+	dev->health.current_valid = false;
+	dev->health.pack_voltage_valid = false;
 }
 
 void adbms2950_parse_cfga(adbms2950_driver_t* dev, uint8_t *data)

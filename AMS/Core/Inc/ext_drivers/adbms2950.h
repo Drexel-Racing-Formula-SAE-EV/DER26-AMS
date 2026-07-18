@@ -21,6 +21,12 @@
 #define ADBMS2950_I1_CLEAR_CODE 0xFC0000u
 #define ADBMS2950_VB1_RESET_CODE 0x7FFFu
 #define ADBMS2950_VB1_CLEAR_CODE 0x8000u
+/* A coherent sample broadcasts UNSNAP, SNAP and UNSNAP.  Initialization is
+ * followed by a conservative ADBMS6830 command-counter resynchronization:
+ * the required ADBMS2950 single-shot/continuous ADI1 sequence has different
+ * validity on the two device types, so guessing an exact shared increment is
+ * not safe. */
+#define ADBMS2950_SHARED_COUNTER_INCREMENTS_PER_SAMPLE 3u
 
 typedef enum
 {
@@ -67,7 +73,10 @@ typedef struct
   bool current_valid;
   bool pack_voltage_valid;
   bool i1_calibrated;
+  bool i1_continuous_ready;
   bool hv_dividers_enabled;
+  /* counter_seen/counter_advanced refer to the documented 13-bit
+   * I1CNTPHA conversion counter, not the SPI command counter. */
   bool counter_seen;
   bool counter_advanced;
   HAL_StatusTypeDef last_status;
@@ -75,6 +84,9 @@ typedef struct
   uint8_t revision;
   uint8_t sid[RSID];
   uint8_t last_cmd_counter;
+  uint16_t i1_conversion_count;
+  uint8_t i1_conversion_phase;
+  uint16_t last_i1cntpha;
   uint32_t sample_count;
   uint32_t sample_error_count;
   uint32_t pec_error_count;
@@ -167,6 +179,9 @@ typedef struct
 	GPIO_TypeDef *cs_port[2];
 	uint16_t cs_pin[2];
 	adbms_string string;
+	/* The final-ring APM is the leading device from String B.  Reads may be
+	 * probed from either end, but subset writes are safe only from this owner. */
+	adbms_string write_string;
 	TIM_HandleTypeDef *htim;
 	HAL_StatusTypeDef delay_last_status;
 	uint32_t delay_timeout_count;
@@ -224,6 +239,10 @@ HAL_StatusTypeDef adbms2950_read_sid(adbms2950_driver_t *dev);
 HAL_StatusTypeDef adbms2950_read_status(adbms2950_driver_t *dev);
 HAL_StatusTypeDef adbms2950_read_primary_sample(adbms2950_driver_t *dev,
                                                 uint32_t now_ms);
+/* Call after the chain owner successfully issues a compatible ADI1/ADCV.
+ * That command resets I1CNT/I1PHA, so the next nonzero counter value belongs
+ * to a new conversion epoch even if its numeric value matches the prior scan. */
+void adbms2950_note_compatible_adi1(adbms2950_driver_t *dev);
 HAL_StatusTypeDef adbms2950_verify_config_readback(adbms2950_driver_t *dev);
 const adbms2950_health_t *adbms2950_health_get(const adbms2950_driver_t *dev);
 void adbms2950_health_clear_counters(adbms2950_driver_t *dev);
