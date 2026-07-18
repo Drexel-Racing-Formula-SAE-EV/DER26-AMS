@@ -66,7 +66,7 @@ WARN := \
 CFLAGS_COMMON := -std=c11 -g -O0 $(WARN) $(COMMON_DEFS) $(INC)
 LDLIBS := -lm
 
-.PHONY: help check-root compile unit test production-gates static-allocation-gate system-sil apm-sil bringup-test hil-adbms-test imd-test air-feedback-stub-test safety-test stress ci asan ubsan analyze clang-analyze clean list make-build-dir
+.PHONY: help check-root compile unit test production-gates static-allocation-gate state-ownership-gate system-sil apm-sil bringup-test hil-adbms-test imd-test air-feedback-stub-test safety-test stress ci asan ubsan analyze clang-analyze clean list make-build-dir
 
 help:
 	@echo "DER26 AMS host test harness"
@@ -76,6 +76,7 @@ help:
 	@echo "  make test          Build and run comprehensive host tests"
 	@echo "  make production-gates Verify HIL/service CLI are disabled by default"
 	@echo "  make static-allocation-gate Verify every application task uses fixed storage"
+	@echo "  make state-ownership-gate Verify state and CAN-control ownership boundaries"
 	@echo "  make system-sil    Alias for comprehensive system-level SIL/injection tests"
 	@echo "  make apm-sil       Run actual-driver ADBMS2950 unit tests plus final-ring CLI/SIL tests"
 	@echo "  make bringup-test  Run comprehensive tests with AMS_HW_BRINGUP=1"
@@ -115,7 +116,7 @@ unit: check-root make-build-dir
 	$(CC) $(CFLAGS_COMMON) $(UNIT_SRC) $(ESTIMATOR_SRC) $(ADBMS2950_SRC) $(AIR_MONITOR_SRC) -o $(UNIT_BIN) $(LDLIBS)
 	$(UNIT_BIN)
 
-ci: unit test apm-sil production-gates static-allocation-gate analyze
+ci: unit test apm-sil production-gates static-allocation-gate state-ownership-gate analyze
 
 # Normal run: catches logic regressions and compile/link problems.
 test: CFLAGS_COMMON += $(HOST_EXERCISE_DEFS)
@@ -156,6 +157,24 @@ static-allocation-gate: check-root
 		"$(AMS_ROOT)/Middlewares/Third_Party/FreeRTOS/Source/timers.c"
 	@grep -q 'cb_mem = &adbms_spi_mutex_cb' "$(AMS_ROOT)/Core/Src/app.c"
 	@echo "PASS application, idle, timer-task, timer-queue, and ADBMS mutex static-allocation gate"
+
+state-ownership-gate: check-root
+	@if grep -R -nE '(data->state|app\.state)[[:space:]]*=[^=]' \
+		"$(AMS_ROOT)/Core/Src" "$(AMS_ROOT)/Core/Inc" | \
+		grep -v "$(AMS_ROOT)/Core/Src/app.c:" | \
+		grep -v "$(AMS_ROOT)/Core/Inc/app.h:"; then \
+		echo "ERROR: application state write exists outside app initialization/transition boundary"; \
+		exit 1; \
+	fi
+	@if grep -R -nE 'HAL_CAN_(Start|Stop|ActivateNotification|DeactivateNotification|ConfigFilter)' \
+		"$(AMS_ROOT)/Core/Src" | \
+		grep -v "$(AMS_ROOT)/Core/Src/ext_drivers/canbus.c:"; then \
+		echo "ERROR: CAN control HAL call exists outside CAN service"; \
+		exit 1; \
+	fi
+	@grep -q 'ams_state_transition_begin' "$(AMS_ROOT)/Core/Src/tasks/error_task.c"
+	@grep -q 'ams_state_transition_begin' "$(AMS_ROOT)/Core/Src/tasks/cli_task.c"
+	@echo "PASS centralized state writers and CAN control ownership gate"
 
 system-sil: test
 

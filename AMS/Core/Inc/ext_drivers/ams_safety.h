@@ -96,6 +96,7 @@ typedef enum
     AMS_FAULT_LOG_FAULT_CLEAR_ACCEPTED,
     AMS_FAULT_LOG_FAULT_CLEAR_REJECTED,
     AMS_FAULT_LOG_AIR_FAULT_LATCH,
+    AMS_FAULT_LOG_STATE_TRANSITION,
 } ams_fault_log_event_t;
 
 typedef struct

@@ -137,6 +137,7 @@ static bool error_task_bms_ready(const app_data_t *data, uint32_t now)
 
     /* Caller holds the short safety critical section. */
     return ams_state_allows_bms_ok(data->state) &&
+           !data->state_transition_in_progress &&
            error_task_current_policy_matches_state(data) &&
            error_task_operating_inputs_ready(data, now) &&
            ((data->state != STATE_CHARGE) || !data->temp_charge_stop) &&
@@ -167,6 +168,11 @@ TaskHandle_t error_task_start(app_data_t *data)
 void error_task_update(app_data_t *data, uint32_t now)
 {
     bool startup_transitioned = false;
+    bool log_state_transition = false;
+    state_t transition_from = STATE_NULL;
+    state_t transition_to = STATE_NULL;
+    ams_state_transition_reason_t transition_reason = AMS_STATE_TRANSITION_BOOT;
+    uint32_t transition_count = 0u;
 
     if(data == NULL)
     {
@@ -195,7 +201,19 @@ void error_task_update(app_data_t *data, uint32_t now)
      * authorize BMS_OK. */
     if(!ams_state_is_valid(data->state))
     {
-        data->state = STATE_ERROR;
+        set_bms(false);
+        if(ams_state_transition_begin(data,
+                                      STATE_ERROR,
+                                      AMS_STATE_TRANSITION_CORRUPT_CURRENT_STATE,
+                                      now) == AMS_STATE_TRANSITION_APPLIED)
+        {
+            transition_from = data->state_previous;
+            transition_to = data->state;
+            transition_reason = data->state_transition_reason;
+            transition_count = data->state_transition_count;
+            log_state_transition = true;
+        }
+        ams_state_transition_finish(data);
     }
 
     data->hard_fault = (data->fuse_fault ||
@@ -233,8 +251,20 @@ void error_task_update(app_data_t *data, uint32_t now)
     if((data->state == STATE_START) &&
        error_task_operating_inputs_ready(data, now))
     {
-        data->state = STATE_DISCARGE;
-        startup_transitioned = true;
+        set_bms(false);
+        if(ams_state_transition_begin(data,
+                                      STATE_DISCARGE,
+                                      AMS_STATE_TRANSITION_STARTUP_READY,
+                                      now) == AMS_STATE_TRANSITION_APPLIED)
+        {
+            startup_transitioned = true;
+            transition_from = data->state_previous;
+            transition_to = data->state;
+            transition_reason = data->state_transition_reason;
+            transition_count = data->state_transition_count;
+            log_state_transition = true;
+        }
+        ams_state_transition_finish(data);
     }
 
     /* This task is the sole normal owner allowed to assert BMS_OK.
@@ -245,6 +275,15 @@ void error_task_update(app_data_t *data, uint32_t now)
     set_bms(data->bms_supervisor_ready);
 
     taskEXIT_CRITICAL();
+
+    if(log_state_transition)
+    {
+        ams_fault_log_event(AMS_FAULT_LOG_STATE_TRANSITION,
+                            (uint16_t)transition_reason,
+                            (((uint32_t)(uint16_t)transition_from) << 16u) |
+                                (uint32_t)(uint16_t)transition_to,
+                            transition_count);
+    }
 
     ams_safety_watchdog_task_update(data);
 }

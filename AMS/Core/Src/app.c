@@ -342,6 +342,11 @@ void app_create(void)
 	app.fan_last_update_tick = 0u;
 
 	app.state = STATE_START;
+	app.state_previous = STATE_NULL;
+	app.state_transition_reason = AMS_STATE_TRANSITION_BOOT;
+	app.state_transition_count = 0u;
+	app.state_transition_last_tick = osKernelGetTickCount();
+	app.state_transition_in_progress = false;
 
 	app.max_temp = 0.0;
 	app.avg_temp = 0.0;

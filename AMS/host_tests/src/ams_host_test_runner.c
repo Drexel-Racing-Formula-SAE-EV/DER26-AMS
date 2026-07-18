@@ -3081,6 +3081,8 @@ static void test_safety_panic_reset_watchdog_and_log(void)
     CHECK(ams_fault_log_get()->count == 2u);
     CHECK(strcmp(ams_fault_log_event_str(AMS_FAULT_LOG_AIR_FAULT_LATCH),
                  "AIR_FAULT_LATCH") == 0);
+    CHECK(strcmp(ams_fault_log_event_str(AMS_FAULT_LOG_STATE_TRANSITION),
+                 "STATE_TRANSITION") == 0);
     CHECK(!ams_fault_log_snapshot(NULL));
 }
 
@@ -3973,6 +3975,13 @@ static void test_system_sil_bench_cli_abuse_and_balance_idempotence(void)
     sil_prepare_cli_capture();
     CHECK(set_state(2, state_discharge) == 0);
     CHECK(app.state == STATE_DISCARGE);
+    CHECK(app.state_previous == STATE_CHARGE);
+    CHECK(app.state_transition_reason == AMS_STATE_TRANSITION_SERVICE_COMMAND);
+    CHECK(app.state_transition_count == 1u);
+    CHECK(app.state_transition_in_progress == false);
+    CHECK(app.board.charger.shutdown_pending == true);
+    CHECK(app.board.charger.shutdown_frames_remaining == CHARGER_EXIT_DISABLE_FRAMES);
+    CHECK(app.charger_fault == true);
     CHECK(app.bms_state == false);
     CHECK(bms_pin_state == GPIO_PIN_RESET);
     sil_expect_balancing_clear(&app);
@@ -4013,6 +4022,25 @@ static void test_system_sil_bench_cli_abuse_and_balance_idempotence(void)
         CHECK(balance_control(2, balance_enable) == 0);
         CHECK(app.balance_inhibit == false);
     }
+
+    app.state = STATE_ERROR;
+    sil_prepare_cli_capture();
+    CHECK(set_state(2, state_discharge) == 1);
+    CHECK(app.state == STATE_ERROR);
+    CHECK(app.state_transition_in_progress == false);
+    CHECK(strstr(cli_capture, "reset required") != NULL);
+
+    ams_fault_log_t state_log;
+    uint32_t state_event_count = 0u;
+    CHECK(ams_fault_log_snapshot(&state_log));
+    for(uint32_t i = 0u; i < AMS_FAULT_LOG_DEPTH; i++)
+    {
+        if(state_log.entry[i].event == AMS_FAULT_LOG_STATE_TRANSITION)
+        {
+            state_event_count++;
+        }
+    }
+    CHECK(state_event_count >= 3u);
 }
 
 static void test_system_sil_bench_state_transition_balance_cleanup(void)
@@ -4047,6 +4075,108 @@ static void test_system_sil_bench_state_transition_balance_cleanup(void)
         CHECK(app.bms_state == true);
         CHECK(bms_pin_state == GPIO_PIN_SET);
     }
+}
+
+static void test_system_sil_state_transition_guard_and_audit(void)
+{
+    static CAN_HandleTypeDef hcan;
+
+    /* A same-state service operation still holds the transition guard while
+     * its blocking cleanup runs.  With all ordinary gates healthy, the
+     * supervisor must not reassert BMS_OK until finish is published. */
+    sil_prepare_ready_system(STATE_CHARGE, 0.0f, 3.700f);
+    charger_init(&app.board.charger, &app.board.canbus);
+    app.board.canbus.hcan = &hcan;
+    app.board.charger.last_rx_tick = fake_tick;
+    taskENTER_CRITICAL();
+    set_bms(false);
+    CHECK(ams_state_transition_begin(&app,
+                                     STATE_CHARGE,
+                                     AMS_STATE_TRANSITION_SERVICE_COMMAND,
+                                     123u) == AMS_STATE_TRANSITION_NO_CHANGE);
+    taskEXIT_CRITICAL();
+    CHECK(app.state_transition_in_progress == true);
+    sil_mark_all_heartbeats_alive(&app);
+    error_task_update(&app, fake_tick);
+    CHECK(app.bms_state == false);
+    CHECK(bms_pin_state == GPIO_PIN_RESET);
+
+    taskENTER_CRITICAL();
+    ams_state_transition_finish(&app);
+    taskEXIT_CRITICAL();
+    sil_mark_all_heartbeats_alive(&app);
+    error_task_update(&app, fake_tick);
+    CHECK(app.bms_state == true);
+    CHECK(bms_pin_state == GPIO_PIN_SET);
+
+    /* An applied charge exit creates an auditable transition and a blocking
+     * charger shutdown request; current-policy refresh alone cannot reopen
+     * BMS_OK before the CAN owner finishes that request. */
+    taskENTER_CRITICAL();
+    set_bms(false);
+    CHECK(ams_state_transition_begin(&app,
+                                     STATE_DISCARGE,
+                                     AMS_STATE_TRANSITION_SERVICE_COMMAND,
+                                     456u) == AMS_STATE_TRANSITION_APPLIED);
+    taskEXIT_CRITICAL();
+    CHECK(app.state == STATE_DISCARGE);
+    CHECK(app.state_previous == STATE_CHARGE);
+    CHECK(app.state_transition_reason == AMS_STATE_TRANSITION_SERVICE_COMMAND);
+    CHECK(app.state_transition_count == 1u);
+    CHECK(app.state_transition_last_tick == 456u);
+    CHECK(app.board.charger.shutdown_pending == true);
+    CHECK(app.board.charger.shutdown_frames_remaining == CHARGER_EXIT_DISABLE_FRAMES);
+    CHECK(app.board.charger.shutdown_request_count == 1u);
+    CHECK(app.charger_fault == true);
+    taskENTER_CRITICAL();
+    ams_state_transition_finish(&app);
+    taskEXIT_CRITICAL();
+
+    sil_run_current_sample(&app, 0.0f);
+    sil_mark_all_heartbeats_alive(&app);
+    error_task_update(&app, fake_tick);
+    CHECK(app.current_fault_mode == CURRENT_FAULT_MODE_DRIVE);
+    CHECK(app.bms_state == false);
+
+    /* Corrupt enums are contained as ERROR, request a conservative charger
+     * shutdown, and cannot wrap the transition diagnostic counter. */
+    init_fake_app();
+    app.state = (state_t)99;
+    app.state_transition_count = UINT32_MAX;
+    taskENTER_CRITICAL();
+    CHECK(ams_state_transition_begin(&app,
+                                     STATE_DISCARGE,
+                                     AMS_STATE_TRANSITION_SERVICE_COMMAND,
+                                     789u) == AMS_STATE_TRANSITION_APPLIED);
+    taskEXIT_CRITICAL();
+    CHECK(app.state == STATE_ERROR);
+    CHECK(app.state_previous == (state_t)99);
+    CHECK(app.state_transition_reason == AMS_STATE_TRANSITION_CORRUPT_CURRENT_STATE);
+    CHECK(app.state_transition_count == UINT32_MAX);
+    CHECK(app.board.charger.shutdown_pending == true);
+    CHECK(app.charger_fault == true);
+    taskENTER_CRITICAL();
+    ams_state_transition_finish(&app);
+    taskEXIT_CRITICAL();
+
+    CHECK(ams_state_transition_begin(&app,
+                                     STATE_DISCARGE,
+                                     AMS_STATE_TRANSITION_SERVICE_COMMAND,
+                                     790u) == AMS_STATE_TRANSITION_REJECTED);
+    CHECK(app.state == STATE_ERROR);
+    CHECK(app.state_transition_in_progress == false);
+    CHECK(app.state_transition_count == UINT32_MAX);
+
+    init_fake_app();
+    app.state = STATE_DISCARGE;
+    CHECK(ams_state_transition_begin(&app,
+                                     (state_t)77,
+                                     AMS_STATE_TRANSITION_SERVICE_COMMAND,
+                                     791u) == AMS_STATE_TRANSITION_APPLIED);
+    CHECK(app.state == STATE_ERROR);
+    CHECK(app.state_transition_reason == AMS_STATE_TRANSITION_INVALID_REQUEST);
+    CHECK(app.board.charger.shutdown_pending == true);
+    ams_state_transition_finish(&app);
 }
 
 static void test_system_sil_bench_bmsok_inhibit_survives_ready_tasks(void)
@@ -7882,6 +8012,107 @@ static void test_charge_state_disable_matrix(void){
     }
 }
 
+static void test_charger_state_exit_shutdown_burst(void)
+{
+    static CAN_HandleTypeDef hcan;
+
+    init_fake_app();
+    charger_init(&app.board.charger, &app.board.canbus);
+    app.board.canbus.hcan = &hcan;
+    app.state = STATE_CHARGE;
+    app.bms_state = true;
+    bms_pin_state = GPIO_PIN_SET;
+
+    taskENTER_CRITICAL();
+    set_bms(false);
+    CHECK(ams_state_transition_begin(&app,
+                                     STATE_DISCARGE,
+                                     AMS_STATE_TRANSITION_SERVICE_COMMAND,
+                                     fake_tick) == AMS_STATE_TRANSITION_APPLIED);
+    ams_state_transition_finish(&app);
+    taskEXIT_CRITICAL();
+
+    CHECK(app.board.charger.shutdown_pending == true);
+    CHECK(app.board.charger.shutdown_frames_remaining == CHARGER_EXIT_DISABLE_FRAMES);
+    CHECK(app.charger_fault == true);
+
+    for(uint8_t frame = 0u; frame < CHARGER_EXIT_DISABLE_FRAMES; frame++)
+    {
+        tx_count = 0u;
+        tx_free_level = 3u;
+        run_one_canbus_task_iteration(&app);
+
+        CHECK(tx_count == (HOST_NONCHARGE_CAN_FRAME_COUNT + 1u));
+        CHECK(tx_log[0].ide == CAN_ID_EXT);
+        CHECK(tx_log[0].extid == CCS_CANBUS_ID);
+        CHECK(word_at(0u, 0u) == 0u);
+        CHECK(word_at(0u, 1u) == 0u);
+        CHECK(tx_log[0].data[4] == CHARGER_CMD_DISABLE);
+        CHECK(app.board.charger.shutdown_tx_count == (uint32_t)frame + 1u);
+        CHECK(app.board.charger.shutdown_frames_remaining ==
+              (uint8_t)(CHARGER_EXIT_DISABLE_FRAMES - frame - 1u));
+
+        if((frame + 1u) < CHARGER_EXIT_DISABLE_FRAMES)
+        {
+            CHECK(app.board.charger.shutdown_pending == true);
+            CHECK(app.charger_fault == true);
+        }
+    }
+
+    CHECK(app.board.charger.shutdown_pending == false);
+    CHECK(app.board.charger.shutdown_frames_remaining == 0u);
+    CHECK(app.board.charger.shutdown_tx_fail_count == 0u);
+    CHECK(app.board.charger.last_shutdown_status == HAL_OK);
+    CHECK(app.board.charger.tx_fail == false);
+    CHECK(app.charger_fault == false);
+
+    /* A failed first queue attempt consumes no shutdown frame and cannot be
+     * hidden by the ordinary non-charge cleanup path. */
+    init_fake_app();
+    charger_init(&app.board.charger, &app.board.canbus);
+    app.board.canbus.hcan = &hcan;
+    app.state = STATE_CHARGE;
+    app.bms_state = true;
+    bms_pin_state = GPIO_PIN_SET;
+    taskENTER_CRITICAL();
+    set_bms(false);
+    CHECK(ams_state_transition_begin(&app,
+                                     STATE_DISCARGE,
+                                     AMS_STATE_TRANSITION_SERVICE_COMMAND,
+                                     fake_tick) == AMS_STATE_TRANSITION_APPLIED);
+    ams_state_transition_finish(&app);
+    taskEXIT_CRITICAL();
+
+    fake_can_add_tx_status = HAL_ERROR;
+    tx_count = 0u;
+    tx_free_level = 3u;
+    run_one_canbus_task_iteration(&app);
+    CHECK(app.board.charger.shutdown_pending == true);
+    CHECK(app.board.charger.shutdown_frames_remaining == CHARGER_EXIT_DISABLE_FRAMES);
+    CHECK(app.board.charger.shutdown_tx_count == 0u);
+    CHECK(app.board.charger.shutdown_tx_fail_count == 1u);
+    CHECK(app.board.charger.last_shutdown_status == HAL_ERROR);
+    CHECK(app.board.charger.tx_fail == true);
+    CHECK((app.board.charger.disable_reason_mask &
+           (CHARGER_DISABLE_REASON_STATE_EXIT |
+            CHARGER_DISABLE_REASON_TX_FAIL)) ==
+          (CHARGER_DISABLE_REASON_STATE_EXIT |
+           CHARGER_DISABLE_REASON_TX_FAIL));
+    CHECK(app.charger_fault == true);
+    CHECK(app.bms_state == false);
+
+    fake_can_add_tx_status = HAL_OK;
+    tx_count = 0u;
+    tx_free_level = 3u;
+    run_one_canbus_task_iteration(&app);
+    CHECK(app.board.charger.shutdown_pending == true);
+    CHECK(app.board.charger.shutdown_frames_remaining ==
+          (CHARGER_EXIT_DISABLE_FRAMES - 1u));
+    CHECK(app.board.charger.shutdown_tx_count == 1u);
+    CHECK(app.board.charger.tx_fail == false);
+    CHECK(app.charger_fault == true);
+}
+
 static void test_charger_command_priority_tx_failure_and_cli(void)
 {
     static CAN_HandleTypeDef hcan;
@@ -8319,6 +8550,7 @@ int main(void){
     test_system_sil_balance_inhibit_ladder_bringup_lockout(); puts("PASS system SIL balance inhibit ladder bring-up lockout");
     test_system_sil_bench_cli_abuse_and_balance_idempotence(); puts("PASS system SIL bench CLI abuse/balance idempotence");
     test_system_sil_bench_state_transition_balance_cleanup(); puts("PASS system SIL bench state-transition balance cleanup");
+    test_system_sil_state_transition_guard_and_audit(); puts("PASS system SIL state-transition guard/audit");
     test_system_sil_bench_bmsok_inhibit_survives_ready_tasks(); puts("PASS system SIL bench BMS_OK inhibit survives ready tasks");
     test_system_sil_bench_adbms_write_failures_and_recovery(); puts("PASS system SIL bench ADBMS write failures/recovery");
     test_system_sil_voltage_uv_ov_severe_diagnostics_and_latch(); puts("PASS system SIL voltage severe diagnostics/latch");
@@ -8381,6 +8613,7 @@ int main(void){
     test_can_rx_filter_matrix(); puts("PASS CAN RX filter matrix");
     test_can_rx_isr_queue_ownership_and_overflow(); puts("PASS CAN RX ISR queue ownership/overflow");
     test_charge_state_disable_matrix(); puts("PASS charge-state disable matrix");
+    test_charger_state_exit_shutdown_burst(); puts("PASS charger state-exit shutdown burst/retry");
     test_charger_command_priority_tx_failure_and_cli(); puts("PASS charger command priority/TX failure/CLI diagnostics");
     test_current_sensor_measurement_model(); puts("PASS current sensor measurement model");
     test_current_task_measurement_state(); puts("PASS current task measurement state");

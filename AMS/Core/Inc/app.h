@@ -221,6 +221,22 @@ typedef enum
 	STATE_ERROR
 } state_t;
 
+typedef enum
+{
+	AMS_STATE_TRANSITION_BOOT = 0,
+	AMS_STATE_TRANSITION_STARTUP_READY,
+	AMS_STATE_TRANSITION_SERVICE_COMMAND,
+	AMS_STATE_TRANSITION_CORRUPT_CURRENT_STATE,
+	AMS_STATE_TRANSITION_INVALID_REQUEST
+} ams_state_transition_reason_t;
+
+typedef enum
+{
+	AMS_STATE_TRANSITION_REJECTED = 0,
+	AMS_STATE_TRANSITION_NO_CHANGE,
+	AMS_STATE_TRANSITION_APPLIED
+} ams_state_transition_result_t;
+
 static inline bool ams_state_is_valid(state_t state)
 {
 	return (state >= STATE_NULL) && (state <= STATE_ERROR);
@@ -237,6 +253,39 @@ static inline bool ams_state_allows_bms_ok(state_t state)
 	case STATE_START:
 	case STATE_NULL:
 	case STATE_ERROR:
+	default:
+		return false;
+	}
+}
+
+static inline bool ams_state_transition_allowed(
+	state_t previous,
+	state_t target,
+	ams_state_transition_reason_t reason)
+{
+	if(!ams_state_is_valid(previous) || !ams_state_is_valid(target))
+	{
+		return false;
+	}
+
+	switch(reason)
+	{
+	case AMS_STATE_TRANSITION_STARTUP_READY:
+		return (previous == STATE_START) && (target == STATE_DISCARGE);
+
+	case AMS_STATE_TRANSITION_SERVICE_COMMAND:
+		return ((previous == STATE_START) ||
+		        (previous == STATE_CHARGE) ||
+		        (previous == STATE_DISCARGE) ||
+		        (previous == STATE_BALANCE)) &&
+		       ((target == STATE_CHARGE) ||
+		        (target == STATE_DISCARGE));
+
+	case AMS_STATE_TRANSITION_CORRUPT_CURRENT_STATE:
+	case AMS_STATE_TRANSITION_INVALID_REQUEST:
+		return target == STATE_ERROR;
+
+	case AMS_STATE_TRANSITION_BOOT:
 	default:
 		return false;
 	}
@@ -469,9 +518,14 @@ struct app_data_t
     bool bms_output_inhibit;
     bool bms_supervisor_ready;
     uint32_t bms_output_block_count;
-    bool balance_inhibit;
+	bool balance_inhibit;
 
 	state_t state;
+	state_t state_previous;
+	ams_state_transition_reason_t state_transition_reason;
+	uint32_t state_transition_count;
+	uint32_t state_transition_last_tick;
+	bool state_transition_in_progress;
 
 	board_t board;
 	accumulator_t acc;
@@ -489,6 +543,107 @@ struct app_data_t
 	TaskHandle_t adbms_task;
 	TaskHandle_t estimator_task;
 };
+
+/* Begin a mode transition while the caller owns a short RTOS critical
+ * section.  The in-progress gate is intentionally set before any potentially
+ * blocking exit cleanup.  The safety supervisor therefore cannot reassert
+ * BMS_OK while balancing is being cleared or a charger shutdown is pending.
+ *
+ * A corrupted current state or invalid target is contained as STATE_ERROR.
+ * Leaving charge (or entering ERROR conservatively) schedules repeated
+ * zero-demand charger-disable frames through the CAN task, the sole CAN TX
+ * owner.  Call ams_state_transition_finish() only after synchronous local
+ * cleanup has completed. */
+static inline ams_state_transition_result_t
+ams_state_transition_begin(app_data_t *data,
+                           state_t requested,
+                           ams_state_transition_reason_t reason,
+                           uint32_t now)
+{
+	state_t previous;
+	state_t target;
+
+	if(data == NULL)
+	{
+		return AMS_STATE_TRANSITION_REJECTED;
+	}
+
+	previous = data->state;
+	target = requested;
+
+	if(!ams_state_is_valid(previous))
+	{
+		target = STATE_ERROR;
+		reason = AMS_STATE_TRANSITION_CORRUPT_CURRENT_STATE;
+	}
+	else if(!ams_state_is_valid(target))
+	{
+		target = STATE_ERROR;
+		reason = AMS_STATE_TRANSITION_INVALID_REQUEST;
+	}
+	else if(!ams_state_transition_allowed(previous, target, reason))
+	{
+		return AMS_STATE_TRANSITION_REJECTED;
+	}
+
+	data->state_transition_in_progress = true;
+	data->bms_supervisor_ready = false;
+
+	if(previous == target)
+	{
+		return AMS_STATE_TRANSITION_NO_CHANGE;
+	}
+
+	data->state_previous = previous;
+	data->state = target;
+	data->state_transition_reason = reason;
+	data->state_transition_last_tick = now;
+	if(data->state_transition_count != UINT32_MAX)
+	{
+		data->state_transition_count++;
+	}
+
+	if((previous == STATE_CHARGE) ||
+	   (target == STATE_ERROR) ||
+	   !ams_state_is_valid(previous))
+	{
+		charger_t *charger = &data->board.charger;
+		charger->shutdown_pending = true;
+		charger->shutdown_frames_remaining = CHARGER_EXIT_DISABLE_FRAMES;
+		charger->disable_reason_mask |= CHARGER_DISABLE_REASON_STATE_EXIT;
+		if(charger->shutdown_request_count != UINT32_MAX)
+		{
+			charger->shutdown_request_count++;
+		}
+		/* Keep every BMS_OK-capable destination inhibited until the CAN
+		 * owner has queued the complete shutdown burst. */
+		data->charger_fault = true;
+	}
+
+	return AMS_STATE_TRANSITION_APPLIED;
+}
+
+static inline void ams_state_transition_finish(app_data_t *data)
+{
+	if(data != NULL)
+	{
+		data->state_transition_in_progress = false;
+	}
+}
+
+static inline const char *ams_state_transition_reason_str(
+	ams_state_transition_reason_t reason)
+{
+	switch(reason)
+	{
+	case AMS_STATE_TRANSITION_BOOT: return "boot";
+	case AMS_STATE_TRANSITION_STARTUP_READY: return "startup_ready";
+	case AMS_STATE_TRANSITION_SERVICE_COMMAND: return "service";
+	case AMS_STATE_TRANSITION_CORRUPT_CURRENT_STATE: return "corrupt_state";
+	case AMS_STATE_TRANSITION_INVALID_REQUEST: return "invalid_request";
+	default: return "unknown";
+	}
+}
 
 void app_create(void);
 void set_bms(bool state);

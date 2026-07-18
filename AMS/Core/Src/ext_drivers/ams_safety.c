@@ -126,7 +126,7 @@ static bool ams_fault_log_entry_valid(const ams_fault_log_entry_t *entry)
            (entry->commit == AMS_FAULT_LOG_ENTRY_COMMIT) &&
            (entry->sequence != 0u) &&
            (entry->event >= (uint16_t)AMS_FAULT_LOG_BOOT) &&
-           (entry->event <= (uint16_t)AMS_FAULT_LOG_AIR_FAULT_LATCH) &&
+           (entry->event <= (uint16_t)AMS_FAULT_LOG_STATE_TRANSITION) &&
            (entry->crc32 == ams_fault_log_entry_crc(entry));
 }
 
@@ -528,6 +528,7 @@ const char *ams_fault_log_event_str(uint16_t event)
     case AMS_FAULT_LOG_FAULT_CLEAR_ACCEPTED: return "FAULT_CLEAR_ACCEPTED";
     case AMS_FAULT_LOG_FAULT_CLEAR_REJECTED: return "FAULT_CLEAR_REJECTED";
     case AMS_FAULT_LOG_AIR_FAULT_LATCH: return "AIR_FAULT_LATCH";
+    case AMS_FAULT_LOG_STATE_TRANSITION: return "STATE_TRANSITION";
     default: return "UNKNOWN";
     }
 }

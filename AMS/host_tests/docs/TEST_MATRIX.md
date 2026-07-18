@@ -11,6 +11,7 @@ Authored by Mahad Faisal, 2026.
 | `test_system_sil_single_pec_miss_drops_bms_then_recovers` | System-level SIL: verifies one PEC/missed cell update immediately marks the voltage scan invalid, drops BMS_OK, and recovers only after a full fresh scan returns. |
 | `test_system_sil_persistent_voltage_stale_drops_bms_ok` | System-level SIL: verifies repeated missed/PEC-failed voltage scans stay fail-closed, track stale data, and recover when a full fresh scan returns. |
 | `test_system_sil_charge_stop_allows_balance_before_hard_ov` | System-level SIL: verifies 4.18 V charge-stop keeps BMS_OK and still allows controlled balancing, while 4.20 V hard OV latches, clears balancing, and drops BMS_OK. |
+| `test_system_sil_state_transition_guard_and_audit` | Verifies a same-state service cleanup cannot race the supervisor into reasserting BMS_OK, applied transitions publish previous/current state, reason/tick/count, charge exit creates a blocking charger-shutdown request, corrupt enums normalize to ERROR, and counters saturate. |
 | `test_system_sil_voltage_uv_ov_severe_diagnostics_and_latch` | System-level SIL: verifies soft UV warning, hard UV latch, severe OV diagnostic reason, and severe UV diagnostic reason through the ADBMS task/BMS_OK path. |
 | `test_system_sil_current_warning_fast_trip_and_latch_persistence` | System-level SIL: verifies current warning-only behavior, fast discharge trip, BMS_OK drop, and latch persistence after current returns normal. |
 | `test_system_sil_current_stale_adc_pair_fails_safe` | System-level SIL: verifies one stale ADC channel makes current invalid, ADBMS gating drops BMS_OK, and repeated ADC failures become a confirmed current sensor fault. |
@@ -46,6 +47,7 @@ Authored by Mahad Faisal, 2026.
 | `test_charger_rx_and_tx` | Verifies charger receive parse, charger fault bits, charger command transmit. |
 | `test_can_rx_filter_matrix` | Verifies exact bxCAN charger/HIL filter packing and configuration failure, then verifies bad RX status, remote/wrong ID type, wrong ID, and short DLC are ignored before application parsing. |
 | `test_charge_state_disable_matrix` | Verifies charge command disable byte for fault, BMS disabled, charger fault, and timeout cases. |
+| `test_charger_state_exit_shutdown_burst` | Verifies leaving charge prioritizes three zero-demand disable frames ahead of telemetry, never enables in the same iteration, blocks BMS_OK until the burst completes, and retries a failed queue operation without consuming a frame or erasing the fault. |
 | `test_charger_command_priority_tx_failure_and_cli` | Verifies the charger command is transmitted before telemetry in charge mode, TX failure drops BMS_OK and is exposed in charger CLI diagnostics. |
 | `test_current_sensor_measurement_model` | Verifies DHAB 0.6-divider reconstruction, zero-current offset, design-file C_SENSE_L=50A / C_SENSE_H=800A mapping, range selection, saturation, mismatch, and implausible ADC handling. |
 | `test_current_task_measurement_state` | Verifies current task propagation of `current_valid`, selected range, measurement reason, stale-current hold on ADC read failure, and confirmed sensor-fault timing. |

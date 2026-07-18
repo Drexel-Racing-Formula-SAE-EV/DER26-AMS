@@ -660,6 +660,8 @@ static uint16_t charger_disable_reasons(const app_data_t *data, bool charger_hw_
     if(data->current_fault)       reasons |= CHARGER_DISABLE_REASON_CURRENT_FAULT;
     if(!data->current_valid)      reasons |= CHARGER_DISABLE_REASON_CURRENT_INVALID;
     if(!data->bms_state)          reasons |= CHARGER_DISABLE_REASON_BMS_NOT_OK;
+    if(data->board.charger.shutdown_pending)
+                                  reasons |= CHARGER_DISABLE_REASON_STATE_EXIT;
 
     return reasons;
 }
@@ -679,9 +681,39 @@ static bool charger_disable_reasons_force_bms_low(uint16_t reasons)
                                  CHARGER_DISABLE_REASON_TEMP_FAULT |
                                  CHARGER_DISABLE_REASON_CURRENT_FAULT |
                                  CHARGER_DISABLE_REASON_CURRENT_INVALID |
-                                 CHARGER_DISABLE_REASON_TX_FAIL;
+                                 CHARGER_DISABLE_REASON_TX_FAIL |
+                                 CHARGER_DISABLE_REASON_STATE_EXIT;
 
     return (reasons & safety_mask) != 0u;
+}
+
+static void canbus_saturating_increment(uint32_t *value)
+{
+    if((value != NULL) && (*value != UINT32_MAX))
+    {
+        (*value)++;
+    }
+}
+
+static HAL_StatusTypeDef canbus_send_charger_command(canbus_device_t *canbus,
+                                                     uint16_t voltage_deci_v,
+                                                     uint16_t current_deci_a,
+                                                     uint8_t command)
+{
+    uint8_t can_data[8] = {0};
+
+    if(canbus == NULL)
+    {
+        return HAL_ERROR;
+    }
+
+    can_data[0] = TO_MSB16(voltage_deci_v);
+    can_data[1] = TO_LSB16(voltage_deci_v);
+    can_data[2] = TO_MSB16(current_deci_a);
+    can_data[3] = TO_LSB16(current_deci_a);
+    can_data[4] = command;
+
+    return canbus_send(canbus, CAN_ID_EXT, CCS_CANBUS_ID, can_data);
 }
 
 static HAL_StatusTypeDef send_logger_summaries(canbus_device_t *canbus,
@@ -1218,6 +1250,73 @@ void canbus_task_fn(void *arg)
             continue;
         }
 
+        /* State-exit shutdown commands take priority over telemetry and over
+         * any later charger-enable command.  A transition records a request
+         * generation under the RTOS critical section; only consume one frame
+         * from that same generation so a concurrent newer transition cannot
+         * be accidentally acknowledged by an older send completion. */
+        bool charger_shutdown_attempted = false;
+        if(ccs->shutdown_pending)
+        {
+            uint32_t shutdown_generation;
+            HAL_StatusTypeDef shutdown_status;
+
+            taskENTER_CRITICAL();
+            shutdown_generation = ccs->shutdown_request_count;
+            taskEXIT_CRITICAL();
+
+            charger_shutdown_attempted = true;
+            ccs->target_voltage = 0.0f;
+            ccs->target_current = 0.0f;
+            shutdown_status = canbus_send_charger_command(canbus,
+                                                          0u,
+                                                          0u,
+                                                          CHARGER_CMD_DISABLE);
+            ret |= shutdown_status;
+
+            taskENTER_CRITICAL();
+            ccs->last_shutdown_status = shutdown_status;
+            ccs->last_tx_status = shutdown_status;
+            if(shutdown_status == HAL_OK)
+            {
+                ccs->tx_fail = false;
+                ccs->disable_reason_mask &=
+                    (uint16_t)~CHARGER_DISABLE_REASON_TX_FAIL;
+                ccs->disable_reason_mask |= CHARGER_DISABLE_REASON_STATE_EXIT;
+                canbus_saturating_increment(&ccs->tx_count);
+                canbus_saturating_increment(&ccs->shutdown_tx_count);
+
+                if((ccs->shutdown_request_count == shutdown_generation) &&
+                   ccs->shutdown_pending)
+                {
+                    if(ccs->shutdown_frames_remaining > 0u)
+                    {
+                        ccs->shutdown_frames_remaining--;
+                    }
+                    if(ccs->shutdown_frames_remaining == 0u)
+                    {
+                        ccs->shutdown_pending = false;
+                    }
+                }
+            }
+            else
+            {
+                ccs->tx_fail = true;
+                ccs->disable_reason_mask |=
+                    CHARGER_DISABLE_REASON_STATE_EXIT |
+                    CHARGER_DISABLE_REASON_TX_FAIL;
+                canbus_saturating_increment(&ccs->tx_fail_count);
+                canbus_saturating_increment(&ccs->shutdown_tx_fail_count);
+                data->charger_fault = true;
+            }
+            taskEXIT_CRITICAL();
+
+            if(shutdown_status != HAL_OK)
+            {
+                set_bms(false);
+            }
+        }
+
         ret |= send_ecu_compact_telemetry(canbus, data, ecu_sequence++);
         bool compact_tx_ok = (ret == HAL_OK);
         if(!compact_tx_ok && (data->state != STATE_CHARGE))
@@ -1254,7 +1353,10 @@ void canbus_task_fn(void *arg)
             ccs->read_voltage   = 0.0f;
             ccs->read_current   = 0.0f;
             ccs->communication_fail = false;
-            data->charger_fault = false;
+            /* A failed or incomplete state-exit shutdown burst is a blocking
+             * charger fault.  Do not erase it merely because the application
+             * has already changed out of charge mode. */
+            data->charger_fault = ccs->shutdown_pending || ccs->tx_fail;
 
             if(slow_due)
             {
@@ -1278,68 +1380,75 @@ void canbus_task_fn(void *arg)
         }
         else if(data->state == STATE_CHARGE)
         {
-            ccs->target_voltage = CHARGE_MAX_VOLTAGE;
-            ccs->target_current = CHARGE_MAX_CURRENT;
-
-            charger_div++;
-            if(charger_div >= CAN_CHARGER_DIV)
+            if(charger_shutdown_attempted)
             {
+                /* Never queue enable behind an exit-disable frame in the same
+                 * task iteration.  A rapid service re-entry must first finish
+                 * the complete shutdown burst, then wait at least one cycle. */
+                ccs->target_voltage = 0.0f;
+                ccs->target_current = 0.0f;
                 charger_div = 0u;
+            }
+            else
+            {
+                ccs->target_voltage = CHARGE_MAX_VOLTAGE;
+                ccs->target_current = CHARGE_MAX_CURRENT;
 
-                if((osKernelGetTickCount() - ccs->last_rx_tick) > CHARGER_RX_TIMEOUT_MS)
+                charger_div++;
+                if(charger_div >= CAN_CHARGER_DIV)
                 {
-                    ccs->communication_fail = true;
-                }
+                    charger_div = 0u;
 
-                bool charger_hw_fault = (ccs->hardware_fail      ||
-                                         ccs->overtemp_fail      ||
-                                         ccs->input_volt_fail    ||
-                                         ccs->voltage_sense_fail ||
-                                         ccs->communication_fail ||
-                                         ccs->tx_fail);
+                    if((osKernelGetTickCount() - ccs->last_rx_tick) > CHARGER_RX_TIMEOUT_MS)
+                    {
+                        ccs->communication_fail = true;
+                    }
 
-                uint16_t disable_reasons = charger_disable_reasons(data, charger_hw_fault);
-                bool disable_charge = (disable_reasons != CHARGER_DISABLE_REASON_NONE);
+                    bool charger_hw_fault = (ccs->hardware_fail      ||
+                                             ccs->overtemp_fail      ||
+                                             ccs->input_volt_fail    ||
+                                             ccs->voltage_sense_fail ||
+                                             ccs->communication_fail ||
+                                             ccs->tx_fail);
 
-                ccs->disable_reason_mask = disable_reasons;
-                data->charger_fault = charger_hw_fault;
-                if(charger_disable_reasons_force_bms_low(disable_reasons))
-                {
-                    set_bms(0);
-                }
+                    uint16_t disable_reasons = charger_disable_reasons(data, charger_hw_fault);
+                    bool disable_charge = (disable_reasons != CHARGER_DISABLE_REASON_NONE);
 
-                uint8_t can_data[8] = {0};
-                can_data[0] = TO_MSB16(voltage10x);
-                can_data[1] = TO_LSB16(voltage10x);
-                can_data[2] = TO_MSB16(current10x);
-                can_data[3] = TO_LSB16(current10x);
-                can_data[4] = disable_charge ? CHARGER_CMD_DISABLE : CHARGER_CMD_ENABLE;
-                can_data[5] = 0u;
-                can_data[6] = 0u;
-                can_data[7] = 0u;
+                    ccs->disable_reason_mask = disable_reasons;
+                    data->charger_fault = charger_hw_fault;
+                    if(charger_disable_reasons_force_bms_low(disable_reasons))
+                    {
+                        set_bms(0);
+                    }
 
-                HAL_StatusTypeDef charger_tx_status = canbus_send(canbus, CAN_ID_EXT, CCS_CANBUS_ID, can_data);
-                ret |= charger_tx_status;
-                if(charger_tx_status == HAL_OK)
-                {
-                    ccs->tx_fail = false;
-                    ccs->last_tx_status = HAL_OK;
-                    ccs->tx_count++;
-                }
-                else
-                {
-                    ccs->tx_fail = true;
-                    ccs->last_tx_status = charger_tx_status;
-                    ccs->disable_reason_mask |= CHARGER_DISABLE_REASON_TX_FAIL;
-                    ccs->tx_fail_count++;
-                    data->charger_fault = true;
-                    set_bms(0);
-                }
+                    HAL_StatusTypeDef charger_tx_status =
+                        canbus_send_charger_command(
+                            canbus,
+                            voltage10x,
+                            current10x,
+                            disable_charge ? CHARGER_CMD_DISABLE : CHARGER_CMD_ENABLE);
+                    ret |= charger_tx_status;
+                    if(charger_tx_status == HAL_OK)
+                    {
+                        ccs->tx_fail = false;
+                        ccs->last_tx_status = HAL_OK;
+                        canbus_saturating_increment(&ccs->tx_count);
+                    }
+                    else
+                    {
+                        ccs->tx_fail = true;
+                        ccs->last_tx_status = charger_tx_status;
+                        ccs->disable_reason_mask |= CHARGER_DISABLE_REASON_TX_FAIL;
+                        canbus_saturating_increment(&ccs->tx_fail_count);
+                        data->charger_fault = true;
+                        set_bms(0);
+                    }
 
-                if(compact_tx_ok)
-                {
-                    ret |= send_logger_telemetry(canbus, data);
-                    ams_heartbeat_kick(data, AMS_HEARTBEAT_LOGGER, osKernelGetTickCount());
+                    if(compact_tx_ok)
+                    {
+                        ret |= send_logger_telemetry(canbus, data);
+                        ams_heartbeat_kick(data, AMS_HEARTBEAT_LOGGER, osKernelGetTickCount());
+                    }
                 }
             }
 

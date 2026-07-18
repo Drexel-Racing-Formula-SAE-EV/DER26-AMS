@@ -20,14 +20,18 @@ threshold policy.
 | CAN bus-off | CAN HAL errors are polled, bus-off is counted, recovery is delayed, failed recovery is throttled, and CAN is restarted through Stop/ResetError/Start/ActivateNotification. In ADBMS-image HIL mode, bus-off/recovery-pending also holds the ADBMS diagnostic fault so stale injected images cannot briefly reassert BMS_OK. |
 | CAN soft-error hold | Non-bus-off CAN errors remain visible as a soft CAN fault for a short hold window instead of being overwritten immediately by a clean transmit pass. |
 | CAN diagnostics | Logger frame `0x69C` exports CAN error/recovery state. Frames `0x69D..0x69F` export safety reset/panic state, watchdog feed-gate state, and ADBMS diagnostic counters/flags. Frames `0x6A6..0x6A7` add current ADC and charger-command detail for bench/dashboard correlation. |
-| Fault log | A 32-entry `.noinit` RAM ring records boot, reset cause, panic, BMS_OK transitions, voltage/temp/current latch transitions, ADBMS diagnostic failures, CAN bus-off/recovery, and watchdog feed-stop events. |
+| State transition boundary | All runtime state writes pass through one guarded boundary. It records previous/current state, reason, tick and a saturating count; blocks BMS_OK across synchronous balance cleanup; and contains invalid state values as `STATE_ERROR`. CI rejects new direct state writers. |
+| Charge exit | Leaving `STATE_CHARGE` requests three prioritized zero-demand charger-disable frames from the CAN owner. Failed queue operations are retried and remain a blocking charger fault. A queued frame is explicitly not treated as end-to-end charger acknowledgement. |
+| Fault log | A 32-entry `.noinit` RAM ring records boot, reset cause, panic, BMS_OK and application-state transitions, voltage/temp/current latch transitions, ADBMS diagnostic failures, CAN bus-off/recovery, and watchdog feed-stop events. |
 | Fault injection | Destructive test commands are present only when compiled with `AMS_FAULT_INJECTION_CLI=1`. |
 
 ## Intentionally Not Included Yet
 
 | Area | Reason |
 |---|---|
-| IMD/BSPD/fuse software gating | Requires one more schematic and harness confirmation before firmware should gate BMS_OK on these signals. |
+| Physical IMD enablement | The TIM2 capture/freshness path exists but remains disabled and fail-closed by default until the external PWM/status wiring, pull network, polarity, scaling and fault cases are bench-validated. |
+| Fuse-fault producer | The supervisor gate exists, but no confirmed protected fuse-monitor hardware signal currently produces `fuse_fault`. |
+| AIR auxiliary-contact enablement | The complete monitor/evaluator exists behind a fail-closed build gate, but the current PCB lacks the reviewed AIR+/AIR-/precharge auxiliary inputs and board adapter. |
 | Formal service fault-clear policy | Deferred until the team decides the final inspection/service reset workflow. Existing threshold latch behavior is unchanged. |
 | Flash fault logging | Deferred to avoid flash-wear/noise during bring-up. Current log is RAM-only. |
 

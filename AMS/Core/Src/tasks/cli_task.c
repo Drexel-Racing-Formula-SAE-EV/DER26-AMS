@@ -3264,7 +3264,18 @@ int get_bringup(int argc, char *argv[])
                  ccs->disable_reason_mask);
         ret |= cli_printline(cli, outline);
 
+        snprintf(outline, CLI_LINESZ,
+                 "exit_shutdown pending:%d remaining:%u requests:%lu sent:%lu failed:%lu last:%s",
+                 ccs->shutdown_pending,
+                 (unsigned)ccs->shutdown_frames_remaining,
+                 (unsigned long)ccs->shutdown_request_count,
+                 (unsigned long)ccs->shutdown_tx_count,
+                 (unsigned long)ccs->shutdown_tx_fail_count,
+                 cli_hal_status_str(ccs->last_shutdown_status));
+        ret |= cli_printline(cli, outline);
+
         ret |= cli_printline(cli, "timeout_test=TODO send valid frames, stop them, confirm charger shuts output off near 5s");
+        ret |= cli_printline(cli, "exit_test: leave charge -> verify three prioritized 00 00 00 00 01 frames; HAL queue success is not charger acknowledgement");
         ret |= cli_printline(cli, "next: state charge -> sniff 0x1806E5F4 -> charger -> bmsok inhibit -> verify BYTE5/data[4]=01");
         return ret;
     }
@@ -3483,6 +3494,16 @@ int set_state(int argc, char *argv[])
     {
         snprintf(outline, CLI_LINESZ, "AMS State: %s", ams_state_to_str(data->state));
         ret |= cli_printline(cli, outline);
+        snprintf(outline, CLI_LINESZ,
+                 "previous:%s reason:%s count:%lu last_tick:%lu transition:%d charger_shutdown:%d/%u",
+                 ams_state_to_str(data->state_previous),
+                 ams_state_transition_reason_str(data->state_transition_reason),
+                 (unsigned long)data->state_transition_count,
+                 (unsigned long)data->state_transition_last_tick,
+                 data->state_transition_in_progress,
+                 data->board.charger.shutdown_pending,
+                 (unsigned)data->board.charger.shutdown_frames_remaining);
+        ret |= cli_printline(cli, outline);
     }
     else if(argc == 2)
     {
@@ -3507,20 +3528,54 @@ int set_state(int argc, char *argv[])
             return 1;
         }
 
-        /* Drop BMS_OK before changing modes and synchronously clear all
-         * balance outputs.  Waiting for the next periodic ADBMS scan leaves a
-         * window where bleed resistors can remain active in the new state. */
-        set_bms(false);
-        int clear_result = cli_clear_balance_recorded();
-        data->state = requested_state;
+        uint32_t transition_tick = osKernelGetTickCount();
+        ams_state_transition_result_t transition_result;
 
-        if(requested_state == STATE_CHARGE)
+        /* Publish the new policy and the in-progress gate atomically with the
+         * BMS_OK drop.  The gate remains set across the synchronous ADBMS
+         * cleanup, so the higher-priority supervisor cannot reassert BMS_OK
+         * while bleed outputs are still being cleared. */
+        taskENTER_CRITICAL();
+        set_bms(false);
+        transition_result = ams_state_transition_begin(
+            data,
+            requested_state,
+            AMS_STATE_TRANSITION_SERVICE_COMMAND,
+            transition_tick);
+
+        if((transition_result != AMS_STATE_TRANSITION_REJECTED) &&
+           (requested_state == STATE_CHARGE))
         {
             /* A CLI state change must not fabricate charger freshness.  Force
              * the charge path to wait for a real charger status frame. */
             data->board.charger.last_rx_tick = 0u;
             data->board.charger.communication_fail = true;
             data->charger_fault = true;
+        }
+        taskEXIT_CRITICAL();
+
+        /* Waiting for the next periodic ADBMS scan leaves a window where
+         * bleed resistors can remain active in the new state. */
+        int clear_result = cli_clear_balance_recorded();
+
+        taskENTER_CRITICAL();
+        ams_state_transition_finish(data);
+        taskEXIT_CRITICAL();
+
+        if(transition_result == AMS_STATE_TRANSITION_REJECTED)
+        {
+            ret |= cli_printline(cli,
+                                 "ERROR state transition rejected; reset required from NULL/ERROR state");
+            return 1;
+        }
+
+        if(transition_result == AMS_STATE_TRANSITION_APPLIED)
+        {
+            ams_fault_log_event(AMS_FAULT_LOG_STATE_TRANSITION,
+                                (uint16_t)data->state_transition_reason,
+                                (((uint32_t)(uint16_t)data->state_previous) << 16u) |
+                                    (uint32_t)(uint16_t)data->state,
+                                data->state_transition_count);
         }
 
         if(clear_result != 0)
@@ -3531,10 +3586,9 @@ int set_state(int argc, char *argv[])
         snprintf(outline, CLI_LINESZ, "AMS State: %s", ams_state_to_str(data->state));
         ret |= cli_printline(cli, outline);
 
-        if(data->board.canbus.hcan != NULL)
-        {
-            HAL_CAN_ActivateNotification(data->board.canbus.hcan, CAN_IT_RX_FIFO0_MSG_PENDING);
-        }
+        /* State changes do not reach into the CAN HAL.  CAN start,
+         * notifications and recovery remain owned by the CAN service, which
+         * already records and retries transport failures. */
 #endif
     }
     else
