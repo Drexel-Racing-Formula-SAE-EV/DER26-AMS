@@ -6,7 +6,8 @@ Updated: 6/23/2025
 
 ## Safety build profiles
 
-The default build is the production-safe profile:
+The default build is the production-restricted profile. It closes HIL/service
+backdoors but is not a vehicle/HV release:
 
 ```c
 AMS_ENABLE_HIL_CAN=0
@@ -25,6 +26,20 @@ enables the service CLI unless `AMS_ENABLE_SERVICE_CLI` is explicitly
 overridden. For CAN-fed HIL, explicitly enable `AMS_ENABLE_HIL_CAN=1`.
 `AMS_HIL_REPLACE_ADBMS=1` is rejected at compile time unless HIL CAN is enabled.
 Never use either service or HIL settings in a vehicle release.
+
+Normal firmware scans the ADBMS chain at 10 Hz. `AMS_HW_BRINGUP=1` deliberately
+uses the slower 1 Hz bench profile while BMS_OK and balancing are inhibited.
+Status, configuration, and full even/odd open-wire periods are specified in
+milliseconds and converted to scan counts for the selected profile, avoiding
+the old accidental multi-minute intervals. Actual cadence still depends on
+measured target execution time and jitter.
+
+The present vehicle hardware—not this firmware—owns contactor precharge
+sequencing. `STATE_START` is therefore software initialization only. Once all
+implemented software safety inputs are valid, the supervisor changes to the
+normal discharge/drive current policy, keeps BMS_OK low for that iteration, and
+waits for a fresh current result under the new policy before a permit is
+possible. This does not prove precharge completion or physical AIR position.
 
 ## BMS_OK and IMD fail-safe behavior
 
@@ -65,8 +80,25 @@ Host verification:
 cd AMS/host_tests
 make test              # full feature exercise profile
 make production-gates  # default production gates remain closed
+make static-allocation-gate # application/kernel runtime objects use fixed storage
 make air-feedback-stub-test # future AIR gate and task-adapter syntax
 make unit
 make asan
 make analyze
 ```
+
+All nine application tasks use fixed TCB/stack storage. The ADBMS recursive
+mutex and FreeRTOS idle task, timer task, and timer queue are also statically
+backed. The vendor CMSIS wrapper retains dynamic-allocation support at compile
+time for compatibility, but the application startup path does not create its
+tasks dynamically.
+
+The bxCAN hardware filter admits only the charger extended data-frame ID in a
+normal build. Explicit HIL builds add only the five approved standard HIL IDs;
+the ISR/task allowlist and DLC checks remain a second validation layer.
+
+The retained fault ring is schema-versioned and uses persistent boot/event
+sequences, per-record CRC, and commit-last publication. Corrupt or interrupted
+records are rejected and ring progress is reconstructed from valid records
+after reset. Upgrading from the previous unversioned ring intentionally clears
+old entries because their integrity cannot be established.

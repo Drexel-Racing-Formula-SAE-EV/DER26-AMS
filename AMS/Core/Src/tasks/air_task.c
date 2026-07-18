@@ -9,6 +9,10 @@
 
 void air_task_fn(void *argument);
 
+static StaticTask_t air_task_tcb;
+static StackType_t air_task_stack[AMS_STACK_AIR_WORDS];
+static TaskHandle_t air_task_handle = NULL;
+
 __weak bool ams_air_board_get_config(ams_air_monitor_config_t *config)
 {
     (void)config;
@@ -47,15 +51,23 @@ __weak bool ams_air_board_read_inputs(ams_air_monitor_inputs_t *inputs,
 
 TaskHandle_t air_task_start(app_data_t *data)
 {
-    TaskHandle_t handle = NULL;
-
     if(data == NULL)
     {
         return NULL;
     }
 
-    xTaskCreate(air_task_fn, "air task", AMS_STACK_AIR_WORDS, (void *)data, AIR_PRIO, &handle);
-    return handle;
+    if(air_task_handle == NULL)
+    {
+        air_task_handle = xTaskCreateStatic(air_task_fn,
+                                            "air task",
+                                            AMS_STACK_AIR_WORDS,
+                                            (void *)data,
+                                            AIR_PRIO,
+                                            air_task_stack,
+                                            &air_task_tcb);
+    }
+
+    return air_task_handle;
 }
 
 void air_task_fn(void *argument)

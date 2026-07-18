@@ -18,6 +18,14 @@
 #define ADBMS6830_MUX_COUNT 3u
 #define ADBMS6830_TEMP_SENSOR_COUNT 24u
 
+/* The S-ADC open-wire result for an intact, normally charged cell remains
+ * well above this threshold after the monitor's internal diagnostic divider.
+ * ADI's reference application uses 2000 mV.  The application must explicitly
+ * configure how many populated cell channels are monitored so an unpopulated
+ * C16 input is never reported as an open wire. */
+#define ADBMS6830_OPEN_WIRE_THRESHOLD_MV 2000u
+#define ADBMS6830_OPEN_WIRE_CONVERSION_WAIT_US 9000u
+
 #define ADBMS6830_SPI_DEBUG_PREVIEW_BYTES 16u
 
 typedef enum
@@ -38,6 +46,7 @@ typedef enum
   ADBMS6830_SPI_OP_CELL_ADC_SELF_TEST,
   ADBMS6830_SPI_OP_OPEN_WIRE_EVEN,
   ADBMS6830_SPI_OP_OPEN_WIRE_ODD,
+  ADBMS6830_SPI_OP_OPEN_WIRE_FULL,
   ADBMS6830_SPI_OP_AUX_GPIO_DIAG,
   ADBMS6830_SPI_OP_SCOPE
 } adbms6830_spi_op_t;
@@ -105,6 +114,12 @@ typedef struct
 
   uint16_t gpi_mask;
   uint8_t revision;
+
+  bool open_wire_even_valid;
+  bool open_wire_odd_valid;
+  uint16_t open_wire_even_fault_mask;
+  uint16_t open_wire_odd_fault_mask;
+  uint16_t open_wire_fault_mask;
 } adbms6830_ic_diag_t;
 
 typedef struct
@@ -138,7 +153,15 @@ typedef struct
   uint32_t cell_adc_self_test_count;
   uint32_t open_wire_even_count;
   uint32_t open_wire_odd_count;
+  uint32_t open_wire_full_count;
   uint32_t aux_gpio_diag_count;
+
+  uint16_t open_wire_even_valid_ic_mask;
+  uint16_t open_wire_odd_valid_ic_mask;
+  uint16_t open_wire_incomplete_ic_mask;
+  uint16_t open_wire_fault_ic_mask;
+  uint16_t sticky_open_wire_fault_ic_mask;
+  uint16_t open_wire_cell_fault_mask[ADBMS6830_MAX_TRACKED_ICS];
 } adbms6830_diag_health_t;
 
 
@@ -185,6 +208,7 @@ typedef struct
   int num_ics;
   uint8_t ics_capacity;
   adbms6830_asic *ics;
+  uint8_t monitored_cell_count;
   adbms_string string;
   SPI_HandleTypeDef *hspi;
   GPIO_TypeDef *cs_port[2];

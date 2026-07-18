@@ -20,19 +20,30 @@
 */
 void imd_task_fn(void *argument);
 
+static StaticTask_t imd_task_tcb;
+static StackType_t imd_task_stack[AMS_STACK_IMD_WORDS];
+static TaskHandle_t imd_task_handle = NULL;
+
 
 TaskHandle_t imd_task_start(app_data_t *data)
 {
-    TaskHandle_t handle = NULL;
-
     if(data == NULL)
     {
         return NULL;
     }
 
-    // todo: appropriate task priority
-    xTaskCreate(imd_task_fn, "imd task", AMS_STACK_IMD_WORDS, (void *) data, IMD_PRIO, &handle);
-    return handle;
+    if(imd_task_handle == NULL)
+    {
+        imd_task_handle = xTaskCreateStatic(imd_task_fn,
+                                            "imd task",
+                                            AMS_STACK_IMD_WORDS,
+                                            (void *)data,
+                                            IMD_PRIO,
+                                            imd_task_stack,
+                                            &imd_task_tcb);
+    }
+
+    return imd_task_handle;
 }
 
 bool imd_task_update(app_data_t *data, uint32_t now)

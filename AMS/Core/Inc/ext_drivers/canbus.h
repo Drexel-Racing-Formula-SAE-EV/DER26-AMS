@@ -23,7 +23,10 @@
  * One complete HIL accumulator image is 65 CAN frames (25 cell frames and
  * 40 temperature frames).  Keep enough ISR-to-task buffering for that burst,
  * plus margin for charger and diagnostic traffic.  The single-producer,
- * single-consumer ring intentionally leaves one entry empty.
+ * single-consumer ring intentionally leaves one entry empty. Its Cortex-M
+ * barrier/ownership contract is documented in
+ * Core/docs/CONCURRENCY_OWNERSHIP.md; adding another producer or consumer is
+ * not supported.
  */
 #define CANBUS_RX_QUEUE_DEPTH 96u
 
@@ -62,6 +65,7 @@ typedef struct {
     volatile uint16_t rx_queue_high_water;
     volatile uint32_t rx_isr_count;
     volatile uint32_t rx_processed_count;
+    volatile uint32_t rx_filtered_count;
     volatile uint32_t rx_queue_drop_count;
     volatile uint32_t rx_hal_error_count;
     uint32_t rx_queue_drop_reported;
@@ -74,6 +78,7 @@ typedef struct {
 } canbus_device_t;
 
 HAL_StatusTypeDef canbus_device_init(canbus_device_t *dev, CAN_HandleTypeDef *hcan);
+HAL_StatusTypeDef canbus_configure_rx_filters(CAN_HandleTypeDef *hcan);
 uint16_t canbus_rx_queue_count(const canbus_device_t *dev);
 uint32_t canbus_process_rx_queue(canbus_device_t *dev, app_data_t *data, uint32_t max_frames);
 void canbus_poll_errors(canbus_device_t *dev, app_data_t *data);

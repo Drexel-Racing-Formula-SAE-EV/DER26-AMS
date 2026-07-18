@@ -8,11 +8,23 @@
 
 #include <tasks/adbms_task.h>
 
-#define ADBMS_STATUS_DIAG_PERIOD_CYCLES       10u
-#define ADBMS_CONFIG_DIAG_PERIOD_CYCLES       60u
-#define ADBMS_OPEN_WIRE_DIAG_PERIOD_CYCLES   300u
+#define ADBMS_STATUS_DIAG_PERIOD_MS            1000u
+#define ADBMS_CONFIG_DIAG_PERIOD_MS            6000u
+#define ADBMS_OPEN_WIRE_DIAG_PERIOD_MS        30000u
+#define ADBMS_DIAG_CYCLES(period_ms) \
+    ((((period_ms) * ADBMS_FREQ) + 999u) / 1000u)
+#define ADBMS_STATUS_DIAG_PERIOD_CYCLES \
+    ADBMS_DIAG_CYCLES(ADBMS_STATUS_DIAG_PERIOD_MS)
+#define ADBMS_CONFIG_DIAG_PERIOD_CYCLES \
+    ADBMS_DIAG_CYCLES(ADBMS_CONFIG_DIAG_PERIOD_MS)
+#define ADBMS_OPEN_WIRE_DIAG_PERIOD_CYCLES \
+    ADBMS_DIAG_CYCLES(ADBMS_OPEN_WIRE_DIAG_PERIOD_MS)
 
 void adbms_task_fn(void *argument);
+
+static StaticTask_t adbms_task_tcb;
+static StackType_t adbms_task_stack[AMS_STACK_ADBMS_WORDS];
+static TaskHandle_t adbms_task_handle = NULL;
 
 static bool adbms_status_diag_has_safety_fault(const adbms6830_driver_t *smb)
 {
@@ -42,7 +54,9 @@ static bool adbms_status_diag_has_safety_fault(const adbms6830_driver_t *smb)
 static bool adbms_open_wire_auto_allowed(const app_data_t *data)
 {
     return (data != NULL) &&
-           (data->state == STATE_BALANCE) &&
+           ((data->state == STATE_CHARGE) ||
+            (data->state == STATE_DISCARGE) ||
+            (data->state == STATE_BALANCE)) &&
            data->voltage_valid &&
            data->temp_valid &&
            data->current_valid &&
@@ -100,12 +114,21 @@ static void adbms_task_run_periodic_diagnostics(app_data_t *data)
     if(((data->adbms_scan_count % ADBMS_OPEN_WIRE_DIAG_PERIOD_CYCLES) == 0u) &&
        adbms_open_wire_auto_allowed(data))
     {
-        bool odd = ((data->adbms_open_wire_diag_count & 1u) != 0u);
-        status = adbms6830_run_open_wire_check(smb, odd);
+        /* One diagnostic is an inseparable even+odd S-ADC pair.  Reporting a
+         * successfully transmitted conversion command as a passed open-wire
+         * test would hide the very lead break this diagnostic is meant to
+         * detect. */
+        status = adbms6830_run_open_wire_diagnostic(smb);
         taskENTER_CRITICAL();
         data->adbms_last_diag_status = status;
         data->adbms_open_wire_diag_count++;
-        data->adbms_open_wire_fault = (status != HAL_OK);
+        if(status != HAL_OK)
+        {
+            /* A successful later sample is useful diagnostically, but it does
+             * not explain why a sense lead appeared open. Require a reset (and
+             * the retained log) before this safety latch can clear. */
+            data->adbms_open_wire_fault = true;
+        }
         taskEXIT_CRITICAL();
     }
 
@@ -316,15 +339,23 @@ static void adbms_task_publish_temperature_state(app_data_t *data,
 
 TaskHandle_t adbms_task_start(app_data_t *data)
 {
-    TaskHandle_t handle = NULL;
-
     if(data == NULL)
     {
         return NULL;
     }
 
-    xTaskCreate(adbms_task_fn, "adbms task", AMS_STACK_ADBMS_WORDS, (void *)data, ADBMS_PRIO, &handle);
-    return handle;
+    if(adbms_task_handle == NULL)
+    {
+        adbms_task_handle = xTaskCreateStatic(adbms_task_fn,
+                                              "adbms task",
+                                              AMS_STACK_ADBMS_WORDS,
+                                              (void *)data,
+                                              ADBMS_PRIO,
+                                              adbms_task_stack,
+                                              &adbms_task_tcb);
+    }
+
+    return adbms_task_handle;
 }
 
 void adbms_task_fn(void *argument)
@@ -415,7 +446,7 @@ void adbms_task_fn(void *argument)
         temperature_fault_state_t next_temp_fault = data->temp_fault_state;
         temperature_fault_update_with_period(&next_temp_fault,
                                              acc,
-                                             (1000u / ADBMS_FREQ));
+                                             AMS_ADBMS_TASK_PERIOD_MS);
         adbms_task_publish_temperature_state(data, &next_temp_fault, acc);
 
         if(data->temp_fault_latched &&
@@ -456,11 +487,17 @@ void adbms_task_fn(void *argument)
                                 (uint32_t)data->adbms_last_diag_status,
                                 data->adbms_scan_count);
         }
+#endif
+
+	    /* The active measurement transport does not change the fail-closed
+	     * action.  In physical-SPI builds this covers ADBMS diagnostics; in
+	     * CAN-fed HIL builds it covers a bus-off/recovery-pending condition.
+	     * Keep this outside the compile-time split so neither profile can retain
+	     * a previously asserted BMS_OK while its transport is unhealthy. */
 	    if(data->adbms_diag_fault)
 	    {
 	        set_bms(0);
 	    }
-#endif
 
 	    /* Do not assert BMS_OK from a measurement task.  The error/safety
 	     * supervisor owns the complete readiness decision and is the only task
@@ -494,6 +531,6 @@ void adbms_task_fn(void *argument)
 #else
 	        data->adbms_scan_active = false;
 #endif
-	        osDelayUntil(entry + (1000 / ADBMS_FREQ));
+	        osDelayUntil(entry + AMS_ADBMS_TASK_PERIOD_MS);
 	}
 }

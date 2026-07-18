@@ -322,6 +322,7 @@ After basic SID/status reads are stable, use the extra diagnostic hooks:
 ```text
 spi cfgchk
 spi cellst
+spi owcheck
 spi oweven
 spi owodd
 spi auxdiag
@@ -334,16 +335,24 @@ Interpretation:
 |---|---|---|
 | `spi cfgchk` | Read CFGA/CFGB and compare against packed TX config | status OK, cfgA/cfgB/cfg masks are 0 |
 | `spi cellst` | Exercise cell ADC diagnostic conversion/poll/status path | status OK and no new PEC/counter errors |
-| `spi oweven` | Start even-channel cell open-wire conversion | command status OK, then inspect voltage deltas per datasheet procedure |
-| `spi owodd` | Start odd-channel cell open-wire conversion | command status OK, then inspect voltage deltas per datasheet procedure |
+| `spi owcheck` | Run the complete even/odd S-cell open-wire sequence, wait for each conversion, read all five groups, validate PEC/counters, and publish per-cell masks | status OK, both valid-IC masks cover every SMB, incomplete/fault masks are zero |
+| `spi oweven` | Run and capture the even-channel diagnostic phase only | command/read status OK and even valid-IC mask covers every SMB |
+| `spi owodd` | Run and capture the odd-channel diagnostic phase only | command/read status OK and odd valid-IC mask covers every SMB |
 | `spi auxdiag` | Exercise AUX/GPIO ADC read/status path | status OK and temp/AUX path still reports plausible data |
 | `spi diagclear` | Clear accumulated diagnostic health counters | sticky masks and counts reset to 0 |
 
-These hooks prove firmware command flow and observability. They do not by
-themselves prove that every cell wire, thermistor mux channel, or ADBMS silicon
-self-test is electrically passing. For open-wire, capture the even/odd
-conversion results and compare the voltage deltas against the ADBMS6830
-datasheet procedure and the actual SMB wiring.
+Normal firmware also runs the full open-wire diagnostic every 30 seconds in
+charge, discharge, and balance states. A transport, PEC, counter, incomplete
+phase, or detected-cell result latches the ADBMS diagnostic fault and keeps
+`BMS_OK` low. The implementation monitors 15 populated cells per SMB; it does
+not interpret the unused sixteenth through eighteenth channels as pack leads.
+
+These hooks prove firmware command flow and the implemented 2.0 V diagnostic
+threshold. They do not by themselves prove the threshold against the assembled
+SMB, harness, cell simulator, or all physical open locations. Before HV use,
+inject known opens one lead at a time at low energy, capture both parity
+measurements, and confirm the reported physical-cell masks against the released
+ADBMS6830 procedure and actual SMB wiring.
 
 ## Fault Isolation Matrix
 

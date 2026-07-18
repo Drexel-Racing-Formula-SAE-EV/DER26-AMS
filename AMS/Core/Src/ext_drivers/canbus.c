@@ -18,6 +18,93 @@
 
 extern app_data_t app;
 
+#define CANBUS_FILTER_BANK_CHARGER 0u
+#define CANBUS_FILTER_BANK_HIL_0   1u
+#define CANBUS_FILTER_BANK_HIL_1   2u
+#define CANBUS_SLAVE_FILTER_START 14u
+
+static uint16_t canbus_filter_ext_high(uint32_t id)
+{
+    return (uint16_t)((id >> 13u) & 0xFFFFu);
+}
+
+static uint16_t canbus_filter_ext_low(uint32_t id)
+{
+    return (uint16_t)(((id << 3u) & 0xFFF8u) | CAN_ID_EXT | CAN_RTR_DATA);
+}
+
+static uint16_t canbus_filter_std16(uint32_t id)
+{
+    return (uint16_t)(((id & 0x7FFu) << 5u) | CAN_ID_STD | CAN_RTR_DATA);
+}
+
+HAL_StatusTypeDef canbus_configure_rx_filters(CAN_HandleTypeDef *hcan)
+{
+    CAN_FilterTypeDef filter;
+
+    if(hcan == NULL)
+    {
+        return HAL_ERROR;
+    }
+
+    memset(&filter, 0, sizeof(filter));
+    filter.FilterBank = CANBUS_FILTER_BANK_CHARGER;
+    filter.FilterMode = CAN_FILTERMODE_IDMASK;
+    filter.FilterFIFOAssignment = CAN_RX_FIFO0;
+    filter.FilterIdHigh = canbus_filter_ext_high(CHARGER_RX_ID);
+    filter.FilterIdLow = canbus_filter_ext_low(CHARGER_RX_ID);
+    filter.FilterMaskIdHigh = 0xFFFFu;
+    /* Match all remaining identifier bits plus IDE and RTR. Bit zero in the
+     * bxCAN filter word is reserved and intentionally ignored. */
+    filter.FilterMaskIdLow = 0xFFFEu;
+    filter.FilterScale = CAN_FILTERSCALE_32BIT;
+    filter.FilterActivation = ENABLE;
+    filter.SlaveStartFilterBank = CANBUS_SLAVE_FILTER_START;
+    if(HAL_CAN_ConfigFilter(hcan, &filter) != HAL_OK)
+    {
+        return HAL_ERROR;
+    }
+
+#if AMS_ENABLE_HIL_CAN
+    /* HIL is an explicit non-production profile. Four standard identifiers fit
+     * in the first 16-bit list bank; the fifth is repeated in the unused slots
+     * of a second bank so no unrelated standard frames are admitted. */
+    memset(&filter, 0, sizeof(filter));
+    filter.FilterBank = CANBUS_FILTER_BANK_HIL_0;
+    filter.FilterMode = CAN_FILTERMODE_IDLIST;
+    filter.FilterFIFOAssignment = CAN_RX_FIFO0;
+    filter.FilterIdHigh = canbus_filter_std16(AMS_HIL_CAN_ID_MEAS);
+    filter.FilterIdLow = canbus_filter_std16(AMS_HIL_CAN_ID_TRUTH);
+    filter.FilterMaskIdHigh = canbus_filter_std16(AMS_HIL_CAN_ID_SUMMARY);
+    filter.FilterMaskIdLow = canbus_filter_std16(AMS_HIL_CAN_ID_CELL_SAMPLE);
+    filter.FilterScale = CAN_FILTERSCALE_16BIT;
+    filter.FilterActivation = ENABLE;
+    filter.SlaveStartFilterBank = CANBUS_SLAVE_FILTER_START;
+    if(HAL_CAN_ConfigFilter(hcan, &filter) != HAL_OK)
+    {
+        return HAL_ERROR;
+    }
+
+    memset(&filter, 0, sizeof(filter));
+    filter.FilterBank = CANBUS_FILTER_BANK_HIL_1;
+    filter.FilterMode = CAN_FILTERMODE_IDLIST;
+    filter.FilterFIFOAssignment = CAN_RX_FIFO0;
+    filter.FilterIdHigh = canbus_filter_std16(AMS_HIL_CAN_ID_TEMP_SAMPLE);
+    filter.FilterIdLow = canbus_filter_std16(AMS_HIL_CAN_ID_TEMP_SAMPLE);
+    filter.FilterMaskIdHigh = canbus_filter_std16(AMS_HIL_CAN_ID_TEMP_SAMPLE);
+    filter.FilterMaskIdLow = canbus_filter_std16(AMS_HIL_CAN_ID_TEMP_SAMPLE);
+    filter.FilterScale = CAN_FILTERSCALE_16BIT;
+    filter.FilterActivation = ENABLE;
+    filter.SlaveStartFilterBank = CANBUS_SLAVE_FILTER_START;
+    if(HAL_CAN_ConfigFilter(hcan, &filter) != HAL_OK)
+    {
+        return HAL_ERROR;
+    }
+#endif
+
+    return HAL_OK;
+}
+
 static void canbus_memory_barrier(void)
 {
 #if AMS_HOST_TEST
@@ -25,6 +112,62 @@ static void canbus_memory_barrier(void)
 #else
     __DMB();
 #endif
+}
+
+static void canbus_increment_u32_sat(volatile uint32_t *value)
+{
+    if((value != NULL) && (*value != UINT32_MAX))
+    {
+        (*value)++;
+    }
+}
+
+static void canbus_add_u32_sat(volatile uint32_t *value, uint32_t amount)
+{
+    if(value == NULL)
+    {
+        return;
+    }
+    if(amount > (UINT32_MAX - *value))
+    {
+        *value = UINT32_MAX;
+    }
+    else
+    {
+        *value += amount;
+    }
+}
+
+static bool canbus_rx_header_allowed(const CAN_RxHeaderTypeDef *header)
+{
+    if((header == NULL) || (header->RTR != CAN_RTR_DATA))
+    {
+        return false;
+    }
+
+    if(header->IDE == CAN_ID_EXT)
+    {
+        return (header->ExtId == CHARGER_RX_ID) && (header->DLC >= 5u);
+    }
+
+#if AMS_ENABLE_HIL_CAN
+    if(header->IDE == CAN_ID_STD)
+    {
+        switch(header->StdId)
+        {
+        case AMS_HIL_CAN_ID_MEAS:
+            return header->DLC >= 7u;
+        case AMS_HIL_CAN_ID_TRUTH:
+        case AMS_HIL_CAN_ID_SUMMARY:
+        case AMS_HIL_CAN_ID_CELL_SAMPLE:
+        case AMS_HIL_CAN_ID_TEMP_SAMPLE:
+            return header->DLC >= 8u;
+        default:
+            break;
+        }
+    }
+#endif
+    return false;
 }
 
 static uint16_t canbus_queue_next(uint16_t index)
@@ -82,7 +225,7 @@ static bool canbus_enqueue_from_isr(canbus_device_t *dev,
     tail = dev->rx_queue_tail;
     if(next == tail)
     {
-        dev->rx_queue_drop_count++;
+        canbus_increment_u32_sat(&dev->rx_queue_drop_count);
         return false;
     }
 
@@ -250,6 +393,7 @@ HAL_StatusTypeDef canbus_device_init(canbus_device_t *dev, CAN_HandleTypeDef *hc
     dev->rx_queue_high_water = 0u;
     dev->rx_isr_count = 0u;
     dev->rx_processed_count = 0u;
+    dev->rx_filtered_count = 0u;
     dev->rx_queue_drop_count = 0u;
     dev->rx_hal_error_count = 0u;
     dev->rx_queue_drop_reported = 0u;
@@ -399,7 +543,7 @@ uint32_t canbus_process_rx_queue(canbus_device_t *dev, app_data_t *data, uint32_
         processed++;
     }
 
-    dev->rx_processed_count += processed;
+    canbus_add_u32_sat(&dev->rx_processed_count, processed);
     return processed;
 }
 
@@ -546,10 +690,15 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
 
     if(HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO0, &rx_header, rx_data) != HAL_OK)
     {
-        dev->rx_hal_error_count++;
+        canbus_increment_u32_sat(&dev->rx_hal_error_count);
         return;
     }
 
-    dev->rx_isr_count++;
+    canbus_increment_u32_sat(&dev->rx_isr_count);
+    if(!canbus_rx_header_allowed(&rx_header))
+    {
+        canbus_increment_u32_sat(&dev->rx_filtered_count);
+        return;
+    }
     (void)canbus_enqueue_from_isr(dev, &rx_header, rx_data, osKernelGetTickCount());
 }

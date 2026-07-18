@@ -22,6 +22,10 @@
 
 void canbus_task_fn(void *arg);
 
+static StaticTask_t canbus_task_tcb;
+static StackType_t canbus_task_stack[AMS_STACK_CAN_WORDS];
+static TaskHandle_t canbus_task_handle = NULL;
+
 #define ECU_SEG_CELLS 15u
 /*
  * Hardware has 24 thermistors per SMB (3x ADG728 muxes into GPIO1/2/3).
@@ -1159,15 +1163,23 @@ static HAL_StatusTypeDef send_estimator_status(canbus_device_t *canbus, const ap
 
 TaskHandle_t canbus_task_start(app_data_t *data)
 {
-    TaskHandle_t handle = NULL;
-
     if(data == NULL)
     {
         return NULL;
     }
 
-    xTaskCreate(canbus_task_fn, "CANBus Task", AMS_STACK_CAN_WORDS, (void *)data, CAN_PRIO, &handle);
-    return handle;
+    if(canbus_task_handle == NULL)
+    {
+        canbus_task_handle = xTaskCreateStatic(canbus_task_fn,
+                                               "CANBus Task",
+                                               AMS_STACK_CAN_WORDS,
+                                               (void *)data,
+                                               CAN_PRIO,
+                                               canbus_task_stack,
+                                               &canbus_task_tcb);
+    }
+
+    return canbus_task_handle;
 }
 
 void canbus_task_fn(void *arg)

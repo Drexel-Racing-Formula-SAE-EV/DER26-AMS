@@ -12,5 +12,6 @@
 #include "cmsis_os.h"
 
 TaskHandle_t estimator_task_start(app_data_t *data);
+bool estimator_task_update(app_data_t *data, uint32_t now, float cc_dt_s);
 
 #endif /* INC_TASKS_ESTIMATOR_TASK_H_ */

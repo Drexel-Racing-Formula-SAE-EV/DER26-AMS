@@ -17,7 +17,7 @@
 #include "ext_drivers/canbus.h"
 
 #define CCS_CANBUS_ID      0x1806E5F4
-#define CHARGER_RX_ID      0x18FF50E5
+#define CHARGER_RX_ID      0x18FF50E5u
 #define CHARGE_MAX_VOLTAGE 312.0f
 #define CHARGE_MAX_CURRENT 10.0f
 #define CHARGER_COMMAND_PERIOD_MS 1000u

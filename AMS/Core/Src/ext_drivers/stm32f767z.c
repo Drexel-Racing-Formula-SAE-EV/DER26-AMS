@@ -91,6 +91,6 @@ HAL_StatusTypeDef stm32f767z_adc_switch_channel(ADC_HandleTypeDef *hadc, uint32_
 	ADC_ChannelConfTypeDef sConfig = {0};
 	sConfig.Channel = channel;
 	sConfig.Rank = 1;
-	sConfig.SamplingTime = ADC_SAMPLETIME_3CYCLES;
+	sConfig.SamplingTime = AMS_CURRENT_ADC_SAMPLING_TIME;
 	return HAL_ADC_ConfigChannel(hadc, &sConfig);
 }

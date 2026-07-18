@@ -28,6 +28,10 @@
 * @param arg App_data struct pointer converted to void pointer
 */
 void cli_task_fn(void *arg);
+static StaticTask_t cli_task_tcb;
+static StackType_t cli_task_stack[AMS_STACK_CLI_WORDS];
+static TaskHandle_t cli_task_handle = NULL;
+
 int cli_handle_cmd(int argc, char *argv[]);
 int cmd_not_found(int argc, char *argv[]);
 
@@ -111,7 +115,7 @@ command_t cmds[] =
 	{"wdg", &watchdog_control, "watchdog diagnostics/control: wdg [status|enable]"},
 	{"rtos", &get_rtos_diag, "RTOS stack/heap diagnostics: rtos"},
 	{"uart", &get_uart_diag, "CLI UART diagnostics/recovery: uart [status|recover|clear]"},
-	{"spi", &get_spi_debug, "ADBMS6830 SPI debug: spi [status|pins|cspins|cs|preset|toggle|probe|probea|probeb|scope|sid|stat|staterr|cfgchk|cellst|oweven|owodd|auxdiag|wake|coldwake|clrflag|clear|diagclear|enable|disable]"},
+	{"spi", &get_spi_debug, "ADBMS6830 SPI debug: spi [status|pins|cspins|cs|preset|toggle|probe|probea|probeb|scope|sid|stat|staterr|cfgchk|cellst|owcheck|oweven|owodd|auxdiag|wake|coldwake|clrflag|clear|diagclear|enable|disable]"},
 	{"apm", &get_apm_debug, "ADBMS2950/APM: apm [status|health|probe|sid|config|sample|scope [1-100]|clear|enable|disable]"},
 	{"bringup", &get_bringup, "bench bring-up summaries: bringup [help|board|adbms6830|apm2950|charger-lv|charger-battery|ready|snapshot|evidence]"},
 	{"bmsok", &bmsok_control, "BMS_OK control: bmsok [status|release|inhibit]"},
@@ -311,15 +315,23 @@ static bool cli_raw_temp_to_values(int16_t raw, float *voltage_out, float *temp_
 
 TaskHandle_t cli_task_start(app_data_t *data)
 {
-    TaskHandle_t handle = NULL;
-
     if(data == NULL)
     {
         return NULL;
     }
 
-    xTaskCreate(cli_task_fn, "CLI task", AMS_STACK_CLI_WORDS, (void *)data, CLI_PRIO, &handle);
-    return handle;
+    if(cli_task_handle == NULL)
+    {
+        cli_task_handle = xTaskCreateStatic(cli_task_fn,
+                                            "CLI task",
+                                            AMS_STACK_CLI_WORDS,
+                                            (void *)data,
+                                            CLI_PRIO,
+                                            cli_task_stack,
+                                            &cli_task_tcb);
+    }
+
+    return cli_task_handle;
 }
 
 void cli_task_fn(void *arg)
@@ -608,9 +620,13 @@ int get_faults(int argc, char *argv[])
             }
 
             const ams_fault_log_t *log = ams_fault_log_get();
-            snprintf(outline, CLI_LINESZ, "fault log count:%lu write:%lu",
+            snprintf(outline, CLI_LINESZ,
+                     "fault log schema:%u boot:%lu count:%lu write:%lu next:%lu",
+                     (unsigned)log->version,
+                     (unsigned long)log->boot_sequence,
                      (unsigned long)log->count,
-                     (unsigned long)log->write_index);
+                     (unsigned long)log->write_index,
+                     (unsigned long)log->next_sequence);
             ret |= cli_printline(cli, outline);
 
             for(uint32_t i = 0u; i < log->count; i++)
@@ -618,8 +634,10 @@ int get_faults(int argc, char *argv[])
                 uint32_t idx = (log->write_index + AMS_FAULT_LOG_DEPTH - log->count + i) % AMS_FAULT_LOG_DEPTH;
                 const ams_fault_log_entry_t *e = &log->entry[idx];
                 snprintf(outline, CLI_LINESZ,
-                         "%02lu tick:%lu event:%s reason:%u arg0:0x%08lX arg1:0x%08lX",
+                         "%02lu boot:%lu seq:%lu tick:%lu event:%s reason:%u arg0:0x%08lX arg1:0x%08lX",
                          (unsigned long)i,
+                         (unsigned long)e->boot_sequence,
+                         (unsigned long)e->sequence,
                          (unsigned long)e->tick,
                          ams_fault_log_event_str(e->event),
                          (unsigned)e->reason,
@@ -1010,7 +1028,9 @@ static bool cli_adbms_scan_busy(void)
 static bool cli_adbms_open_wire_state_allowed(void)
 {
     return (data != NULL) &&
-           ((data->state == STATE_CHARGE) || (data->state == STATE_BALANCE));
+           ((data->state == STATE_CHARGE) ||
+            (data->state == STATE_DISCARGE) ||
+            (data->state == STATE_BALANCE));
 }
 
 static const char *cli_passfail(bool ok)
@@ -1803,8 +1823,12 @@ static int get_spi_debug_locked(int argc, char *argv[])
 	        }
         else if(!strcmp(argv[1], "diagclear"))
         {
+            if(cli_adbms_refuse_active_scan("spi diagclear"))
+            {
+                return ret;
+            }
             adbms6830_diag_health_clear(smb);
-            ret |= cli_printline(cli, "ADBMS diagnostic health counters cleared");
+            ret |= cli_printline(cli, "ADBMS diagnostic counters cleared; safety latches require reset");
         }
 	        else if(!strcmp(argv[1], "cfgchk"))
 	        {
@@ -1826,6 +1850,40 @@ static int get_spi_debug_locked(int argc, char *argv[])
 	            snprintf(outline, CLI_LINESZ, "Cell ADC diagnostic hook status: %s", cli_hal_status_str(probe_status));
 	            ret |= cli_printline(cli, outline);
 	        }
+	        else if(!strcmp(argv[1], "owcheck"))
+	        {
+	            if(cli_adbms_refuse_active_scan("spi owcheck"))
+	            {
+	                return ret;
+	            }
+	            if(!cli_adbms_open_wire_state_allowed())
+	            {
+	                ret |= cli_printline(cli, "Open-wire refused: use only in charge/discharge/balance service state");
+	                return ret;
+            }
+            probe_status = adbms6830_run_open_wire_diagnostic(smb);
+            if(probe_status != HAL_OK)
+            {
+                bool was_latched;
+
+                taskENTER_CRITICAL();
+                was_latched = data->adbms_open_wire_fault;
+                data->adbms_open_wire_fault = true;
+                data->adbms_diag_fault = true;
+                data->adbms_last_diag_status = probe_status;
+                taskEXIT_CRITICAL();
+                if(!was_latched)
+                {
+                    ams_fault_log_event(AMS_FAULT_LOG_ADBMS_DIAG_FAIL,
+                                        0x0004u,
+                                        (uint32_t)probe_status,
+                                        data->adbms_scan_count);
+                }
+                set_bms(false);
+            }
+            snprintf(outline, CLI_LINESZ, "Open-wire full even+odd result: %s", cli_hal_status_str(probe_status));
+	            ret |= cli_printline(cli, outline);
+	        }
 	        else if(!strcmp(argv[1], "oweven"))
 	        {
 	            if(cli_adbms_refuse_active_scan("spi oweven"))
@@ -1834,11 +1892,11 @@ static int get_spi_debug_locked(int argc, char *argv[])
 	            }
 	            if(!cli_adbms_open_wire_state_allowed())
 	            {
-	                ret |= cli_printline(cli, "Open-wire refused: use only in charge/balance service state");
+	                ret |= cli_printline(cli, "Open-wire refused: use only in charge/discharge/balance service state");
 	                return ret;
 	            }
 	            probe_status = adbms6830_run_open_wire_check(smb, false);
-	            snprintf(outline, CLI_LINESZ, "Open-wire even-channel command status: %s", cli_hal_status_str(probe_status));
+	            snprintf(outline, CLI_LINESZ, "Open-wire even-channel result: %s", cli_hal_status_str(probe_status));
 	            ret |= cli_printline(cli, outline);
 	        }
 	        else if(!strcmp(argv[1], "owodd"))
@@ -1849,11 +1907,11 @@ static int get_spi_debug_locked(int argc, char *argv[])
 	            }
 	            if(!cli_adbms_open_wire_state_allowed())
 	            {
-	                ret |= cli_printline(cli, "Open-wire refused: use only in charge/balance service state");
+	                ret |= cli_printline(cli, "Open-wire refused: use only in charge/discharge/balance service state");
 	                return ret;
 	            }
 	            probe_status = adbms6830_run_open_wire_check(smb, true);
-	            snprintf(outline, CLI_LINESZ, "Open-wire odd-channel command status: %s", cli_hal_status_str(probe_status));
+	            snprintf(outline, CLI_LINESZ, "Open-wire odd-channel result: %s", cli_hal_status_str(probe_status));
 	            ret |= cli_printline(cli, outline);
 	        }
 	        else if(!strcmp(argv[1], "auxdiag"))
@@ -1868,7 +1926,7 @@ static int get_spi_debug_locked(int argc, char *argv[])
 	        }
 	        else if(strcmp(argv[1], "status"))
 	        {
-	            ret |= cli_printline(cli, "Usage: spi [status|pins|cspins|cs|preset|toggle|probe|probea|probeb|scope|sid|stat|staterr|cfgchk|cellst|oweven|owodd|auxdiag|wake|coldwake|clrflag|clear|diagclear|enable|disable]");
+	            ret |= cli_printline(cli, "Usage: spi [status|pins|cspins|cs|preset|toggle|probe|probea|probeb|scope|sid|stat|staterr|cfgchk|cellst|owcheck|oweven|owodd|auxdiag|wake|coldwake|clrflag|clear|diagclear|enable|disable]");
 	            return ret;
 	        }
 	    }
@@ -1986,12 +2044,23 @@ static int get_spi_debug_locked(int argc, char *argv[])
         ret |= cli_printline(cli, outline);
 
         snprintf(outline, CLI_LINESZ,
-                 "diag counts cfg:%lu cell:%lu owe:%lu owo:%lu aux:%lu",
+                 "diag counts cfg:%lu cell:%lu owfull:%lu owe:%lu owo:%lu aux:%lu",
                  (unsigned long)health->config_readback_count,
                  (unsigned long)health->cell_adc_self_test_count,
+                 (unsigned long)health->open_wire_full_count,
                  (unsigned long)health->open_wire_even_count,
                  (unsigned long)health->open_wire_odd_count,
                  (unsigned long)health->aux_gpio_diag_count);
+        ret |= cli_printline(cli, outline);
+
+        snprintf(outline, CLI_LINESZ,
+                 "openwire cells:%u even_valid:0x%04X odd_valid:0x%04X incomplete:0x%04X fault_ic:0x%04X sticky:0x%04X",
+                 (unsigned)smb->monitored_cell_count,
+                 health->open_wire_even_valid_ic_mask,
+                 health->open_wire_odd_valid_ic_mask,
+                 health->open_wire_incomplete_ic_mask,
+                 health->open_wire_fault_ic_mask,
+                 health->sticky_open_wire_fault_ic_mask);
         ret |= cli_printline(cli, outline);
     }
 
@@ -2034,6 +2103,16 @@ static int get_spi_debug_locked(int argc, char *argv[])
                  diag->state_valid,
                  diag->gpi_mask,
                  diag->revision);
+        ret |= cli_printline(cli, outline);
+
+        snprintf(outline, CLI_LINESZ,
+                 "IC%u openwire even:%d/0x%04X odd:%d/0x%04X combined:0x%04X",
+                 (unsigned)ic,
+                 diag->open_wire_even_valid,
+                 diag->open_wire_even_fault_mask,
+                 diag->open_wire_odd_valid,
+                 diag->open_wire_odd_fault_mask,
+                 diag->open_wire_fault_mask);
         ret |= cli_printline(cli, outline);
     }
 
@@ -2493,9 +2572,10 @@ int get_can_diag(int argc, char *argv[])
 
     uint16_t rx_queued = canbus_rx_queue_count(&data->board.canbus);
     snprintf(outline, CLI_LINESZ,
-             "CAN RX isr:%lu processed:%lu queued:%u high:%u dropped:%lu hal_err:%lu",
+             "CAN RX isr:%lu processed:%lu filtered:%lu queued:%u high:%u dropped:%lu hal_err:%lu",
              (unsigned long)data->board.canbus.rx_isr_count,
              (unsigned long)data->board.canbus.rx_processed_count,
+             (unsigned long)data->board.canbus.rx_filtered_count,
              (unsigned)rx_queued,
              (unsigned)data->board.canbus.rx_queue_high_water,
              (unsigned long)data->board.canbus.rx_queue_drop_count,

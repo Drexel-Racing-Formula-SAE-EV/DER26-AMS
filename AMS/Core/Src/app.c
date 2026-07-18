@@ -58,6 +58,7 @@ uint32_t ams_heartbeat_timeout_ms(ams_heartbeat_id_t id)
 	case AMS_HEARTBEAT_CAN:     return AMS_HEARTBEAT_CAN_TIMEOUT_MS;
 	case AMS_HEARTBEAT_LOGGER:  return AMS_HEARTBEAT_LOGGER_TIMEOUT_MS;
 	case AMS_HEARTBEAT_IMD:     return AMS_HEARTBEAT_IMD_TIMEOUT_MS;
+	case AMS_HEARTBEAT_FAN:     return AMS_HEARTBEAT_FAN_TIMEOUT_MS;
 	default:                    return 0u;
 	}
 }
@@ -72,6 +73,7 @@ const char *ams_heartbeat_name(ams_heartbeat_id_t id)
 	case AMS_HEARTBEAT_CAN:     return "can";
 	case AMS_HEARTBEAT_LOGGER:  return "logger";
 	case AMS_HEARTBEAT_IMD:     return "imd";
+	case AMS_HEARTBEAT_FAN:     return "fan";
 	default:                    return "unknown";
 	}
 }

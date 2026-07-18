@@ -13,6 +13,10 @@
 
 void fan_task_fn(void *argument);
 
+static StaticTask_t fan_task_tcb;
+static StackType_t fan_task_stack[AMS_STACK_FAN_WORDS];
+static TaskHandle_t fan_task_handle = NULL;
+
 #define FAN_MIN_COMMAND_PERCENT        25.0f
 #define FAN_CHARGE_WARM_PERCENT       35.0f
 #define FAN_OFF_HYSTERESIS_C           3.0f
@@ -132,15 +136,23 @@ static float fan_percent_from_temp(const app_data_t *data, uint8_t *reason_out)
 
 TaskHandle_t fan_task_start(app_data_t *data)
 {
-    TaskHandle_t handle = NULL;
-
     if(data == NULL)
     {
         return NULL;
     }
 
-    xTaskCreate(fan_task_fn, "fan task", AMS_STACK_FAN_WORDS, (void *)data, FAN_PRIO, &handle);
-    return handle;
+    if(fan_task_handle == NULL)
+    {
+        fan_task_handle = xTaskCreateStatic(fan_task_fn,
+                                            "fan task",
+                                            AMS_STACK_FAN_WORDS,
+                                            (void *)data,
+                                            FAN_PRIO,
+                                            fan_task_stack,
+                                            &fan_task_tcb);
+    }
+
+    return fan_task_handle;
 }
 
 void fan_task_fn(void *argument)
@@ -183,6 +195,11 @@ void fan_task_fn(void *argument)
         {
             data->fan_control_reason = FAN_CONTROL_REASON_DRIVER_FAULT;
         }
+
+        /* Fan actuation is part of the thermal safety chain. A live
+         * temperature task cannot compensate for a fan task that stopped
+         * executing, so publish an independent supervisor heartbeat. */
+        ams_heartbeat_kick(data, AMS_HEARTBEAT_FAN, osKernelGetTickCount());
 
         osDelayUntil(entry + (1000 / FAN_FREQ));
     }

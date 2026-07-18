@@ -12,6 +12,17 @@
 #include <stm32f7xx_hal.h>
 #include "cmsis_os.h"
 
+/* C_SENSE_H_MCU and C_SENSE_L_MCU each see the 100 kOhm / 150 kOhm
+ * divider's approximately 60 kOhm Thevenin resistance.  Three ADC clock
+ * cycles cannot settle the STM32F767 sample-and-hold capacitor through that
+ * source.  Use the longest supported acquisition window; at the configured
+ * 18 MHz ADC clock it is about 26.7 us, negligible beside the 20 ms current
+ * task period.  Physical accuracy, sign and gain still require bench
+ * validation. */
+#ifndef AMS_CURRENT_ADC_SAMPLING_TIME
+#define AMS_CURRENT_ADC_SAMPLING_TIME ADC_SAMPLETIME_480CYCLES
+#endif
+
 typedef struct
 {
 	ADC_HandleTypeDef *hadc1;

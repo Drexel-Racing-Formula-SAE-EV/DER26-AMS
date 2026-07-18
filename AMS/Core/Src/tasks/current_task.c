@@ -14,6 +14,10 @@
 
 void current_task_fn(void *argument);
 
+static StaticTask_t current_task_tcb;
+static StackType_t current_task_stack[AMS_STACK_CURRENT_WORDS];
+static TaskHandle_t current_task_handle = NULL;
+
 static uint32_t current_task_abs_deciamps(float current_a)
 {
     double scaled;
@@ -37,6 +41,10 @@ static current_fault_mode_t current_task_fault_mode_from_state(state_t state)
     switch(state)
     {
         case STATE_START:
+            /* STATE_START is software initialization, not control of the
+             * hardware precharge circuit.  The conservative precharge limits
+             * are retained here only to detect unexpected pack current while
+             * BMS_OK and the shutdown loop should still be open. */
             return CURRENT_FAULT_MODE_PRECHARGE;
         case STATE_CHARGE:
             return CURRENT_FAULT_MODE_CHARGE;
@@ -86,15 +94,23 @@ static void current_task_publish_fault_state(app_data_t *app_data,
 
 TaskHandle_t current_task_start(app_data_t *data)
 {
-    TaskHandle_t handle = NULL;
-
     if(data == NULL)
     {
         return NULL;
     }
 
-    xTaskCreate(current_task_fn, "current task", AMS_STACK_CURRENT_WORDS, (void *)data, CUR_PRIO, &handle);
-    return handle;
+    if(current_task_handle == NULL)
+    {
+        current_task_handle = xTaskCreateStatic(current_task_fn,
+                                                "current task",
+                                                AMS_STACK_CURRENT_WORDS,
+                                                (void *)data,
+                                                CUR_PRIO,
+                                                current_task_stack,
+                                                &current_task_tcb);
+    }
+
+    return current_task_handle;
 }
 
 void current_task_fn(void *argument)

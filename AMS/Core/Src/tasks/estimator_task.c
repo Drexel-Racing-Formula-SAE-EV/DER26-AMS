@@ -22,6 +22,10 @@ void estimator_task_fn(void *argument);
 #define ESTIMATOR_HW_MIN_TEMP_C     (-40.0f)
 #define ESTIMATOR_HW_MAX_TEMP_C     120.0f
 
+static StaticTask_t estimator_task_tcb;
+static StackType_t estimator_task_stack[ESTIMATOR_STACK_WORDS];
+static TaskHandle_t estimator_task_handle = NULL;
+
 static float adc_code_to_cell_v(int16_t code)
 {
     return ((float)code + 10000.0f) * 0.000150f;
@@ -183,20 +187,124 @@ static bool hil_meas_fresh(const app_data_t *data, uint32_t now)
 
 TaskHandle_t estimator_task_start(app_data_t *data)
 {
-    TaskHandle_t handle = NULL;
-
     if (data == NULL)
     {
         return NULL;
     }
 
-    xTaskCreate(estimator_task_fn,
-                "estimator task",
-                ESTIMATOR_STACK_WORDS,
-                (void *)data,
-                EST_PRIO,
-                &handle);
-    return handle;
+    if (estimator_task_handle == NULL)
+    {
+        estimator_task_handle = xTaskCreateStatic(estimator_task_fn,
+                                                   "estimator task",
+                                                   ESTIMATOR_STACK_WORDS,
+                                                   (void *)data,
+                                                   EST_PRIO,
+                                                   estimator_task_stack,
+                                                   &estimator_task_tcb);
+    }
+
+    return estimator_task_handle;
+}
+
+bool estimator_task_update(app_data_t *data, uint32_t now, float cc_dt_s)
+{
+    ams_estimator_input_source_t source = AMS_ESTIMATOR_INPUT_HARDWARE;
+    bool hardware_inputs_ready;
+
+    if ((data == NULL) || (data->estimator.enabled == 0U) ||
+        (data->estimator.instance_count == 0U))
+    {
+        return false;
+    }
+
+#if AMS_ENABLE_HIL_CAN
+    bool use_hil = hil_meas_fresh(data, now);
+    if (use_hil)
+    {
+        source = AMS_ESTIMATOR_INPUT_HIL_CAN;
+    }
+#else
+    const bool use_hil = false;
+#endif
+
+    hardware_inputs_ready = data->current_valid &&
+                            !data->current_sensor_fault &&
+                            data->voltage_valid &&
+                            !data->voltage_read_fault &&
+                            data->temp_valid &&
+                            !data->temp_read_fault;
+
+    /* Coulomb count may continue without a voltage/temperature correction,
+     * but never integrate a stale or invalid hardware current sample. */
+    if (use_hil)
+    {
+#if AMS_ENABLE_HIL_CAN
+        (void)ams_estimator_cc_step(&data->estimator,
+                                    data->hil.meas.i_pack_A,
+                                    cc_dt_s);
+#endif
+    }
+    else if (data->current_valid && !data->current_sensor_fault &&
+             isfinite(data->current))
+    {
+        (void)ams_estimator_cc_step(&data->estimator, data->current, cc_dt_s);
+    }
+
+    for (uint8_t i = 0U;
+         (i < data->estimator.instance_count) && (i < AMS_EKF_MAX_INSTANCES);
+         i++)
+    {
+        ams_ekf_instance_t *inst = &data->estimator.inst[i];
+        float v_meas = 0.0f;
+        float i_pack = data->current;
+        float t_surf = 25.0f;
+        bool input_ok = false;
+        bool instance_uses_hil = false;
+
+        if (inst->cfg.enabled == 0U)
+        {
+            continue;
+        }
+
+#if AMS_ENABLE_HIL_CAN
+        if (use_hil &&
+            (inst->cfg.first_series_group == 0U) &&
+            (inst->cfg.series_group_count == AMS_EKF_PACK_SERIES_GROUPS))
+        {
+            v_meas = data->hil.meas.v_pack_V;
+            i_pack = data->hil.meas.i_pack_A;
+            t_surf = data->hil.meas.t_surf_C;
+            input_ok = true;
+            instance_uses_hil = true;
+        }
+        else
+#endif
+        {
+            uint16_t valid_v = 0U;
+            bool voltage_ok = collect_group_voltage(data, &inst->cfg,
+                                                    &v_meas, &valid_v);
+            bool temp_ok = collect_group_temp(data, &inst->cfg, &t_surf);
+            input_ok = hardware_inputs_ready && voltage_ok && temp_ok &&
+                       isfinite(i_pack);
+        }
+
+        if (input_ok)
+        {
+            (void)ams_ekf_step(inst, i_pack, v_meas, t_surf,
+                               inst->cfg.sample_time_s);
+        }
+        else
+        {
+            inst->valid = 0U;
+            inst->fault_flags = instance_uses_hil ? AMS_EKF_FAULT_STALE_INPUT :
+                                                    AMS_EKF_FAULT_BAD_INPUT;
+        }
+    }
+
+    ams_estimator_refresh_summary(&data->estimator, source, now);
+    data->estimator_fault =
+        (data->estimator.fault_flags != AMS_EKF_FAULT_NONE);
+    return !data->estimator_fault;
 }
 
 void estimator_task_fn(void *argument)
@@ -218,72 +326,7 @@ void estimator_task_fn(void *argument)
         float cc_dt_s = (float)(entry - last_entry) / 1000.0f;
         last_entry = entry;
 
-        if ((data->estimator.enabled == 0U) || (data->estimator.instance_count == 0U))
-        {
-            osDelayUntil(entry + (1000U / ESTIMATOR_FREQ));
-            continue;
-        }
-
-        ams_estimator_input_source_t source = AMS_ESTIMATOR_INPUT_HARDWARE;
-#if AMS_ENABLE_HIL_CAN
-        bool use_hil = hil_meas_fresh(data, entry);
-        if (use_hil)
-        {
-            source = AMS_ESTIMATOR_INPUT_HIL_CAN;
-        }
-        float cc_current_A = use_hil ? data->hil.meas.i_pack_A : data->current;
-#else
-        const bool use_hil = false;
-        float cc_current_A = data->current;
-#endif
-        (void)ams_estimator_cc_step(&data->estimator, cc_current_A, cc_dt_s);
-
-        for (uint8_t i = 0U; (i < data->estimator.instance_count) && (i < AMS_EKF_MAX_INSTANCES); i++)
-        {
-            ams_ekf_instance_t *inst = &data->estimator.inst[i];
-            if (inst->cfg.enabled == 0U)
-            {
-                continue;
-            }
-
-            float v_meas = 0.0f;
-            float i_pack = data->current;
-            float t_surf = 25.0f;
-            bool input_ok = false;
-
-#if AMS_ENABLE_HIL_CAN
-            if (use_hil &&
-                (inst->cfg.first_series_group == 0U) &&
-                (inst->cfg.series_group_count == AMS_EKF_PACK_SERIES_GROUPS))
-            {
-                v_meas = data->hil.meas.v_pack_V;
-                i_pack = data->hil.meas.i_pack_A;
-                t_surf = data->hil.meas.t_surf_C;
-                input_ok = true;
-            }
-            else
-#endif
-            {
-                uint16_t valid_v = 0U;
-                bool voltage_ok = collect_group_voltage(data, &inst->cfg, &v_meas, &valid_v);
-                bool temp_ok = collect_group_temp(data, &inst->cfg, &t_surf);
-                (void)temp_ok;
-                input_ok = voltage_ok && isfinite(i_pack);
-            }
-
-            if (input_ok)
-            {
-                (void)ams_ekf_step(inst, i_pack, v_meas, t_surf, inst->cfg.sample_time_s);
-            }
-            else
-            {
-                inst->valid = 0U;
-                inst->fault_flags |= use_hil ? AMS_EKF_FAULT_STALE_INPUT : AMS_EKF_FAULT_BAD_INPUT;
-            }
-        }
-
-        ams_estimator_refresh_summary(&data->estimator, source, entry);
-        data->estimator_fault = (data->estimator.fault_flags != AMS_EKF_FAULT_NONE);
+        (void)estimator_task_update(data, entry, cc_dt_s);
         osDelayUntil(entry + (1000U / ESTIMATOR_FREQ));
     }
 }

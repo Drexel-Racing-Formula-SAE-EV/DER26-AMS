@@ -214,6 +214,11 @@ void accumulator_init(accumulator_t *dev,
 	                                      cs_pin_a,
 	                                      cs_pin_b,
 	                                      ready_timer);
+	if((dev->smb_init_status == HAL_OK) &&
+	   !adbms6830_set_monitored_cell_count(&dev->smb, NCELLS))
+	{
+		dev->smb_init_status = HAL_ERROR;
+	}
 	if(dev->smb_init_status == HAL_OK)
 	{
 		const adbms6830_diag_health_t *health;

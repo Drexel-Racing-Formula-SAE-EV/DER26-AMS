@@ -22,6 +22,10 @@
  */
 void error_task_fn(void *arg);
 
+static StaticTask_t error_task_tcb;
+static StackType_t error_task_stack[AMS_STACK_ERROR_WORDS];
+static TaskHandle_t error_task_handle = NULL;
+
 static bool error_task_air_publication_fresh(const app_data_t *data,
                                              uint32_t now)
 {
@@ -66,6 +70,54 @@ static bool error_task_air_feedback_fault(const app_data_t *data,
 #endif
 }
 
+static bool error_task_operating_inputs_ready(const app_data_t *data,
+                                              uint32_t now)
+{
+    if(data == NULL)
+    {
+        return false;
+    }
+
+    return data->voltage_valid &&
+           !data->voltage_fault &&
+           data->temp_valid &&
+           !data->temp_fault &&
+           data->current_valid &&
+           !data->current_fault &&
+           !data->adbms_diag_fault &&
+           !data->task_heartbeat_fault &&
+           !data->fuse_fault &&
+           !data->charger_fault &&
+           error_task_air_feedback_ready(data, now) &&
+           data->imd_valid &&
+           data->imd_ok &&
+           !data->imd_fault &&
+           !data->hard_fault;
+}
+
+static bool error_task_current_policy_matches_state(const app_data_t *data)
+{
+    if(data == NULL)
+    {
+        return false;
+    }
+
+    switch(data->state)
+    {
+    case STATE_CHARGE:
+        return data->current_fault_mode == CURRENT_FAULT_MODE_CHARGE;
+    case STATE_DISCARGE:
+        return data->current_fault_mode == CURRENT_FAULT_MODE_DRIVE;
+    case STATE_BALANCE:
+        return data->current_fault_mode == CURRENT_FAULT_MODE_IDLE;
+    case STATE_NULL:
+    case STATE_START:
+    case STATE_ERROR:
+    default:
+        return false;
+    }
+}
+
 static bool error_task_bms_ready(const app_data_t *data, uint32_t now)
 {
     if(data == NULL)
@@ -85,39 +137,37 @@ static bool error_task_bms_ready(const app_data_t *data, uint32_t now)
 
     /* Caller holds the short safety critical section. */
     return ams_state_allows_bms_ok(data->state) &&
-           data->voltage_valid &&
-           !data->voltage_fault &&
-           data->temp_valid &&
-           !data->temp_fault &&
+           error_task_current_policy_matches_state(data) &&
+           error_task_operating_inputs_ready(data, now) &&
            ((data->state != STATE_CHARGE) || !data->temp_charge_stop) &&
-           data->current_valid &&
-           !data->current_fault &&
-           !data->adbms_diag_fault &&
-           !data->task_heartbeat_fault &&
-           !data->fuse_fault &&
-           !data->charger_fault &&
-           error_task_air_feedback_ready(data, now) &&
-           data->imd_valid &&
-           data->imd_ok &&
-           !data->imd_fault &&
            !data->hard_fault;
 }
 
 TaskHandle_t error_task_start(app_data_t *data)
 {
-    TaskHandle_t handle = NULL;
-
     if(data == NULL)
     {
         return NULL;
     }
 
-    xTaskCreate(error_task_fn, "ERROR task", AMS_STACK_ERROR_WORDS, (void *)data, ERR_PRIO, &handle);
-    return handle;
+    if(error_task_handle == NULL)
+    {
+        error_task_handle = xTaskCreateStatic(error_task_fn,
+                                              "ERROR task",
+                                              AMS_STACK_ERROR_WORDS,
+                                              (void *)data,
+                                              ERR_PRIO,
+                                              error_task_stack,
+                                              &error_task_tcb);
+    }
+
+    return error_task_handle;
 }
 
 void error_task_update(app_data_t *data, uint32_t now)
 {
+    bool startup_transitioned = false;
+
     if(data == NULL)
     {
         return;
@@ -172,10 +222,26 @@ void error_task_update(app_data_t *data, uint32_t now)
                         data->rtos_stack_warning ||
                         data->rtos_heap_warning);
 
+    /* The present vehicle hardware owns precharge sequencing.  Firmware only
+     * supplies the BMS_OK/shutdown-loop permit and has no AIR command or
+     * precharge-complete input.  STATE_START therefore means software
+     * initialization only.  Once every software safety input is valid, move
+     * to the normal drive policy; BMS_OK remains low until the current task has
+     * published a fresh DRIVE-policy result on a later iteration.  This avoids
+     * both the old permanent 1.2 A startup limit and a mode-transition window
+     * evaluated with stale current thresholds. */
+    if((data->state == STATE_START) &&
+       error_task_operating_inputs_ready(data, now))
+    {
+        data->state = STATE_DISCARGE;
+        startup_transitioned = true;
+    }
+
     /* This task is the sole normal owner allowed to assert BMS_OK.
      * Measurement/communication tasks may still force the output low for
      * immediate response, but they cannot reassert it. */
-    data->bms_supervisor_ready = error_task_bms_ready(data, now);
+    data->bms_supervisor_ready = !startup_transitioned &&
+                                 error_task_bms_ready(data, now);
     set_bms(data->bms_supervisor_ready);
 
     taskEXIT_CRITICAL();

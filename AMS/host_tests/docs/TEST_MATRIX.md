@@ -43,7 +43,7 @@ Authored by Mahad Faisal, 2026.
 | `test_can_telemetry_packets` | Verifies ECU AMS packet headers, CAN ID, 8-byte layout, status/current/voltage/temp/fan payloads. |
 | `test_telemetry_absent_segments_and_invalid_channels` | Verifies missing SMB segments and invalid channels zero-fill instead of reading out of bounds. |
 | `test_charger_rx_and_tx` | Verifies charger receive parse, charger fault bits, charger command transmit. |
-| `test_can_rx_filter_matrix` | Verifies bad RX status, wrong ID type, wrong ID, and short DLC are ignored. |
+| `test_can_rx_filter_matrix` | Verifies exact bxCAN charger/HIL filter packing and configuration failure, then verifies bad RX status, remote/wrong ID type, wrong ID, and short DLC are ignored before application parsing. |
 | `test_charge_state_disable_matrix` | Verifies charge command disable byte for fault, BMS disabled, charger fault, and timeout cases. |
 | `test_charger_command_priority_tx_failure_and_cli` | Verifies the charger command is transmitted before telemetry in charge mode, TX failure drops BMS_OK and is exposed in charger CLI diagnostics. |
 | `test_current_sensor_measurement_model` | Verifies DHAB 0.6-divider reconstruction, zero-current offset, design-file C_SENSE_L=50A / C_SENSE_H=800A mapping, range selection, saturation, mismatch, and implausible ADC handling. |
@@ -54,6 +54,7 @@ Authored by Mahad Faisal, 2026.
 | `test_task_iterations_with_injected_signals` | Runs one fake iteration of CAN, ADBMS, error, fan, and current tasks. |
 | `test_fault_matrix_extra` | Verifies hard/soft fault aggregation, confirmed current sensor soft fault behavior, and BMS_OK safety behavior. |
 | `test_safety_panic_reset_watchdog_and_log` | Verifies panic handling forces BMS_OK low without HAL/RTOS dependency, preserves reset/panic cause state, and records fault-log entries. |
+| `test_retained_fault_log_integrity_recovery` | Injects uncommitted records, CRC corruption, corrupt ring metadata, and full-ring rollover; verifies only committed valid entries survive and sequence/order metadata is reconstructed. |
 | `test_watchdog_feed_gate` | Verifies watchdog feeding is blocked during startup/stale/fault states and only allowed after voltage, current, temp, and heartbeat health are all valid. |
 | `test_can_busoff_sets_fault_and_recovers` | Verifies CAN bus-off sets AMS CAN fault state, schedules recovery, records bus-off/recovery counters, and clears recovery-pending state after successful CAN restart. |
 
@@ -78,9 +79,10 @@ Unit-only additions:
 | `test_adbms_spi_scope_activity` | Verifies the bench scope traffic helper preserves the selected string, emits the visible MOSI pattern, repeats valid RDCFGA command bursts, and rejects invalid repeat counts. |
 | `test_adbms_spi_sid_status_and_counter_mismatch` | Verifies ADBMS6830 RDSID parsing, RDSTATC/RDSTATD/RDSTATE diagnostic parsing, and command-counter mismatch detection. |
 | `test_adbms_spi_coldwake_and_clear_flags` | Verifies conservative cold-wake pulse generation and CLRFLAG all-flag packing/command dispatch. |
-| `test_adbms6830_diagnostic_commands_and_cli_health` | Verifies ADBMS6830 config readback, cell ADC diagnostic hook, open-wire command hooks, AUX/GPIO diagnostic hook, sticky health counters, and CLI visibility. |
-| `test_adbms_periodic_diagnostics_and_safe_open_wire` | Verifies low-rate ADBMS6830 status/config diagnostics, config mismatch fail-closed behavior, and automatic open-wire scheduling only in balance/service state. |
-| `test_adbms_cli_scan_guard_and_cs_probe_commands` | Verifies CLI SPI probes, PE4/PF4 candidate pin pulsing, and scope traffic are refused during active ADBMS scans, CS_A/CS_B probe commands select the intended chip-select path, scope preset/toggle mode drives default `spi scope`, scope mode reports bench probe guidance, and manual open-wire is charge/balance gated. |
+| `test_adbms6830_diagnostic_commands_and_cli_health` | Verifies ADBMS6830 config readback, cell ADC diagnostic hook, full open-wire command hooks, AUX/GPIO diagnostic hook, sticky health counters, and CLI visibility. |
+| `test_adbms_periodic_diagnostics_and_safe_open_wire` | Verifies real-time status/config/open-wire scheduling, config mismatch fail-closed behavior, and automatic full open-wire evaluation in charge/discharge/balance states. |
+| `test_adbms_cli_scan_guard_and_cs_probe_commands` | Verifies CLI SPI probes, PE4/PF4 candidate pin pulsing, and scope traffic are refused during active ADBMS scans, CS_A/CS_B probe commands select the intended chip-select path, scope preset/toggle mode drives default `spi scope`, and manual full/phase open-wire commands are limited to safe service states. |
+| `test_adbms_open_wire_full_measurement_and_fault_injection` | Links the real driver and verifies both S-ADC parity commands, conversion waits, five-group reads for 15 populated cells, exact fault-bit mapping, bad PEC/counter rejection, stale-buffer preservation, and stopped-timer failure. |
 | `test_adbms2950_spi_debug_write_and_full_duplex_paths` | Verifies ADBMS2950/APM SPI write and full-duplex read debug state, CS wrapping, dummy-byte TX padding, RX extraction, HAL error propagation, and counters/previews. |
 | `test_adbms2950_pec_write_is_bounded_and_reference_equal` | Regression for the sanitizer-discovered write-PEC overflow: verifies a six-byte write payload is not mutated or indexed past its end and matches the independent PEC calculation. |
 | `test_adbms2950_spi_probe_pec_masks_and_clear` | Verifies ADBMS2950/APM RDCFGA probe debug capture, PEC pass/fail masks, command-counter capture, debug clear/enable behavior, and SPI op strings. |
@@ -93,16 +95,17 @@ Hardware bring-up notes:
 
 | Area | Purpose |
 |---|---|
-| ADBMS6830 SPI debug CLI | Firmware exposes `spi status`, `spi preset`, `spi toggle`, `spi scope`, `spi probe`, `spi sid`, `spi stat`, `spi staterr`, `spi cfgchk`, `spi cellst`, `spi oweven`, `spi owodd`, `spi auxdiag`, `spi wake`, `spi coldwake`, `spi clrflag`, `spi clear`, `spi diagclear`, `spi enable`, and `spi disable` for board-side ADBMS6830 chain bring-up. This is hardware-debug support; host tests still cover firmware transaction/debug logic, not physical SPI timing or cable integrity. |
+| ADBMS6830 SPI debug CLI | Firmware exposes `spi status`, `spi preset`, `spi toggle`, `spi scope`, `spi probe`, `spi sid`, `spi stat`, `spi staterr`, `spi cfgchk`, `spi cellst`, `spi owcheck`, `spi oweven`, `spi owodd`, `spi auxdiag`, `spi wake`, `spi coldwake`, `spi clrflag`, `spi clear`, `spi diagclear`, `spi enable`, and `spi disable` for board-side ADBMS6830 chain bring-up. Host tests cover command/result logic; physical thresholds, timing, and harness mapping still require injected-open LV testing. |
 | ADBMS2950/APM final-ring CLI | Firmware exposes `apm status`, `apm health`, `apm sid`, `apm config`, `apm sample`, `apm scope [1-100]`, `apm clear`, `apm enable`, and `apm disable`. The APM is enabled by default on String B, divider controls default off, and its data remains advisory/non-gating. |
 | Dedicated APM SIL gate | `make apm-sil` links the real ADBMS2950 driver for unit/injection tests and separately runs topology, fault-isolation, and CLI behavior in the system SIL harness. |
 | Hardware bring-up BMS_OK inhibit | Firmware supports `AMS_HW_BRINGUP=1`, which defaults BMS_OK output inhibited until `bmsok release` is run from CLI. `bmsok inhibit` forces it low again. |
 | Staged bring-up CLI summaries | Firmware exposes `bringup board`, `bringup adbms6830`, `bringup apm2950`, `bringup charger-lv`, `bringup charger-battery`, `bringup ready`, `bringup snapshot`, and `bringup evidence` to make bench phase decisions repeatable without mutating safety state. |
 | Shared ADBMS SPI lock | ADBMS6830 and ADBMS2950 low-level SPI transfers call shared `adbms_spi_lock()` / `adbms_spi_unlock()` hooks so CLI probing cannot collide with periodic reads on SPI6. |
 | Fan fail-safe/ramp | Fan task drives max PWM when temperature data is invalid/stale/unavailable, and ramps PWM between low/high temperature thresholds when temperature data is valid. |
-| Software heartbeat monitor | Error task checks ADBMS, current, temperature, CAN, and logger/dashboard heartbeats. ADBMS/current/temp/CAN stale is safety-critical and drops BMS_OK; logger/dashboard stale is diagnostic-only. |
+| Software heartbeat monitor | Error task checks ADBMS, current, temperature, CAN, fan, IMD (when enabled), and logger/dashboard heartbeats. ADBMS/current/temp/CAN/fan/IMD stale is safety-critical and drops BMS_OK; logger/dashboard stale is diagnostic-only. |
 | CPU panic safety path | HardFault, MemManage, BusFault, UsageFault, NMI, and Error_Handler force BMS_OK low through a direct GPIO reset path before entering the fault loop. |
-| Reset/panic record | `.noinit` RAM keeps the last panic reason, ARM fault status registers, reset flags, and a small diagnostic event ring across software/watchdog resets. |
+| Reset/panic record | `.noinit` RAM keeps the last panic reason, ARM fault status registers, reset flags, and a versioned diagnostic event ring with record sequence, CRC, commit-last publication, and recovery from torn/corrupt entries. |
+| Deterministic RTOS allocation | All nine application tasks, the ADBMS recursive mutex, idle task, timer task, and timer queue use static storage; `make static-allocation-gate` rejects dynamic application task creation. |
 | Watchdog gate | Optional IWDG support is disabled by default and, when compiled in, is fed only by the error task after safety heartbeat and sensor freshness gates pass. |
 | CAN bus-off recovery | CAN error polling tracks HAL error code, bus-off count, recovery count, and attempts a delayed peripheral restart after bus-off. |
 | Hardware SPI bring-up guide | `docs/HARDWARE_SPI_BRINGUP.md` documents first-flash setup, logic-analyzer channels, expected SPI mode 3 behavior, CLI command order, fault isolation, APM probing, and BMS_OK release criteria. |

@@ -53,7 +53,7 @@ HAL GPIO read/write
 HAL TIM PWM/input-capture
 HAL UART
 ADC read helper
-FreeRTOS task create/delay/delete
+FreeRTOS static-task create/delay/delete
 CMSIS-RTOS tick functions
 ADBMS6830 measurement helpers
 ADBMS2950 command helpers
@@ -183,6 +183,7 @@ make AMS_ROOT=/absolute/path/to/DER26-AMS-feature-canbus_charger asan
 | Missing segments | only first 2 SMBs configured | absent segments zero-filled, no out-of-bounds access |
 | Charger RX | fake extended CAN charger frame | voltage/current decode and fault bits |
 | Charger RX filter | wrong FIFO status, ID type, ID, or DLC | ignored safely |
+| bxCAN hardware filter | exact charger extended ID, explicit HIL standard IDs, configuration failure | correct register packing and fail-closed return |
 | Charger TX | charge-state command path | target voltage/current and disable byte behavior |
 | Charger timeout | stale `last_rx_tick` | communication fault and charger disable |
 | CAN TX timeout | no free mailbox | HAL timeout returned, no infinite loop |
@@ -193,6 +194,9 @@ make AMS_ROOT=/absolute/path/to/DER26-AMS-feature-canbus_charger asan
 | System SIL current faults | fake DHAB current ADC sequences through current task | warning-only behavior, fast-trip debounce, latch persistence, stale ADC fail-safe |
 | System SIL combined faults | current latch + voltage latch + reset calls | BMS_OK stays low until all relevant latches are cleared and data is healthy |
 | System SIL ADBMS2950/APM | final-ring init, sample failures, identity/config and CLI actions | APM is observable, bounded and non-safety-gating until final-board validation |
+| Full ADBMS6830 open wire | even/odd responses, bad PEC/counter, timeout, injected lead | complete result validation, exact cell mask, no stale overwrite, fail-closed diagnostic |
+| Retained fault log | torn commit, CRC damage, metadata corruption, ring rollover | corrupt records rejected and chronology reconstructed |
+| RTOS allocation gate | application task source and kernel/CMSIS storage path | fixed task/idle/timer/queue/mutex storage; no dynamic application task creation |
 | Current sensor | fake timer capture | current conversion path and fault flag behavior |
 | Task loops | one-iteration task runs via fake RTOS delay | state transitions and periodic behavior |
 | Error task | hard/soft fault combinations | `BMS_OK` gating and aggregate fault flags |

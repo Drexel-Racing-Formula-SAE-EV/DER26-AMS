@@ -122,7 +122,26 @@
 #define CLI_FREQ 20
 #define AIR_FREQ 2 /* legacy control-sense path; future monitor uses its period macro */
 #define CURRENT_FREQ 50
-#define ADBMS_FREQ 1 // was 10, testing with 1
+
+/* ADBMS acquisition profile.  The 1 Hz setting is intentionally limited to
+ * hardware bring-up, where BMS_OK and balancing are inhibited by default.
+ * Normal firmware restores the original 10 Hz acquisition intent.  A build
+ * may override AMS_ADBMS_SCAN_HZ, but it must remain a whole-Hz rate that can
+ * be represented by the 1 ms RTOS tick. */
+#ifndef AMS_ADBMS_SCAN_HZ
+#if AMS_HW_BRINGUP
+#define AMS_ADBMS_SCAN_HZ 1u
+#else
+#define AMS_ADBMS_SCAN_HZ 10u
+#endif
+#endif
+
+#if (AMS_ADBMS_SCAN_HZ == 0u) || (AMS_ADBMS_SCAN_HZ > 1000u)
+#error "AMS_ADBMS_SCAN_HZ must be between 1 and 1000 Hz"
+#endif
+
+#define ADBMS_FREQ AMS_ADBMS_SCAN_HZ
+#define AMS_ADBMS_TASK_PERIOD_MS ((1000u + ADBMS_FREQ - 1u) / ADBMS_FREQ)
 #define IMD_FREQ 10
 #define FAN_FREQ 5
 #define CAN_FREQ 2
@@ -135,6 +154,7 @@
 #define AMS_HEARTBEAT_CAN_TIMEOUT_MS 2000u
 #define AMS_HEARTBEAT_LOGGER_TIMEOUT_MS 2000u
 #define AMS_HEARTBEAT_IMD_TIMEOUT_MS 500u
+#define AMS_HEARTBEAT_FAN_TIMEOUT_MS 1000u
 
 /* CMSIS-RTOS mutex timeouts are expressed in kernel ticks.  The generated
  * FreeRTOS configuration uses a 1 kHz kernel tick, so this is 500 ms on the
@@ -156,8 +176,8 @@
 #define IMD_PRIO     6
 #define CLI_PRIO     4
 
-/* xTaskCreate stack sizes are in StackType_t words, not bytes. Cortex-M7 uses
- * 32-bit StackType_t, so multiply by 4 for bytes.
+/* Static FreeRTOS task stack sizes are in StackType_t words, not bytes.
+ * Cortex-M7 uses 32-bit StackType_t, so multiply by 4 for bytes.
  */
 #define AMS_STACK_ERROR_WORDS       256u
 #define AMS_STACK_CURRENT_WORDS     256u
@@ -210,11 +230,11 @@ static inline bool ams_state_allows_bms_ok(state_t state)
 {
 	switch(state)
 	{
-	case STATE_START:
 	case STATE_CHARGE:
 	case STATE_DISCARGE:
 	case STATE_BALANCE:
 		return true;
+	case STATE_START:
 	case STATE_NULL:
 	case STATE_ERROR:
 	default:
@@ -230,6 +250,7 @@ typedef enum
 	AMS_HEARTBEAT_CAN,
 	AMS_HEARTBEAT_LOGGER,
 	AMS_HEARTBEAT_IMD,
+	AMS_HEARTBEAT_FAN,
 	AMS_HEARTBEAT_COUNT
 } ams_heartbeat_id_t;
 
@@ -269,6 +290,7 @@ typedef enum
                                    AMS_HEARTBEAT_BIT(AMS_HEARTBEAT_CURRENT) | \
                                    AMS_HEARTBEAT_BIT(AMS_HEARTBEAT_TEMP) | \
                                    AMS_HEARTBEAT_BIT(AMS_HEARTBEAT_CAN) | \
+                                   AMS_HEARTBEAT_BIT(AMS_HEARTBEAT_FAN) | \
                                    (AMS_ENABLE_IMD ? AMS_HEARTBEAT_BIT(AMS_HEARTBEAT_IMD) : 0u))
 #define AMS_HEARTBEAT_LOGGER_MASK AMS_HEARTBEAT_BIT(AMS_HEARTBEAT_LOGGER)
 
@@ -427,6 +449,9 @@ struct app_data_t
 	bool adbms_diag_fault;
 	bool adbms_config_fault;
 	bool adbms_status_fault;
+	/* Safety latch: a failed/incomplete open-wire diagnostic remains asserted
+	 * until reset. A later pass may restore measurement freshness, but cannot
+	 * silently restore BMS permission in the same boot. */
 	bool adbms_open_wire_fault;
 	bool adbms_balance_write_fault;
 	bool adbms_scan_active;

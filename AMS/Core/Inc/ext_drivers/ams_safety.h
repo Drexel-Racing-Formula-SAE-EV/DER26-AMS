@@ -21,6 +21,8 @@
 
 #define AMS_PANIC_RECORD_MAGIC 0x414D5350u /* 'AMSP' */
 #define AMS_FAULT_LOG_MAGIC    0x414D534Cu /* 'AMSL' */
+#define AMS_FAULT_LOG_VERSION  2u
+#define AMS_FAULT_LOG_ENTRY_COMMIT 0xC04D17EDu
 #define AMS_FAULT_LOG_DEPTH    32u
 
 #ifndef AMS_CAN_BUSOFF_RECOVERY_COOLDOWN_MS
@@ -109,18 +111,26 @@ typedef struct
 
 typedef struct
 {
+    uint32_t boot_sequence;
+    uint32_t sequence;
     uint32_t tick;
     uint16_t event;
     uint16_t reason;
     uint32_t arg0;
     uint32_t arg1;
+    uint32_t crc32;
+    uint32_t commit;
 } ams_fault_log_entry_t;
 
 typedef struct
 {
     uint32_t magic;
+    uint16_t version;
+    uint16_t entry_size;
     uint32_t write_index;
     uint32_t count;
+    uint32_t boot_sequence;
+    uint32_t next_sequence;
     ams_fault_log_entry_t entry[AMS_FAULT_LOG_DEPTH];
 } ams_fault_log_t;
 
@@ -164,6 +174,11 @@ void ams_safety_host_reset_state(void);
 void ams_safety_host_set_reset_csr(uint32_t csr);
 void ams_safety_host_set_fault_regs(uint32_t cfsr, uint32_t hfsr, uint32_t mmfar, uint32_t bfar);
 bool ams_safety_host_bms_forced_low(void);
+void ams_safety_host_fault_log_invalidate_entry(uint32_t index);
+void ams_safety_host_fault_log_corrupt_entry_crc(uint32_t index);
+void ams_safety_host_fault_log_corrupt_metadata(uint32_t write_index,
+                                                uint32_t count,
+                                                uint32_t next_sequence);
 #endif
 
 #endif /* AMS_SAFETY_H_ */

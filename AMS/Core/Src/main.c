@@ -289,7 +289,7 @@ static void MX_ADC1_Init(void)
   */
   sConfig.Channel = ADC_CHANNEL_3;
   sConfig.Rank = ADC_REGULAR_RANK_1;
-  sConfig.SamplingTime = ADC_SAMPLETIME_3CYCLES;
+  sConfig.SamplingTime = AMS_CURRENT_ADC_SAMPLING_TIME;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
   {
     Error_Handler();
@@ -341,7 +341,7 @@ static void MX_ADC2_Init(void)
   */
   sConfig.Channel = ADC_CHANNEL_10;
   sConfig.Rank = ADC_REGULAR_RANK_1;
-  sConfig.SamplingTime = ADC_SAMPLETIME_3CYCLES;
+  sConfig.SamplingTime = AMS_CURRENT_ADC_SAMPLING_TIME;
   if (HAL_ADC_ConfigChannel(&hadc2, &sConfig) != HAL_OK)
   {
     Error_Handler();
@@ -384,18 +384,10 @@ static void MX_CAN1_Init(void)
     Error_Handler();
   }
   /* USER CODE BEGIN CAN1_Init 2 */
-  CAN_FilterTypeDef canfil;
-  canfil.FilterBank           = 0;
-  canfil.FilterMode           = CAN_FILTERMODE_IDMASK;
-  canfil.FilterFIFOAssignment = CAN_RX_FIFO0;
-  canfil.FilterIdHigh         = 0;
-  canfil.FilterIdLow          = 0;
-  canfil.FilterMaskIdHigh     = 0;
-  canfil.FilterMaskIdLow      = 0;
-  canfil.FilterScale          = CAN_FILTERSCALE_32BIT;
-  canfil.FilterActivation     = ENABLE;
-  canfil.SlaveStartFilterBank = 14;
-  HAL_CAN_ConfigFilter(&hcan1, &canfil);
+  if (canbus_configure_rx_filters(&hcan1) != HAL_OK)
+  {
+    Error_Handler();
+  }
   /* USER CODE END CAN1_Init 2 */
 
 }

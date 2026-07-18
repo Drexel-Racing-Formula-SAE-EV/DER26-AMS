@@ -66,7 +66,7 @@ WARN := \
 CFLAGS_COMMON := -std=c11 -g -O0 $(WARN) $(COMMON_DEFS) $(INC)
 LDLIBS := -lm
 
-.PHONY: help check-root compile unit test production-gates system-sil apm-sil bringup-test hil-adbms-test imd-test air-feedback-stub-test safety-test stress ci asan ubsan analyze clang-analyze clean list make-build-dir
+.PHONY: help check-root compile unit test production-gates static-allocation-gate system-sil apm-sil bringup-test hil-adbms-test imd-test air-feedback-stub-test safety-test stress ci asan ubsan analyze clang-analyze clean list make-build-dir
 
 help:
 	@echo "DER26 AMS host test harness"
@@ -75,6 +75,7 @@ help:
 	@echo "  make unit          Build and run isolated unit tests"
 	@echo "  make test          Build and run comprehensive host tests"
 	@echo "  make production-gates Verify HIL/service CLI are disabled by default"
+	@echo "  make static-allocation-gate Verify every application task uses fixed storage"
 	@echo "  make system-sil    Alias for comprehensive system-level SIL/injection tests"
 	@echo "  make apm-sil       Run actual-driver ADBMS2950 unit tests plus final-ring CLI/SIL tests"
 	@echo "  make bringup-test  Run comprehensive tests with AMS_HW_BRINGUP=1"
@@ -114,7 +115,7 @@ unit: check-root make-build-dir
 	$(CC) $(CFLAGS_COMMON) $(UNIT_SRC) $(ESTIMATOR_SRC) $(ADBMS2950_SRC) $(AIR_MONITOR_SRC) -o $(UNIT_BIN) $(LDLIBS)
 	$(UNIT_BIN)
 
-ci: unit test apm-sil production-gates analyze
+ci: unit test apm-sil production-gates static-allocation-gate analyze
 
 # Normal run: catches logic regressions and compile/link problems.
 test: CFLAGS_COMMON += $(HOST_EXERCISE_DEFS)
@@ -131,6 +132,30 @@ production-gates: check-root
 		$(AMS_ROOT)/Core/Src/app.c $(OWNER_SRC) \
 		-Wl,--gc-sections -o $(OWNER_BIN) $(LDLIBS)
 	$(OWNER_BIN)
+
+static-allocation-gate: check-root
+	@task_sources="$$(find "$(AMS_ROOT)/Core/Src/tasks" -maxdepth 1 -name '*_task.c' -type f)"; \
+	if grep -nE '(^|[^A-Za-z0-9_])xTaskCreate[[:space:]]*\(' $$task_sources; then \
+		echo "ERROR: dynamic application task creation is not permitted"; exit 1; \
+	fi; \
+	count="$$(grep -hE '(^|[^A-Za-z0-9_])xTaskCreateStatic[[:space:]]*\(' $$task_sources | wc -l)"; \
+	test "$$count" -eq 9 || \
+		(echo "ERROR: expected 9 static application tasks, found $$count"; exit 1)
+	@if $(CC) $(CFLAGS_COMMON) -E "$(AMS_ROOT)/Core/Src/main.c" | \
+		grep -qE 'defaultTaskHandle[[:space:]]*=[[:space:]]*osThreadNew'; then \
+		echo "ERROR: Cube defaultTask is compiled and would allocate dynamically"; \
+		exit 1; \
+	fi
+	@grep -q 'configSUPPORT_STATIC_ALLOCATION[[:space:]]*1' \
+		"$(AMS_ROOT)/Core/Inc/FreeRTOSConfig.h"
+	@grep -q 'vApplicationGetIdleTaskMemory' \
+		"$(AMS_ROOT)/Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2/cmsis_os2.c"
+	@grep -q 'vApplicationGetTimerTaskMemory' \
+		"$(AMS_ROOT)/Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2/cmsis_os2.c"
+	@grep -q 'xQueueCreateStatic' \
+		"$(AMS_ROOT)/Middlewares/Third_Party/FreeRTOS/Source/timers.c"
+	@grep -q 'cb_mem = &adbms_spi_mutex_cb' "$(AMS_ROOT)/Core/Src/app.c"
+	@echo "PASS application, idle, timer-task, timer-queue, and ADBMS mutex static-allocation gate"
 
 system-sil: test
 
@@ -175,22 +200,22 @@ stress: test
 asan: CFLAGS_COMMON += $(HOST_EXERCISE_DEFS)
 asan: check-root
 	@mkdir -p "$(BUILD_DIR)"
-	$(CC) $(CFLAGS_COMMON) -fsanitize=address,undefined -fno-omit-frame-pointer \
+	$(CC) $(CFLAGS_COMMON) -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer \
 		$(UNIT_SRC) $(ESTIMATOR_SRC) $(ADBMS2950_SRC) $(AIR_MONITOR_SRC) -o $(UNIT_BIN)-asan $(LDLIBS)
-	ASAN_OPTIONS=detect_leaks=0 $(UNIT_BIN)-asan
-	$(CC) $(CFLAGS_COMMON) -fsanitize=address,undefined -fno-omit-frame-pointer \
+	ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 $(UNIT_BIN)-asan
+	$(CC) $(CFLAGS_COMMON) -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer \
 		$(SRC) $(AIR_MONITOR_SRC) -o $(BIN)-asan $(LDLIBS)
-	ASAN_OPTIONS=detect_leaks=0 $(BIN)-asan
+	ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 $(BIN)-asan
 
 ubsan: CFLAGS_COMMON += $(HOST_EXERCISE_DEFS)
 ubsan: check-root
 	@mkdir -p "$(BUILD_DIR)"
-	$(CC) $(CFLAGS_COMMON) -fsanitize=undefined -fno-omit-frame-pointer \
+	$(CC) $(CFLAGS_COMMON) -fsanitize=undefined -fno-sanitize-recover=all -fno-omit-frame-pointer \
 		$(UNIT_SRC) $(ESTIMATOR_SRC) $(ADBMS2950_SRC) $(AIR_MONITOR_SRC) -o $(UNIT_BIN)-ubsan $(LDLIBS)
-	$(UNIT_BIN)-ubsan
-	$(CC) $(CFLAGS_COMMON) -fsanitize=undefined -fno-omit-frame-pointer \
+	UBSAN_OPTIONS=halt_on_error=1 $(UNIT_BIN)-ubsan
+	$(CC) $(CFLAGS_COMMON) -fsanitize=undefined -fno-sanitize-recover=all -fno-omit-frame-pointer \
 		$(SRC) $(AIR_MONITOR_SRC) -o $(BIN)-ubsan $(LDLIBS)
-	$(BIN)-ubsan
+	UBSAN_OPTIONS=halt_on_error=1 $(BIN)-ubsan
 
 # GCC static analyzer. Useful for null/bounds/uninitialized regressions.
 analyze: CFLAGS_COMMON += $(HOST_EXERCISE_DEFS)

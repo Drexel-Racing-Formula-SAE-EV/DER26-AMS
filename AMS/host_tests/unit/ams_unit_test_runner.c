@@ -67,13 +67,13 @@ uint16_t stm32f767z_adc_read(ADC_HandleTypeDef *hadc)
 static uint8_t unit_spi_last_tx[BUFSZ];
 static uint8_t unit_spi_last_txrx_tx[BUFSZ];
 static uint8_t unit_spi_txrx_response[BUFSZ];
-static uint8_t unit_spi_txrx_sequence[8][BUFSZ];
+static uint8_t unit_spi_txrx_sequence[16][BUFSZ];
 static uint16_t unit_spi_last_tx_len = 0u;
 static uint16_t unit_spi_last_txrx_len = 0u;
 static uint32_t unit_spi_tx_calls = 0u;
 static uint32_t unit_spi_txrx_calls = 0u;
 static uint32_t unit_spi_txrx_sequence_count = 0u;
-static HAL_StatusTypeDef unit_spi_tx_status_sequence[8];
+static HAL_StatusTypeDef unit_spi_tx_status_sequence[16];
 static uint32_t unit_spi_tx_status_sequence_count = 0u;
 static uint32_t unit_gpio_write_calls = 0u;
 static GPIO_PinState unit_gpio_states[64];
@@ -1167,6 +1167,25 @@ static void unit_adbms_make_aux_result(uint8_t *dst,
     unit_adbms_make_read_packet_from_data(dst, payload, cmd_counter, corrupt_pec);
 }
 
+static void unit_adbms_make_s_group_result(uint8_t *dst,
+                                            int16_t code0,
+                                            int16_t code1,
+                                            int16_t code2,
+                                            uint8_t cmd_counter,
+                                            bool corrupt_pec)
+{
+    uint8_t payload[TX_DATA];
+    const int16_t codes[3] = {code0, code1, code2};
+
+    for(uint8_t slot = 0u; slot < 3u; slot++)
+    {
+        uint16_t raw = (uint16_t)codes[slot];
+        payload[slot * 2u] = (uint8_t)raw;
+        payload[(slot * 2u) + 1u] = (uint8_t)(raw >> 8u);
+    }
+    unit_adbms_make_read_packet_from_data(dst, payload, cmd_counter, corrupt_pec);
+}
+
 static void unit_adbms_init_driver(adbms6830_driver_t *dev,
                                    adbms6830_asic *ics,
                                    SPI_HandleTypeDef *spi,
@@ -1188,6 +1207,7 @@ static void unit_adbms_init_driver(adbms6830_driver_t *dev,
                         3u,
                         4u,
                         &unit_delay_timer);
+    (void)adbms6830_set_monitored_cell_count(dev, 15u);
     unit_spi_reset();
     dev->string = STRING_B;
     adbms6830_spi_debug_clear(dev);
@@ -1967,6 +1987,127 @@ static void test_adbms_mux_transport_and_ack_failures(void)
     EXPECT_TRUE(dev.mux_selection_valid_mask[1] == 0u);
 }
 
+static void unit_adbms_fill_open_wire_phase(uint32_t first_sequence,
+                                             uint8_t counter,
+                                             int16_t nominal_code)
+{
+    for(uint32_t group = 0u; group < 5u; group++)
+    {
+        unit_adbms_make_s_group_result(
+            &unit_spi_txrx_sequence[first_sequence + group][CMDSZ + PEC15SZ],
+            nominal_code,
+            nominal_code,
+            nominal_code,
+            counter,
+            false);
+    }
+}
+
+static void test_adbms_open_wire_full_measurement_and_fault_injection(void)
+{
+    adbms6830_driver_t dev;
+    adbms6830_asic ics[1];
+    SPI_HandleTypeDef spi;
+    GPIO_TypeDef gpio_a;
+    GPIO_TypeDef gpio_b;
+    const int16_t nominal_code = 12200; /* 3.33 V at 150 uV/LSB, offset -10000. */
+
+    memset(&dev, 0, sizeof(dev));
+    memset(ics, 0, sizeof(ics));
+    memset(&spi, 0, sizeof(spi));
+    memset(&gpio_a, 0, sizeof(gpio_a));
+    memset(&gpio_b, 0, sizeof(gpio_b));
+    unit_adbms_init_driver(&dev, ics, &spi, &gpio_a, &gpio_b, 1u);
+
+    EXPECT_TRUE(dev.monitored_cell_count == 15u);
+    EXPECT_FALSE(adbms6830_set_monitored_cell_count(&dev, 0u));
+    EXPECT_FALSE(adbms6830_set_monitored_cell_count(&dev, (uint8_t)(CELL + 1u)));
+    EXPECT_TRUE(dev.monitored_cell_count == 15u);
+
+    /* A 15-cell SMB must read only S groups A..E for each phase. The first
+     * valid phase establishes counter 7; the second ADSV increments it to 8. */
+    unit_spi_txrx_sequence_count = 10u;
+    unit_adbms_fill_open_wire_phase(0u, 7u, nominal_code);
+    unit_adbms_fill_open_wire_phase(5u, 8u, nominal_code);
+    EXPECT_TRUE(adbms6830_run_open_wire_diagnostic(&dev) == HAL_OK);
+    EXPECT_TRUE(unit_spi_tx_calls == 2u);
+    EXPECT_TRUE(unit_spi_txrx_calls == 10u);
+    EXPECT_TRUE(unit_spi_last_tx_len == (CMDSZ + PEC15SZ));
+    EXPECT_TRUE(unit_spi_last_tx[0] == 0x01u);
+    EXPECT_TRUE(unit_spi_last_tx[1] == 0x6Au); /* ADSV, single, DCP=0, odd OW. */
+    EXPECT_TRUE(dev.health.open_wire_full_count == 1u);
+    EXPECT_TRUE(dev.health.open_wire_even_count == 1u);
+    EXPECT_TRUE(dev.health.open_wire_odd_count == 1u);
+    EXPECT_TRUE(dev.health.open_wire_even_valid_ic_mask == 0x0001u);
+    EXPECT_TRUE(dev.health.open_wire_odd_valid_ic_mask == 0x0001u);
+    EXPECT_TRUE(dev.health.open_wire_incomplete_ic_mask == 0u);
+    EXPECT_TRUE(dev.health.open_wire_fault_ic_mask == 0u);
+    EXPECT_TRUE(ics[0].owcell.cell_ow_even[14] == nominal_code);
+    EXPECT_TRUE(ics[0].owcell.cell_ow_odd[14] == nominal_code);
+
+    /* In the even-channel phase, ADI channel C2 is zero-based index 1. A
+     * 1.5 V result is below the 2.0 V open-wire threshold and must latch the
+     * exact cell bit while remaining a structurally valid measurement. */
+    unit_spi_reset();
+    unit_spi_txrx_sequence_count = 5u;
+    unit_adbms_fill_open_wire_phase(0u, 9u, nominal_code);
+    unit_adbms_make_s_group_result(
+        &unit_spi_txrx_sequence[0][CMDSZ + PEC15SZ],
+        nominal_code,
+        0,
+        nominal_code,
+        9u,
+        false);
+    EXPECT_TRUE(adbms6830_run_open_wire_check(&dev, false) == HAL_ERROR);
+    EXPECT_TRUE(dev.diag[0].open_wire_even_valid);
+    EXPECT_TRUE(dev.diag[0].open_wire_even_fault_mask == (uint16_t)(1u << 1u));
+    EXPECT_TRUE(dev.health.open_wire_fault_ic_mask == 0x0001u);
+    EXPECT_TRUE(dev.health.sticky_open_wire_fault_ic_mask == 0x0001u);
+
+    dev.last_cell_updated_mask[0] = 0x7FFFu;
+    adbms6830_mask_open_wire_cells(&dev);
+    EXPECT_FALSE((dev.last_cell_updated_mask[0] & (uint16_t)(1u << 1u)) != 0u);
+    EXPECT_TRUE((dev.last_cell_updated_mask[0] & (uint16_t)(1u << 0u)) != 0u);
+
+    /* A PEC-bad group must not overwrite its previous raw values and must
+     * invalidate the phase even when every other group is valid. */
+    ics[0].owcell.cell_ow_odd[0] = 777;
+    unit_spi_reset();
+    unit_spi_txrx_sequence_count = 5u;
+    unit_adbms_fill_open_wire_phase(0u, 10u, nominal_code);
+    unit_adbms_make_s_group_result(
+        &unit_spi_txrx_sequence[0][CMDSZ + PEC15SZ],
+        nominal_code,
+        nominal_code,
+        nominal_code,
+        10u,
+        true);
+    EXPECT_TRUE(adbms6830_run_open_wire_check(&dev, true) == HAL_ERROR);
+    EXPECT_TRUE(ics[0].owcell.cell_ow_odd[0] == 777);
+    EXPECT_FALSE(dev.diag[0].open_wire_odd_valid);
+    EXPECT_TRUE(dev.health.open_wire_incomplete_ic_mask == 0x0001u);
+    EXPECT_TRUE(dev.health.sticky_pec_fail_mask == 0x0001u);
+
+    /* A valid PEC with the wrong command counter is equally unusable and
+     * also must not publish the affected group's data as current. */
+    ics[0].owcell.cell_ow_odd[0] = 888;
+    unit_spi_reset();
+    unit_spi_txrx_sequence_count = 5u;
+    unit_adbms_fill_open_wire_phase(0u, 12u, nominal_code);
+    EXPECT_TRUE(adbms6830_run_open_wire_check(&dev, true) == HAL_ERROR);
+    EXPECT_TRUE(ics[0].owcell.cell_ow_odd[0] == 888);
+    EXPECT_FALSE(dev.diag[0].open_wire_odd_valid);
+    EXPECT_TRUE(dev.health.sticky_cmd_counter_mismatch_mask == 0x0001u);
+
+    /* A frozen 1 MHz delay timer must time out before any S-register read. */
+    unit_spi_reset();
+    unit_delay_timer_advances = false;
+    EXPECT_TRUE(adbms6830_run_open_wire_check(&dev, false) == HAL_TIMEOUT);
+    EXPECT_TRUE(unit_spi_txrx_calls == 0u);
+    EXPECT_FALSE(dev.diag[0].open_wire_even_valid);
+    unit_delay_timer_advances = true;
+}
+
 
 static void unit_adbms2950_init_driver(adbms2950_driver_t *dev,
                                        adbms2950_asic *ics,
@@ -2420,6 +2561,7 @@ int main(void)
     run_test("ADBMS config/balance readback", test_adbms_config_and_balance_readback);
     run_test("ADBMS mux ACK/temperature freshness", test_adbms_mux_ack_and_temperature_freshness);
     run_test("ADBMS mux transport/ACK failures", test_adbms_mux_transport_and_ack_failures);
+    run_test("ADBMS full open-wire measurement/fault injection", test_adbms_open_wire_full_measurement_and_fault_injection);
 	run_test("ADBMS2950 bounded write PEC", test_adbms2950_pec_write_is_bounded_and_reference_equal);
     run_test("ADBMS2950 SPI write/full-duplex", test_adbms2950_spi_debug_write_and_full_duplex_paths);
     run_test("ADBMS2950 SPI probe PEC masks", test_adbms2950_spi_probe_pec_masks_and_clear);

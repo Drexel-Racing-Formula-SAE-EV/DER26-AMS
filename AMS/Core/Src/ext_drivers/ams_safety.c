@@ -70,23 +70,277 @@ static void ams_safety_zero_bytes(void *ptr, size_t len)
     }
 }
 
+static void ams_safety_memory_barrier(void)
+{
+#if AMS_HOST_TEST
+    __asm__ volatile("" ::: "memory");
+#else
+    __DMB();
+#endif
+}
+
+static uint32_t ams_fault_log_crc32_byte(uint32_t crc, uint8_t value)
+{
+    crc ^= value;
+    for(uint32_t bit = 0u; bit < 8u; bit++)
+    {
+        uint32_t mask = 0u - (crc & 1u);
+        crc = (crc >> 1u) ^ (0xEDB88320u & mask);
+    }
+    return crc;
+}
+
+static uint32_t ams_fault_log_crc32_u16(uint32_t crc, uint16_t value)
+{
+    crc = ams_fault_log_crc32_byte(crc, (uint8_t)(value & 0xFFu));
+    return ams_fault_log_crc32_byte(crc, (uint8_t)(value >> 8u));
+}
+
+static uint32_t ams_fault_log_crc32_u32(uint32_t crc, uint32_t value)
+{
+    for(uint32_t shift = 0u; shift < 32u; shift += 8u)
+    {
+        crc = ams_fault_log_crc32_byte(crc,
+                                       (uint8_t)((value >> shift) & 0xFFu));
+    }
+    return crc;
+}
+
+static uint32_t ams_fault_log_entry_crc(const ams_fault_log_entry_t *entry)
+{
+    uint32_t crc = UINT32_MAX;
+
+    crc = ams_fault_log_crc32_u32(crc, entry->boot_sequence);
+    crc = ams_fault_log_crc32_u32(crc, entry->sequence);
+    crc = ams_fault_log_crc32_u32(crc, entry->tick);
+    crc = ams_fault_log_crc32_u16(crc, entry->event);
+    crc = ams_fault_log_crc32_u16(crc, entry->reason);
+    crc = ams_fault_log_crc32_u32(crc, entry->arg0);
+    crc = ams_fault_log_crc32_u32(crc, entry->arg1);
+    return ~crc;
+}
+
+static bool ams_fault_log_entry_valid(const ams_fault_log_entry_t *entry)
+{
+    return (entry != NULL) &&
+           (entry->commit == AMS_FAULT_LOG_ENTRY_COMMIT) &&
+           (entry->sequence != 0u) &&
+           (entry->event >= (uint16_t)AMS_FAULT_LOG_BOOT) &&
+           (entry->event <= (uint16_t)AMS_FAULT_LOG_AIR_FAULT_LATCH) &&
+           (entry->crc32 == ams_fault_log_entry_crc(entry));
+}
+
+static bool ams_fault_log_sequence_after(uint32_t lhs, uint32_t rhs)
+{
+    uint32_t distance = lhs - rhs;
+    return (distance != 0u) && (distance < 0x80000000u);
+}
+
+static uint32_t ams_fault_log_next_sequence(uint32_t sequence)
+{
+    sequence++;
+    return (sequence == 0u) ? 1u : sequence;
+}
+
+static bool ams_fault_log_schema_valid(void)
+{
+    return (g_fault_log.magic == AMS_FAULT_LOG_MAGIC) &&
+           (g_fault_log.version == AMS_FAULT_LOG_VERSION) &&
+           (g_fault_log.entry_size == (uint16_t)sizeof(ams_fault_log_entry_t));
+}
+
+static void ams_fault_log_reset_raw(void)
+{
+    ams_safety_zero_bytes(&g_fault_log, sizeof(g_fault_log));
+    g_fault_log.version = AMS_FAULT_LOG_VERSION;
+    g_fault_log.entry_size = (uint16_t)sizeof(ams_fault_log_entry_t);
+    g_fault_log.next_sequence = 1u;
+    ams_safety_memory_barrier();
+    /* Publish the magic last so a reset during initialisation cannot make a
+     * partially initialised schema look valid on the next boot. */
+    g_fault_log.magic = AMS_FAULT_LOG_MAGIC;
+    ams_safety_memory_barrier();
+}
+
+static void ams_fault_log_recover_raw(void)
+{
+    uint32_t valid_count = 0u;
+    uint32_t newest_index = 0u;
+    uint32_t newest_sequence = 0u;
+    uint32_t newest_boot_sequence = 0u;
+    bool have_newest = false;
+    bool needs_compaction = false;
+
+    if(!ams_fault_log_schema_valid())
+    {
+        /* Version 1 did not contain per-entry integrity metadata. It cannot be
+         * distinguished from a torn write, so it is intentionally discarded
+         * on the first boot of this schema rather than trusted. */
+        ams_fault_log_reset_raw();
+        return;
+    }
+
+    for(uint32_t index = 0u; index < AMS_FAULT_LOG_DEPTH; index++)
+    {
+        ams_fault_log_entry_t *entry = &g_fault_log.entry[index];
+        bool valid = ams_fault_log_entry_valid(entry);
+
+        if(!valid)
+        {
+            if(entry->commit != 0u)
+            {
+                needs_compaction = true;
+            }
+            continue;
+        }
+
+        /* A reset during recovery can leave a second committed copy. Keep one
+         * sequence only; duplicate records must not inflate the event count. */
+        bool duplicate = false;
+        for(uint32_t prior = 0u; prior < index; prior++)
+        {
+            if(ams_fault_log_entry_valid(&g_fault_log.entry[prior]) &&
+               (g_fault_log.entry[prior].sequence == entry->sequence))
+            {
+                duplicate = true;
+                break;
+            }
+        }
+        if(duplicate)
+        {
+            entry->commit = 0u;
+            needs_compaction = true;
+            continue;
+        }
+
+        valid_count++;
+        if(!have_newest ||
+           ams_fault_log_sequence_after(entry->sequence, newest_sequence))
+        {
+            newest_sequence = entry->sequence;
+            newest_boot_sequence = entry->boot_sequence;
+            newest_index = index;
+            have_newest = true;
+        }
+    }
+
+    if(valid_count == 0u)
+    {
+        for(uint32_t index = 0u; index < AMS_FAULT_LOG_DEPTH; index++)
+        {
+            ams_safety_zero_bytes(&g_fault_log.entry[index],
+                                  sizeof(g_fault_log.entry[index]));
+        }
+        g_fault_log.write_index = 0u;
+        g_fault_log.count = 0u;
+        g_fault_log.next_sequence = 1u;
+        return;
+    }
+
+    uint32_t expected_write_index =
+        (newest_index + 1u) % AMS_FAULT_LOG_DEPTH;
+    uint32_t start_index =
+        (expected_write_index + AMS_FAULT_LOG_DEPTH - valid_count) %
+        AMS_FAULT_LOG_DEPTH;
+
+    for(uint32_t offset = 0u; offset < valid_count; offset++)
+    {
+        uint32_t index = (start_index + offset) % AMS_FAULT_LOG_DEPTH;
+        if(!ams_fault_log_entry_valid(&g_fault_log.entry[index]))
+        {
+            needs_compaction = true;
+            break;
+        }
+    }
+
+    if(!needs_compaction && (valid_count < AMS_FAULT_LOG_DEPTH))
+    {
+        for(uint32_t offset = valid_count; offset < AMS_FAULT_LOG_DEPTH; offset++)
+        {
+            uint32_t index = (start_index + offset) % AMS_FAULT_LOG_DEPTH;
+            if(ams_fault_log_entry_valid(&g_fault_log.entry[index]))
+            {
+                needs_compaction = true;
+                break;
+            }
+        }
+    }
+
+    if(needs_compaction)
+    {
+        uint32_t packed = 0u;
+
+        for(uint32_t read_index = 0u;
+            read_index < AMS_FAULT_LOG_DEPTH;
+            read_index++)
+        {
+            if(ams_fault_log_entry_valid(&g_fault_log.entry[read_index]))
+            {
+                if(read_index != packed)
+                {
+                    g_fault_log.entry[packed] = g_fault_log.entry[read_index];
+                    ams_safety_zero_bytes(&g_fault_log.entry[read_index],
+                                          sizeof(g_fault_log.entry[read_index]));
+                }
+                packed++;
+            }
+        }
+
+        /* Sort the at-most-32 retained entries oldest-to-newest. Sequence age
+         * is modular, so this remains correct across uint32_t rollover. */
+        for(uint32_t index = 1u; index < packed; index++)
+        {
+            ams_fault_log_entry_t key = g_fault_log.entry[index];
+            uint32_t key_age = newest_sequence - key.sequence;
+            uint32_t insert = index;
+
+            while(insert > 0u)
+            {
+                uint32_t previous_age =
+                    newest_sequence - g_fault_log.entry[insert - 1u].sequence;
+                if(previous_age >= key_age)
+                {
+                    break;
+                }
+                g_fault_log.entry[insert] = g_fault_log.entry[insert - 1u];
+                insert--;
+            }
+            g_fault_log.entry[insert] = key;
+        }
+
+        for(uint32_t index = packed; index < AMS_FAULT_LOG_DEPTH; index++)
+        {
+            ams_safety_zero_bytes(&g_fault_log.entry[index],
+                                  sizeof(g_fault_log.entry[index]));
+        }
+
+        valid_count = packed;
+        expected_write_index = packed % AMS_FAULT_LOG_DEPTH;
+    }
+
+    g_fault_log.count = valid_count;
+    g_fault_log.write_index = expected_write_index;
+    if((g_fault_log.boot_sequence == 0u) ||
+       ams_fault_log_sequence_after(newest_boot_sequence,
+                                    g_fault_log.boot_sequence))
+    {
+        g_fault_log.boot_sequence = newest_boot_sequence;
+    }
+    g_fault_log.next_sequence =
+        ams_fault_log_next_sequence(newest_sequence);
+}
+
+static void ams_fault_log_init_if_needed_raw(void)
+{
+    ams_fault_log_recover_raw();
+}
+
 static void ams_panic_record_init_if_needed_raw(void)
 {
     if(g_panic_record.magic != AMS_PANIC_RECORD_MAGIC)
     {
         ams_safety_zero_bytes(&g_panic_record, sizeof(g_panic_record));
         g_panic_record.magic = AMS_PANIC_RECORD_MAGIC;
-    }
-}
-
-static void ams_fault_log_init_if_needed_raw(void)
-{
-    if((g_fault_log.magic != AMS_FAULT_LOG_MAGIC) ||
-       (g_fault_log.write_index >= AMS_FAULT_LOG_DEPTH) ||
-       (g_fault_log.count > AMS_FAULT_LOG_DEPTH))
-    {
-        ams_safety_zero_bytes(&g_fault_log, sizeof(g_fault_log));
-        g_fault_log.magic = AMS_FAULT_LOG_MAGIC;
     }
 }
 
@@ -155,14 +409,25 @@ static void ams_safety_force_gpio_output_low(GPIO_TypeDef *port, uint16_t pin_ma
 
 static void ams_fault_log_init_if_needed(void)
 {
-    if((g_fault_log.magic != AMS_FAULT_LOG_MAGIC) ||
-       (g_fault_log.write_index >= AMS_FAULT_LOG_DEPTH) ||
-       (g_fault_log.count > AMS_FAULT_LOG_DEPTH))
-    {
-        memset(&g_fault_log, 0, sizeof(g_fault_log));
-        g_fault_log.magic = AMS_FAULT_LOG_MAGIC;
-    }
+    ams_fault_log_recover_raw();
 }
+
+static void ams_fault_log_begin_boot(void)
+{
+    ams_irq_state_t irq_state = ams_safety_irq_save();
+
+    ams_fault_log_init_if_needed();
+    g_fault_log.boot_sequence =
+        ams_fault_log_next_sequence(g_fault_log.boot_sequence);
+    ams_safety_memory_barrier();
+    ams_safety_irq_restore(irq_state);
+}
+
+static void ams_fault_log_event_raw_tick(uint32_t tick,
+                                         ams_fault_log_event_t event,
+                                         uint16_t reason,
+                                         uint32_t arg0,
+                                         uint32_t arg1);
 
 static uint32_t ams_safety_now_tick(void)
 {
@@ -192,19 +457,11 @@ void ams_fault_log_event(ams_fault_log_event_t event,
 {
     ams_irq_state_t irq_state = ams_safety_irq_save();
 
-    ams_fault_log_init_if_needed();
-
-    uint32_t index = g_fault_log.write_index % AMS_FAULT_LOG_DEPTH;
-    g_fault_log.entry[index].tick = ams_safety_now_tick();
-    g_fault_log.entry[index].event = (uint16_t)event;
-    g_fault_log.entry[index].reason = reason;
-    g_fault_log.entry[index].arg0 = arg0;
-    g_fault_log.entry[index].arg1 = arg1;
-    g_fault_log.write_index = (index + 1u) % AMS_FAULT_LOG_DEPTH;
-    if(g_fault_log.count < AMS_FAULT_LOG_DEPTH)
-    {
-        g_fault_log.count++;
-    }
+    ams_fault_log_event_raw_tick(ams_safety_now_tick(),
+                                 event,
+                                 reason,
+                                 arg0,
+                                 arg1);
 
     ams_safety_irq_restore(irq_state);
 }
@@ -237,9 +494,13 @@ const ams_fault_log_t *ams_fault_log_get(void)
 void ams_fault_log_clear(void)
 {
     ams_irq_state_t irq_state = ams_safety_irq_save();
+    uint32_t boot_sequence;
 
-    memset(&g_fault_log, 0, sizeof(g_fault_log));
-    g_fault_log.magic = AMS_FAULT_LOG_MAGIC;
+    ams_fault_log_init_if_needed();
+    boot_sequence = g_fault_log.boot_sequence;
+    ams_fault_log_reset_raw();
+    g_fault_log.boot_sequence = boot_sequence;
+    ams_safety_memory_barrier();
     ams_safety_irq_restore(irq_state);
 }
 
@@ -280,16 +541,37 @@ static void ams_fault_log_event_raw_tick(uint32_t tick,
     ams_fault_log_init_if_needed_raw();
 
     uint32_t index = g_fault_log.write_index % AMS_FAULT_LOG_DEPTH;
-    g_fault_log.entry[index].tick = tick;
-    g_fault_log.entry[index].event = (uint16_t)event;
-    g_fault_log.entry[index].reason = reason;
-    g_fault_log.entry[index].arg0 = arg0;
-    g_fault_log.entry[index].arg1 = arg1;
+    ams_fault_log_entry_t *entry = &g_fault_log.entry[index];
+    bool replacing_valid_entry = ams_fault_log_entry_valid(entry);
+    uint32_t sequence = g_fault_log.next_sequence;
+
+    if(sequence == 0u)
+    {
+        sequence = 1u;
+    }
+
+    /* Invalidate the destination before changing any payload field. The final
+     * commit word is the publication point for this retained record. */
+    entry->commit = 0u;
+    ams_safety_memory_barrier();
+    entry->boot_sequence = g_fault_log.boot_sequence;
+    entry->sequence = sequence;
+    entry->tick = tick;
+    entry->event = (uint16_t)event;
+    entry->reason = reason;
+    entry->arg0 = arg0;
+    entry->arg1 = arg1;
+    entry->crc32 = ams_fault_log_entry_crc(entry);
+    ams_safety_memory_barrier();
+    entry->commit = AMS_FAULT_LOG_ENTRY_COMMIT;
+    ams_safety_memory_barrier();
+
     g_fault_log.write_index = (index + 1u) % AMS_FAULT_LOG_DEPTH;
-    if(g_fault_log.count < AMS_FAULT_LOG_DEPTH)
+    if(!replacing_valid_entry && (g_fault_log.count < AMS_FAULT_LOG_DEPTH))
     {
         g_fault_log.count++;
     }
+    g_fault_log.next_sequence = ams_fault_log_next_sequence(sequence);
 }
 
 void ams_safety_panic(ams_panic_reason_t reason)
@@ -352,7 +634,7 @@ void ams_safety_enable_cpu_faults(void)
 void ams_safety_record_reset_cause(void)
 {
     ams_panic_record_init_if_needed();
-    ams_fault_log_init_if_needed();
+    ams_fault_log_begin_boot();
 
 #if AMS_HOST_TEST
     g_reset_flags = g_host_reset_csr;
@@ -780,5 +1062,30 @@ void ams_safety_host_set_fault_regs(uint32_t cfsr, uint32_t hfsr, uint32_t mmfar
 bool ams_safety_host_bms_forced_low(void)
 {
     return g_host_bms_forced_low;
+}
+
+void ams_safety_host_fault_log_invalidate_entry(uint32_t index)
+{
+    if(index < AMS_FAULT_LOG_DEPTH)
+    {
+        g_fault_log.entry[index].commit = 0u;
+    }
+}
+
+void ams_safety_host_fault_log_corrupt_entry_crc(uint32_t index)
+{
+    if(index < AMS_FAULT_LOG_DEPTH)
+    {
+        g_fault_log.entry[index].crc32 ^= 0x00000001u;
+    }
+}
+
+void ams_safety_host_fault_log_corrupt_metadata(uint32_t write_index,
+                                                uint32_t count,
+                                                uint32_t next_sequence)
+{
+    g_fault_log.write_index = write_index;
+    g_fault_log.count = count;
+    g_fault_log.next_sequence = next_sequence;
 }
 #endif

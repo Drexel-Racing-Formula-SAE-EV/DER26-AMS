@@ -52,6 +52,7 @@ void adbms6830_wakeup_cold(adbms6830_driver_t* dev);
 HAL_StatusTypeDef adbms6830_us_delay(adbms6830_driver_t* dev, uint16_t microseconds);
 
 HAL_StatusTypeDef adbms6830_start_adc_cell_voltage_measurement(adbms6830_driver_t *dev);
+bool adbms6830_set_monitored_cell_count(adbms6830_driver_t *dev, uint8_t cell_count);
 void adbms6830_parse_cell(adbms6830_driver_t *dev, uint8_t *data, GRP grp);
 HAL_StatusTypeDef adbms6830_read_cell_voltages(adbms6830_driver_t *dev);
 
@@ -75,6 +76,7 @@ HAL_StatusTypeDef adbms6830_verify_config_readback(adbms6830_driver_t *dev);
 HAL_StatusTypeDef adbms6830_verify_balance_readback(adbms6830_driver_t *dev);
 HAL_StatusTypeDef adbms6830_run_cell_adc_self_test(adbms6830_driver_t *dev);
 HAL_StatusTypeDef adbms6830_run_open_wire_check(adbms6830_driver_t *dev, bool odd_channels);
+HAL_StatusTypeDef adbms6830_run_open_wire_diagnostic(adbms6830_driver_t *dev);
 HAL_StatusTypeDef adbms6830_run_aux_gpio_diagnostic(adbms6830_driver_t *dev);
 
 ///* I2C COMM primitives */

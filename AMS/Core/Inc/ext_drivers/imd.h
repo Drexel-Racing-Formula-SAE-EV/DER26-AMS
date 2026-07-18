@@ -78,6 +78,11 @@ typedef struct
 	float freq;
 	bool capture_started;
 	volatile bool capture_seen;
+	/* The ISR publishes one period/high/timestamp tuple under this sequence
+	 * counter. Even values are stable; odd values mean a write is in progress. */
+	volatile uint32_t capture_sequence;
+	volatile uint32_t captured_high_count;
+	volatile uint32_t captured_total_count;
 	volatile uint32_t capture_count;
 	volatile uint32_t last_capture_tick;
 	HAL_StatusTypeDef init_status;
