@@ -1,0 +1,40 @@
+{
+  "checks": {
+    "dense_lut_sh": true,
+    "extended_sh_table": true,
+    "forward_relative": true,
+    "lut_table": true,
+    "raw_roundtrip": true,
+    "raw_zero_valid": true
+  },
+  "compiler": "cc",
+  "csv": "NTC_RT_Calculation_Vishay_NTCLE350E4103FHB0.csv",
+  "csv_sha256": "db3446078e15efcf3cc1d0647a4a580ba8a9a18b0edb9a4c60a819551fa7fa83",
+  "limits": {
+    "dense_lut_sh_max_c": 0.014,
+    "extended_sh_table_max_c": 0.012,
+    "forward_relative_max": 0.00015,
+    "lut_table_max_c": 0.0006,
+    "raw_roundtrip_max_c": 0.02
+  },
+  "measured": {
+    "dense_lut_sh_max_at_c": -18.77,
+    "dense_lut_sh_max_c": 0.013265609741210938,
+    "extended_sh_table_max_at_c": -17.0,
+    "extended_sh_table_max_c": 0.011260986328125,
+    "forward_resistance_max_abs_at_c": -17.5,
+    "forward_resistance_max_abs_ohm": 0.14375000000291038,
+    "forward_resistance_max_relative": 1.2906046055022348e-05,
+    "forward_resistance_max_relative_at_c": 118.0,
+    "lut_table_max_at_c": 0.0,
+    "lut_table_max_c": 0.0,
+    "raw_roundtrip_max_at_c": 118.86000000000001,
+    "raw_roundtrip_max_c": 0.016037597656236358,
+    "raw_zero_resistance_ohm": 23333.33203125,
+    "raw_zero_temperature_c": 6.712385177612305,
+    "raw_zero_voltage_v": 1.5000001192092896
+  },
+  "part": "NTCLE350E4103FHB0",
+  "pass": true,
+  "row_count": 281
+}

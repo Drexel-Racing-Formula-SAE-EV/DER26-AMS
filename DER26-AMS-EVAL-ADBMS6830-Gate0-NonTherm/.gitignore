@@ -1,0 +1,34 @@
+# Root local/editor junk
+.metadata/
+.vscode/
+.DS_Store
+Thumbs.db
+*.bak
+*.orig
+*.rej
+*.tmp
+*.plist
+
+# Nested project outputs
+AMS/Debug/
+AMS/Release/
+AMS/host_tests/build/
+AMS/host_tests/build-*/
+AMS/host_tests/*.exe
+AMS/host_tests/*.out
+AMS/host_tests/*.log
+
+# HIL / ESP32 / Simulink generated junk
+HiL/**/build/
+HiL/**/managed_components/
+HiL/**/sdkconfig.old
+HiL/**/slprj/
+HiL/**/*_ert_rtw/
+HiL/**/*.slxc
+HiL/**/*.asv
+HiL/**/*.autosave
+HiL/**/codegen/
+HiL/**/*.log
+# CI/headless build outputs
+AMS/build/
+ci_artifacts/

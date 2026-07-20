@@ -1,0 +1,52 @@
+# ADBMS6830 Five-SMB Reference Alignment
+
+This package uses the DER26 final-ring topology and behavior:
+
+- five SMB ADBMS6830B devices;
+- one ADBMS2950B APM device at the opposite end of the ring;
+- fifteen populated cell channels per SMB;
+- the existing ADBMS6822/SPI6 electrical mode, with String A owning the
+  five-SMB subset and String B owning the one-APM subset;
+- the existing thermistor-mux, configuration, balancing and safety policies.
+
+The production implementation was independently checked against two vendor
+reference implementations and the applicable device timing requirements.
+No vendor source or confidential document is included in this package.
+
+The review confirmed the existing ADCV command encoding, redundant continuous
+measurement selection, PEC/counter validation, six individual cell-register
+group reads and cell-voltage scaling. The individual group commands are used
+instead of the mixed-chain-incompatible read-all shortcut. It resulted in these
+timing corrections:
+
+- each isoSPI wake low/high interval is 1 ms instead of 250/100 us;
+- cold wake uses the same checked 1 ms timing contract;
+- the code waits the complete 8 ms redundant C-ADC/S-ADC conversion interval
+  before publishing cell data;
+- compile-time constants and host regressions guard the wake, reference and
+  conversion timing assumptions.
+
+A later public-repository cross-check confirmed historical 6830/2950 mixed
+chain bring-up but was not used as a code source. ADI documentation resolves
+the important boundary rule: leading-device reads and writes may end at an
+eight-byte device boundary. The final implementation now also:
+
+- requires all five String-A RDSID packets to identify an ADBMS6830B as
+  device ID `0x03` before configuration;
+- binds five-device writes to String A and one-device APM writes to String B;
+- validates the complete final-ring structure before physical scan, mux, or
+  balance operations;
+- locks the 44-byte SMB and 12-byte APM subset frames into real-driver tests.
+
+See `PUBLIC_G474_BMS_CROSSCHECK.md` for the source boundary and comparison.
+
+The ordinary profile retains the full five-SMB thermistor/balancing behavior
+and one advisory APM path without giving APM measurements authority over
+BMS_OK. This package also carries a deliberately separate
+`AMS_EVAL_ADBMS6830_BMSW=1` fixture profile. That profile uses one String-B
+monitor, stops initialization after checked SID identity, and compile-time
+removes configuration/balance/mux/open-wire/APM output paths; it does not alter
+the normal final-ring topology selected with the eval symbol set to `0`.
+
+Host CI, safety profiles, static analysis, sanitizers and stress testing do not
+replace an ARM target build or current-limited physical validation.
