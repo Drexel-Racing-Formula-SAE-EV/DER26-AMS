@@ -71,7 +71,10 @@ static void adbms_task_run_periodic_diagnostics(app_data_t *data)
                         adbms_status_diag_has_safety_fault(smb));
         taskENTER_CRITICAL();
         data->adbms_last_diag_status = status;
-        data->adbms_status_diag_count++;
+		if(data->adbms_status_diag_count != UINT32_MAX)
+		{
+			data->adbms_status_diag_count++;
+		}
 		data->adbms_status_fault = status_fault;
         taskEXIT_CRITICAL();
     }
@@ -84,7 +87,10 @@ static void adbms_task_run_periodic_diagnostics(app_data_t *data)
         health = adbms6830_diag_health_get(smb);
         taskENTER_CRITICAL();
         data->adbms_last_diag_status = status;
-        data->adbms_config_diag_count++;
+        if(data->adbms_config_diag_count != UINT32_MAX)
+        {
+            data->adbms_config_diag_count++;
+        }
         data->adbms_config_fault = ((status != HAL_OK) ||
                                     ((health != NULL) &&
                                      (health->config_mismatch_mask != 0u)));
@@ -101,7 +107,10 @@ static void adbms_task_run_periodic_diagnostics(app_data_t *data)
         status = adbms6830_run_open_wire_diagnostic(smb);
         taskENTER_CRITICAL();
         data->adbms_last_diag_status = status;
-        data->adbms_open_wire_diag_count++;
+        if(data->adbms_open_wire_diag_count != UINT32_MAX)
+        {
+            data->adbms_open_wire_diag_count++;
+        }
         if(status != HAL_OK)
         {
             /* A successful later sample is useful diagnostically, but it does
@@ -353,16 +362,37 @@ void adbms_task_fn(void *argument)
 	for(;;)
 	{
 	    entry = osKernelGetTickCount();
-	    data->adbms_scan_active = true;
-	    data->adbms_scan_count++;
-
-#if !AMS_HIL_REPLACE_ADBMS
-	    /* Own SPI6 for the complete scan.  Individual accumulator/driver
-	     * helpers lock recursively, while this outer lock prevents a service
-	     * command from interleaving wake, conversion, readback, diagnostics,
-	     * or balance writes that form one logical ADBMS operation. */
+	    uint16_t balance_mask_at_acquisition[NSMBS] = {0u};
+	    bool balance_was_active = false;
+	    bool balance_recovery_verified = true;
+	    uint32_t balance_off_ms = 0u;
+	    uint32_t balance_clear_tick = 0u;
+	    bool balance_clear_timed = false;
+	    ams_current_window_t current_window = {0};
+	    uint32_t voltage_complete_tick;
+	    uint32_t balance_apply_tick = 0u;
+	    /* Own the complete accumulator-image epoch, including the initial
+	     * balance-shadow capture. Individual physical accumulator/driver
+	     * helpers lock recursively. In CAN-fed HIL builds, the same lock
+	     * excludes injected cell/temperature writes until the immutable
+	     * snapshot has been published. */
 	    adbms_spi_lock();
+	    for(uint8_t seg = 0u; seg < NSMBS; seg++)
+	    {
+	        balance_mask_at_acquisition[seg] =
+	            accumulator_balance_shadow_mask(acc, seg);
+	        balance_was_active = balance_was_active ||
+	                             (balance_mask_at_acquisition[seg] != 0u);
+	    }
+#if !AMS_HIL_REPLACE_ADBMS
+	    bool balance_recovery_required =
+	        balance_was_active || data->adbms_balance_write_fault;
 #endif
+	    data->adbms_scan_active = true;
+	    /* This counter is also the modulo schedule for periodic diagnostics.
+	     * Unsigned wrap is intentional so those diagnostics cannot stop after
+	     * the counter reaches its maximum value. */
+	    data->adbms_scan_count++;
 
         bool voltage_was_latched = data->voltage_fault_latched;
         voltage_fault_reason_t voltage_prev_latched_reason = data->voltage_fault_latched_reason;
@@ -372,14 +402,37 @@ void adbms_task_fn(void *argument)
         bool adbms_diag_was_faulted = data->adbms_diag_fault;
 #endif
 
-	    /* Turn off balancing before reading so cell voltages recover from load. */
+	    /* Turn off balancing before reading so cell voltages recover from load.
+	     * Do not impose this delay on every non-balancing scan: at 10 Hz the
+	     * old unconditional 100 ms wait consumed the complete task period before
+	     * conversion, temperature, diagnostics, and SPI work even started. */
 #if !AMS_HIL_REPLACE_ADBMS
-	    if(!adbms_record_balance_write_result(data, accumulator_clear_balance(acc)))
+	    if(balance_recovery_required)
 	    {
+	        balance_recovery_verified = adbms_record_balance_write_result(
+	            data, accumulator_clear_balance(acc));
+	        if(!balance_recovery_verified)
+	        {
             adbms_diag_was_faulted = true;
+	        }
+	        else
+	        {
+	            balance_clear_tick = osKernelGetTickCount();
+	            balance_clear_timed = true;
+	            if(data->adbms_balance_active)
+	            {
+	                data->adbms_last_balance_on_ms =
+	                    (uint32_t)(balance_clear_tick -
+	                               data->adbms_balance_apply_tick);
+	            }
+	        }
+	        if(data->adbms_balance_recovery_count != UINT32_MAX)
+	        {
+	            data->adbms_balance_recovery_count++;
+	        }
+	        osDelay(AMS_ADBMS_BALANCE_RECOVERY_MS);
 	    }
 #endif
-	    osDelay(100);
 
 #if AMS_HIL_REPLACE_ADBMS
         accumulator_hil_refresh_update_masks(acc,
@@ -397,6 +450,18 @@ void adbms_task_fn(void *argument)
 		}
 #endif
         accumulator_update_voltage_stats_at(acc, osKernelGetTickCount());
+	    voltage_complete_tick = osKernelGetTickCount();
+	    if(balance_clear_timed)
+	    {
+	        balance_off_ms =
+	            (uint32_t)(voltage_complete_tick - balance_clear_tick);
+	    }
+	    data->adbms_last_balance_off_ms = balance_off_ms;
+	    ams_current_window_lock();
+	    (void)ams_current_window_rotate(&data->current_window,
+	                                    voltage_complete_tick,
+	                                    &current_window);
+	    ams_current_window_unlock();
 
         voltage_fault_state_t next_voltage_fault = data->voltage_fault_state;
         voltage_fault_update(&next_voltage_fault, acc);
@@ -489,6 +554,7 @@ void adbms_task_fn(void *argument)
 
         /* Voltage charge-stop can still balance; hard faults/temp stop cannot. */
 #if !AMS_HIL_REPLACE_ADBMS
+	        bool balance_applied_active = false;
 	        if((data->state == STATE_CHARGE) &&
 	           !data->balance_inhibit &&
 	           data->voltage_valid &&
@@ -501,20 +567,95 @@ void adbms_task_fn(void *argument)
            data->current_valid &&
            data->bms_state)
         {
-            (void)adbms_record_balance_write_result(data, accumulator_set_balance(acc));
+            bool balance_write_ok = adbms_record_balance_write_result(
+                data, accumulator_set_balance(acc));
+            balance_applied_active = balance_write_ok &&
+                                     accumulator_balance_shadow_active(acc);
         }
         else
         {
 	        (void)adbms_record_balance_write_result(data, accumulator_clear_balance(acc));
 	        }
+	        data->adbms_balance_active = balance_applied_active;
+	        if(balance_applied_active)
+	        {
+	            balance_apply_tick = osKernelGetTickCount();
+	            data->adbms_balance_apply_tick = balance_apply_tick;
+	        }
+#else
+	        const bool balance_applied_active = false;
+	        data->adbms_balance_active = false;
 #endif
 
-#if !AMS_HIL_REPLACE_ADBMS
+	        uint32_t measurement_flags = 0u;
+	        if(data->voltage_valid && !data->voltage_read_fault)
+	        {
+	            measurement_flags |= AMS_MEAS_VALID_VOLTAGE;
+	        }
+	        if(data->temp_valid && !data->temp_read_fault)
+	        {
+	            measurement_flags |= AMS_MEAS_VALID_TEMPERATURE;
+	        }
+	        if(current_window.valid)
+	        {
+	            measurement_flags |= AMS_MEAS_VALID_CURRENT;
+	        }
+	        if(balance_recovery_verified)
+	        {
+	            measurement_flags |= AMS_MEAS_BALANCE_RECOVERED;
+	        }
+	        if(balance_was_active)
+	        {
+	            measurement_flags |= AMS_MEAS_BALANCE_WAS_ACTIVE;
+	        }
+
+	        uint32_t publication_tick = osKernelGetTickCount();
+	        ams_measurement_snapshot_t *measurement =
+	            ams_measurement_store_begin_write(&data->measurement_store);
+	        ams_measurement_snapshot_prepare(measurement,
+	                                         acc,
+	                                         &current_window,
+	                                         entry,
+	                                         voltage_complete_tick,
+	                                         publication_tick,
+	                                         balance_mask_at_acquisition,
+	                                         balance_off_ms,
+	                                         measurement_flags);
+	        (void)ams_measurement_store_publish(&data->measurement_store,
+	                                            measurement);
+
 	        data->adbms_scan_active = false;
 	        adbms_spi_unlock();
-#else
-	        data->adbms_scan_active = false;
-#endif
-	        osDelayUntil(entry + AMS_ADBMS_TASK_PERIOD_MS);
+	        uint32_t scan_end = osKernelGetTickCount();
+
+	        uint32_t deadline = entry + AMS_ADBMS_TASK_PERIOD_MS;
+	        if(balance_applied_active)
+	        {
+	            /* Base the minimum on-time on the verified write/readback time,
+	             * not the scan entry. This prevents an overrun from setting PWM
+	             * and immediately clearing it in the next iteration. */
+	            uint32_t balance_deadline =
+	                balance_apply_tick + AMS_ADBMS_BALANCE_MIN_ON_MS;
+	            if((int32_t)(balance_deadline - deadline) > 0)
+	            {
+	                deadline = balance_deadline;
+	            }
+	        }
+
+	        uint32_t duration_ms = (uint32_t)(scan_end - entry);
+	        data->adbms_last_scan_duration_ms = duration_ms;
+	        if(duration_ms > data->adbms_max_scan_duration_ms)
+	        {
+	            data->adbms_max_scan_duration_ms = duration_ms;
+	        }
+	        data->adbms_last_schedule_interval_ms = (uint32_t)(deadline - entry);
+	        if((int32_t)(scan_end - deadline) > 0)
+	        {
+	            if(data->adbms_scan_deadline_miss_count != UINT32_MAX)
+	            {
+	                data->adbms_scan_deadline_miss_count++;
+	            }
+	        }
+	        osDelayUntil(deadline);
 	}
 }

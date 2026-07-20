@@ -12,6 +12,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "ams_build_profile.h"
 #include "stm32f7xx_hal.h"
 #include "main.h"
 #include "board.h"
@@ -22,10 +23,33 @@
 #include "ext_drivers/temperature_fault.h"
 #include "ext_drivers/air_monitor.h"
 #include "ext_drivers/ams_safety.h"
+#include "measurement/ams_measurement.h"
 
 #define VER_MAJOR 0
 #define VER_MINOR 1
 #define VER_BUG   0
+
+#define AMS_BUILD_MANIFEST_MAGIC 0x414D5342u /* 'AMSB' */
+#define AMS_BUILD_MANIFEST_SCHEMA 2u
+
+#define AMS_BUILD_FEATURE_HIL_CAN      (1u << 0u)
+#define AMS_BUILD_FEATURE_HIL_ADBMS    (1u << 1u)
+#define AMS_BUILD_FEATURE_SERVICE_CLI  (1u << 2u)
+#define AMS_BUILD_FEATURE_IMD          (1u << 3u)
+#define AMS_BUILD_FEATURE_IWDG         (1u << 4u)
+#define AMS_BUILD_FEATURE_AIR_AUX      (1u << 5u)
+#define AMS_BUILD_FEATURE_APM_2950     (1u << 6u)
+#define AMS_BUILD_FEATURE_HW_BRINGUP   (1u << 7u)
+
+#define AMS_BUILD_FEATURE_FLAGS_VALUE ( \
+    (AMS_ENABLE_HIL_CAN ? AMS_BUILD_FEATURE_HIL_CAN : 0u) | \
+    (AMS_HIL_REPLACE_ADBMS ? AMS_BUILD_FEATURE_HIL_ADBMS : 0u) | \
+    (AMS_ENABLE_SERVICE_CLI ? AMS_BUILD_FEATURE_SERVICE_CLI : 0u) | \
+    (AMS_ENABLE_IMD ? AMS_BUILD_FEATURE_IMD : 0u) | \
+    (AMS_ENABLE_IWDG ? AMS_BUILD_FEATURE_IWDG : 0u) | \
+    (AMS_ENABLE_AIR_AUX_FEEDBACK ? AMS_BUILD_FEATURE_AIR_AUX : 0u) | \
+    (AMS_ENABLE_APM_2950 ? AMS_BUILD_FEATURE_APM_2950 : 0u) | \
+    (AMS_HW_BRINGUP ? AMS_BUILD_FEATURE_HW_BRINGUP : 0u))
 
 #ifndef AMS_HW_BRINGUP
 #define AMS_HW_BRINGUP 0
@@ -36,7 +60,8 @@
 #endif
 
 #ifndef AMS_HW_BRINGUP_BALANCE_INHIBIT_DEFAULT
-#define AMS_HW_BRINGUP_BALANCE_INHIBIT_DEFAULT AMS_HW_BRINGUP
+#define AMS_HW_BRINGUP_BALANCE_INHIBIT_DEFAULT \
+    (AMS_HW_BRINGUP || AMS_PROFILE_BALANCE_INHIBIT_DEFAULT)
 #endif
 
 #ifndef AMS_HIL_REPLACE_ADBMS
@@ -142,6 +167,26 @@
 
 #define ADBMS_FREQ AMS_ADBMS_SCAN_HZ
 #define AMS_ADBMS_TASK_PERIOD_MS ((1000u + ADBMS_FREQ - 1u) / ADBMS_FREQ)
+
+/* Passive balancing is disabled before a measurement so the cell inputs can
+ * recover from bleed load.  When balancing is re-applied, hold it on for a
+ * real, measurable interval before beginning the next recovery/scan cycle.
+ * Both values are deliberately overrideable for target characterization. */
+#ifndef AMS_ADBMS_BALANCE_RECOVERY_MS
+#define AMS_ADBMS_BALANCE_RECOVERY_MS 100u
+#endif
+#ifndef AMS_ADBMS_BALANCE_MIN_ON_MS
+#define AMS_ADBMS_BALANCE_MIN_ON_MS 100u
+#endif
+
+#if (AMS_ADBMS_BALANCE_RECOVERY_MS == 0u) || \
+    (AMS_ADBMS_BALANCE_RECOVERY_MS > 0x7FFFFFFFu)
+#error "AMS_ADBMS_BALANCE_RECOVERY_MS must be nonzero and tick-wrap safe"
+#endif
+#if (AMS_ADBMS_BALANCE_MIN_ON_MS == 0u) || \
+    (AMS_ADBMS_BALANCE_MIN_ON_MS > 0x7FFFFFFFu)
+#error "AMS_ADBMS_BALANCE_MIN_ON_MS must be nonzero and tick-wrap safe"
+#endif
 #define IMD_FREQ 10
 #define FAN_FREQ 5
 #define CAN_FREQ 2
@@ -161,6 +206,7 @@
  * target.  A bounded wait is essential here: the caller's panic path drops
  * BMS_OK, whereas osWaitForever could leave it asserted after a deadlock. */
 #define AMS_ADBMS_MUTEX_TIMEOUT_TICKS 500u
+#define AMS_CURRENT_WINDOW_MUTEX_TIMEOUT_TICKS 20u
 
 /* FreeRTOS priority policy: larger number means higher priority.
  * Safety supervisor stays highest. Blocking bench/service CLI stays below all
@@ -202,6 +248,8 @@
 #define AMS_ECU_CAN_ID_ELECTRICAL  0x681u
 #define AMS_ECU_CAN_ID_THERMAL     0x682u
 #define AMS_ECU_CAN_ID_HEALTH      0x683u
+#define AMS_CAN_ECU_FAST_FREQ_HZ   10u
+#define AMS_CAN_ECU_FAST_PERIOD_MS (1000u / AMS_CAN_ECU_FAST_FREQ_HZ)
 
 #define TO_LSB16(x) ((uint16_t)x & 0xff)
 #define TO_MSB16(x) ((((uint16_t)x & 0xff00) >> 8) & 0xff)
@@ -220,6 +268,23 @@ typedef enum
 	STATE_BALANCE,
 	STATE_ERROR
 } state_t;
+
+typedef struct
+{
+    uint32_t magic;
+    uint16_t schema;
+    uint8_t profile;
+    uint8_t feature_flags;
+    uint8_t estimator_topology;
+    const char *profile_name;
+    const char *git_commit;
+    const char *estimator_model_revision;
+    const char *current_calibration_revision;
+    const char *can_contract_revision;
+    const char *threshold_revision;
+} ams_build_manifest_t;
+
+extern const ams_build_manifest_t ams_build_manifest;
 
 typedef enum
 {
@@ -363,6 +428,8 @@ struct app_data_t
 	float avg_temp;
 	float current;
 	bool current_valid;
+	uint32_t current_sample_tick;
+	uint32_t current_sample_sequence;
 	current_sensor_range_t current_selected_range;
 	current_sensor_reason_t current_meas_reason;
 
@@ -388,6 +455,19 @@ struct app_data_t
 	uint32_t can_last_error_tick;
 	bool can_busoff_fault;
 	bool can_recover_pending;
+	/* Single-writer CAN-task diagnostics.  Keep safety/charger command,
+	 * compact ECU heartbeat, and best-effort detail failures distinguishable. */
+	uint32_t can_tx_critical_attempt_count;
+	uint32_t can_tx_critical_fail_count;
+	uint32_t can_tx_compact_bundle_count;
+	uint32_t can_tx_compact_bundle_fail_count;
+	uint32_t can_tx_detail_phase_count;
+	uint32_t can_tx_detail_phase_fail_count;
+	uint32_t can_tx_detail_suppressed_count;
+	uint32_t can_task_cycle_count;
+	uint32_t can_task_deadline_miss_count;
+	uint32_t can_task_last_duration_ms;
+	uint32_t can_task_max_duration_ms;
 
     uint32_t rtos_heap_free_bytes;
     uint32_t rtos_heap_min_ever_free_bytes;
@@ -504,11 +584,20 @@ struct app_data_t
 	bool adbms_open_wire_fault;
 	bool adbms_balance_write_fault;
 	bool adbms_scan_active;
+	bool adbms_balance_active;
 	uint32_t adbms_scan_count;
 	uint32_t adbms_status_diag_count;
 	uint32_t adbms_config_diag_count;
 	uint32_t adbms_open_wire_diag_count;
 	uint32_t adbms_balance_write_fail_count;
+	uint32_t adbms_balance_recovery_count;
+	uint32_t adbms_scan_deadline_miss_count;
+	uint32_t adbms_last_scan_duration_ms;
+	uint32_t adbms_max_scan_duration_ms;
+	uint32_t adbms_last_schedule_interval_ms;
+	uint32_t adbms_last_balance_on_ms;
+	uint32_t adbms_last_balance_off_ms;
+	uint32_t adbms_balance_apply_tick;
 	HAL_StatusTypeDef adbms_last_diag_status;
 	bool task_heartbeat_fault;
 	bool logger_heartbeat_fault;
@@ -530,6 +619,8 @@ struct app_data_t
 	board_t board;
 	accumulator_t acc;
 	ams_estimator_t estimator;
+	ams_current_window_accumulator_t current_window;
+	ams_measurement_store_t measurement_store;
 	ams_hil_input_t hil;
 	ams_heartbeat_monitor_t heartbeat;
 
@@ -649,6 +740,8 @@ void app_create(void);
 void set_bms(bool state);
 void adbms_spi_lock(void);
 void adbms_spi_unlock(void);
+void ams_current_window_lock(void);
+void ams_current_window_unlock(void);
 void ams_heartbeat_init(app_data_t *data, uint32_t now);
 void ams_heartbeat_kick(app_data_t *data, ams_heartbeat_id_t id, uint32_t now);
 uint16_t ams_heartbeat_update(app_data_t *data, uint32_t now);

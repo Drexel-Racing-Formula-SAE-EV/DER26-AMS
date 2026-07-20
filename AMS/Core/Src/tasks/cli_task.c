@@ -47,6 +47,7 @@ int get_fan_diag(int argc, char *argv[]);
 
 
 int get_current(int argc, char *argv[]);
+int get_estimator_diag(int argc, char *argv[]);
 int get_charger(int argc, char *argv[]);
 int get_can_diag(int argc, char *argv[]);
 int watchdog_control(int argc, char *argv[]);
@@ -111,6 +112,7 @@ command_t cmds[] =
 	{"tempsns", &get_temperature_sensor, "gets one sensor: tempsns <ic> <sensor 0-23>"},
 	{"fan", &get_fan_diag, "fan control telemetry: fan"},
 	{"current", &get_current, "gets current sensor raw counts/voltages/status"},
+	{"estimator", &get_estimator_diag, "estimator timing and advisory R0/SoH confidence"},
 	{"charger", &get_charger, "gets charger CAN command/status/debug state"},
 	{"can", &get_can_diag, "CAN diagnostics: can [diag|recover]"},
 	{"wdg", &watchdog_control, "watchdog diagnostics/control: wdg [status|enable]"},
@@ -326,12 +328,25 @@ void cli_task_fn(void *arg)
     snprintf(outline, CLI_LINESZ, "~~~~~~~~~~ DER AMS FW V%d.%d.%d ~~~~~~~~~~", VER_MAJOR, VER_MINOR, VER_BUG);
 	cli_printline(local_cli, outline);
     snprintf(outline, CLI_LINESZ,
-             "Build:%s service_cli:%d hil_can:%d APM2950:%d BMS_OK_inhibit:%d",
-             AMS_HW_BRINGUP ? "hw-bringup" : "normal",
+             "Build:%s estimator_topology:%u service_cli:%d hil_can:%d APM2950:%d inhibit:%d",
+             AMS_BUILD_PROFILE_NAME,
+             AMS_ESTIMATOR_DEFAULT_TOPOLOGY,
              AMS_ENABLE_SERVICE_CLI,
              AMS_ENABLE_HIL_CAN,
              AMS_ENABLE_APM_2950,
              data->bms_output_inhibit);
+    cli_printline(local_cli, outline);
+    snprintf(outline, CLI_LINESZ,
+             "Manifest schema:%u commit:%s current:%s CAN:%s",
+             (unsigned)AMS_BUILD_MANIFEST_SCHEMA,
+             AMS_BUILD_GIT_COMMIT,
+             AMS_CURRENT_CALIBRATION_REVISION,
+             AMS_CAN_CONTRACT_REVISION);
+    cli_printline(local_cli, outline);
+    snprintf(outline, CLI_LINESZ,
+             "Manifest thresholds:%s estimator:%s",
+             AMS_THRESHOLD_REVISION,
+             AMS_ESTIMATOR_MODEL_REVISION);
     cli_printline(local_cli, outline);
     cli_printline(local_cli, "ADBMS6822 SPI6 expected: mode3 CPOL HIGH CPHA 2EDGE");
 	cli_printline(local_cli, "Type 'help' for list of commands");
@@ -436,7 +451,7 @@ int get_status(int argc, char *argv[])
 	             VER_MAJOR,
 	             VER_MINOR,
 	             VER_BUG,
-	             AMS_HW_BRINGUP ? "hw-bringup" : "normal",
+	             AMS_BUILD_PROFILE_NAME,
 	             AMS_ENABLE_SERVICE_CLI,
 	             AMS_ENABLE_HIL_CAN,
 	             ams_state_to_str(data->state),
@@ -1950,7 +1965,14 @@ static int get_spi_debug_locked(int argc, char *argv[])
 	    ret |= cli_printline(cli, outline);
 
 	    snprintf(outline, CLI_LINESZ,
-	             "scan active:%d count:%lu diag fault:%d cfg:%d stat:%d ow:%d balance:%d balance_fail:%lu last:%s",
+	             "balance timing verified on:%lums off-to-voltage:%lums apply_tick:%lu",
+	             (unsigned long)data->adbms_last_balance_on_ms,
+	             (unsigned long)data->adbms_last_balance_off_ms,
+	             (unsigned long)data->adbms_balance_apply_tick);
+	    ret |= cli_printline(cli, outline);
+
+	    snprintf(outline, CLI_LINESZ,
+	             "scan active:%d count:%lu diag fault:%d cfg:%d stat:%d ow:%d balance_fault:%d balance_fail:%lu last:%s",
 	             data->adbms_scan_active,
 	             (unsigned long)data->adbms_scan_count,
 	             data->adbms_diag_fault,
@@ -1960,6 +1982,16 @@ static int get_spi_debug_locked(int argc, char *argv[])
 	             data->adbms_balance_write_fault,
 	             (unsigned long)data->adbms_balance_write_fail_count,
 	             cli_hal_status_str(data->adbms_last_diag_status));
+	    ret |= cli_printline(cli, outline);
+
+	    snprintf(outline, CLI_LINESZ,
+	             "timing last:%lums max:%lums interval:%lums misses:%lu balance_active:%d recoveries:%lu",
+	             (unsigned long)data->adbms_last_scan_duration_ms,
+	             (unsigned long)data->adbms_max_scan_duration_ms,
+	             (unsigned long)data->adbms_last_schedule_interval_ms,
+	             (unsigned long)data->adbms_scan_deadline_miss_count,
+	             data->adbms_balance_active,
+	             (unsigned long)data->adbms_balance_recovery_count);
 	    ret |= cli_printline(cli, outline);
 
 	    snprintf(outline, CLI_LINESZ,
@@ -2469,13 +2501,44 @@ int get_current(int argc, char *argv[])
     int whole = 0;
     int decimal = 0;
     current_sensor_t *cs = &data->board.current_sensor;
+    current_sensor_t cs_snapshot;
 
     if((argc >= 2) && (argv[1] != NULL) && !strcmp(argv[1], "zero"))
     {
         if((argc >= 3) && (argv[2] != NULL) && !strcmp(argv[2], "clear"))
         {
 #if AMS_ENABLE_SERVICE_CLI
+            if((!data->bms_output_inhibit) || data->bms_state ||
+               (data->state == STATE_CHARGE) ||
+               (data->state == STATE_DISCARGE))
+            {
+                return cli_printline(cli,
+                    "current zero clear refused: require BMS_OK inhibited, BMS low, and non-charge/non-drive state");
+            }
+            ams_current_window_lock();
+            if((!data->bms_output_inhibit) || data->bms_state ||
+               (data->state == STATE_CHARGE) ||
+               (data->state == STATE_DISCARGE))
+            {
+                ams_current_window_unlock();
+                return cli_printline(cli,
+                    "current zero clear refused: safety state changed before clear");
+            }
             current_sensor_zero_clear(cs);
+            uint32_t change_tick = osKernelGetTickCount();
+            ams_current_window_update(&data->current_window,
+                                      change_tick,
+                                      cs->current,
+                                      cs->current_filtered,
+                                      false,
+                                      false,
+                                      0u);
+            taskENTER_CRITICAL();
+            data->current_valid = false;
+            data->current_meas_reason =
+                CURRENT_SENSOR_REASON_CALIBRATION_CHANGED;
+            taskEXIT_CRITICAL();
+            ams_current_window_unlock();
             ret |= cli_printline(cli, "current zero: cleared");
             return ret;
 #else
@@ -2485,17 +2548,26 @@ int get_current(int argc, char *argv[])
 
         if((argc >= 3) && (argv[2] != NULL) && !strcmp(argv[2], "status"))
         {
-            cli_fixed1(cs->zero_offset_50a, &whole, &decimal);
+            ams_current_window_lock();
+            cs_snapshot = *cs;
+            ams_current_window_unlock();
+            cli_fixed1(cs_snapshot.zero_offset_50a, &whole, &decimal);
             snprintf(outline, CLI_LINESZ,
                      "current zero: calibrated:%d captures:%lu offset50:%d.%01d A",
-                     cs->zero_calibrated,
-                     (unsigned long)cs->zero_cal_count,
+                     cs_snapshot.zero_calibrated,
+                     (unsigned long)cs_snapshot.zero_cal_count,
                      whole,
                      decimal);
             ret |= cli_printline(cli, outline);
 
-            cli_fixed1(cs->zero_offset_800a, &whole, &decimal);
+            cli_fixed1(cs_snapshot.zero_offset_800a, &whole, &decimal);
             snprintf(outline, CLI_LINESZ, "current zero: offset800:%d.%01d A", whole, decimal);
+            ret |= cli_printline(cli, outline);
+            snprintf(outline, CLI_LINESZ,
+                     "current calibration: restored:%d id:%lu record_confident:%d",
+                     cs_snapshot.calibration_loaded_from_record,
+                     (unsigned long)cs_snapshot.calibration_id,
+                     current_sensor_calibration_confident(&cs_snapshot));
             ret |= cli_printline(cli, outline);
             return ret;
         }
@@ -2511,20 +2583,53 @@ int get_current(int argc, char *argv[])
             return ret;
         }
 
+        ams_current_window_lock();
+        if((!data->bms_output_inhibit) || data->bms_state ||
+           (data->state == STATE_CHARGE) || (data->state == STATE_DISCARGE))
+        {
+            ams_current_window_unlock();
+            ret |= cli_printline(cli, "current zero refused: safety state changed before capture");
+            return ret;
+        }
+
         if(!current_sensor_read_adc(cs))
         {
+            ams_current_window_unlock();
             ret |= cli_printline(cli, "current zero refused: ADC read failed");
             return ret;
         }
 
         (void)current_sensor_convert(cs);
-        if(current_sensor_zero_calibrate(cs))
+        bool zero_captured = current_sensor_zero_calibrate(cs);
+        if(zero_captured)
         {
             (void)current_sensor_convert(cs);
-            cli_fixed1(cs->zero_offset_50a, &whole, &decimal);
+            uint32_t change_tick = osKernelGetTickCount();
+            ams_current_window_update(&data->current_window,
+                                      change_tick,
+                                      cs->current,
+                                      cs->current_filtered,
+                                      false,
+                                      false,
+                                      0u);
+            cs->current_valid = false;
+            cs->selected_range = CURRENT_SENSOR_RANGE_UNKNOWN;
+            cs->reason = CURRENT_SENSOR_REASON_CALIBRATION_CHANGED;
+            taskENTER_CRITICAL();
+            data->current_valid = false;
+            data->current_meas_reason =
+                CURRENT_SENSOR_REASON_CALIBRATION_CHANGED;
+            taskEXIT_CRITICAL();
+        }
+        cs_snapshot = *cs;
+        ams_current_window_unlock();
+
+        if(zero_captured)
+        {
+            cli_fixed1(cs_snapshot.zero_offset_50a, &whole, &decimal);
             snprintf(outline, CLI_LINESZ, "current zero captured: offset50:%d.%01d A", whole, decimal);
             ret |= cli_printline(cli, outline);
-            cli_fixed1(cs->zero_offset_800a, &whole, &decimal);
+            cli_fixed1(cs_snapshot.zero_offset_800a, &whole, &decimal);
             snprintf(outline, CLI_LINESZ, "current zero captured: offset800:%d.%01d A", whole, decimal);
             ret |= cli_printline(cli, outline);
         }
@@ -2532,11 +2637,16 @@ int get_current(int argc, char *argv[])
         {
             snprintf(outline, CLI_LINESZ,
                      "current zero refused: raw50/800 not near zero or sensor invalid reason:%s",
-                     current_sensor_reason_str(cs->reason));
+                     current_sensor_reason_str(cs_snapshot.reason));
             ret |= cli_printline(cli, outline);
         }
         return ret;
     }
+
+    ams_current_window_lock();
+    cs_snapshot = *cs;
+    ams_current_window_unlock();
+    cs = &cs_snapshot;
 
     snprintf(outline, CLI_LINESZ, "Current valid:%d fault:%d sensor:%d oc:%d latch:%d",
              data->current_valid,
@@ -2618,6 +2728,22 @@ int get_current(int argc, char *argv[])
     snprintf(outline, CLI_LINESZ, "Zero offset800:%d.%01d A", whole, decimal);
     ret |= cli_printline(cli, outline);
 
+    snprintf(outline, CLI_LINESZ,
+             "Calibration restored:%d id:%lu restores:%lu record_confident:%d",
+             cs->calibration_loaded_from_record,
+             (unsigned long)cs->calibration_id,
+             (unsigned long)cs->calibration_restore_count,
+             current_sensor_calibration_confident(cs));
+    ret |= cli_printline(cli, outline);
+
+    snprintf(outline, CLI_LINESZ,
+             "Calibration time:%lu temp_dC:%d uncertainty_mA:%u/%u",
+             (unsigned long)cs->calibration_capture_time_s,
+             (int)cs->calibration_temp_deci_c,
+             (unsigned)cs->calibration_uncertainty_50a_mA,
+             (unsigned)cs->calibration_uncertainty_800a_mA);
+    ret |= cli_printline(cli, outline);
+
     cli_fixed3(cs->adc_vref_v, &whole, &decimal);
     snprintf(outline, CLI_LINESZ, "Ref adc:%d.%03d V", whole, decimal);
     ret |= cli_printline(cli, outline);
@@ -2626,6 +2752,100 @@ int get_current(int argc, char *argv[])
     snprintf(outline, CLI_LINESZ, "Ref dhab_supply:%d.%03d V", whole, decimal);
     ret |= cli_printline(cli, outline);
 
+    return ret;
+}
+
+int get_estimator_diag(int argc, char *argv[])
+{
+    (void)argc;
+    (void)argv;
+
+    if((data == NULL) || (data->estimator.enabled == 0u) ||
+       (data->estimator.instance_count == 0u) ||
+       (data->estimator.active_index >= data->estimator.instance_count) ||
+       (data->estimator.active_index >= AMS_EKF_MAX_INSTANCES))
+    {
+        return cli_printline(cli, "Estimator unavailable or misconfigured");
+    }
+
+    int ret = 0;
+    uint8_t active = data->estimator.active_index;
+    const ams_ekf_instance_t *inst = &data->estimator.inst[active];
+    const ams_resistance_soh_t *soh =
+        &data->estimator.resistance_soh[active];
+
+    snprintf(outline, CLI_LINESZ,
+             "Estimator source:%u active:%u/%u valid:%u flags:0x%08lX model:0x%02X",
+             (unsigned)data->estimator.input_source,
+             (unsigned)active,
+             (unsigned)data->estimator.instance_count,
+             (unsigned)inst->valid,
+             (unsigned long)data->estimator.fault_flags,
+             (unsigned)data->estimator.model_domain_flags);
+    ret |= cli_printline(cli, outline);
+
+    snprintf(outline, CLI_LINESZ,
+             "Epoch seq:%lu repeat:%lu missed:%lu timing_fault:%lu voltage_tick:%lu",
+             (unsigned long)data->estimator.last_consumed_measurement_sequence,
+             (unsigned long)data->estimator.repeated_measurement_count,
+             (unsigned long)data->estimator.missed_measurement_count,
+             (unsigned long)data->estimator.epoch_timing_fault_count,
+             (unsigned long)data->estimator.last_voltage_tick);
+    ret |= cli_printline(cli, outline);
+
+    snprintf(outline, CLI_LINESZ,
+             "Measurement publication drops:%lu",
+             (unsigned long)data->measurement_store.publication_drop_count);
+    ret |= cli_printline(cli, outline);
+
+    snprintf(outline, CLI_LINESZ,
+             "SoC:%.4f cell_R0:%.5f ohm pack_R0:%.5f ohm innovation:%.4f V p_R0:%.7f",
+             (double)data->estimator.pack_soc,
+             (double)data->estimator.representative_cell_r0_ohm,
+             (double)data->estimator.estimated_pack_r0_ohm,
+             (double)data->estimator.pack_innovation_V,
+             (double)inst->p_r0);
+    ret |= cli_printline(cli, outline);
+
+    snprintf(outline, CLI_LINESZ,
+             "R0-SoH ADVISORY status:0x%02X confidence:%u%% persisted:%u last_reject:0x%03lX",
+             (unsigned)soh->status_flags,
+             (unsigned)soh->observation_confidence_pct,
+             (unsigned)soh->persistence_valid,
+             (unsigned long)soh->last_reject_flags);
+    ret |= cli_printline(cli, outline);
+
+    snprintf(outline, CLI_LINESZ,
+             "R0 est:%.6f ref:%.6f ohm growth:%.4f accepted:%lu rejected:%lu",
+             (double)soh->estimated_cell_r0_ohm,
+             (double)soh->reference_cell_r0_ohm,
+             (double)soh->resistance_growth_ratio,
+             (unsigned long)soh->accepted_count,
+             (unsigned long)soh->rejected_count);
+    ret |= cli_printline(cli, outline);
+
+    snprintf(outline, CLI_LINESZ,
+             "Reject epoch:%lu calibration:%lu lowI:%lu step:%lu recovery:%lu domain:%lu",
+             (unsigned long)soh->reject_epoch_count,
+             (unsigned long)soh->reject_current_calibration_count,
+             (unsigned long)soh->reject_low_current_count,
+             (unsigned long)soh->reject_low_current_step_count,
+             (unsigned long)soh->reject_balance_recovery_count,
+             (unsigned long)soh->reject_model_domain_count);
+    ret |= cli_printline(cli, outline);
+
+    snprintf(outline, CLI_LINESZ,
+             "Reject innovation:%lu clamp:%lu numeric:%lu estimator:%lu last_accept_age:%lums",
+             (unsigned long)soh->reject_innovation_count,
+             (unsigned long)soh->reject_r0_clamp_count,
+             (unsigned long)soh->reject_numeric_count,
+             (unsigned long)soh->reject_estimator_count,
+             (unsigned long)((soh->accepted_count != 0u) ?
+                 (osKernelGetTickCount() - soh->last_accept_tick) : UINT32_MAX));
+    ret |= cli_printline(cli, outline);
+
+    ret |= cli_printline(cli,
+        "R0/SoH is non-authoritative until current calibration, persistence, and target validation are complete");
     return ret;
 }
 
@@ -2680,6 +2900,30 @@ int get_can_diag(int argc, char *argv[])
              (unsigned)data->board.canbus.rx_queue_high_water,
              (unsigned long)data->board.canbus.rx_queue_drop_count,
              (unsigned long)data->board.canbus.rx_hal_error_count);
+    ret |= cli_printline(cli, outline);
+
+    snprintf(outline, CLI_LINESZ,
+             "CAN TX attempts/fail critical:%lu/%lu compact:%lu/%lu",
+             (unsigned long)data->can_tx_critical_attempt_count,
+             (unsigned long)data->can_tx_critical_fail_count,
+             (unsigned long)data->can_tx_compact_bundle_count,
+             (unsigned long)data->can_tx_compact_bundle_fail_count);
+    ret |= cli_printline(cli, outline);
+
+    snprintf(outline, CLI_LINESZ,
+             "CAN TX detail attempts/fail:%lu/%lu suppressed:%lu",
+             (unsigned long)data->can_tx_detail_phase_count,
+             (unsigned long)data->can_tx_detail_phase_fail_count,
+             (unsigned long)data->can_tx_detail_suppressed_count);
+    ret |= cli_printline(cli, outline);
+
+    snprintf(outline, CLI_LINESZ,
+             "CAN task cycles:%lu deadline_miss:%lu duration_ms last:%lu max:%lu budget:%u",
+             (unsigned long)data->can_task_cycle_count,
+             (unsigned long)data->can_task_deadline_miss_count,
+             (unsigned long)data->can_task_last_duration_ms,
+             (unsigned long)data->can_task_max_duration_ms,
+             (unsigned)AMS_CAN_ECU_FAST_PERIOD_MS);
     ret |= cli_printline(cli, outline);
 
 	snprintf(outline, CLI_LINESZ,
@@ -2986,7 +3230,11 @@ int get_bringup(int argc, char *argv[])
     if(!strcmp(mode, "board") || !strcmp(mode, "snapshot"))
     {
         SPI_HandleTypeDef *hspi = smb->hspi;
-        current_sensor_t *cs = &data->board.current_sensor;
+        current_sensor_t current_snapshot;
+        ams_current_window_lock();
+        current_snapshot = data->board.current_sensor;
+        ams_current_window_unlock();
+        const current_sensor_t *cs = &current_snapshot;
         int sensor_high_whole;
         int sensor_high_decimal;
         int sensor_low_whole;
@@ -3002,7 +3250,7 @@ int get_bringup(int argc, char *argv[])
 
         snprintf(outline, CLI_LINESZ,
                  "BRINGUP BOARD build:%s state:%s BMS_OK:%d inhibit:%d",
-                 AMS_HW_BRINGUP ? "hw-bringup" : "normal",
+                 AMS_BUILD_PROFILE_NAME,
                  ams_state_to_str(data->state),
                  data->bms_state,
                  data->bms_output_inhibit);
@@ -3346,13 +3594,26 @@ int get_version(int argc, char *argv[])
 {
 	int ret = 0;
 	snprintf(outline, CLI_LINESZ,
-	         "v%d.%d.%d %s service_cli:%d hil_can:%d",
+	         "v%d.%d.%d profile:%s service_cli:%d hil_can:%d features:0x%02x",
 	         VER_MAJOR,
 	         VER_MINOR,
 	         VER_BUG,
-	         AMS_HW_BRINGUP ? "hw-bringup" : "normal",
+	         AMS_BUILD_PROFILE_NAME,
 	         AMS_ENABLE_SERVICE_CLI,
-	         AMS_ENABLE_HIL_CAN);
+	         AMS_ENABLE_HIL_CAN,
+	         (unsigned)AMS_BUILD_FEATURE_FLAGS_VALUE);
+	ret |= cli_printline(cli, outline);
+	snprintf(outline, CLI_LINESZ,
+	         "manifest schema:%u commit:%s current:%s CAN:%s",
+	         (unsigned)AMS_BUILD_MANIFEST_SCHEMA,
+	         AMS_BUILD_GIT_COMMIT,
+	         AMS_CURRENT_CALIBRATION_REVISION,
+	         AMS_CAN_CONTRACT_REVISION);
+	ret |= cli_printline(cli, outline);
+	snprintf(outline, CLI_LINESZ,
+	         "manifest thresholds:%s estimator:%s",
+	         AMS_THRESHOLD_REVISION,
+	         AMS_ESTIMATOR_MODEL_REVISION);
 	ret |= cli_printline(cli, outline);
 	return ret;
 }

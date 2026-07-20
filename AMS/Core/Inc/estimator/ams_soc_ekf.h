@@ -20,6 +20,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "ams_build_profile.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -52,6 +54,44 @@ extern "C" {
 #define AMS_EKF_FAULT_BAD_TEMP      0x00000020UL
 #define AMS_EKF_FAULT_STALE_INPUT   0x00000040UL
 #define AMS_EKF_FAULT_CLAMPED       0x00000080UL
+#define AMS_EKF_FAULT_EPOCH_TIMING  0x00000100UL
+
+#define AMS_EKF_MODEL_DOMAIN_NONE       0x00U
+#define AMS_EKF_MODEL_DOMAIN_TEMP_LOW   0x01U
+#define AMS_EKF_MODEL_DOMAIN_TEMP_HIGH  0x02U
+#define AMS_EKF_MODEL_DOMAIN_CORE_CLAMP 0x04U
+
+/* Conservative, provisional resistance-observation thresholds. These govern
+ * advisory online R0 adaptation only; they do not create SoH authority. The
+ * current calibration and these thresholds still require target validation. */
+#define AMS_SOH_MIN_PACK_CURRENT_A             20.0f
+#define AMS_SOH_MIN_PACK_CURRENT_STEP_A         5.0f
+#define AMS_SOH_MIN_SOC                         0.10f
+#define AMS_SOH_MAX_SOC                         0.90f
+#define AMS_SOH_MIN_MODEL_TEMP_C                5.0f
+#define AMS_SOH_MAX_MODEL_TEMP_C               40.0f
+#define AMS_SOH_MAX_INNOVATION_PER_CELL_V       0.10f
+#define AMS_SOH_MIN_ACCEPTED_OBSERVATIONS       50u
+#define AMS_SOH_MAX_R0_VARIANCE_OHM2            5.0e-5f
+#define AMS_SOH_MAX_ACCEPT_AGE_MS             300000u
+
+#define AMS_SOH_REJECT_NONE                 0x0000u
+#define AMS_SOH_REJECT_EPOCH                0x0001u
+#define AMS_SOH_REJECT_CURRENT_CALIBRATION  0x0002u
+#define AMS_SOH_REJECT_LOW_CURRENT          0x0004u
+#define AMS_SOH_REJECT_LOW_CURRENT_STEP     0x0008u
+#define AMS_SOH_REJECT_BALANCE_RECOVERY     0x0010u
+#define AMS_SOH_REJECT_MODEL_DOMAIN         0x0020u
+#define AMS_SOH_REJECT_INNOVATION           0x0040u
+#define AMS_SOH_REJECT_R0_CLAMP             0x0080u
+#define AMS_SOH_REJECT_NUMERIC              0x0100u
+#define AMS_SOH_REJECT_ESTIMATOR            0x0200u
+
+#define AMS_SOH_STATUS_CALIBRATION_CONFIDENT 0x01u
+#define AMS_SOH_STATUS_LAST_OBSERVABLE        0x02u
+#define AMS_SOH_STATUS_CONVERGED              0x04u
+#define AMS_SOH_STATUS_ADVISORY_VALID         0x08u
+#define AMS_SOH_STATUS_PERSISTED               0x10u
 
 #define AMS_EKF_FLAG_VALID          0x01U
 #define AMS_EKF_FLAG_HIL_SOURCE     0x02U
@@ -59,6 +99,46 @@ extern "C" {
 #define AMS_EKF_FLAG_STALE          0x08U
 #define AMS_EKF_FLAG_CLAMPED        0x10U
 #define AMS_EKF_FLAG_CC_FALLBACK    0x20U
+#define AMS_EKF_FLAG_MODEL_CLAMPED  0x40U
+#define AMS_EKF_FLAG_SOH_ADVISORY   0x80U
+
+typedef enum
+{
+    AMS_EKF_R0_UPDATE_NOT_REQUESTED = 0,
+    AMS_EKF_R0_UPDATE_APPLIED,
+    AMS_EKF_R0_UPDATE_REJECT_INNOVATION,
+    AMS_EKF_R0_UPDATE_REJECT_NUMERIC,
+    AMS_EKF_R0_UPDATE_CLAMPED
+} ams_ekf_r0_update_result_t;
+
+typedef struct
+{
+    uint32_t accepted_count;
+    uint32_t rejected_count;
+    uint32_t reject_epoch_count;
+    uint32_t reject_current_calibration_count;
+    uint32_t reject_low_current_count;
+    uint32_t reject_low_current_step_count;
+    uint32_t reject_balance_recovery_count;
+    uint32_t reject_model_domain_count;
+    uint32_t reject_innovation_count;
+    uint32_t reject_r0_clamp_count;
+    uint32_t reject_numeric_count;
+    uint32_t reject_estimator_count;
+    uint32_t last_measurement_sequence;
+    uint32_t last_observation_tick;
+    uint32_t last_accept_tick;
+    uint32_t last_reject_flags;
+    float estimated_cell_r0_ohm;
+    float reference_cell_r0_ohm;
+    float resistance_growth_ratio;
+    float r0_variance_ohm2;
+    uint8_t observation_confidence_pct;
+    uint8_t status_flags;
+    /* Persistence remains false until a versioned, CRC-protected,
+     * wear-managed target storage contract is implemented and validated. */
+    uint8_t persistence_valid;
+} ams_resistance_soh_t;
 
 typedef enum
 {
@@ -105,6 +185,9 @@ typedef struct
     float last_t_surf_C;
     uint32_t step_count;
     uint32_t fault_flags;
+    uint32_t last_measurement_sequence;
+    uint32_t last_voltage_tick;
+    uint8_t model_domain_flags;
     uint8_t valid;
 } ams_ekf_instance_t;
 
@@ -117,8 +200,24 @@ typedef struct
     uint32_t last_update_tick;
     uint32_t step_count;
     uint32_t fault_flags;
+    uint32_t last_consumed_measurement_sequence;
+    uint32_t repeated_measurement_count;
+    uint32_t missed_measurement_count;
+    uint32_t epoch_timing_fault_count;
+    uint32_t last_voltage_tick;
+    uint8_t model_domain_flags;
+    uint8_t hil_counter_seen;
+    uint8_t last_hil_counter;
+    uint32_t last_hil_tick;
+    double last_current_total_charge_As;
+    uint32_t last_current_total_invalid_sample_count;
+    uint8_t current_total_initialized;
 
     float pack_soc;
+    float representative_cell_r0_ohm;
+    float estimated_pack_r0_ohm;
+    /* Deprecated compatibility alias. This remains per-cell resistance and
+     * must never be interpreted as effective pack resistance. */
     float pack_r0_ohm;
     float pack_v_pred_V;
     float pack_innovation_V;
@@ -128,6 +227,7 @@ typedef struct
     uint32_t cc_step_count;
 
     ams_ekf_instance_t inst[AMS_EKF_MAX_INSTANCES];
+    ams_resistance_soh_t resistance_soh[AMS_EKF_MAX_INSTANCES];
 } ams_estimator_t;
 
 typedef struct
@@ -179,6 +279,27 @@ bool ams_ekf_step(ams_ekf_instance_t *ekf,
                   float v_meas_V,
                   float t_surf_C,
                   float dt_s);
+bool ams_ekf_step_gated(ams_ekf_instance_t *ekf,
+                        float i_pack_A,
+                        float v_meas_V,
+                        float t_surf_C,
+                        float dt_s,
+                        bool allow_r0_update,
+                        ams_ekf_r0_update_result_t *r0_result);
+
+uint32_t ams_resistance_soh_gate(const ams_ekf_instance_t *ekf,
+                                 float i_pack_A,
+                                 bool epoch_coherent,
+                                 bool balance_recovered,
+                                 bool current_calibration_confident);
+void ams_resistance_soh_record(ams_resistance_soh_t *soh,
+                               const ams_ekf_instance_t *ekf,
+                               uint32_t measurement_sequence,
+                               uint32_t tick,
+                               bool current_calibration_confident,
+                               uint32_t precheck_reject_flags,
+                               ams_ekf_r0_update_result_t r0_result,
+                               bool estimator_step_ok);
 
 void ams_estimator_init_default(ams_estimator_t *est);
 bool ams_estimator_configure_pack(ams_estimator_t *est);
@@ -186,6 +307,7 @@ bool ams_estimator_configure_segments(ams_estimator_t *est);
 bool ams_estimator_configure_even_split(ams_estimator_t *est, uint8_t instance_count);
 void ams_estimator_cc_reset(ams_estimator_t *est, float soc_init);
 bool ams_estimator_cc_step(ams_estimator_t *est, float i_pack_A, float dt_s);
+bool ams_estimator_cc_apply_charge(ams_estimator_t *est, double charge_As);
 void ams_estimator_refresh_summary(ams_estimator_t *est,
                                    ams_estimator_input_source_t source,
                                    uint32_t tick);

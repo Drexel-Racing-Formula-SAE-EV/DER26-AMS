@@ -25,6 +25,8 @@ void canbus_task_fn(void *arg);
 static StaticTask_t canbus_task_tcb;
 static StackType_t canbus_task_stack[AMS_STACK_CAN_WORDS];
 static TaskHandle_t canbus_task_handle = NULL;
+static ams_measurement_snapshot_t canbus_measurement_cache;
+static const ams_measurement_snapshot_t canbus_invalid_measurement = {0};
 
 #define ECU_SEG_CELLS 15u
 /*
@@ -37,15 +39,205 @@ static TaskHandle_t canbus_task_handle = NULL;
 #define ECU_FANS      10u
 #define ECU_TEMP_INVALID_DECI_C ((uint16_t)0x8000u)
 #define CAN_TX_TIMEOUT_TICKS 1u
+#define CAN_MEASUREMENT_TIMEOUT_MS 500u
 #define CAN_ECU_COMPACT_PROTOCOL_VERSION 1u
-#define CAN_ECU_FAST_FREQ 10u
-#define CAN_ECU_FAST_PERIOD_MS (1000u / CAN_ECU_FAST_FREQ)
+#define CAN_ECU_FAST_FREQ AMS_CAN_ECU_FAST_FREQ_HZ
+#define CAN_ECU_FAST_PERIOD_MS AMS_CAN_ECU_FAST_PERIOD_MS
 #define CAN_ECU_SLOW_DIV ((CAN_ECU_FAST_FREQ + CAN_FREQ - 1u) / CAN_FREQ)
 #define CAN_CHARGER_DIV ((CHARGER_COMMAND_PERIOD_MS + CAN_ECU_FAST_PERIOD_MS - 1u) / CAN_ECU_FAST_PERIOD_MS)
+
+#if (CAN_ECU_FAST_FREQ % CAN_FREQ) != 0
+#error "CAN fast frequency must be an integer multiple of the full telemetry sweep frequency"
+#endif
+
+#define CAN_TELEMETRY_PHASE_COUNT (CAN_ECU_FAST_FREQ / CAN_FREQ)
+
+#if CAN_TELEMETRY_PHASE_COUNT != NSMBS
+#error "Current phased CAN contract requires one telemetry phase per SMB"
+#endif
+
+typedef struct
+{
+    const ams_measurement_snapshot_t *snapshot;
+    uint32_t measurement_sequence;
+    bool voltage_valid;
+    bool temperature_valid;
+    bool current_valid;
+    float pack_voltage_V;
+    float current_A;
+    uint16_t min_cell_mv;
+    uint16_t max_cell_mv;
+    int16_t min_temp_deci_c;
+    int16_t max_temp_deci_c;
+    int16_t avg_temp_deci_c;
+    uint16_t usable_cell_count;
+    uint16_t usable_temp_count;
+    uint8_t min_cell_seg;
+    uint8_t min_cell_index;
+    uint8_t max_cell_seg;
+    uint8_t max_cell_index;
+    uint8_t min_temp_seg;
+    uint8_t min_temp_index;
+    uint8_t max_temp_seg;
+    uint8_t max_temp_index;
+} can_measurement_view_t;
+
+typedef struct
+{
+    state_t state;
+    bool bms_state;
+    bool bms_output_inhibit;
+    bool hard_fault;
+    bool soft_fault;
+    bool canbus_fault;
+    bool voltage_valid;
+    bool current_valid;
+    bool temperature_valid;
+    bool voltage_fault;
+    bool temp_fault;
+    bool current_fault;
+    bool charger_fault;
+    bool adbms_diag_fault;
+    bool task_heartbeat_fault;
+    bool logger_heartbeat_fault;
+    bool temp_warning;
+    bool temp_fan_max;
+    bool temp_charge_stop;
+    bool temp_overtemp_pending;
+    bool overtemp_fault;
+    bool severe_overtemp_fault;
+    bool fan_fault;
+    bool temp_read_fault;
+    uint8_t voltage_fault_reason;
+    uint8_t temp_fault_reason;
+    uint8_t current_fault_reason;
+    int16_t max_temp_deci_c;
+    int16_t min_temp_deci_c;
+    int16_t avg_temp_deci_c;
+    uint8_t max_fan_percent;
+} can_compact_state_snapshot_t;
 
 static uint16_t sat_u16_scaled(float x, float scale);
 static int16_t sat_i16_scaled(float x, float scale);
 static uint8_t sat_u8_u32(uint32_t x);
+
+static void can_measurement_view_build(const app_data_t *data,
+                                       const ams_measurement_snapshot_t *snapshot,
+                                       can_measurement_view_t *view)
+{
+    if((data == NULL) || (view == NULL))
+    {
+        return;
+    }
+
+    memset(view, 0, sizeof(*view));
+    view->snapshot = snapshot;
+    if(snapshot == NULL)
+    {
+        view->voltage_valid = data->voltage_valid && !data->voltage_read_fault;
+        view->temperature_valid = data->temp_valid && !data->temp_read_fault;
+        view->current_valid = data->current_valid && !data->current_sensor_fault;
+        view->pack_voltage_V = (data->total_voltage > 0.0f) ?
+                               data->total_voltage : data->acc.total_volt;
+        view->current_A = data->current;
+        view->min_cell_mv = data->acc.min_voltage_mv;
+        view->max_cell_mv = data->acc.max_voltage_mv;
+        view->min_temp_deci_c = data->acc.min_temp_deci_c;
+        view->max_temp_deci_c = data->acc.max_temp_deci_c;
+        view->avg_temp_deci_c = data->acc.filtered_avg_temp_deci_c;
+        view->usable_cell_count = data->voltage_usable_cell_count;
+        view->usable_temp_count = data->temp_usable_sensor_count;
+        view->min_cell_seg = data->min_voltage_seg;
+        view->min_cell_index = data->min_voltage_cell;
+        view->max_cell_seg = data->max_voltage_seg;
+        view->max_cell_index = data->max_voltage_cell;
+        view->min_temp_seg = data->min_temp_seg;
+        view->min_temp_index = data->min_temp_sensor;
+        view->max_temp_seg = data->max_temp_seg;
+        view->max_temp_index = data->max_temp_sensor;
+        return;
+    }
+
+    view->measurement_sequence = snapshot->sequence;
+    view->voltage_valid =
+        ((snapshot->validity_flags & AMS_MEAS_VALID_VOLTAGE) != 0u);
+    view->temperature_valid =
+        ((snapshot->validity_flags & AMS_MEAS_VALID_TEMPERATURE) != 0u);
+    view->current_valid =
+        ((snapshot->validity_flags & AMS_MEAS_VALID_CURRENT) != 0u) &&
+        snapshot->current.valid;
+    view->current_A = snapshot->current.average_A;
+
+    uint32_t pack_mv = 0u;
+    int64_t temp_sum = 0;
+    bool have_cell = false;
+    bool have_temp = false;
+    for(uint8_t seg = 0u; seg < NSMBS; seg++)
+    {
+        for(uint8_t cell = 0u; cell < NCELLS; cell++)
+        {
+            if((snapshot->cell_usable_mask[seg] & (uint16_t)(1u << cell)) == 0u)
+            {
+                continue;
+            }
+            uint16_t mv = snapshot->cell_mv[seg][cell];
+            pack_mv += mv;
+            if(!have_cell || (mv < view->min_cell_mv))
+            {
+                view->min_cell_mv = mv;
+                view->min_cell_seg = seg;
+                view->min_cell_index = cell;
+            }
+            if(!have_cell || (mv > view->max_cell_mv))
+            {
+                view->max_cell_mv = mv;
+                view->max_cell_seg = seg;
+                view->max_cell_index = cell;
+            }
+            have_cell = true;
+            if(view->usable_cell_count != UINT16_MAX)
+            {
+                view->usable_cell_count++;
+            }
+        }
+
+        for(uint8_t sensor = 0u; sensor < NTEMPS; sensor++)
+        {
+            if((snapshot->temp_usable_mask[seg] & (1UL << sensor)) == 0u)
+            {
+                continue;
+            }
+            int16_t temperature = snapshot->temp_deci_c[seg][sensor];
+            if(!have_temp || (temperature < view->min_temp_deci_c))
+            {
+                view->min_temp_deci_c = temperature;
+                view->min_temp_seg = seg;
+                view->min_temp_index = sensor;
+            }
+            if(!have_temp || (temperature > view->max_temp_deci_c))
+            {
+                view->max_temp_deci_c = temperature;
+                view->max_temp_seg = seg;
+                view->max_temp_index = sensor;
+            }
+            temp_sum += (int64_t)temperature;
+            have_temp = true;
+            if(view->usable_temp_count != UINT16_MAX)
+            {
+                view->usable_temp_count++;
+            }
+        }
+    }
+
+    view->pack_voltage_V = (float)pack_mv / 1000.0f;
+    if(view->usable_temp_count > 0u)
+    {
+        view->avg_temp_deci_c =
+            (int16_t)(temp_sum / (int64_t)view->usable_temp_count);
+    }
+    view->voltage_valid = view->voltage_valid && have_cell;
+    view->temperature_valid = view->temperature_valid && have_temp;
+}
 
 static HAL_StatusTypeDef canbus_wait_tx_mailbox(canbus_device_t *canbus)
 {
@@ -133,6 +325,24 @@ static uint16_t cell_mv_for_ecu(const app_data_t *data, uint8_t seg, uint8_t cel
     return accumulator_cell_voltage_mv(&data->acc, seg, cell);
 }
 
+static uint16_t cell_mv_for_view(const app_data_t *data,
+                                 const can_measurement_view_t *view,
+                                 uint8_t seg,
+                                 uint8_t cell)
+{
+    if((view != NULL) && (view->snapshot != NULL))
+    {
+        if((seg >= NSMBS) || (cell >= NCELLS) ||
+           ((view->snapshot->cell_usable_mask[seg] &
+             (uint16_t)(1u << cell)) == 0u))
+        {
+            return 0u;
+        }
+        return view->snapshot->cell_mv[seg][cell];
+    }
+    return cell_mv_for_ecu(data, seg, cell);
+}
+
 static uint16_t temp_deci_c_for_ecu(const app_data_t *data, uint8_t seg, uint8_t sensor)
 {
     if((data == NULL) ||
@@ -150,6 +360,24 @@ static uint16_t temp_deci_c_for_ecu(const app_data_t *data, uint8_t seg, uint8_t
     return (uint16_t)accumulator_temp_deci_c(&data->acc, seg, sensor);
 }
 
+static uint16_t temp_deci_c_for_view(const app_data_t *data,
+                                     const can_measurement_view_t *view,
+                                     uint8_t seg,
+                                     uint8_t sensor)
+{
+    if((view != NULL) && (view->snapshot != NULL))
+    {
+        if((seg >= NSMBS) || (sensor >= NTEMPS) ||
+           ((view->snapshot->temp_usable_mask[seg] &
+             (1UL << sensor)) == 0u))
+        {
+            return ECU_TEMP_INVALID_DECI_C;
+        }
+        return (uint16_t)view->snapshot->temp_deci_c[seg][sensor];
+    }
+    return temp_deci_c_for_ecu(data, seg, sensor);
+}
+
 static uint16_t fan_percent_for_ecu(const app_data_t *data, uint8_t fan)
 {
     if((data == NULL) || (fan >= NFANS))
@@ -160,6 +388,13 @@ static uint16_t fan_percent_for_ecu(const app_data_t *data, uint8_t fan)
     return sat_u16_scaled(data->board.fans[fan].duty_cycle, 10.0f);
 }
 
+static void canbus_saturating_increment(uint32_t *value)
+{
+    if((value != NULL) && (*value != UINT32_MAX))
+    {
+        (*value)++;
+    }
+}
 
 static void canbus_record_task_tx_status(app_data_t *data, HAL_StatusTypeDef ret)
 {
@@ -173,7 +408,7 @@ static void canbus_record_task_tx_status(app_data_t *data, HAL_StatusTypeDef ret
     if(ret != HAL_OK)
     {
         data->canbus_fault = true;
-        data->can_error_count++;
+        canbus_saturating_increment(&data->can_error_count);
         data->can_last_error_tick = now;
         if(data->can_error_code == HAL_CAN_ERROR_NONE)
         {
@@ -245,11 +480,62 @@ static uint8_t ecu_max_fan_percent(const app_data_t *data)
     return (uint8_t)(max_duty + 0.5f);
 }
 
+/* Freeze every non-measurement field used by the compact ECU bundle.  Cell,
+ * temperature, and current values already come from the immutable measurement
+ * store; this short snapshot prevents supervisor or fan updates between the
+ * four CAN frames from producing a contradictory bundle. */
+static bool can_compact_state_snapshot_capture(
+    const app_data_t *data,
+    can_compact_state_snapshot_t *snapshot)
+{
+    if((data == NULL) || (snapshot == NULL))
+    {
+        return false;
+    }
+
+    taskENTER_CRITICAL();
+    snapshot->state = data->state;
+    snapshot->bms_state = data->bms_state;
+    snapshot->bms_output_inhibit = data->bms_output_inhibit;
+    snapshot->hard_fault = data->hard_fault;
+    snapshot->soft_fault = data->soft_fault;
+    snapshot->canbus_fault = data->canbus_fault;
+    snapshot->voltage_valid = data->voltage_valid;
+    snapshot->current_valid = data->current_valid;
+    snapshot->temperature_valid = data->temp_valid;
+    snapshot->voltage_fault = data->voltage_fault;
+    snapshot->temp_fault = data->temp_fault;
+    snapshot->current_fault = data->current_fault;
+    snapshot->charger_fault = data->charger_fault;
+    snapshot->adbms_diag_fault = data->adbms_diag_fault;
+    snapshot->task_heartbeat_fault = data->task_heartbeat_fault;
+    snapshot->logger_heartbeat_fault = data->logger_heartbeat_fault;
+    snapshot->temp_warning = data->temp_warning;
+    snapshot->temp_fan_max = data->temp_fan_max;
+    snapshot->temp_charge_stop = data->temp_charge_stop;
+    snapshot->temp_overtemp_pending = data->temp_overtemp_pending;
+    snapshot->overtemp_fault = data->overtemp_fault;
+    snapshot->severe_overtemp_fault = data->severe_overtemp_fault;
+    snapshot->fan_fault = data->fan_fault;
+    snapshot->temp_read_fault = data->temp_read_fault;
+    snapshot->voltage_fault_reason = (uint8_t)data->voltage_fault_reason;
+    snapshot->temp_fault_reason = (uint8_t)data->temp_fault_reason;
+    snapshot->current_fault_reason = (uint8_t)data->current_fault_reason;
+    snapshot->max_temp_deci_c = data->acc.max_temp_deci_c;
+    snapshot->min_temp_deci_c = data->acc.min_temp_deci_c;
+    snapshot->avg_temp_deci_c = data->acc.filtered_avg_temp_deci_c;
+    snapshot->max_fan_percent = ecu_max_fan_percent(data);
+    taskEXIT_CRITICAL();
+
+    return true;
+}
+
 static HAL_StatusTypeDef send_ecu_compact_status(canbus_device_t *canbus,
-                                                  const app_data_t *data,
+                                                  const can_compact_state_snapshot_t *state,
+                                                  const can_measurement_view_t *view,
                                                   uint8_t sequence)
 {
-    if((canbus == NULL) || (data == NULL))
+    if((canbus == NULL) || (state == NULL))
     {
         return HAL_ERROR;
     }
@@ -257,18 +543,18 @@ static HAL_StatusTypeDef send_ecu_compact_status(canbus_device_t *canbus,
     uint8_t payload[8] = {0};
     payload[0] = CAN_ECU_COMPACT_PROTOCOL_VERSION;
     payload[1] = sequence;
-    payload[2] = (uint8_t)data->state;
-    payload[3] = ecu_bool_bit(data->bms_state, 0u) |
-                 ecu_bool_bit(data->bms_output_inhibit, 1u) |
-                 ecu_bool_bit(data->hard_fault, 2u) |
-                 ecu_bool_bit(data->soft_fault, 3u) |
-                 ecu_bool_bit(data->voltage_valid, 4u) |
-                 ecu_bool_bit(data->current_valid, 5u) |
-                 ecu_bool_bit(data->temp_valid, 6u) |
-                 ecu_bool_bit(data->canbus_fault, 7u);
-    payload[4] = ecu_bool_bit(data->voltage_fault, 0u) |
-                 ecu_bool_bit(data->temp_fault, 1u) |
-                 ecu_bool_bit(data->current_fault, 2u) |
+    payload[2] = (uint8_t)state->state;
+    payload[3] = ecu_bool_bit(state->bms_state, 0u) |
+                 ecu_bool_bit(state->bms_output_inhibit, 1u) |
+                 ecu_bool_bit(state->hard_fault, 2u) |
+                 ecu_bool_bit(state->soft_fault, 3u) |
+                 ecu_bool_bit((view != NULL) ? view->voltage_valid : state->voltage_valid, 4u) |
+                 ecu_bool_bit((view != NULL) ? view->current_valid : state->current_valid, 5u) |
+                 ecu_bool_bit((view != NULL) ? view->temperature_valid : state->temperature_valid, 6u) |
+                 ecu_bool_bit(state->canbus_fault, 7u);
+    payload[4] = ecu_bool_bit(state->voltage_fault, 0u) |
+                 ecu_bool_bit(state->temp_fault, 1u) |
+                 ecu_bool_bit(state->current_fault, 2u) |
                  /*
                   * Bit 3 is reserved until AMS firmware actually decodes the
                   * IMD input. During staged bench testing, IMD supervision is
@@ -276,19 +562,20 @@ static HAL_StatusTypeDef send_ecu_compact_status(canbus_device_t *canbus,
                   * a firmware-validated IMD_OK bit to the ECU.
                   */
                  0u |
-                 ecu_bool_bit(data->charger_fault, 4u) |
-                 ecu_bool_bit(data->adbms_diag_fault, 5u) |
-                 ecu_bool_bit(data->task_heartbeat_fault, 6u) |
-                 ecu_bool_bit(data->logger_heartbeat_fault, 7u);
-    payload[5] = (uint8_t)data->voltage_fault_reason;
-    payload[6] = (uint8_t)data->temp_fault_reason;
-    payload[7] = (uint8_t)data->current_fault_reason;
+                 ecu_bool_bit(state->charger_fault, 4u) |
+                 ecu_bool_bit(state->adbms_diag_fault, 5u) |
+                 ecu_bool_bit(state->task_heartbeat_fault, 6u) |
+                 ecu_bool_bit(state->logger_heartbeat_fault, 7u);
+    payload[5] = state->voltage_fault_reason;
+    payload[6] = state->temp_fault_reason;
+    payload[7] = state->current_fault_reason;
 
     return canbus_send(canbus, CAN_ID_STD, AMS_ECU_CAN_ID_STATUS, payload);
 }
 
 static HAL_StatusTypeDef send_ecu_compact_electrical(canbus_device_t *canbus,
-                                                      const app_data_t *data)
+                                                      const app_data_t *data,
+                                                      const can_measurement_view_t *view)
 {
     if((canbus == NULL) || (data == NULL))
     {
@@ -296,41 +583,56 @@ static HAL_StatusTypeDef send_ecu_compact_electrical(canbus_device_t *canbus,
     }
 
     uint8_t payload[8] = {0};
-    ecu_put_u16(payload, 0u, ecu_pack_voltage_deci_v(data));
-    ecu_put_i16(payload, 2u, sat_i16_scaled(data->current, 10.0f));
-    ecu_put_u16(payload, 4u, data->acc.min_voltage_mv);
-    ecu_put_u16(payload, 6u, data->acc.max_voltage_mv);
+    ecu_put_u16(payload, 0u,
+                (view != NULL) ? sat_u16_scaled(view->pack_voltage_V, 10.0f) :
+                                 ecu_pack_voltage_deci_v(data));
+    ecu_put_i16(payload, 2u,
+                sat_i16_scaled((view != NULL) ? view->current_A : data->current,
+                               10.0f));
+    ecu_put_u16(payload, 4u,
+                (view != NULL) ? view->min_cell_mv : data->acc.min_voltage_mv);
+    ecu_put_u16(payload, 6u,
+                (view != NULL) ? view->max_cell_mv : data->acc.max_voltage_mv);
 
     return canbus_send(canbus, CAN_ID_STD, AMS_ECU_CAN_ID_ELECTRICAL, payload);
 }
 
 static HAL_StatusTypeDef send_ecu_compact_thermal(canbus_device_t *canbus,
-                                                   const app_data_t *data)
+                                                   const can_compact_state_snapshot_t *state,
+                                                   const can_measurement_view_t *view)
 {
-    if((canbus == NULL) || (data == NULL))
+    if((canbus == NULL) || (state == NULL))
     {
         return HAL_ERROR;
     }
 
     uint8_t payload[8] = {0};
-    ecu_put_i16(payload, 0u, data->temp_valid ? data->acc.max_temp_deci_c : (int16_t)ECU_TEMP_INVALID_DECI_C);
-    ecu_put_i16(payload, 2u, data->temp_valid ? data->acc.min_temp_deci_c : (int16_t)ECU_TEMP_INVALID_DECI_C);
-    ecu_put_i16(payload, 4u, data->temp_valid ? data->acc.filtered_avg_temp_deci_c : (int16_t)ECU_TEMP_INVALID_DECI_C);
-    payload[6] = ecu_max_fan_percent(data);
-    payload[7] = ecu_bool_bit(data->temp_warning, 0u) |
-                 ecu_bool_bit(data->temp_fan_max, 1u) |
-                 ecu_bool_bit(data->temp_charge_stop, 2u) |
-                 ecu_bool_bit(data->temp_overtemp_pending, 3u) |
-                 ecu_bool_bit(data->overtemp_fault, 4u) |
-                 ecu_bool_bit(data->severe_overtemp_fault, 5u) |
-                 ecu_bool_bit(data->fan_fault, 6u) |
-                 ecu_bool_bit(!data->temp_valid || data->temp_read_fault, 7u);
+    bool temperature_valid = (view != NULL) ? view->temperature_valid : state->temperature_valid;
+    ecu_put_i16(payload, 0u, temperature_valid ?
+                ((view != NULL) ? view->max_temp_deci_c : state->max_temp_deci_c) :
+                (int16_t)ECU_TEMP_INVALID_DECI_C);
+    ecu_put_i16(payload, 2u, temperature_valid ?
+                ((view != NULL) ? view->min_temp_deci_c : state->min_temp_deci_c) :
+                (int16_t)ECU_TEMP_INVALID_DECI_C);
+    ecu_put_i16(payload, 4u, temperature_valid ?
+                ((view != NULL) ? view->avg_temp_deci_c : state->avg_temp_deci_c) :
+                (int16_t)ECU_TEMP_INVALID_DECI_C);
+    payload[6] = state->max_fan_percent;
+    payload[7] = ecu_bool_bit(state->temp_warning, 0u) |
+                 ecu_bool_bit(state->temp_fan_max, 1u) |
+                 ecu_bool_bit(state->temp_charge_stop, 2u) |
+                 ecu_bool_bit(state->temp_overtemp_pending, 3u) |
+                 ecu_bool_bit(state->overtemp_fault, 4u) |
+                 ecu_bool_bit(state->severe_overtemp_fault, 5u) |
+                 ecu_bool_bit(state->fan_fault, 6u) |
+                 ecu_bool_bit(!temperature_valid || state->temp_read_fault, 7u);
 
     return canbus_send(canbus, CAN_ID_STD, AMS_ECU_CAN_ID_THERMAL, payload);
 }
 
 static HAL_StatusTypeDef send_ecu_compact_health(canbus_device_t *canbus,
-                                                  const app_data_t *data)
+                                                  const app_data_t *data,
+                                                  const can_measurement_view_t *view)
 {
     if((canbus == NULL) || (data == NULL))
     {
@@ -338,34 +640,46 @@ static HAL_StatusTypeDef send_ecu_compact_health(canbus_device_t *canbus,
     }
 
     uint8_t payload[8] = {0};
-    payload[0] = data->max_voltage_seg;
-    payload[1] = data->max_voltage_cell;
-    payload[2] = data->min_voltage_seg;
-    payload[3] = data->min_voltage_cell;
-    payload[4] = data->max_temp_seg;
-    payload[5] = data->max_temp_sensor;
-    payload[6] = sat_u8_u32(data->voltage_usable_cell_count);
-    payload[7] = sat_u8_u32(data->temp_usable_sensor_count);
+    payload[0] = (view != NULL) ? view->max_cell_seg : data->max_voltage_seg;
+    payload[1] = (view != NULL) ? view->max_cell_index : data->max_voltage_cell;
+    payload[2] = (view != NULL) ? view->min_cell_seg : data->min_voltage_seg;
+    payload[3] = (view != NULL) ? view->min_cell_index : data->min_voltage_cell;
+    payload[4] = (view != NULL) ? view->max_temp_seg : data->max_temp_seg;
+    payload[5] = (view != NULL) ? view->max_temp_index : data->max_temp_sensor;
+    payload[6] = sat_u8_u32((view != NULL) ? view->usable_cell_count :
+                                             data->voltage_usable_cell_count);
+    payload[7] = sat_u8_u32((view != NULL) ? view->usable_temp_count :
+                                             data->temp_usable_sensor_count);
 
     return canbus_send(canbus, CAN_ID_STD, AMS_ECU_CAN_ID_HEALTH, payload);
 }
 
 static HAL_StatusTypeDef send_ecu_compact_telemetry(canbus_device_t *canbus,
                                                      const app_data_t *data,
+                                                     const can_measurement_view_t *view,
                                                      uint8_t sequence)
 {
     HAL_StatusTypeDef ret = HAL_OK;
+    can_compact_state_snapshot_t state;
 
-    ret |= send_ecu_compact_status(canbus, data, sequence);
-    ret |= send_ecu_compact_electrical(canbus, data);
-    ret |= send_ecu_compact_thermal(canbus, data);
-    ret |= send_ecu_compact_health(canbus, data);
+    if(!can_compact_state_snapshot_capture(data, &state))
+    {
+        return HAL_ERROR;
+    }
+
+    ret |= send_ecu_compact_status(canbus, &state, view, sequence);
+    ret |= send_ecu_compact_electrical(canbus, data, view);
+    ret |= send_ecu_compact_thermal(canbus, &state, view);
+    ret |= send_ecu_compact_health(canbus, data, view);
 
     return ret;
 }
 
 
-static HAL_StatusTypeDef send_ecu_ams_status(canbus_device_t *canbus, const app_data_t *data)
+static HAL_StatusTypeDef send_ecu_ams_status_view(
+    canbus_device_t *canbus,
+    const app_data_t *data,
+    const can_measurement_view_t *view)
 {
     HAL_StatusTypeDef ret = HAL_OK;
 
@@ -380,7 +694,9 @@ static HAL_StatusTypeDef send_ecu_ams_status(canbus_device_t *canbus, const app_
                            /* Legacy field: AIR_CONTROL_MCU control-net sense,
                             * not physical contactor auxiliary feedback. */
                            (uint16_t)data->air_state,
-                           (uint16_t)sat_i16_scaled(data->current, 10.0f));
+                           (uint16_t)sat_i16_scaled(
+                               (view != NULL) ? view->current_A : data->current,
+                               10.0f));
 
     ret |= send_ams_packet(canbus,
                            1u,
@@ -390,13 +706,26 @@ static HAL_StatusTypeDef send_ecu_ams_status(canbus_device_t *canbus, const app_
 
     ret |= send_ams_packet(canbus,
                            2u,
-                           (data->temp_valid && isfinite(data->max_temp)) ?
-                               (uint16_t)sat_i16_scaled(data->max_temp, 10.0f) :
+                           ((view != NULL) ? view->temperature_valid :
+                              (data->temp_valid && isfinite(data->max_temp))) ?
+                               (uint16_t)((view != NULL) ?
+                                   view->max_temp_deci_c :
+                                   sat_i16_scaled(data->max_temp, 10.0f)) :
                                ECU_TEMP_INVALID_DECI_C,
-                           sat_u16_scaled(data->min_voltage, 1000.0f),
-                           sat_u16_scaled(data->max_voltage, 1000.0f));
+                           (view != NULL) ? view->min_cell_mv :
+                               sat_u16_scaled(data->min_voltage, 1000.0f),
+                           (view != NULL) ? view->max_cell_mv :
+                               sat_u16_scaled(data->max_voltage, 1000.0f));
 
     return ret;
+}
+
+/* Retain the legacy test/helper entry point. The production phased task calls
+ * the view-aware function above with its immutable measurement epoch. */
+static HAL_StatusTypeDef send_ecu_ams_status(canbus_device_t *canbus,
+                                              const app_data_t *data)
+{
+    return send_ecu_ams_status_view(canbus, data, NULL);
 }
 
 static HAL_StatusTypeDef send_ecu_ams_voltages(canbus_device_t *canbus, const app_data_t *data)
@@ -451,6 +780,50 @@ static HAL_StatusTypeDef send_ecu_ams_fans(canbus_device_t *canbus, const app_da
                                fan_percent_for_ecu(data, fan),
                                fan_percent_for_ecu(data, (uint8_t)(fan + 1u)),
                                (fan + 2u < ECU_FANS) ? fan_percent_for_ecu(data, (uint8_t)(fan + 2u)) : 0u);
+    }
+
+    return ret;
+}
+
+static HAL_StatusTypeDef send_ecu_ams_phase(canbus_device_t *canbus,
+                                             const app_data_t *data,
+                                             const can_measurement_view_t *view,
+                                             uint8_t phase)
+{
+    if((canbus == NULL) || (data == NULL) || (phase >= NSMBS))
+    {
+        return HAL_ERROR;
+    }
+
+    HAL_StatusTypeDef ret = HAL_OK;
+    if(phase == 0u)
+    {
+        ret |= send_ecu_ams_status_view(canbus, data, view);
+        ret |= send_ecu_ams_fans(canbus, data);
+    }
+
+    for(uint8_t packet = 0u; packet < 5u; packet++)
+    {
+        uint8_t cell = (uint8_t)(packet * 3u);
+        ret |= send_ams_packet(
+            canbus,
+            (uint16_t)(3u + (phase * 5u) + packet),
+            cell_mv_for_view(data, view, phase, cell),
+            cell_mv_for_view(data, view, phase, (uint8_t)(cell + 1u)),
+            cell_mv_for_view(data, view, phase, (uint8_t)(cell + 2u)));
+    }
+
+    for(uint8_t packet = 0u; packet < 6u; packet++)
+    {
+        uint8_t sensor = (uint8_t)(packet * 3u);
+        ret |= send_ams_packet(
+            canbus,
+            (uint16_t)(28u + (phase * 6u) + packet),
+            temp_deci_c_for_view(data, view, phase, sensor),
+            temp_deci_c_for_view(data, view, phase, (uint8_t)(sensor + 1u)),
+            (sensor + 2u < ECU_SEG_TEMPS) ?
+                temp_deci_c_for_view(data, view, phase, (uint8_t)(sensor + 2u)) :
+                0u);
     }
 
     return ret;
@@ -588,6 +961,24 @@ static uint16_t temp_deci_c_for_logger(const app_data_t *data, uint8_t seg, uint
     return (uint16_t)accumulator_temp_deci_c(&data->acc, seg, sensor);
 }
 
+static uint16_t temp_deci_c_for_logger_view(const app_data_t *data,
+                                            const can_measurement_view_t *view,
+                                            uint8_t seg,
+                                            uint8_t sensor)
+{
+    if((view != NULL) && (view->snapshot != NULL))
+    {
+        if((seg >= NSMBS) || (sensor >= NTEMPS) ||
+           ((view->snapshot->temp_usable_mask[seg] &
+             (1UL << sensor)) == 0u))
+        {
+            return AMS_LOGGER_TEMP_INVALID_DECI_C;
+        }
+        return (uint16_t)view->snapshot->temp_deci_c[seg][sensor];
+    }
+    return temp_deci_c_for_logger(data, seg, sensor);
+}
+
 static uint16_t cell_mv_for_logger(const app_data_t *data, uint8_t seg, uint8_t cell)
 {
     if((data == NULL) ||
@@ -598,6 +989,24 @@ static uint16_t cell_mv_for_logger(const app_data_t *data, uint8_t seg, uint8_t 
     }
 
     return accumulator_cell_voltage_mv(&data->acc, seg, cell);
+}
+
+static uint16_t cell_mv_for_logger_view(const app_data_t *data,
+                                        const can_measurement_view_t *view,
+                                        uint8_t seg,
+                                        uint8_t cell)
+{
+    if((view != NULL) && (view->snapshot != NULL))
+    {
+        if((seg >= NSMBS) || (cell >= NCELLS) ||
+           ((view->snapshot->cell_usable_mask[seg] &
+             (uint16_t)(1u << cell)) == 0u))
+        {
+            return 0u;
+        }
+        return view->snapshot->cell_mv[seg][cell];
+    }
+    return cell_mv_for_logger(data, seg, cell);
 }
 
 static uint8_t logger_max_fan_decipct(const app_data_t *data)
@@ -687,14 +1096,6 @@ static bool charger_disable_reasons_force_bms_low(uint16_t reasons)
     return (reasons & safety_mask) != 0u;
 }
 
-static void canbus_saturating_increment(uint32_t *value)
-{
-    if((value != NULL) && (*value != UINT32_MAX))
-    {
-        (*value)++;
-    }
-}
-
 static HAL_StatusTypeDef canbus_send_charger_command(canbus_device_t *canbus,
                                                      uint16_t voltage_deci_v,
                                                      uint16_t current_deci_a,
@@ -718,6 +1119,7 @@ static HAL_StatusTypeDef canbus_send_charger_command(canbus_device_t *canbus,
 
 static HAL_StatusTypeDef send_logger_summaries(canbus_device_t *canbus,
                                                const app_data_t *data,
+                                               const can_measurement_view_t *view,
                                                uint8_t sequence)
 {
     if((canbus == NULL) || (data == NULL))
@@ -746,9 +1148,9 @@ static HAL_StatusTypeDef send_logger_summaries(canbus_device_t *canbus,
                  logger_bool_bit(data->charger_fault, AMS_LOGGER_HEARTBEAT_FLAG_CHARGER_FAULT) |
                  logger_bool_bit(data->canbus_fault, AMS_LOGGER_HEARTBEAT_FLAG_CANBUS_FAULT) |
                  logger_bool_bit(data->bms_output_inhibit, AMS_LOGGER_HEARTBEAT_FLAG_BMS_OUTPUT_INHIBIT);
-    payload[4] = logger_bool_bit(data->voltage_valid, AMS_LOGGER_VALID_FLAG_VOLTAGE_VALID) |
-                 logger_bool_bit(data->current_valid, AMS_LOGGER_VALID_FLAG_CURRENT_VALID) |
-                 logger_bool_bit(data->temp_valid, AMS_LOGGER_VALID_FLAG_TEMP_VALID) |
+    payload[4] = logger_bool_bit((view != NULL) ? view->voltage_valid : data->voltage_valid, AMS_LOGGER_VALID_FLAG_VOLTAGE_VALID) |
+                 logger_bool_bit((view != NULL) ? view->current_valid : data->current_valid, AMS_LOGGER_VALID_FLAG_CURRENT_VALID) |
+                 logger_bool_bit((view != NULL) ? view->temperature_valid : data->temp_valid, AMS_LOGGER_VALID_FLAG_TEMP_VALID) |
                  logger_bool_bit(data->voltage_read_fault, AMS_LOGGER_VALID_FLAG_VOLTAGE_READ_FAULT) |
                  logger_bool_bit(data->temp_read_fault, AMS_LOGGER_VALID_FLAG_TEMP_READ_FAULT) |
                  logger_bool_bit(data->current_sensor_fault, AMS_LOGGER_VALID_FLAG_CURRENT_SENSOR_FAULT) |
@@ -777,16 +1179,30 @@ static HAL_StatusTypeDef send_logger_summaries(canbus_device_t *canbus,
     ret |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_FAULT_REASONS, payload);
 
     memset(payload, 0, sizeof(payload));
-    logger_put_u16(payload, 0u, sat_u16_scaled((data->total_voltage > 0.0f) ? data->total_voltage : acc->total_volt, 10.0f));
-    logger_put_i16(payload, 2u, sat_i16_scaled(data->current, 10.0f));
-    logger_put_u16(payload, 4u, acc->min_voltage_mv);
-    logger_put_u16(payload, 6u, acc->max_voltage_mv);
+    logger_put_u16(payload, 0u,
+                   sat_u16_scaled((view != NULL) ? view->pack_voltage_V :
+                                  ((data->total_voltage > 0.0f) ?
+                                   data->total_voltage : acc->total_volt),
+                                  10.0f));
+    logger_put_i16(payload, 2u,
+                   sat_i16_scaled((view != NULL) ? view->current_A : data->current,
+                                  10.0f));
+    logger_put_u16(payload, 4u,
+                   (view != NULL) ? view->min_cell_mv : acc->min_voltage_mv);
+    logger_put_u16(payload, 6u,
+                   (view != NULL) ? view->max_cell_mv : acc->max_voltage_mv);
     ret |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_PACK_ELECTRICAL, payload);
 
     memset(payload, 0, sizeof(payload));
-    logger_put_i16(payload, 0u, acc->max_temp_deci_c);
-    logger_put_i16(payload, 2u, acc->min_temp_deci_c);
-    logger_put_i16(payload, 4u, sat_i16_scaled((data->avg_temp != 0.0f) ? data->avg_temp : acc->avg_temp, 10.0f));
+    logger_put_i16(payload, 0u,
+                   (view != NULL) ? view->max_temp_deci_c : acc->max_temp_deci_c);
+    logger_put_i16(payload, 2u,
+                   (view != NULL) ? view->min_temp_deci_c : acc->min_temp_deci_c);
+    logger_put_i16(payload, 4u,
+                   (view != NULL) ? view->avg_temp_deci_c :
+                   sat_i16_scaled((data->avg_temp != 0.0f) ?
+                                  data->avg_temp : acc->avg_temp,
+                                  10.0f));
     payload[6] = logger_max_fan_decipct(data);
     payload[7] = logger_bool_bit(data->temp_warning, 0u) |
                  logger_bool_bit(data->temp_fan_max, 1u) |
@@ -797,22 +1213,24 @@ static HAL_StatusTypeDef send_logger_summaries(canbus_device_t *canbus,
     ret |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_TEMP_FAN, payload);
 
     memset(payload, 0, sizeof(payload));
-    payload[0] = data->max_voltage_seg;
-    payload[1] = data->max_voltage_cell;
-    payload[2] = data->min_voltage_seg;
-    payload[3] = data->min_voltage_cell;
-    payload[4] = sat_u8_u32(data->voltage_usable_cell_count);
+    payload[0] = (view != NULL) ? view->max_cell_seg : data->max_voltage_seg;
+    payload[1] = (view != NULL) ? view->max_cell_index : data->max_voltage_cell;
+    payload[2] = (view != NULL) ? view->min_cell_seg : data->min_voltage_seg;
+    payload[3] = (view != NULL) ? view->min_cell_index : data->min_voltage_cell;
+    payload[4] = sat_u8_u32((view != NULL) ? view->usable_cell_count :
+                                             data->voltage_usable_cell_count);
     payload[5] = sat_u8_u32(data->voltage_updated_cell_count);
     payload[6] = sat_u8_u32(data->voltage_stale_cell_count);
     payload[7] = sat_u8_u32(data->voltage_pec_fail_cell_count);
     ret |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_VOLTAGE_HEALTH, payload);
 
     memset(payload, 0, sizeof(payload));
-    payload[0] = data->max_temp_seg;
-    payload[1] = data->max_temp_sensor;
-    payload[2] = data->min_temp_seg;
-    payload[3] = data->min_temp_sensor;
-    payload[4] = sat_u8_u32(data->temp_usable_sensor_count);
+    payload[0] = (view != NULL) ? view->max_temp_seg : data->max_temp_seg;
+    payload[1] = (view != NULL) ? view->max_temp_index : data->max_temp_sensor;
+    payload[2] = (view != NULL) ? view->min_temp_seg : data->min_temp_seg;
+    payload[3] = (view != NULL) ? view->min_temp_index : data->min_temp_sensor;
+    payload[4] = sat_u8_u32((view != NULL) ? view->usable_temp_count :
+                                             data->temp_usable_sensor_count);
     payload[5] = sat_u8_u32(data->temp_updated_sensor_count);
     payload[6] = sat_u8_u32(data->temp_stale_sensor_count);
     payload[7] = sat_u8_u32(data->temp_invalid_sensor_count);
@@ -834,7 +1252,9 @@ static HAL_StatusTypeDef send_logger_summaries(canbus_device_t *canbus,
     ret |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_CHARGER, payload);
 
     memset(payload, 0, sizeof(payload));
-    logger_put_i16(payload, 0u, sat_i16_scaled(data->current, 10.0f));
+    logger_put_i16(payload, 0u,
+                   sat_i16_scaled((view != NULL) ? view->current_A : data->current,
+                                  10.0f));
     payload[2] = (uint8_t)data->current_selected_range;
     payload[3] = (uint8_t)data->current_meas_reason;
     payload[4] = (uint8_t)data->current_fault_reason;
@@ -942,7 +1362,11 @@ static HAL_StatusTypeDef send_logger_summaries(canbus_device_t *canbus,
                  logger_bool_bit(data->hil.summary.fresh != 0u, AMS_LOGGER_HIL_FLAG_SUMMARY_FRESH);
     ret |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_ADBMS_DIAG, payload);
 
-    const current_sensor_t *cur = &data->board.current_sensor;
+    current_sensor_t current_snapshot;
+    ams_current_window_lock();
+    current_snapshot = data->board.current_sensor;
+    ams_current_window_unlock();
+    const current_sensor_t *cur = &current_snapshot;
     memset(payload, 0, sizeof(payload));
     logger_put_u16(payload, 0u, cur->count_high);
     logger_put_u16(payload, 2u, cur->count_low);
@@ -1114,12 +1538,242 @@ static HAL_StatusTypeDef send_logger_details(canbus_device_t *canbus, const app_
     return ret;
 }
 
+static HAL_StatusTypeDef send_logger_detail_phase(
+    canbus_device_t *canbus,
+    const app_data_t *data,
+    const can_measurement_view_t *view,
+    uint8_t phase)
+{
+    if((canbus == NULL) || (data == NULL) || (phase >= NSMBS))
+    {
+        return HAL_ERROR;
+    }
+
+    HAL_StatusTypeDef ret = HAL_OK;
+    const accumulator_t *acc = &data->acc;
+    uint8_t payload[8] = {0};
+
+    for(uint8_t cell = 0u; cell < NCELLS; cell = (uint8_t)(cell + 3u))
+    {
+        memset(payload, 0, sizeof(payload));
+        payload[0] = phase;
+        payload[1] = cell;
+        logger_put_u16(payload, 2u,
+                       cell_mv_for_logger_view(data, view, phase, cell));
+        logger_put_u16(payload, 4u,
+                       cell_mv_for_logger_view(data,
+                                               view,
+                                               phase,
+                                               (uint8_t)(cell + 1u)));
+        logger_put_u16(payload, 6u,
+                       cell_mv_for_logger_view(data,
+                                               view,
+                                               phase,
+                                               (uint8_t)(cell + 2u)));
+        ret |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_CELL_DETAIL, payload);
+    }
+
+    for(uint8_t sensor = 0u; sensor < NTEMPS; sensor = (uint8_t)(sensor + 3u))
+    {
+        memset(payload, 0, sizeof(payload));
+        payload[0] = phase;
+        payload[1] = sensor;
+        logger_put_u16(payload, 2u,
+                       temp_deci_c_for_logger_view(data, view, phase, sensor));
+        logger_put_u16(payload, 4u,
+                       temp_deci_c_for_logger_view(data,
+                                                  view,
+                                                  phase,
+                                                  (uint8_t)(sensor + 1u)));
+        logger_put_u16(payload, 6u,
+                       temp_deci_c_for_logger_view(data,
+                                                  view,
+                                                  phase,
+                                                  (uint8_t)(sensor + 2u)));
+        ret |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_TEMP_DETAIL, payload);
+    }
+
+    uint16_t updated =
+        (phase < accumulator_configured_smb_count(acc)) ?
+        acc->updated_voltage_mask[phase] : 0u;
+    uint16_t usable = (view != NULL) && (view->snapshot != NULL) ?
+        view->snapshot->cell_usable_mask[phase] :
+        ((phase < accumulator_configured_smb_count(acc)) ?
+         acc->usable_voltage_mask[phase] : 0u);
+    uint16_t stale =
+        (phase < accumulator_configured_smb_count(acc)) ?
+        acc->stale_voltage_mask[phase] : 0u;
+    uint16_t pec =
+        (phase < accumulator_configured_smb_count(acc)) ?
+        acc->pec_fail_voltage_mask[phase] : 0u;
+
+    memset(payload, 0, sizeof(payload));
+    payload[0] = phase;
+    logger_put_u16(payload, 1u, updated);
+    logger_put_u16(payload, 3u, usable);
+    logger_put_u16(payload, 5u, stale);
+    ret |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_VOLTAGE_MASKS, payload);
+
+    memset(payload, 0, sizeof(payload));
+    payload[0] = phase;
+    logger_put_u16(payload, 1u, pec);
+    payload[3] = logger_count_bits16(pec);
+    ret |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_VOLTAGE_PEC, payload);
+
+    uint32_t temp_updated =
+        (phase < accumulator_configured_smb_count(acc)) ?
+        acc->updated_temp_mask[phase] : 0u;
+    uint32_t temp_usable = (view != NULL) && (view->snapshot != NULL) ?
+        view->snapshot->temp_usable_mask[phase] :
+        ((phase < accumulator_configured_smb_count(acc)) ?
+         acc->usable_temp_mask[phase] : 0u);
+    uint32_t temp_stale =
+        (phase < accumulator_configured_smb_count(acc)) ?
+        acc->stale_temp_mask[phase] : 0u;
+    uint32_t temp_invalid =
+        (phase < accumulator_configured_smb_count(acc)) ?
+        acc->invalid_temp_mask[phase] : 0u;
+
+    memset(payload, 0, sizeof(payload));
+    payload[0] = phase;
+    logger_put_u24(payload, 1u, temp_updated);
+    logger_put_u24(payload, 4u, temp_usable);
+    ret |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_TEMP_MASKS_A, payload);
+
+    memset(payload, 0, sizeof(payload));
+    payload[0] = phase;
+    logger_put_u24(payload, 1u, temp_stale);
+    logger_put_u24(payload, 4u, temp_invalid);
+    ret |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_TEMP_MASKS_B, payload);
+
+    if(phase == 0u)
+    {
+        memset(payload, 0, sizeof(payload));
+        logger_put_i16(payload, 0u,
+                       sat_i16_scaled(data->temp_filtered_max, 10.0f));
+        logger_put_i16(payload, 2u,
+                       sat_i16_scaled(data->temp_max_rate_c_per_s, 10.0f));
+        payload[4] =
+            logger_bool_bit(data->temp_open_sensor_count > 0u,
+                            AMS_LOGGER_TEMP_DIAG_FLAG_OPEN) |
+            logger_bool_bit(data->temp_short_sensor_count > 0u,
+                            AMS_LOGGER_TEMP_DIAG_FLAG_SHORT) |
+            logger_bool_bit(data->temp_jump_sensor_count > 0u,
+                            AMS_LOGGER_TEMP_DIAG_FLAG_JUMP) |
+            logger_bool_bit(data->temp_rate_rise_sensor_count > 0u,
+                            AMS_LOGGER_TEMP_DIAG_FLAG_RATE_RISE) |
+            logger_bool_bit(data->temp_usable_sensor_count > 0u,
+                            AMS_LOGGER_TEMP_DIAG_FLAG_FILTER_VALID);
+        payload[5] = data->fan_control_reason;
+        payload[6] = sat_u8_u32(
+            (uint32_t)((isfinite(data->fan_command_percent) &&
+                        (data->fan_command_percent > 0.0f)) ?
+                       (data->fan_command_percent + 0.5f) : 0.0f));
+        payload[7] =
+            logger_bool_bit(data->fan_state,
+                            AMS_LOGGER_FAN_DIAG_FLAG_FAN_ON) |
+            logger_bool_bit(data->fan_fault,
+                            AMS_LOGGER_FAN_DIAG_FLAG_DRIVER_FAULT) |
+            logger_bool_bit(!data->temp_valid || data->temp_read_fault,
+                            AMS_LOGGER_FAN_DIAG_FLAG_TEMP_INVALID) |
+            logger_bool_bit(data->temp_fault,
+                            AMS_LOGGER_FAN_DIAG_FLAG_TEMP_FAULT) |
+            logger_bool_bit(data->temp_fan_max,
+                            AMS_LOGGER_FAN_DIAG_FLAG_TEMP_FAN_MAX);
+        ret |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_TEMP_DIAG, payload);
+    }
+
+    uint32_t temp_open =
+        (phase < accumulator_configured_smb_count(acc)) ?
+        acc->temp_open_mask[phase] : 0u;
+    uint32_t temp_short =
+        (phase < accumulator_configured_smb_count(acc)) ?
+        acc->temp_short_mask[phase] : 0u;
+    uint32_t temp_jump =
+        (phase < accumulator_configured_smb_count(acc)) ?
+        acc->temp_jump_mask[phase] : 0u;
+    uint32_t temp_rate =
+        (phase < accumulator_configured_smb_count(acc)) ?
+        acc->temp_rate_rise_mask[phase] : 0u;
+    uint16_t voltage_jump =
+        (phase < accumulator_configured_smb_count(acc)) ?
+        acc->voltage_jump_mask[phase] : 0u;
+    uint16_t voltage_stuck =
+        (phase < accumulator_configured_smb_count(acc)) ?
+        acc->voltage_stuck_mask[phase] : 0u;
+
+    memset(payload, 0, sizeof(payload));
+    payload[0] = phase;
+    logger_put_u24(payload, 1u, temp_open);
+    logger_put_u24(payload, 4u, temp_short);
+    payload[7] = (uint8_t)((logger_count_bits32(temp_open) & 0x0Fu) |
+                           ((logger_count_bits32(temp_short) & 0x0Fu) << 4u));
+    ret |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_TEMP_DIAG_A, payload);
+
+    memset(payload, 0, sizeof(payload));
+    payload[0] = phase;
+    logger_put_u24(payload, 1u, temp_jump);
+    logger_put_u24(payload, 4u, temp_rate);
+    payload[7] = (uint8_t)((logger_count_bits32(temp_jump) & 0x0Fu) |
+                           ((logger_count_bits32(temp_rate) & 0x0Fu) << 4u));
+    ret |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_TEMP_DIAG_B, payload);
+
+    memset(payload, 0, sizeof(payload));
+    payload[0] = phase;
+    logger_put_u16(payload, 1u, voltage_jump);
+    logger_put_u16(payload, 3u, voltage_stuck);
+    payload[5] = logger_count_bits16(voltage_jump);
+    payload[6] = logger_count_bits16(voltage_stuck);
+    payload[7] =
+        logger_bool_bit(voltage_jump != 0u,
+                        AMS_LOGGER_VOLTAGE_DIAG_FLAG_JUMP) |
+        logger_bool_bit(voltage_stuck != 0u,
+                        AMS_LOGGER_VOLTAGE_DIAG_FLAG_STUCK);
+    ret |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_VOLTAGE_DIAG, payload);
+
+    return ret;
+}
+
+static HAL_StatusTypeDef send_logger_phase(canbus_device_t *canbus,
+                                            const app_data_t *data,
+                                            const can_measurement_view_t *view,
+                                            uint8_t phase,
+                                            uint8_t sequence)
+{
+    if((canbus == NULL) || (data == NULL) ||
+       (phase >= CAN_TELEMETRY_PHASE_COUNT))
+    {
+        return HAL_ERROR;
+    }
+
+    HAL_StatusTypeDef ret = HAL_OK;
+    uint8_t payload[8] = {0};
+    payload[0] = AMS_LOGGER_SNAPSHOT_VERSION;
+    payload[1] = sequence;
+    payload[2] = phase;
+    payload[3] = CAN_TELEMETRY_PHASE_COUNT;
+    logger_put_u32(payload,
+                   4u,
+                   (view != NULL) ? view->measurement_sequence : 0u);
+    ret |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_SNAPSHOT_META, payload);
+
+    if(phase == 0u)
+    {
+        ret |= send_logger_summaries(canbus, data, view, sequence);
+    }
+    ret |= send_logger_detail_phase(canbus, data, view, phase);
+    return ret;
+}
+
 static HAL_StatusTypeDef send_logger_telemetry(canbus_device_t *canbus, const app_data_t *data)
 {
     static uint8_t sequence = 0u;
     HAL_StatusTypeDef ret;
 
-    ret = send_logger_summaries(canbus, data, sequence);
+    can_measurement_view_t view;
+    can_measurement_view_build(data, NULL, &view);
+
+    ret = send_logger_summaries(canbus, data, &view, sequence);
     ret |= send_logger_details(canbus, data);
     sequence++;
 
@@ -1193,6 +1847,121 @@ static HAL_StatusTypeDef send_estimator_status(canbus_device_t *canbus, const ap
     return canbus_send(canbus, CAN_ID_STD, AMS_ESTIMATOR_STATUS_CAN_ID, payload);
 }
 
+static void canbus_record_tx_class(uint32_t *attempt_count,
+                                   uint32_t *failure_count,
+                                   HAL_StatusTypeDef status)
+{
+    canbus_saturating_increment(attempt_count);
+    if(status != HAL_OK)
+    {
+        canbus_saturating_increment(failure_count);
+    }
+}
+
+static HAL_StatusTypeDef canbus_run_periodic_charger_command(
+    app_data_t *data,
+    canbus_device_t *canbus,
+    charger_t *ccs,
+    uint16_t *charger_div,
+    bool charger_shutdown_attempted,
+    uint16_t voltage10x,
+    uint16_t current10x)
+{
+    if((data == NULL) || (canbus == NULL) || (ccs == NULL) ||
+       (charger_div == NULL))
+    {
+        return HAL_ERROR;
+    }
+
+    if(charger_shutdown_attempted)
+    {
+        /* Never queue enable behind an exit-disable frame in the same task
+         * iteration. A rapid service re-entry first completes the shutdown
+         * burst and then waits at least one CAN cycle. */
+        ccs->target_voltage = 0.0f;
+        ccs->target_current = 0.0f;
+        *charger_div = 0u;
+        return HAL_OK;
+    }
+
+    ccs->target_voltage = CHARGE_MAX_VOLTAGE;
+    ccs->target_current = CHARGE_MAX_CURRENT;
+    (*charger_div)++;
+    if(*charger_div < CAN_CHARGER_DIV)
+    {
+        return HAL_OK;
+    }
+    *charger_div = 0u;
+
+    if((osKernelGetTickCount() - ccs->last_rx_tick) > CHARGER_RX_TIMEOUT_MS)
+    {
+        ccs->communication_fail = true;
+    }
+
+    bool charger_hw_fault = ccs->hardware_fail ||
+                            ccs->overtemp_fail ||
+                            ccs->input_volt_fail ||
+                            ccs->voltage_sense_fail ||
+                            ccs->communication_fail ||
+                            ccs->tx_fail;
+    uint16_t disable_reasons = charger_disable_reasons(data,
+                                                       charger_hw_fault);
+    bool disable_charge =
+        (disable_reasons != CHARGER_DISABLE_REASON_NONE);
+
+    ccs->disable_reason_mask = disable_reasons;
+    data->charger_fault = charger_hw_fault;
+    if(charger_disable_reasons_force_bms_low(disable_reasons))
+    {
+        set_bms(false);
+    }
+
+    HAL_StatusTypeDef status = canbus_send_charger_command(
+        canbus,
+        voltage10x,
+        current10x,
+        disable_charge ? CHARGER_CMD_DISABLE : CHARGER_CMD_ENABLE);
+    canbus_record_tx_class(&data->can_tx_critical_attempt_count,
+                           &data->can_tx_critical_fail_count,
+                           status);
+    if(status == HAL_OK)
+    {
+        ccs->tx_fail = false;
+        ccs->last_tx_status = HAL_OK;
+        canbus_saturating_increment(&ccs->tx_count);
+    }
+    else
+    {
+        ccs->tx_fail = true;
+        ccs->last_tx_status = status;
+        ccs->disable_reason_mask |= CHARGER_DISABLE_REASON_TX_FAIL;
+        canbus_saturating_increment(&ccs->tx_fail_count);
+        data->charger_fault = true;
+        set_bms(false);
+    }
+    return status;
+}
+
+static void canbus_wait_next_period(app_data_t *data, uint32_t entry_tick)
+{
+    if(data != NULL)
+    {
+        uint32_t duration_ms = osKernelGetTickCount() - entry_tick;
+        data->can_task_last_duration_ms = duration_ms;
+        if(duration_ms > data->can_task_max_duration_ms)
+        {
+            data->can_task_max_duration_ms = duration_ms;
+        }
+        canbus_saturating_increment(&data->can_task_cycle_count);
+        if(duration_ms > CAN_ECU_FAST_PERIOD_MS)
+        {
+            canbus_saturating_increment(&data->can_task_deadline_miss_count);
+        }
+    }
+
+    (void)osDelayUntil(entry_tick + CAN_ECU_FAST_PERIOD_MS);
+}
+
 TaskHandle_t canbus_task_start(app_data_t *data)
 {
     if(data == NULL)
@@ -1229,7 +1998,8 @@ void canbus_task_fn(void *arg)
     HAL_StatusTypeDef ret;
     uint32_t entry;
     uint8_t ecu_sequence = 0u;
-    uint8_t slow_div = CAN_ECU_SLOW_DIV;
+    uint8_t telemetry_phase = 0u;
+    uint8_t logger_sequence = 0u;
     uint16_t charger_div = CAN_CHARGER_DIV;
 
     const uint16_t voltage10x = (uint16_t)(CHARGE_MAX_VOLTAGE * 10.0f);
@@ -1239,6 +2009,18 @@ void canbus_task_fn(void *arg)
     {
         entry = osKernelGetTickCount();
         ret = HAL_OK;
+        bool have_measurement = ams_measurement_store_copy_latest(
+            &data->measurement_store,
+            &canbus_measurement_cache);
+        have_measurement = have_measurement &&
+            ((uint32_t)(entry - canbus_measurement_cache.publication_tick) <=
+             CAN_MEASUREMENT_TIMEOUT_MS);
+        can_measurement_view_t measurement_view;
+        can_measurement_view_build(
+            data,
+            have_measurement ? &canbus_measurement_cache :
+                               &canbus_invalid_measurement,
+            &measurement_view);
         (void)canbus_process_rx_queue(canbus, data, CANBUS_RX_QUEUE_DEPTH);
         canbus_poll_errors(canbus, data);
 
@@ -1246,7 +2028,7 @@ void canbus_task_fn(void *arg)
         {
             data->canbus_fault = true;
             ams_heartbeat_kick(data, AMS_HEARTBEAT_CAN, osKernelGetTickCount());
-            osDelayUntil(entry + CAN_ECU_FAST_PERIOD_MS);
+            canbus_wait_next_period(data, entry);
             continue;
         }
 
@@ -1272,6 +2054,9 @@ void canbus_task_fn(void *arg)
                                                           0u,
                                                           0u,
                                                           CHARGER_CMD_DISABLE);
+            canbus_record_tx_class(&data->can_tx_critical_attempt_count,
+                                   &data->can_tx_critical_fail_count,
+                                   shutdown_status);
             ret |= shutdown_status;
 
             taskENTER_CRITICAL();
@@ -1317,8 +2102,31 @@ void canbus_task_fn(void *arg)
             }
         }
 
-        ret |= send_ecu_compact_telemetry(canbus, data, ecu_sequence++);
-        bool compact_tx_ok = (ret == HAL_OK);
+        /* A normal charge command is safety-relevant traffic and therefore
+         * runs before compact status/detail telemetry. State-exit shutdown
+         * traffic above retains the absolute first slot. */
+        if(data->state == STATE_CHARGE)
+        {
+            ret |= canbus_run_periodic_charger_command(
+                data,
+                canbus,
+                ccs,
+                &charger_div,
+                charger_shutdown_attempted,
+                voltage10x,
+                current10x);
+        }
+
+        HAL_StatusTypeDef compact_status = send_ecu_compact_telemetry(
+            canbus,
+            data,
+            &measurement_view,
+            ecu_sequence++);
+        canbus_record_tx_class(&data->can_tx_compact_bundle_count,
+                               &data->can_tx_compact_bundle_fail_count,
+                               compact_status);
+        ret |= compact_status;
+        bool compact_tx_ok = (compact_status == HAL_OK);
         if(!compact_tx_ok && (data->state != STATE_CHARGE))
         {
             /*
@@ -1332,22 +2140,17 @@ void canbus_task_fn(void *arg)
              */
             canbus_poll_errors(canbus, data);
             canbus_record_task_tx_status(data, ret);
+            canbus_saturating_increment(&data->can_tx_detail_suppressed_count);
             data->canbus_fault = data->canbus_fault || data->can_busoff_fault;
             ams_heartbeat_kick(data, AMS_HEARTBEAT_CAN, osKernelGetTickCount());
-            osDelayUntil(entry + CAN_ECU_FAST_PERIOD_MS);
+            canbus_wait_next_period(data, entry);
             continue;
-        }
-
-        bool slow_due = false;
-        slow_div++;
-        if(slow_div >= CAN_ECU_SLOW_DIV)
-        {
-            slow_div = 0u;
-            slow_due = true;
         }
 
         if(data->state != STATE_CHARGE)
         {
+            HAL_StatusTypeDef detail_status = HAL_OK;
+
             ccs->target_voltage = 0.0f;
             ccs->target_current = 0.0f;
             ccs->read_voltage   = 0.0f;
@@ -1358,111 +2161,89 @@ void canbus_task_fn(void *arg)
              * has already changed out of charge mode. */
             data->charger_fault = ccs->shutdown_pending || ccs->tx_fail;
 
-            if(slow_due)
+            detail_status |= send_ecu_ams_phase(canbus,
+                                                data,
+                                                &measurement_view,
+                                                telemetry_phase);
+            HAL_StatusTypeDef logger_status =
+                send_logger_phase(canbus,
+                                  data,
+                                  &measurement_view,
+                                  telemetry_phase,
+                                  logger_sequence);
+            detail_status |= logger_status;
+            if(logger_status == HAL_OK)
             {
-                ret |= send_ecu_ams_status(canbus, data);
-                ret |= send_ecu_ams_voltages(canbus, data);
-                ret |= send_ecu_ams_temps(canbus, data);
-                ret |= send_ecu_ams_fans(canbus, data);
-                if(compact_tx_ok)
-                {
-                    ret |= send_logger_telemetry(canbus, data);
-                    ams_heartbeat_kick(data, AMS_HEARTBEAT_LOGGER, osKernelGetTickCount());
-                }
-                ret |= send_estimator_status(canbus, data);
+                ams_heartbeat_kick(data,
+                                  AMS_HEARTBEAT_LOGGER,
+                                  osKernelGetTickCount());
+            }
+            if(telemetry_phase == 0u)
+            {
+                detail_status |= send_estimator_status(canbus, data);
+            }
+            canbus_record_tx_class(&data->can_tx_detail_phase_count,
+                                   &data->can_tx_detail_phase_fail_count,
+                                   detail_status);
+            ret |= detail_status;
+            telemetry_phase++;
+            if(telemetry_phase >= CAN_TELEMETRY_PHASE_COUNT)
+            {
+                telemetry_phase = 0u;
+                logger_sequence++;
             }
             canbus_poll_errors(canbus, data);
 
             canbus_record_task_tx_status(data, ret);
             data->canbus_fault = data->canbus_fault || data->can_busoff_fault;
             ams_heartbeat_kick(data, AMS_HEARTBEAT_CAN, osKernelGetTickCount());
-            osDelayUntil(entry + CAN_ECU_FAST_PERIOD_MS);
-        }
-        else if(data->state == STATE_CHARGE)
-        {
-            if(charger_shutdown_attempted)
-            {
-                /* Never queue enable behind an exit-disable frame in the same
-                 * task iteration.  A rapid service re-entry must first finish
-                 * the complete shutdown burst, then wait at least one cycle. */
-                ccs->target_voltage = 0.0f;
-                ccs->target_current = 0.0f;
-                charger_div = 0u;
-            }
-            else
-            {
-                ccs->target_voltage = CHARGE_MAX_VOLTAGE;
-                ccs->target_current = CHARGE_MAX_CURRENT;
-
-                charger_div++;
-                if(charger_div >= CAN_CHARGER_DIV)
-                {
-                    charger_div = 0u;
-
-                    if((osKernelGetTickCount() - ccs->last_rx_tick) > CHARGER_RX_TIMEOUT_MS)
-                    {
-                        ccs->communication_fail = true;
-                    }
-
-                    bool charger_hw_fault = (ccs->hardware_fail      ||
-                                             ccs->overtemp_fail      ||
-                                             ccs->input_volt_fail    ||
-                                             ccs->voltage_sense_fail ||
-                                             ccs->communication_fail ||
-                                             ccs->tx_fail);
-
-                    uint16_t disable_reasons = charger_disable_reasons(data, charger_hw_fault);
-                    bool disable_charge = (disable_reasons != CHARGER_DISABLE_REASON_NONE);
-
-                    ccs->disable_reason_mask = disable_reasons;
-                    data->charger_fault = charger_hw_fault;
-                    if(charger_disable_reasons_force_bms_low(disable_reasons))
-                    {
-                        set_bms(0);
-                    }
-
-                    HAL_StatusTypeDef charger_tx_status =
-                        canbus_send_charger_command(
-                            canbus,
-                            voltage10x,
-                            current10x,
-                            disable_charge ? CHARGER_CMD_DISABLE : CHARGER_CMD_ENABLE);
-                    ret |= charger_tx_status;
-                    if(charger_tx_status == HAL_OK)
-                    {
-                        ccs->tx_fail = false;
-                        ccs->last_tx_status = HAL_OK;
-                        canbus_saturating_increment(&ccs->tx_count);
-                    }
-                    else
-                    {
-                        ccs->tx_fail = true;
-                        ccs->last_tx_status = charger_tx_status;
-                        ccs->disable_reason_mask |= CHARGER_DISABLE_REASON_TX_FAIL;
-                        canbus_saturating_increment(&ccs->tx_fail_count);
-                        data->charger_fault = true;
-                        set_bms(0);
-                    }
-
-                    if(compact_tx_ok)
-                    {
-                        ret |= send_logger_telemetry(canbus, data);
-                        ams_heartbeat_kick(data, AMS_HEARTBEAT_LOGGER, osKernelGetTickCount());
-                    }
-                }
-            }
-
-            canbus_poll_errors(canbus, data);
-            canbus_record_task_tx_status(data, ret);
-            data->canbus_fault = data->canbus_fault || data->can_busoff_fault;
-
-            ams_heartbeat_kick(data, AMS_HEARTBEAT_CAN, osKernelGetTickCount());
-            osDelayUntil(entry + CAN_ECU_FAST_PERIOD_MS);
+            canbus_wait_next_period(data, entry);
         }
         else
         {
+            if(compact_tx_ok)
+            {
+                HAL_StatusTypeDef detail_status = HAL_OK;
+                HAL_StatusTypeDef logger_status =
+                    send_logger_phase(canbus,
+                                      data,
+                                      &measurement_view,
+                                      telemetry_phase,
+                                      logger_sequence);
+                detail_status |= logger_status;
+                if(logger_status == HAL_OK)
+                {
+                    ams_heartbeat_kick(data,
+                                      AMS_HEARTBEAT_LOGGER,
+                                      osKernelGetTickCount());
+                }
+                if(telemetry_phase == 0u)
+                {
+                    detail_status |= send_estimator_status(canbus, data);
+                }
+                canbus_record_tx_class(&data->can_tx_detail_phase_count,
+                                       &data->can_tx_detail_phase_fail_count,
+                                       detail_status);
+                ret |= detail_status;
+
+                telemetry_phase++;
+                if(telemetry_phase >= CAN_TELEMETRY_PHASE_COUNT)
+                {
+                    telemetry_phase = 0u;
+                    logger_sequence++;
+                }
+            }
+            else
+            {
+                canbus_saturating_increment(&data->can_tx_detail_suppressed_count);
+            }
+
+            canbus_poll_errors(canbus, data);
+            canbus_record_task_tx_status(data, ret);
+            data->canbus_fault = data->canbus_fault || data->can_busoff_fault;
+
             ams_heartbeat_kick(data, AMS_HEARTBEAT_CAN, osKernelGetTickCount());
-            osDelayUntil(entry + CAN_ECU_FAST_PERIOD_MS);
+            canbus_wait_next_period(data, entry);
         }
     }
 }

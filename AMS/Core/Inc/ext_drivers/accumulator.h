@@ -211,6 +211,11 @@ uint8_t accumulator_configured_smb_count(const accumulator_t *dev);
  * sample health: the APM remains advisory, but a corrupted device order,
  * pointer, shared-bus binding or write-end assignment must stop all writes. */
 bool accumulator_final_ring_topology_valid(const accumulator_t *dev);
+/* True when the verified outbound CFGB/PWM shadow requests at least one
+ * discharge path.  It does not independently read hardware; set/clear APIs
+ * already perform the authoritative readback before returning success. */
+bool accumulator_balance_shadow_active(const accumulator_t *dev);
+uint16_t accumulator_balance_shadow_mask(const accumulator_t *dev, uint8_t seg);
 int accumulator_set_balance(accumulator_t *dev);
 int accumulator_clear_balance(accumulator_t *dev);
 int accumulator_hil_ingest_cell_triplet(accumulator_t *dev,

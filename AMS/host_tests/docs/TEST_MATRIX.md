@@ -30,6 +30,7 @@ Authored by Mahad Faisal, 2026.
 | `test_system_sil_recovery_and_latch_reset_paths` | System-level SIL: verifies warning-only current/voltage states recover automatically, while latched current and voltage hard faults require explicit latch reset before BMS_OK can return. |
 | `test_system_sil_current_boundary_timing_edges` | System-level SIL/policy boundary test: verifies 499 ms does not trip a 500 ms debounce, 500 ms does; 99 ms does not trip a 100 ms fast fault, 100 ms does, including current-task integrated timing. |
 | `test_system_sil_cli_can_diagnostic_consistency` | System-level SIL: verifies stale voltage and current ADC faults appear in CLI fault/voltage/current diagnostics and that unusable stale cells zero-fill in CAN voltage telemetry instead of reporting misleading data. |
+| `test_current_service_calibration_boundary` | Verifies service calibration clear is refused while BMS_OK may be active and that an authorized calibration mutation invalidates the active current epoch and scalar readiness until a fresh current-task sample is published. |
 | `test_software_heartbeat_monitor_faults_and_recovery` | System-level SIL: verifies startup heartbeat grace, critical task heartbeat stale fail-closed behavior, heartbeat recovery, and non-safety logger/dashboard stale reporting. |
 | `test_system_sil_bringup_status_and_bmsok_inhibit` | System-level SIL: verifies BMS_OK output inhibit blocks attempted assertions, counts blocked assertions, CLI release/inhibit commands work, and status reports Mode 3 SPI settings. |
 | `test_bringup_cli_board_ready_and_adbms_summaries` | Verifies `bringup board`, `bringup ready`, and `bringup adbms6830` report board-only readiness, avoid BMS_OK mutation, classify stuck ADBMS readback, and show PEC/SID/status pass states. |
@@ -43,6 +44,8 @@ Authored by Mahad Faisal, 2026.
 | `test_temp_stats` | Verifies temperature max/average behavior while skipping invalid raw channels. |
 | `test_temp_invalid_and_cold_valid_fault_behavior` | Ensures all-invalid temps fault and valid cold temps do not fault. |
 | `test_can_telemetry_packets` | Verifies ECU AMS packet headers, CAN ID, 8-byte layout, status/current/voltage/temp/fan payloads. |
+| `test_can_telemetry_pacing_and_snapshot` | Verifies slow detail frames are phased instead of burst, compact fields remain frozen when live application state mutates mid-bundle, and all electrical data come from one measurement snapshot. |
+| `test_can_priority_metrics_and_deadlines` | Injects critical-shutdown and compact-traffic failures, verifies failure classes cannot overwrite each other, confirms compact failure suppresses best-effort detail, and checks task-duration/deadline counters. |
 | `test_telemetry_absent_segments_and_invalid_channels` | Verifies missing SMB segments and invalid channels zero-fill instead of reading out of bounds. |
 | `test_charger_rx_and_tx` | Verifies charger receive parse, charger fault bits, charger command transmit. |
 | `test_can_rx_filter_matrix` | Verifies exact bxCAN charger/HIL filter packing and configuration failure, then verifies bad RX status, remote/wrong ID type, wrong ID, and short DLC are ignored before application parsing. |
@@ -52,6 +55,11 @@ Authored by Mahad Faisal, 2026.
 | `test_current_sensor_measurement_model` | Verifies DHAB 0.6-divider reconstruction, zero-current offset, design-file C_SENSE_L=50A / C_SENSE_H=800A mapping, range selection, saturation, mismatch, and implausible ADC handling. |
 | `test_current_task_measurement_state` | Verifies current task propagation of `current_valid`, selected range, measurement reason, stale-current hold on ADC read failure, and confirmed sensor-fault timing. |
 | `test_current_task_threshold_faults` | Verifies discharge overcurrent debounce/latch behavior and low-current precharge fast-fault behavior using the corrected DHAB mapping. |
+| `test_adbms_voltage_scan_timing_contract` | Verifies the conversion waits, wrap-safe absolute scheduling, no unconditional recovery delay, and measured verified balance on/off intervals at or above their configured minima. |
+| `test_measurement_epoch_contract` | Verifies current integration/invalid-gap accounting, tick-wrap handling, immutable voltage/current/temperature publication, sequence rollover, reader pinning, drop-on-busy behavior and recovery without a long critical-section copy. |
+| `test_estimator_epoch_sequence_and_timing` | Verifies one update per measurement sequence, missed/repeated epoch accounting, actual voltage-to-voltage `dt`, tick wrap and invalid timing rejection. |
+| `test_estimator_model_domain_flags` | Verifies low/high temperature-model clamp flags, core-temperature clamp flags and explicit model-domain validity reporting. |
+| `test_estimator_task_hil_and_hardware_paths` | Verifies synthetic HIL can exercise R0 observation while hardware R0 remains frozen without both persistent calibration confidence and the build-time physical-polarity gate. |
 | `test_fan_current_and_null_guards` | Verifies fan driver edge cases and defensive null handling. |
 | `test_periods_and_driver_edge_cases` | Verifies task timing period increments, NaN/Inf fan input handling, CAN send guard behavior. |
 | `test_task_iterations_with_injected_signals` | Runs one fake iteration of CAN, ADBMS, error, fan, and current tasks. |
@@ -69,6 +77,8 @@ Unit-only additions:
 | `test_current_sensor_invalid_conditions` | Verifies sensor saturation, 50A/800A channel mismatch, implausible ADC rails, stale/missing channel data, and reason/range strings. |
 | `test_current_sensor_requires_fresh_pair_and_channel_mapping` | Regression test for the stale-channel bug: conversion requires both ADC channels fresh and preserves C_SENSE_L=50A / C_SENSE_H=800A mapping. |
 | `test_current_sensor_read_adc_status_path` | Verifies checked ADC status propagation for normal reads, timeout/error reads, and null ADC handles. |
+| `test_current_sensor_calibration_record_integrity` | Verifies fixed-width record creation, CRC/schema/range rejection, explicit live-zero proof, fail-closed restore, record-reference-based live/stored offset agreement (including wrong-board rejection), uncertainty-based SoH confidence, provenance clearing and reference-change invalidation. |
+| `test_r0_observability_and_accounting` | Verifies R0 update gates/reject accounting, convergence/confidence flags, unit scaling, and removal of advisory-valid status once the last accepted observation becomes stale while retaining historical convergence. |
 | `test_current_fault_policy` | Verifies discharge debounce, precharge fast trip, persistent sensor-fault confirmation, and placeholder regen-unexpected warning policy. |
 | `test_air_feedback_scaffold` | Verifies the absent-hardware profile never reports auxiliary feedback healthy and that an enabled-but-uninitialized future monitor starts fail-closed. |
 | `test_air_monitor_nominal_sequence_and_weld_clear` | Exercises boot-open proof, the complete Off -> Precharge -> Run -> Shutdown sequence, authorized transition permission, voltage-settle checks, simultaneous welded AIR+/AIR- detection, persistent latching, and verified all-open controlled clear. |
@@ -111,6 +121,7 @@ Hardware bring-up notes:
 | CPU panic safety path | HardFault, MemManage, BusFault, UsageFault, NMI, and Error_Handler force BMS_OK low through a direct GPIO reset path before entering the fault loop. |
 | Reset/panic record | `.noinit` RAM keeps the last panic reason, ARM fault status registers, reset flags, and a versioned diagnostic event ring with record sequence, CRC, commit-last publication, and recovery from torn/corrupt entries. |
 | Deterministic RTOS allocation | All nine application tasks, the ADBMS recursive mutex, idle task, timer task, and timer queue use static storage; `make static-allocation-gate` rejects dynamic application task creation. |
+| Target project metadata | `make target-project-gate` parses CubeIDE XML, rejects stale DER25 paths/identity, requires project-relative Debug/Release directories, checks explicit warning flags and confirms the STM32F767 flash linker script. |
 | Watchdog gate | Optional IWDG support is disabled by default and, when compiled in, is fed only by the error task after safety heartbeat and sensor freshness gates pass. |
 | CAN bus-off recovery | CAN error polling tracks HAL error code, bus-off count, recovery count, and attempts a delayed peripheral restart after bus-off. |
 | Hardware SPI bring-up guide | `docs/HARDWARE_SPI_BRINGUP.md` documents first-flash setup, logic-analyzer channels, expected SPI mode 3 behavior, CLI command order, fault isolation, APM probing, and BMS_OK release criteria. |

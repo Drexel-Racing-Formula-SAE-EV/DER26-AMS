@@ -45,6 +45,10 @@ static uint32_t tx_count = 0;
 static struct { uint32_t ide, stdid, extid, dlc; uint8_t data[8]; } tx_log[AMS_HOST_TX_LOG_CAPACITY];
 static uint32_t tx_free_level = 3;
 static HAL_StatusTypeDef fake_can_add_tx_status = HAL_OK;
+static uint32_t fake_can_add_tx_call_count = 0u;
+static uint32_t fake_can_fail_on_call = 0u;
+static uint32_t fake_can_advance_tick_per_tx_ms = 0u;
+static uint32_t fake_can_mutate_after_tx_count = 0u;
 static uint32_t fake_can_error = HAL_CAN_ERROR_NONE;
 static HAL_StatusTypeDef fake_can_recover_status = HAL_OK;
 static HAL_StatusTypeDef fake_can_notification_status = HAL_OK;
@@ -84,6 +88,7 @@ static uint32_t fake_counter_resync_calls = 0u;
 static uint16_t fake_adbms_config_mismatch_mask = 0u;
 static uint16_t fake_adbms_delay_values_us[8];
 static uint32_t fake_adbms_delay_calls = 0u;
+static bool fake_adbms_delay_advances_tick = false;
 static uint32_t fake_adbms_lock_depth = 0u;
 static uint32_t fake_adbms_lock_max_depth = 0u;
 static HAL_StatusTypeDef fake_tim_base_start_status = HAL_OK;
@@ -101,6 +106,9 @@ static void fake_adbms_voltage_masks_full_update(void);
 static void fake_adbms_voltage_masks_all_missing(bool pec_fail);
 static void fake_adbms_voltage_masks_one_missing(uint8_t seg, uint8_t cell, bool pec_fail);
 static void fake_adc_set_current_a(float current_a);
+static void run_one_canbus_task_iteration(app_data_t *d);
+static void run_one_adbms_task_iteration(app_data_t *d);
+static void fill_nominal_pack(app_data_t *d, float base_v);
 static void sil_publish_temp_state(app_data_t *d);
 static void sil_expect_balancing_clear(const app_data_t *d);
 static uint8_t sil_balance_pwm_duty(const app_data_t *d, uint8_t ic, uint8_t cell);
@@ -109,7 +117,7 @@ static void sil_run_can_charge_iteration(app_data_t *d, CAN_HandleTypeDef *hcan)
 
 uint32_t osKernelGetTickCount(void){ return fake_tick; }
 osStatus_t osDelay(uint32_t ticks){ fake_tick += ticks; return osOK; }
-osStatus_t osDelayUntil(uint32_t ticks){ fake_tick = ticks; if(task_exit_after_delay_until){ task_exit_after_delay_until = 0; longjmp(task_exit_jmp, 1); } return osOK; }
+osStatus_t osDelayUntil(uint32_t ticks){ if((int32_t)(ticks - fake_tick) > 0){ fake_tick = ticks; } if(task_exit_after_delay_until){ task_exit_after_delay_until = 0; longjmp(task_exit_jmp, 1); } return osOK; }
 BaseType_t xTaskCreate(TaskFunction_t fn, const char * const name, const configSTACK_DEPTH_TYPE stack, void * const arg, UBaseType_t prio, TaskHandle_t * const handle){ (void)fn;(void)name;(void)stack;(void)arg;(void)prio; if(handle) *handle=(TaskHandle_t)0x1; return pdPASS; }
 TaskHandle_t xTaskCreateStatic(TaskFunction_t fn,
                                const char * const name,
@@ -151,9 +159,27 @@ HAL_StatusTypeDef HAL_CAN_ConfigFilter(CAN_HandleTypeDef *hcan,
 uint32_t HAL_CAN_GetTxMailboxesFreeLevel(const CAN_HandleTypeDef *hcan){ (void)hcan; return tx_free_level; }
 HAL_StatusTypeDef HAL_CAN_AddTxMessage(CAN_HandleTypeDef *hcan, const CAN_TxHeaderTypeDef *hdr, const uint8_t *data, uint32_t *mailbox){
     if(!hcan || !hdr || !data || tx_count >= AMS_HOST_TX_LOG_CAPACITY) return HAL_ERROR;
+    fake_can_add_tx_call_count++;
     if(fake_can_add_tx_status != HAL_OK) return fake_can_add_tx_status;
+    if((fake_can_fail_on_call != 0u) &&
+       (fake_can_add_tx_call_count == fake_can_fail_on_call)) return HAL_ERROR;
     tx_log[tx_count].ide = hdr->IDE; tx_log[tx_count].stdid = hdr->StdId; tx_log[tx_count].extid = hdr->ExtId; tx_log[tx_count].dlc = hdr->DLC;
-    memcpy(tx_log[tx_count].data, data, 8); if(mailbox) *mailbox=0; tx_count++; return HAL_OK;
+    memcpy(tx_log[tx_count].data, data, 8); if(mailbox) *mailbox=0; tx_count++;
+    if((fake_can_mutate_after_tx_count != 0u) &&
+       (tx_count == fake_can_mutate_after_tx_count))
+    {
+        for(uint8_t fan = 0u; fan < NFANS; fan++) app.board.fans[fan].duty_cycle = 100.0f;
+        app.temp_warning = true;
+        app.temp_fan_max = true;
+        app.temp_charge_stop = true;
+        app.temp_overtemp_pending = true;
+        app.overtemp_fault = true;
+        app.severe_overtemp_fault = true;
+        app.fan_fault = true;
+        app.temp_read_fault = true;
+    }
+    fake_tick += fake_can_advance_tick_per_tx_ms;
+    return HAL_OK;
 }
 HAL_StatusTypeDef HAL_CAN_GetRxMessage(CAN_HandleTypeDef *hcan, uint32_t fifo, CAN_RxHeaderTypeDef *hdr, uint8_t data[]){
     (void)fifo; if(!hcan || !hdr || !data) return HAL_ERROR; *hdr = fake_rx_hdr; memcpy(data, fake_rx_data, 8); return fake_rx_status;
@@ -208,6 +234,14 @@ void adbms_spi_unlock(void)
 {
     assert(fake_adbms_lock_depth > 0u);
     fake_adbms_lock_depth--;
+}
+
+void ams_current_window_lock(void)
+{
+}
+
+void ams_current_window_unlock(void)
+{
 }
 
 void set_bms(bool state){
@@ -349,6 +383,10 @@ HAL_StatusTypeDef adbms6830_us_delay(adbms6830_driver_t* dev, uint16_t microseco
         fake_adbms_delay_values_us[fake_adbms_delay_calls] = microseconds;
     }
     fake_adbms_delay_calls++;
+    if(fake_adbms_delay_advances_tick)
+    {
+        fake_tick += ((uint32_t)microseconds + 999u) / 1000u;
+    }
     return HAL_OK;
 }
 HAL_StatusTypeDef adbms6830_start_adc_cell_voltage_measurement(adbms6830_driver_t *dev){return (dev != NULL) ? fake_adbms_start_conversion_status : HAL_ERROR;}
@@ -827,6 +865,7 @@ uint16_t stm32f767z_adc_read(ADC_HandleTypeDef *hadc){ return stm32f767z_adc_rea
 #include "Core/Src/ext_drivers/ams_safety.c"
 #include "Core/Src/ext_drivers/ams_rtos_diag.c"
 #include "Core/Src/ext_drivers/canbus.c"
+#include "Core/Src/measurement/ams_measurement.c"
 #include "Core/Src/estimator/ams_estimator_lut.c"
 #include "Core/Src/estimator/ams_soc_ekf.c"
 int cli_printline(cli_device_t *dev, char *line)
@@ -941,12 +980,21 @@ static int16_t raw_for_temp_c(float temp_c)
 #define HOST_LOGGER_FRAME_COUNT 120u
 #define HOST_ECU_FRAME_COUNT 62u
 #define HOST_ECU_COMPACT_FRAME_COUNT 4u
+#define HOST_ECU_PHASE0_FRAME_COUNT 18u
+#define HOST_LOGGER_PHASE0_FRAME_COUNT 41u
 #define HOST_LEGACY_ECU_FRAME_OFFSET HOST_ECU_COMPACT_FRAME_COUNT
-#define HOST_NONCHARGE_CAN_FRAME_COUNT (HOST_ECU_COMPACT_FRAME_COUNT + HOST_ECU_FRAME_COUNT + HOST_LOGGER_FRAME_COUNT)
-#define HOST_CHARGE_CAN_FRAME_COUNT (HOST_ECU_COMPACT_FRAME_COUNT + HOST_LOGGER_FRAME_COUNT + 1u)
-#define HOST_CHARGER_FRAME_INDEX HOST_ECU_COMPACT_FRAME_COUNT
+#define HOST_NONCHARGE_CAN_FRAME_COUNT \
+    (HOST_ECU_COMPACT_FRAME_COUNT + HOST_ECU_PHASE0_FRAME_COUNT + \
+     HOST_LOGGER_PHASE0_FRAME_COUNT)
+#define HOST_CHARGE_CAN_FRAME_COUNT \
+    (HOST_ECU_COMPACT_FRAME_COUNT + HOST_LOGGER_PHASE0_FRAME_COUNT + 1u)
+#define HOST_CHARGER_FRAME_INDEX 0u
 
 static void sil_mark_all_heartbeats_alive(app_data_t *d);
+static uint32_t host_publish_measurement_snapshot(app_data_t *d,
+                                                  uint32_t voltage_tick,
+                                                  float current_A,
+                                                  uint32_t validity_flags);
 
 static void sil_bind_final_ring_topology(accumulator_t *acc)
 {
@@ -967,7 +1015,7 @@ static void sil_bind_final_ring_topology(accumulator_t *acc)
     acc->apm.write_string = STRING_B;
 }
 
-static void init_fake_app(void){ fake_tick = 0u; memset(&app,0,sizeof(app)); ams_safety_host_reset_state(); ams_rtos_host_reset_state(); ams_rtos_diag_init(&app); app.state = STATE_START; app.acc.smb.num_ics = NSMBS; app.acc.smb.physical_chain_count = (uint8_t)(NSMBS + NAPMS); app.acc.smb.ics_capacity = NSMBS; app.acc.smb.ics = app.acc.smb_ics; app.acc.smb.string = STRING_A; app.acc.smb.health.startup_baseline_passed = true; app.acc.delay_timer_ready = true; app.acc.delay_timer_status = HAL_OK; app.acc.smb_ready = true; app.acc.smb_init_status = HAL_OK; app.acc.apm.num_ics = NAPMS; app.acc.apm.ics_capacity = NAPMS; app.acc.apm.ics = app.acc.apm_ics; app.acc.apm.string = STRING_B; app.acc.apm_ready = true; app.acc.apm_init_status = HAL_OK; app.acc.apm.health.initialized = true; app.acc.apm.health.i1_calibrated = true; app.acc.apm.health.i1_continuous_ready = true; app.acc.apm.health.sid_valid = true; app.acc.apm.health.config_valid = true; app.acc.apm.health.device_id = ADBMS2950B_DEVICE_ID; app.acc.apm.health.sid[5] = (uint8_t)(ADBMS2950B_DEVICE_ID << 1u); sil_bind_final_ring_topology(&app.acc); current_fault_init(&app.current_fault_state); voltage_fault_init(&app.voltage_fault_state); temperature_fault_init(&app.temp_fault_state); ams_heartbeat_init(&app, fake_tick); ams_safety_watchdog_boot_arm(&app); app.current_meas_reason = CURRENT_SENSOR_REASON_ADC_READ; app.current_fault_reason = CURRENT_FAULT_REASON_SENSOR_NOT_READY; app.voltage_fault_reason = VOLTAGE_FAULT_REASON_NOT_READY; app.temp_fault = true; app.temp_read_fault = true; app.temp_fan_max = true; app.temp_fault_reason = TEMPERATURE_FAULT_REASON_NOT_READY; app.imd_valid = true; app.imd_ok = true; app.imd_fault = false; app.imd_status = IMD_NORMAL; app.balance_inhibit = (AMS_HW_BRINGUP_BALANCE_INHIBIT_DEFAULT != 0); fake_adbms_voltage_masks_full_update(); fake_adc_read_index = 0u; fake_adbms_init_status = HAL_OK; fake_adbms_start_conversion_status = HAL_OK; fake_adbms_read_cell_status = HAL_OK; fake_apm_init_status = HAL_OK; fake_apm_sample_status = HAL_OK; fake_apm_probe_status = HAL_OK; fake_apm_i1_raw = 1234; fake_apm_vb1_raw = 18000; fake_apm_init_string = STRING_A; fake_apm_init_requested_reset = true; fake_apm_init_enabled_dividers = true; fake_adbms_wrcfgb_status = HAL_OK; fake_adbms_wrpwm_status = HAL_OK; fake_adbms_balance_verify_status = HAL_OK; fake_adbms_wrpwm_fail_after_ok = -1; fake_adbms_diag_status = HAL_OK; fake_adbms_config_mismatch_mask = 0u; fake_can_add_tx_status = HAL_OK; fake_can_error = HAL_CAN_ERROR_NONE; fake_can_recover_status = HAL_OK; fake_can_notification_status = HAL_OK; fake_can_filter_status = HAL_OK; fake_can_filter_count = 0u; memset(fake_can_filter_log, 0, sizeof(fake_can_filter_log)); fake_rx_status = HAL_OK; fake_tim_base_start_status = HAL_OK; fake_tim_pwm_start_status = HAL_OK; fake_tim_ic_start_it_status = HAL_OK; fake_tim_ic_start_status = HAL_OK; fake_tim_total_capture = 1000u; fake_tim_high_capture = 500u; memset(&fake_rx_hdr, 0, sizeof(fake_rx_hdr)); memset(fake_rx_data, 0, sizeof(fake_rx_data)); bms_pin_state = GPIO_PIN_RESET; }
+static void init_fake_app(void){ fake_tick = 0u; memset(&app,0,sizeof(app)); ams_safety_host_reset_state(); ams_rtos_host_reset_state(); ams_rtos_diag_init(&app); app.state = STATE_START; app.acc.smb.num_ics = NSMBS; app.acc.smb.physical_chain_count = (uint8_t)(NSMBS + NAPMS); app.acc.smb.ics_capacity = NSMBS; app.acc.smb.ics = app.acc.smb_ics; app.acc.smb.string = STRING_A; app.acc.smb.health.startup_baseline_passed = true; app.acc.delay_timer_ready = true; app.acc.delay_timer_status = HAL_OK; app.acc.smb_ready = true; app.acc.smb_init_status = HAL_OK; app.acc.apm.num_ics = NAPMS; app.acc.apm.ics_capacity = NAPMS; app.acc.apm.ics = app.acc.apm_ics; app.acc.apm.string = STRING_B; app.acc.apm_ready = true; app.acc.apm_init_status = HAL_OK; app.acc.apm.health.initialized = true; app.acc.apm.health.i1_calibrated = true; app.acc.apm.health.i1_continuous_ready = true; app.acc.apm.health.sid_valid = true; app.acc.apm.health.config_valid = true; app.acc.apm.health.device_id = ADBMS2950B_DEVICE_ID; app.acc.apm.health.sid[5] = (uint8_t)(ADBMS2950B_DEVICE_ID << 1u); sil_bind_final_ring_topology(&app.acc); current_fault_init(&app.current_fault_state); voltage_fault_init(&app.voltage_fault_state); temperature_fault_init(&app.temp_fault_state); ams_heartbeat_init(&app, fake_tick); ams_safety_watchdog_boot_arm(&app); app.current_meas_reason = CURRENT_SENSOR_REASON_ADC_READ; app.current_fault_reason = CURRENT_FAULT_REASON_SENSOR_NOT_READY; app.voltage_fault_reason = VOLTAGE_FAULT_REASON_NOT_READY; app.temp_fault = true; app.temp_read_fault = true; app.temp_fan_max = true; app.temp_fault_reason = TEMPERATURE_FAULT_REASON_NOT_READY; app.imd_valid = true; app.imd_ok = true; app.imd_fault = false; app.imd_status = IMD_NORMAL; app.balance_inhibit = (AMS_HW_BRINGUP_BALANCE_INHIBIT_DEFAULT != 0); fake_adbms_voltage_masks_full_update(); fake_adc_read_index = 0u; fake_adbms_init_status = HAL_OK; fake_adbms_start_conversion_status = HAL_OK; fake_adbms_read_cell_status = HAL_OK; fake_apm_init_status = HAL_OK; fake_apm_sample_status = HAL_OK; fake_apm_probe_status = HAL_OK; fake_apm_i1_raw = 1234; fake_apm_vb1_raw = 18000; fake_apm_init_string = STRING_A; fake_apm_init_requested_reset = true; fake_apm_init_enabled_dividers = true; fake_adbms_wrcfgb_status = HAL_OK; fake_adbms_wrpwm_status = HAL_OK; fake_adbms_balance_verify_status = HAL_OK; fake_adbms_wrpwm_fail_after_ok = -1; fake_adbms_diag_status = HAL_OK; fake_adbms_config_mismatch_mask = 0u; fake_adbms_delay_advances_tick = false; fake_can_add_tx_status = HAL_OK; fake_can_add_tx_call_count = 0u; fake_can_fail_on_call = 0u; fake_can_advance_tick_per_tx_ms = 0u; fake_can_mutate_after_tx_count = 0u; fake_can_error = HAL_CAN_ERROR_NONE; fake_can_recover_status = HAL_OK; fake_can_notification_status = HAL_OK; fake_can_filter_status = HAL_OK; fake_can_filter_count = 0u; memset(fake_can_filter_log, 0, sizeof(fake_can_filter_log)); fake_rx_status = HAL_OK; fake_tim_base_start_status = HAL_OK; fake_tim_pwm_start_status = HAL_OK; fake_tim_ic_start_it_status = HAL_OK; fake_tim_ic_start_status = HAL_OK; fake_tim_total_capture = 1000u; fake_tim_high_capture = 500u; memset(&fake_rx_hdr, 0, sizeof(fake_rx_hdr)); memset(fake_rx_data, 0, sizeof(fake_rx_data)); bms_pin_state = GPIO_PIN_RESET; }
 
 static void host_mark_updated_cells(app_data_t *d)
 {
@@ -1093,6 +1141,58 @@ static void test_adbms_voltage_scan_timing_contract(void)
     CHECK(fake_adbms_delay_values_us[1] ==
           ADBMS6830_REDUNDANT_CONVERSION_WAIT_US);
     CHECK(fake_adbms_delay_values_us[1] > 16000u);
+
+    /* A past absolute deadline must never rewind the host clock. The previous
+     * fake did so and hid production deadline overruns. Preserve wraparound
+     * behavior while advancing only to a genuinely future tick. */
+    fake_tick = 500u;
+    CHECK(osDelayUntil(400u) == osOK);
+    CHECK(fake_tick == 500u);
+    fake_tick = UINT32_MAX - 5u;
+    CHECK(osDelayUntil(4u) == osOK);
+    CHECK(fake_tick == 4u);
+
+    /* Non-balancing scans retain the configured 10 Hz schedule without an
+     * unconditional recovery delay. */
+    init_fake_app();
+    fill_nominal_pack(&app, 3.700f);
+    app.state = STATE_DISCARGE;
+    fake_tick = 1000u;
+    run_one_adbms_task_iteration(&app);
+    CHECK(fake_tick == 1000u + AMS_ADBMS_TASK_PERIOD_MS);
+    CHECK(app.adbms_balance_recovery_count == 0u);
+    CHECK(app.adbms_balance_active == false);
+    CHECK(app.adbms_last_schedule_interval_ms == AMS_ADBMS_TASK_PERIOD_MS);
+
+    /* Once PWM is actually selected, each subsequent scan performs the full
+     * off/recovery interval and then leaves the verified PWM command active
+     * for at least the configured minimum on-time. */
+    init_fake_app();
+    fill_nominal_pack(&app, 3.700f);
+    app.state = STATE_CHARGE;
+    app.current_valid = true;
+    app.bms_state = true;
+    app.balance_inhibit = false;
+    app.acc.smb_ics[0].cell.c_codes[0] = code_for_volts(4.100f);
+    app.acc.smb_ics[0].cell.c_codes[1] = code_for_volts(4.180f);
+    fake_tick = 2000u;
+    run_one_adbms_task_iteration(&app);
+    CHECK(app.adbms_balance_active == true);
+    CHECK(accumulator_balance_shadow_active(&app.acc));
+    uint32_t expected_first_balance_interval =
+        (AMS_ADBMS_TASK_PERIOD_MS > AMS_ADBMS_BALANCE_MIN_ON_MS) ?
+            AMS_ADBMS_TASK_PERIOD_MS : AMS_ADBMS_BALANCE_MIN_ON_MS;
+    CHECK(fake_tick == 2000u + expected_first_balance_interval);
+
+    uint32_t previous_iteration_end = fake_tick;
+    run_one_adbms_task_iteration(&app);
+    CHECK(app.adbms_balance_recovery_count == 1u);
+    CHECK(app.adbms_balance_active == true);
+	CHECK(app.adbms_last_balance_on_ms >= AMS_ADBMS_BALANCE_MIN_ON_MS);
+	CHECK(app.adbms_last_balance_off_ms >= AMS_ADBMS_BALANCE_RECOVERY_MS);
+    CHECK((uint32_t)(fake_tick - previous_iteration_end) >=
+          (AMS_ADBMS_BALANCE_RECOVERY_MS + AMS_ADBMS_BALANCE_MIN_ON_MS));
+    CHECK(app.adbms_last_scan_duration_ms >= AMS_ADBMS_BALANCE_RECOVERY_MS);
 }
 
 static void test_temp_stats(void){
@@ -1140,6 +1240,186 @@ static void test_can_telemetry_packets(void){
 
     tx_count=0; tx_free_level=0; fake_tick=0;
     CHECK(send_ecu_ams_status(&app.board.canbus, &app) == HAL_TIMEOUT);
+}
+
+static void test_can_telemetry_pacing_and_snapshot(void)
+{
+    static CAN_HandleTypeDef hcan;
+    init_fake_app();
+    app.board.canbus.hcan = &hcan;
+    app.state = STATE_DISCARGE;
+    fake_tick = 100u;
+    fill_nominal_pack(&app, 3.900f);
+    (void)host_publish_measurement_snapshot(
+        &app,
+        100u,
+        12.0f,
+        AMS_MEAS_VALID_VOLTAGE | AMS_MEAS_VALID_TEMPERATURE |
+        AMS_MEAS_VALID_CURRENT | AMS_MEAS_BALANCE_RECOVERED);
+
+    ams_measurement_snapshot_t frozen;
+    CHECK(ams_measurement_store_copy_latest(&app.measurement_store, &frozen));
+    can_measurement_view_t view;
+    can_measurement_view_build(&app, &frozen, &view);
+    CHECK(view.measurement_sequence == frozen.sequence);
+
+    /* Mutating the live driver state after publication must not change the
+     * values serialized for this CAN phase. */
+    app.acc.cell_voltage_mv[0][0] = 4100u;
+
+    uint32_t total_frames = 0u;
+    for(uint8_t phase = 0u; phase < CAN_TELEMETRY_PHASE_COUNT; phase++)
+    {
+        tx_count = 0u;
+        tx_free_level = 3u;
+        CHECK(send_ecu_compact_telemetry(&app.board.canbus,
+                                         &app,
+                                         &view,
+                                         phase) == HAL_OK);
+        CHECK(send_ecu_ams_phase(&app.board.canbus,
+                                 &app,
+                                 &view,
+                                 phase) == HAL_OK);
+        CHECK(send_logger_phase(&app.board.canbus,
+                                &app,
+                                &view,
+                                phase,
+                                7u) == HAL_OK);
+
+        uint32_t expected = (phase == 0u) ? 63u : 36u;
+        CHECK(tx_count == expected);
+        CHECK(tx_count <= 63u);
+        total_frames += tx_count;
+
+        uint32_t meta_index =
+            HOST_ECU_COMPACT_FRAME_COUNT +
+            ((phase == 0u) ? HOST_ECU_PHASE0_FRAME_COUNT : 11u);
+        CHECK(tx_log[meta_index].stdid == AMS_LOGGER_CAN_ID_SNAPSHOT_META);
+        CHECK(tx_log[meta_index].data[1] == 7u);
+        CHECK(tx_log[meta_index].data[2] == phase);
+        CHECK(tx_log[meta_index].data[3] == CAN_TELEMETRY_PHASE_COUNT);
+        uint32_t meta_sequence =
+            ((uint32_t)tx_log[meta_index].data[4] << 24u) |
+            ((uint32_t)tx_log[meta_index].data[5] << 16u) |
+            ((uint32_t)tx_log[meta_index].data[6] << 8u) |
+            (uint32_t)tx_log[meta_index].data[7];
+        CHECK(meta_sequence == frozen.sequence);
+
+        for(uint32_t frame = meta_index + 1u; frame < tx_count; frame++)
+        {
+            if((tx_log[frame].stdid == AMS_LOGGER_CAN_ID_CELL_DETAIL) ||
+               (tx_log[frame].stdid == AMS_LOGGER_CAN_ID_TEMP_DETAIL))
+            {
+                CHECK(tx_log[frame].data[0] == phase);
+            }
+        }
+
+        if(phase == 0u)
+        {
+            /* Compact electrical is frame 1. The phase-0 legacy voltage
+             * starts after four compact + three legacy status frames. */
+            CHECK(word_at(1u, 0u) == 2925u);
+            CHECK(word_at(11u, 1u) == frozen.cell_mv[0][0]);
+            CHECK(word_at(11u, 1u) != 4100u);
+        }
+    }
+
+    CHECK(total_frames == 207u);
+
+    /* Mutate live thermal/fan state after the first compact frame.  The
+     * thermal frame later in the same four-frame bundle must still contain
+     * the values captured before transmission began. */
+    for(uint8_t fan = 0u; fan < NFANS; fan++)
+    {
+        app.board.fans[fan].duty_cycle = 10.0f;
+    }
+    app.temp_warning = false;
+    app.temp_fan_max = false;
+    app.temp_charge_stop = false;
+    app.temp_overtemp_pending = false;
+    app.overtemp_fault = false;
+    app.severe_overtemp_fault = false;
+    app.fan_fault = false;
+    app.temp_read_fault = false;
+    tx_count = 0u;
+    fake_can_add_tx_call_count = 0u;
+    fake_can_mutate_after_tx_count = 1u;
+    CHECK(send_ecu_compact_telemetry(&app.board.canbus,
+                                     &app,
+                                     &view,
+                                     9u) == HAL_OK);
+    CHECK(tx_count == HOST_ECU_COMPACT_FRAME_COUNT);
+    CHECK(tx_log[2].stdid == AMS_ECU_CAN_ID_THERMAL);
+    CHECK(tx_log[2].data[6] == 10u);
+    CHECK(tx_log[2].data[7] == 0u);
+    CHECK(app.temp_warning == true);
+    CHECK(app.board.fans[0].duty_cycle == 100.0f);
+    fake_can_mutate_after_tx_count = 0u;
+}
+
+static void test_can_priority_metrics_and_deadlines(void)
+{
+    static CAN_HandleTypeDef hcan;
+
+    /* A failed critical shutdown frame must not be mislabeled as a failed
+     * compact bundle when all four compact frames and detail traffic succeed. */
+    init_fake_app();
+    fill_nominal_pack(&app, 3.700f);
+    app.board.canbus.hcan = &hcan;
+    app.state = STATE_DISCARGE;
+    app.board.charger.shutdown_pending = true;
+    app.board.charger.shutdown_frames_remaining = 2u;
+    app.board.charger.shutdown_request_count = 1u;
+    tx_count = 0u;
+    tx_free_level = 3u;
+    fake_can_fail_on_call = 1u;
+    run_one_canbus_task_iteration(&app);
+    CHECK(app.can_tx_critical_attempt_count == 1u);
+    CHECK(app.can_tx_critical_fail_count == 1u);
+    CHECK(app.can_tx_compact_bundle_count == 1u);
+    CHECK(app.can_tx_compact_bundle_fail_count == 0u);
+    CHECK(app.can_tx_detail_phase_count == 1u);
+    CHECK(app.can_tx_detail_phase_fail_count == 0u);
+    CHECK(app.can_tx_detail_suppressed_count == 0u);
+    CHECK(app.can_task_cycle_count == 1u);
+    CHECK(tx_count > HOST_ECU_COMPACT_FRAME_COUNT);
+
+    /* Compact-heartbeat congestion suppresses best-effort detail traffic and
+     * is counted independently. */
+    init_fake_app();
+    fill_nominal_pack(&app, 3.700f);
+    app.board.canbus.hcan = &hcan;
+    app.state = STATE_DISCARGE;
+    fake_can_add_tx_status = HAL_ERROR;
+    tx_count = 0u;
+    tx_free_level = 3u;
+    run_one_canbus_task_iteration(&app);
+    CHECK(app.can_tx_compact_bundle_count == 1u);
+    CHECK(app.can_tx_compact_bundle_fail_count == 1u);
+    CHECK(app.can_tx_detail_phase_count == 0u);
+    CHECK(app.can_tx_detail_suppressed_count == 1u);
+    CHECK(app.can_task_cycle_count == 1u);
+
+    /* Successful sends can still overrun the 100 ms task budget.  Advance the
+     * fake clock per transmitted frame to prove explicit deadline accounting. */
+    init_fake_app();
+    fill_nominal_pack(&app, 3.700f);
+    app.board.canbus.hcan = &hcan;
+    app.state = STATE_DISCARGE;
+    fake_tick = 500u;
+    fake_can_advance_tick_per_tx_ms = 2u;
+    tx_count = 0u;
+    tx_free_level = 3u;
+    run_one_canbus_task_iteration(&app);
+    CHECK(app.can_task_cycle_count == 1u);
+    CHECK(app.can_task_deadline_miss_count == 1u);
+    CHECK(app.can_task_last_duration_ms > AMS_CAN_ECU_FAST_PERIOD_MS);
+    CHECK(app.can_task_max_duration_ms == app.can_task_last_duration_ms);
+
+    sil_prepare_cli_capture();
+    CHECK(get_can_diag(0, NULL) == 0);
+    CHECK(strstr(cli_capture, "CAN TX attempts/fail") != NULL);
+    CHECK(strstr(cli_capture, "deadline_miss:1") != NULL);
 }
 
 static void test_logger_can_contract_packets(void){
@@ -1403,6 +1683,67 @@ static void fill_nominal_pack(app_data_t *d, float base_v){
     d->max_temp = d->acc.max_temp;
     d->avg_temp = d->acc.avg_temp;
     sil_publish_temp_state(d);
+}
+
+static uint32_t host_publish_measurement_snapshot(app_data_t *d,
+                                                  uint32_t voltage_tick,
+                                                  float current_A,
+                                                  uint32_t validity_flags)
+{
+    CHECK(d != NULL);
+
+    ams_measurement_snapshot_t previous;
+    bool have_previous =
+        ams_measurement_store_copy_latest(&d->measurement_store, &previous);
+    uint32_t interval_ms = have_previous ?
+        (uint32_t)(voltage_tick - previous.voltage_complete_tick) : 100u;
+
+    ams_current_window_t current = {0};
+    current.start_tick = voltage_tick - interval_ms;
+    current.end_tick = voltage_tick;
+    current.latest_sample_tick = voltage_tick;
+    current.sample_count =
+        ((validity_flags & AMS_MEAS_VALID_CURRENT) != 0u) ? 5u : 0u;
+    current.invalid_sample_count =
+        ((validity_flags & AMS_MEAS_VALID_CURRENT) != 0u) ? 0u : 1u;
+    current.latest_A = current_A;
+    current.filtered_A = current_A;
+    current.average_A = current_A;
+    current.rms_A = fabsf(current_A);
+    current.min_A = current_A;
+    current.max_A = current_A;
+    current.charge_As =
+        ((validity_flags & AMS_MEAS_VALID_CURRENT) != 0u) ?
+        ((double)current_A * ((double)interval_ms / 1000.0)) : 0.0;
+    current.absolute_charge_As = fabs(current.charge_As);
+    current.total_charge_As =
+        (have_previous ? previous.current.total_charge_As : 0.0) +
+        current.charge_As;
+    current.total_absolute_charge_As =
+        (have_previous ? previous.current.total_absolute_charge_As : 0.0) +
+        current.absolute_charge_As;
+    current.total_invalid_sample_count =
+        (have_previous ? previous.current.total_invalid_sample_count : 0u) +
+        current.invalid_sample_count;
+    current.valid = ((validity_flags & AMS_MEAS_VALID_CURRENT) != 0u);
+
+    uint16_t balance_masks[NSMBS] = {0};
+    ams_measurement_snapshot_t *snapshot =
+        ams_measurement_store_begin_write(&d->measurement_store);
+    CHECK(snapshot != NULL);
+    ams_measurement_snapshot_prepare(snapshot,
+                                     &d->acc,
+                                     &current,
+                                     voltage_tick - interval_ms,
+                                     voltage_tick,
+                                     voltage_tick,
+                                     balance_masks,
+                                     0u,
+                                     validity_flags);
+    uint32_t sequence =
+        ams_measurement_store_publish(&d->measurement_store, snapshot);
+    CHECK(sequence != 0u);
+    return sequence;
 }
 
 static ADC_HandleTypeDef sil_adc_high;
@@ -3590,8 +3931,9 @@ static void test_voltage_stats_boundaries_and_fuzz(void){
     }
     host_mark_updated_cells(&app);
     accumulator_update_voltage_stats(&app.acc);
-    CHECK(app.acc.valid_voltage_count == 15u);
-    CHECK(app.acc.min_volt > 3.49f && app.acc.max_volt < 3.52f);
+    CHECK(app.acc.valid_voltage_count == 30u);
+    CHECK(fabsf(app.acc.min_volt - 1.500f) < 0.002f);
+    CHECK(app.acc.max_volt > 3.49f && app.acc.max_volt < 3.52f);
 
     init_fake_app();
     app.acc.smb.num_ics = NSMBS;
@@ -3616,7 +3958,7 @@ static void test_voltage_stats_boundaries_and_fuzz(void){
             }
             app.acc.smb_ics[ic].cell.c_codes[c] = code;
             float v = convert_adc_to_volt(code);
-            if(code != 0 && code != INT16_MIN && v >= 0.5f && v <= 5.0f){
+            if(code != INT16_MIN && v >= 0.5f && v <= 5.0f){
                 if(v < expected_min) expected_min = v;
                 if(v > expected_max) expected_max = v;
                 expected_total += v;
@@ -3646,6 +3988,21 @@ static void test_voltage_fault_policy_and_strict_scan_freshness(void){
     CHECK(app.voltage_fault_state.voltage_valid == true);
     CHECK(app.voltage_fault_state.read_fault == false);
     CHECK(app.voltage_fault_state.reason == VOLTAGE_FAULT_REASON_NONE);
+
+    /* ADBMS code zero is 1.500 V. It is a valid, severe-UV measurement,
+     * not stale/reset data, and must enter the latched voltage-fault path. */
+    init_fake_app(); fill_nominal_pack(&app, 3.700f);
+    app.acc.smb_ics[0].cell.c_codes[0] = 0;
+    host_mark_updated_cells(&app);
+    accumulator_update_voltage_stats_at(&app.acc, 0u);
+    voltage_fault_update(&app.voltage_fault_state, &app.acc);
+    CHECK(app.acc.cell_voltage_mv[0][0] == 1500u);
+    CHECK(app.acc.voltage_full_updated == true);
+    CHECK(app.acc.voltage_full_usable == true);
+    CHECK(app.voltage_fault_state.voltage_valid == true);
+    CHECK(app.voltage_fault_state.undervoltage_fault == true);
+    CHECK(app.voltage_fault_state.latched == true);
+    CHECK(app.voltage_fault_state.reason == VOLTAGE_FAULT_REASON_UV_SEVERE);
 
     /* One noisy/PEC-failed group remains visible in telemetry but fails closed immediately. */
     fake_tick = 1000u;
@@ -4262,7 +4619,9 @@ static void test_system_sil_bench_adbms_write_failures_and_recovery(void)
     sil_set_cell_voltage(&app, 0u, 0u, 4.100f);
     sil_set_cell_voltage(&app, 0u, 1u, 4.180f);
     fake_adbms_voltage_masks_full_update();
-    fake_adbms_wrpwm_fail_after_ok = 1;
+    /* The scheduler no longer performs a redundant all-off write before a
+     * non-balancing scan, so fail the first PWM write in the apply operation. */
+    fake_adbms_wrpwm_fail_after_ok = 0;
     sil_run_voltage_sample(&app);
     CHECK(app.bms_state == false);
     CHECK(app.adbms_diag_fault == true);
@@ -5472,6 +5831,48 @@ static void test_system_sil_cli_can_diagnostic_consistency(void)
     CHECK(strstr(cli_capture, "valid:0") != NULL);
     CHECK(strstr(cli_capture, "reason:adc_read") != NULL || strstr(cli_capture, "sensor_adc_read") != NULL);
     CHECK(strstr(cli_capture, "ADC map L:PC0 ADC2_IN10 50A H:PA3 ADC1_IN3 800A") != NULL);
+}
+
+static void test_current_service_calibration_boundary(void)
+{
+    init_fake_app();
+    app.board.current_sensor.zero_calibrated = true;
+    app.board.current_sensor.zero_offset_50a = 1.0f;
+    app.board.current_sensor.zero_offset_800a = 2.0f;
+    app.bms_output_inhibit = false;
+    app.bms_state = true;
+    app.state = STATE_DISCARGE;
+    char *clear_args[] = {"current", "zero", "clear", NULL};
+
+    sil_prepare_cli_capture();
+    CHECK(get_current(3, clear_args) == 0);
+    CHECK(strstr(cli_capture, "refused") != NULL);
+    CHECK(app.board.current_sensor.zero_calibrated == true);
+
+    app.bms_output_inhibit = true;
+    app.bms_state = false;
+    app.state = STATE_START;
+    ams_current_window_init(&app.current_window, fake_tick);
+    ams_current_window_update(&app.current_window,
+                              fake_tick,
+                              0.0f,
+                              0.0f,
+                              true,
+                              true,
+                              91u);
+    app.current_valid = true;
+    app.current_meas_reason = CURRENT_SENSOR_REASON_OK;
+
+    sil_prepare_cli_capture();
+    CHECK(get_current(3, clear_args) == 0);
+    CHECK(strstr(cli_capture, "cleared") != NULL);
+    CHECK(app.board.current_sensor.zero_calibrated == false);
+    CHECK(app.board.current_sensor.current_valid == false);
+    CHECK(app.current_valid == false);
+    CHECK(app.current_meas_reason ==
+          CURRENT_SENSOR_REASON_CALIBRATION_CHANGED);
+    CHECK(app.current_window.active.invalid_sample_count == 1u);
+    CHECK(app.current_window.last_sample_valid == false);
 }
 
 static void test_cli_numeric_and_telemetry_conversion_guards(void)
@@ -7398,6 +7799,185 @@ static float estimator_expected_voltage(const ams_ekf_config_t *cfg, float soc, 
     return (float)cfg->series_group_count * (ams_p42a_ocv_v(soc, temp_C) - (r0_ohm * i_cell));
 }
 
+static void test_measurement_epoch_contract(void)
+{
+    ams_current_window_accumulator_t current_acc;
+    ams_current_window_t completed;
+
+    ams_current_window_init(&current_acc, 0u);
+    ams_current_window_update(&current_acc,
+                              10u,
+                              10.0f,
+                              9.0f,
+                              true,
+                              true,
+                              42u);
+    ams_current_window_update(&current_acc,
+                              30u,
+                              20.0f,
+                              19.0f,
+                              true,
+                              true,
+                              42u);
+    CHECK(ams_current_window_rotate(&current_acc, 50u, &completed));
+    CHECK(completed.valid);
+    CHECK(completed.sample_count == 2u);
+    CHECK(completed.invalid_sample_count == 0u);
+    CHECK(fabs(completed.charge_As - 0.8) < 1.0e-9);
+    CHECK(fabs(completed.total_charge_As - 0.8) < 1.0e-9);
+    CHECK(fabsf(completed.average_A - 16.0f) < 1.0e-5f);
+    CHECK(fabsf(completed.latest_A - 20.0f) < 1.0e-5f);
+    CHECK(fabsf(completed.filtered_A - 19.0f) < 1.0e-5f);
+    CHECK(completed.calibration_record_confident);
+    CHECK(completed.calibration_id == 42u);
+
+    /* The held sample from the previous boundary used record 42. A new
+     * record inside this epoch must reject resistance-SoH confidence without
+     * invalidating otherwise coherent current integration. */
+    ams_current_window_update(&current_acc,
+                              70u,
+                              20.0f,
+                              20.0f,
+                              true,
+                              true,
+                              43u);
+    CHECK(ams_current_window_rotate(&current_acc, 100u, &completed));
+    CHECK(fabs(completed.charge_As - 1.0) < 1.0e-9);
+    CHECK(fabs(completed.total_charge_As - 1.8) < 1.0e-9);
+    CHECK(!completed.calibration_record_confident);
+    CHECK(completed.calibration_id == 0u);
+
+    ams_current_window_update(&current_acc,
+                              110u,
+                              NAN,
+                              NAN,
+                              false,
+                              false,
+                              0u);
+    CHECK(!ams_current_window_rotate(&current_acc, 120u, &completed));
+    CHECK(completed.invalid_sample_count > 0u);
+    CHECK(completed.total_invalid_sample_count > 0u);
+
+    /* Tick arithmetic remains valid across the 32-bit RTOS tick wrap. */
+    ams_current_window_init(&current_acc, UINT32_MAX - 20u);
+    ams_current_window_update(&current_acc,
+                              UINT32_MAX - 10u,
+                              4.0f,
+                              4.0f,
+                              true,
+                              true,
+                              7u);
+    ams_current_window_update(&current_acc,
+                              5u,
+                              4.0f,
+                              4.0f,
+                              true,
+                              true,
+                              7u);
+    CHECK(ams_current_window_rotate(&current_acc, 20u, &completed));
+    CHECK(fabs(completed.charge_As - 0.164) < 1.0e-9);
+
+    /* Current-window sequences use the same nonzero rollover convention as
+     * published measurement epochs. */
+    ams_current_window_init(&current_acc, 0u);
+    current_acc.next_sequence = UINT32_MAX - 1u;
+    ams_current_window_update(&current_acc,
+                              10u,
+                              1.0f,
+                              1.0f,
+                              true,
+                              true,
+                              9u);
+    CHECK(ams_current_window_rotate(&current_acc, 20u, &completed));
+    CHECK(completed.sequence == UINT32_MAX);
+    ams_current_window_update(&current_acc,
+                              30u,
+                              1.0f,
+                              1.0f,
+                              true,
+                              true,
+                              9u);
+    CHECK(ams_current_window_rotate(&current_acc, 40u, &completed));
+    CHECK(completed.sequence == 1u);
+
+    ams_measurement_store_t store;
+    ams_measurement_store_init(&store);
+    ams_measurement_snapshot_t *write =
+        ams_measurement_store_begin_write(&store);
+    CHECK(write != NULL);
+    ams_measurement_snapshot_prepare(write,
+                                     NULL,
+                                     &completed,
+                                     1u,
+                                     2u,
+                                     3u,
+                                     NULL,
+                                     0u,
+                                     AMS_MEAS_VALID_CURRENT);
+    CHECK(ams_measurement_store_publish(&store, write) == 1u);
+    ams_measurement_snapshot_t copied;
+    CHECK(ams_measurement_store_copy_latest(&store, &copied));
+    CHECK(copied.sequence == 1u);
+    CHECK(copied.voltage_complete_tick == 2u);
+    CHECK(copied.current.total_invalid_sample_count ==
+          completed.total_invalid_sample_count);
+    CHECK(store.reader_count[0] == 0u);
+    CHECK(store.reader_count[1] == 0u);
+
+    /* A pinned inactive buffer is never overwritten.  The producer drops one
+     * publication attempt and can resume once that reader releases it. */
+    uint8_t inactive = (uint8_t)(store.published_index ^ 1u);
+    store.reader_count[inactive] = 1u;
+    CHECK(ams_measurement_store_begin_write(&store) == NULL);
+    CHECK(store.publication_drop_count == 1u);
+    store.reader_count[inactive] = 0u;
+    write = ams_measurement_store_begin_write(&store);
+    CHECK(write == &store.buffer[inactive]);
+    ams_measurement_snapshot_prepare(write,
+                                     NULL,
+                                     &completed,
+                                     4u,
+                                     5u,
+                                     6u,
+                                     NULL,
+                                     0u,
+                                     AMS_MEAS_VALID_CURRENT);
+    CHECK(ams_measurement_store_publish(&store, write) == 3u);
+    CHECK(ams_measurement_store_copy_latest(&store, &copied));
+    CHECK(copied.sequence == 3u);
+    CHECK(copied.voltage_complete_tick == 5u);
+
+    /* Sequence zero is reserved for "never published". Rollover skips it
+     * while preserving a visible forward epoch on the next publication. */
+    ams_measurement_store_t wrap_store;
+    ams_measurement_store_init(&wrap_store);
+    wrap_store.next_sequence = UINT32_MAX - 1u;
+    write = ams_measurement_store_begin_write(&wrap_store);
+    CHECK(write != NULL);
+    ams_measurement_snapshot_prepare(write,
+                                     NULL,
+                                     &completed,
+                                     10u,
+                                     11u,
+                                     12u,
+                                     NULL,
+                                     0u,
+                                     AMS_MEAS_VALID_CURRENT);
+    CHECK(ams_measurement_store_publish(&wrap_store, write) == UINT32_MAX);
+    write = ams_measurement_store_begin_write(&wrap_store);
+    CHECK(write != NULL);
+    ams_measurement_snapshot_prepare(write,
+                                     NULL,
+                                     &completed,
+                                     13u,
+                                     14u,
+                                     15u,
+                                     NULL,
+                                     0u,
+                                     AMS_MEAS_VALID_CURRENT);
+    CHECK(ams_measurement_store_publish(&wrap_store, write) == 1u);
+}
+
 static void test_estimator_ra8m1_architecture_parity(void){
     /*
      * This guards the intended match to the working RA8M1 physics-only DAEKF:
@@ -7418,6 +7998,12 @@ static void test_estimator_ra8m1_architecture_parity(void){
     ams_ekf_instance_t ekf;
     ams_ekf_init(&ekf, &cfg);
     CHECK(fabsf(ekf.r0_ohm - 0.040f) < 1.0e-7f);
+
+    ams_estimator_t estimator;
+    ams_estimator_init_default(&estimator);
+    estimator.cc_step_count = UINT32_MAX;
+    CHECK(ams_estimator_cc_apply_charge(&estimator, 1.0));
+    CHECK(estimator.cc_step_count == UINT32_MAX);
 
     cfg.r0_init_ohm = 0.0147f;
     cfg.soc_init = 1.0f;
@@ -7458,7 +8044,9 @@ static void test_estimator_lut_and_config_matrix(void){
     CHECK(est.inst[0].cfg.first_series_group == 0u);
     CHECK(est.inst[0].cfg.series_group_count == 75u);
 
+    est.fault_flags = AMS_EKF_FAULT_BAD_TEMP;
     CHECK(ams_estimator_configure_segments(&est));
+    CHECK(est.fault_flags == AMS_EKF_FAULT_NONE);
     CHECK(est.instance_count == 5u);
     for(uint8_t i=0; i<5u; i++){
         CHECK(est.inst[i].cfg.first_series_group == (uint16_t)(15u * i));
@@ -7540,9 +8128,125 @@ static void test_estimator_step_faults_and_scalability(void){
     ams_estimator_refresh_summary(&est, AMS_ESTIMATOR_INPUT_HARDWARE, 999u);
     CHECK((est.fault_flags & AMS_EKF_FAULT_BAD_TEMP) != 0u);
     CHECK(est.pack_soc > 0.50f && est.pack_soc < 0.60f);
-    CHECK(est.pack_r0_ohm > 0.010f && est.pack_r0_ohm < 0.020f);
+    CHECK(est.representative_cell_r0_ohm > 0.010f &&
+          est.representative_cell_r0_ohm < 0.020f);
+    CHECK(fabsf(est.pack_r0_ohm - est.representative_cell_r0_ohm) < 1.0e-8f);
+    CHECK(fabsf(est.estimated_pack_r0_ohm -
+                (est.representative_cell_r0_ohm * 75.0f / 6.0f)) < 1.0e-6f);
     CHECK(fabsf(est.pack_v_pred_V - 277.5f) < 0.5f);
     CHECK(est.pack_innovation_V > 4.0f && est.pack_innovation_V < 5.0f);
+}
+
+static void test_estimator_epoch_sequence_and_timing(void)
+{
+    init_fake_app();
+    fake_tick = 100u;
+    fill_nominal_pack(&app, 3.90f);
+    ams_estimator_init_default(&app.estimator);
+
+    const uint32_t good_flags =
+        AMS_MEAS_VALID_VOLTAGE | AMS_MEAS_VALID_TEMPERATURE |
+        AMS_MEAS_VALID_CURRENT | AMS_MEAS_BALANCE_RECOVERED;
+    (void)host_publish_measurement_snapshot(&app, 100u, 10.0f, good_flags);
+    CHECK(estimator_task_update(&app, 100u, 0.1f));
+    CHECK(app.estimator.inst[0].step_count == 1u);
+    CHECK(app.estimator.last_consumed_measurement_sequence == 1u);
+    float cc_after_first = app.estimator.cc_soc;
+
+    CHECK(estimator_task_update(&app, 150u, 0.05f));
+    CHECK(app.estimator.inst[0].step_count == 1u);
+    CHECK(app.estimator.cc_soc == cc_after_first);
+    CHECK(app.estimator.repeated_measurement_count == 1u);
+
+    uint32_t steps_before_stale = app.estimator.inst[0].step_count;
+    CHECK(!estimator_task_update(&app, 601u, 0.1f));
+    CHECK(app.estimator.inst[0].step_count == steps_before_stale);
+    CHECK((app.estimator.fault_flags & AMS_EKF_FAULT_STALE_INPUT) != 0u);
+
+    /* Reinitialize after the deliberate stale-time jump so the remainder of
+     * this deterministic sequence keeps monotonic test time. */
+    init_fake_app();
+    fake_tick = 100u;
+    fill_nominal_pack(&app, 3.90f);
+    ams_estimator_init_default(&app.estimator);
+    (void)host_publish_measurement_snapshot(&app, 100u, 10.0f, good_flags);
+    CHECK(estimator_task_update(&app, 100u, 0.1f));
+
+    (void)host_publish_measurement_snapshot(&app, 200u, 20.0f, good_flags);
+    (void)host_publish_measurement_snapshot(&app, 300u, 30.0f, good_flags);
+    CHECK(estimator_task_update(&app, 300u, 0.1f));
+    CHECK(app.estimator.missed_measurement_count == 1u);
+    CHECK(app.estimator.inst[0].step_count == 2u);
+    CHECK(fabsf(app.estimator.inst[0].last_i_pack_A - 25.0f) < 1.0e-4f);
+
+    uint32_t steps_before_bad_time = app.estimator.inst[0].step_count;
+    (void)host_publish_measurement_snapshot(&app, 300u, 30.0f, good_flags);
+    CHECK(!estimator_task_update(&app, 301u, 0.1f));
+    CHECK(app.estimator.inst[0].step_count == steps_before_bad_time);
+    CHECK(app.estimator.epoch_timing_fault_count == 1u);
+    CHECK((app.estimator.fault_flags & AMS_EKF_FAULT_EPOCH_TIMING) != 0u);
+
+    /* An invalid skipped current interval cannot be hidden by a later valid
+     * window and then retroactively integrated into coulomb count. */
+    init_fake_app();
+    fake_tick = 100u;
+    fill_nominal_pack(&app, 3.90f);
+    ams_estimator_init_default(&app.estimator);
+    (void)host_publish_measurement_snapshot(&app, 100u, 10.0f, good_flags);
+    CHECK(estimator_task_update(&app, 100u, 0.1f));
+    uint32_t steps_before_gap = app.estimator.inst[0].step_count;
+    float cc_before_gap = app.estimator.cc_soc;
+    (void)host_publish_measurement_snapshot(
+        &app,
+        200u,
+        0.0f,
+        AMS_MEAS_VALID_VOLTAGE | AMS_MEAS_VALID_TEMPERATURE |
+        AMS_MEAS_BALANCE_RECOVERED);
+    (void)host_publish_measurement_snapshot(&app, 300u, 10.0f, good_flags);
+    CHECK(!estimator_task_update(&app, 300u, 0.1f));
+    CHECK(app.estimator.inst[0].step_count == steps_before_gap);
+    CHECK(app.estimator.cc_soc == cc_before_gap);
+
+    /* Voltage-epoch timing uses unsigned wrap-safe subtraction. */
+    init_fake_app();
+    fake_tick = UINT32_MAX - 49u;
+    fill_nominal_pack(&app, 3.90f);
+    ams_estimator_init_default(&app.estimator);
+    (void)host_publish_measurement_snapshot(&app,
+                                            UINT32_MAX - 49u,
+                                            0.0f,
+                                            good_flags);
+    CHECK(estimator_task_update(&app, UINT32_MAX - 49u, 0.1f));
+    (void)host_publish_measurement_snapshot(&app, 50u, 0.0f, good_flags);
+    CHECK(estimator_task_update(&app, 50u, 0.1f));
+    CHECK(app.estimator.epoch_timing_fault_count == 0u);
+}
+
+static void test_estimator_model_domain_flags(void)
+{
+    ams_estimator_t est;
+    ams_estimator_init_default(&est);
+    ams_ekf_instance_t *inst = &est.inst[0];
+    inst->t_core_C = 0.0f;
+    float v_low = estimator_expected_voltage(&inst->cfg,
+                                             inst->soc,
+                                             0.0f,
+                                             5.0f,
+                                             inst->r0_ohm);
+    CHECK(ams_ekf_step(inst, 0.0f, v_low, 0.0f, 0.1f));
+    ams_estimator_refresh_summary(&est, AMS_ESTIMATOR_INPUT_HARDWARE, 1u);
+    CHECK((est.model_domain_flags & AMS_EKF_MODEL_DOMAIN_TEMP_LOW) != 0u);
+    CHECK((ams_estimator_status_flags(&est) & AMS_EKF_FLAG_MODEL_CLAMPED) != 0u);
+
+    inst->t_core_C = 45.0f;
+    float v_high = estimator_expected_voltage(&inst->cfg,
+                                              inst->soc,
+                                              0.0f,
+                                              40.0f,
+                                              inst->r0_ohm);
+    CHECK(ams_ekf_step(inst, 0.0f, v_high, 45.0f, 0.1f));
+    ams_estimator_refresh_summary(&est, AMS_ESTIMATOR_INPUT_HARDWARE, 2u);
+    CHECK((est.model_domain_flags & AMS_EKF_MODEL_DOMAIN_TEMP_HIGH) != 0u);
 }
 
 static void test_hil_parser_edge_cases(void){
@@ -7586,14 +8290,26 @@ static void test_hil_parser_edge_cases(void){
 
 static void test_estimator_task_hil_and_hardware_paths(void){
     static CAN_HandleTypeDef hcan;
-    init_fake_app(); fill_nominal_pack(&app, 3.90f); app.board.canbus.hcan = &hcan;
+
+    init_fake_app(); fake_tick = 100u; fill_nominal_pack(&app, 3.90f); app.board.canbus.hcan = &hcan;
     sil_make_measurement_gates_ready(&app);
-    app.current = 0.0f; app.avg_temp = 25.0f; fake_tick = 100u;
+    app.current = 0.0f; app.avg_temp = 25.0f;
+    (void)host_publish_measurement_snapshot(
+        &app,
+        fake_tick,
+        0.0f,
+        AMS_MEAS_VALID_VOLTAGE | AMS_MEAS_VALID_TEMPERATURE |
+        AMS_MEAS_VALID_CURRENT | AMS_MEAS_BALANCE_RECOVERED);
     run_one_estimator_task_iteration(&app);
     CHECK(app.estimator.input_source == AMS_ESTIMATOR_INPUT_HARDWARE);
     CHECK(app.estimator.inst[0].valid == 1u);
     CHECK(app.estimator_fault == false);
     CHECK(app.estimator.pack_soc >= 0.0f && app.estimator.pack_soc <= 1.0f);
+    CHECK(app.estimator.resistance_soh[0].accepted_count == 0u);
+    CHECK(app.estimator.resistance_soh[0].rejected_count == 1u);
+    CHECK(app.estimator.resistance_soh[0].reject_current_calibration_count == 1u);
+    CHECK((app.estimator.resistance_soh[0].status_flags &
+           AMS_SOH_STATUS_ADVISORY_VALID) == 0u);
 
     init_fake_app(); app.board.canbus.hcan = &hcan;
     app.hil.meas.fresh = 1u;
@@ -7606,6 +8322,32 @@ static void test_estimator_task_hil_and_hardware_paths(void){
     CHECK(app.estimator.input_source == AMS_ESTIMATOR_INPUT_HIL_CAN);
     CHECK(app.estimator.inst[0].valid == 1u);
     CHECK((ams_estimator_status_flags(&app.estimator) & AMS_EKF_FLAG_HIL_SOURCE) != 0u);
+    CHECK(app.estimator.resistance_soh[0].accepted_count == 0u);
+    CHECK(app.estimator.resistance_soh[0].reject_low_current_count == 1u);
+
+    /* A second coherent HIL epoch with known synthetic current calibration,
+     * sufficient current, and a real step may update advisory R0. */
+    app.hil.meas.counter = 1u;
+    app.hil.meas.last_rx_tick = 1200u;
+    app.hil.meas.i_pack_A = -30.0f;
+    app.estimator.inst[0].soc = 0.50f;
+    app.estimator.cc_soc = 0.50f;
+    app.hil.meas.v_pack_V = estimator_expected_voltage(
+        &app.estimator.inst[0].cfg,
+        app.estimator.inst[0].soc,
+        app.hil.meas.i_pack_A,
+        25.0f,
+        app.estimator.inst[0].r0_ohm);
+    app.hil.meas.t_surf_C = 25.0f;
+    CHECK(estimator_task_update(&app, 1200u, 0.1f));
+    CHECK(app.estimator.resistance_soh[0].accepted_count == 1u);
+    CHECK(app.estimator.resistance_soh[0].last_reject_flags == AMS_SOH_REJECT_NONE);
+
+    sil_prepare_cli_capture();
+    CHECK(get_estimator_diag(0, NULL) == 0);
+    CHECK(strstr(cli_capture, "R0-SoH ADVISORY") != NULL);
+    CHECK(strstr(cli_capture, "accepted:1") != NULL);
+    CHECK(strstr(cli_capture, "non-authoritative") != NULL);
 
     init_fake_app(); app.board.canbus.hcan = &hcan;
     app.hil.meas.fresh = 1u;
@@ -7626,11 +8368,16 @@ static void test_estimator_rejects_invalid_hardware_inputs(void)
     uint32_t steps_before;
 
     init_fake_app();
+    fake_tick = 100u;
     fill_nominal_pack(&app, 3.90f);
     sil_make_measurement_gates_ready(&app);
     app.current = 20.0f;
     app.avg_temp = 25.0f;
     ams_estimator_init_default(&app.estimator);
+    (void)host_publish_measurement_snapshot(
+        &app, 100u, 20.0f,
+        AMS_MEAS_VALID_VOLTAGE | AMS_MEAS_VALID_TEMPERATURE |
+        AMS_MEAS_VALID_CURRENT | AMS_MEAS_BALANCE_RECOVERED);
     CHECK(estimator_task_update(&app, 100u, 0.1f));
     CHECK(app.estimator.inst[0].valid == 1u);
     cc_before = app.estimator.cc_soc;
@@ -7638,6 +8385,10 @@ static void test_estimator_rejects_invalid_hardware_inputs(void)
 
     app.current_valid = false;
     app.current = 500.0f;
+    (void)host_publish_measurement_snapshot(
+        &app, 200u, 500.0f,
+        AMS_MEAS_VALID_VOLTAGE | AMS_MEAS_VALID_TEMPERATURE |
+        AMS_MEAS_BALANCE_RECOVERED);
     CHECK(!estimator_task_update(&app, 200u, 0.1f));
     CHECK(app.estimator.cc_soc == cc_before);
     CHECK(app.estimator.inst[0].step_count == steps_before);
@@ -7649,12 +8400,20 @@ static void test_estimator_rejects_invalid_hardware_inputs(void)
     app.current_valid = true;
     app.current = 20.0f;
     app.voltage_valid = false;
+    (void)host_publish_measurement_snapshot(
+        &app, 300u, 20.0f,
+        AMS_MEAS_VALID_TEMPERATURE | AMS_MEAS_VALID_CURRENT |
+        AMS_MEAS_BALANCE_RECOVERED);
     CHECK(!estimator_task_update(&app, 300u, 0.1f));
     CHECK(app.estimator.cc_soc < cc_before);
     CHECK(app.estimator.inst[0].step_count == steps_before);
 
     app.voltage_valid = true;
     app.temp_valid = false;
+    (void)host_publish_measurement_snapshot(
+        &app, 400u, 20.0f,
+        AMS_MEAS_VALID_VOLTAGE | AMS_MEAS_VALID_CURRENT |
+        AMS_MEAS_BALANCE_RECOVERED);
     CHECK(!estimator_task_update(&app, 400u, 0.1f));
     CHECK(app.estimator.inst[0].step_count == steps_before);
 
@@ -7668,11 +8427,21 @@ static void test_estimator_rejects_invalid_hardware_inputs(void)
         {
             app.acc.smb_ics[seg].temp.raw[sensor] = -1;
         }
+        app.acc.usable_temp_mask[seg] = 0u;
     }
+    (void)host_publish_measurement_snapshot(
+        &app, 500u, 20.0f,
+        AMS_MEAS_VALID_VOLTAGE | AMS_MEAS_VALID_TEMPERATURE |
+        AMS_MEAS_VALID_CURRENT | AMS_MEAS_BALANCE_RECOVERED);
     CHECK(!estimator_task_update(&app, 500u, 0.1f));
     CHECK(app.estimator.inst[0].step_count == steps_before);
 
     app.avg_temp = 25.0f;
+    fill_nominal_pack(&app, 3.90f);
+    (void)host_publish_measurement_snapshot(
+        &app, 600u, 20.0f,
+        AMS_MEAS_VALID_VOLTAGE | AMS_MEAS_VALID_TEMPERATURE |
+        AMS_MEAS_VALID_CURRENT | AMS_MEAS_BALANCE_RECOVERED);
     CHECK(estimator_task_update(&app, 600u, 0.1f));
     CHECK(app.estimator.inst[0].valid == 1u);
     CHECK(app.estimator.inst[0].step_count == (steps_before + 1u));
@@ -7870,6 +8639,8 @@ static void test_hil_adbms_image_replaces_raw_reads(void)
 #if AMS_HIL_REPLACE_ADBMS
     init_fake_app();
     fake_tick = 2000u;
+    fake_adbms_lock_depth = 0u;
+    fake_adbms_lock_max_depth = 0u;
     bms_pin_state = GPIO_PIN_RESET;
     app.state = STATE_DISCARGE;
     app.current_valid = true;
@@ -7888,7 +8659,12 @@ static void test_hil_adbms_image_replaces_raw_reads(void)
         }
     }
 
+    CHECK(fake_adbms_lock_depth == 0u);
+    CHECK(fake_adbms_lock_max_depth >= 1u);
+
     run_one_adbms_task_iteration(&app);
+
+    CHECK(fake_adbms_lock_depth == 0u);
 
     CHECK(app.voltage_valid == true);
     CHECK(app.voltage_fault == false);
@@ -8200,8 +8976,14 @@ static void test_telemetry_absent_segments_and_invalid_channels(void){
     host_mark_updated_temps(&app, (1UL << NTEMPS) - 1UL);
     accumulator_update_temp_stats_at(&app.acc, fake_tick);
     tx_count = 0; tx_free_level = 3;
-    run_one_canbus_task_iteration(&app);
-    CHECK(tx_count == HOST_NONCHARGE_CAN_FRAME_COUNT);
+    can_measurement_view_t view;
+    can_measurement_view_build(&app, NULL, &view);
+    CHECK(send_ecu_compact_telemetry(&app.board.canbus, &app, &view, 0u) == HAL_OK);
+    CHECK(send_ecu_ams_status(&app.board.canbus, &app) == HAL_OK);
+    CHECK(send_ecu_ams_voltages(&app.board.canbus, &app) == HAL_OK);
+    CHECK(send_ecu_ams_temps(&app.board.canbus, &app) == HAL_OK);
+    CHECK(send_ecu_ams_fans(&app.board.canbus, &app) == HAL_OK);
+    CHECK(tx_count == (HOST_ECU_COMPACT_FRAME_COUNT + HOST_ECU_FRAME_COUNT));
     CHECK(word_at(HOST_LEGACY_ECU_FRAME_OFFSET + 3u,1) > 3500u && word_at(HOST_LEGACY_ECU_FRAME_OFFSET + 3u,2) == 0u && word_at(HOST_LEGACY_ECU_FRAME_OFFSET + 3u,3) > 3500u);
     CHECK(word_at(HOST_LEGACY_ECU_FRAME_OFFSET + 28u + 6u + 1u,1) == ECU_TEMP_INVALID_DECI_C); // segment 1, temp sensor 3 invalid => packet 35 word0
     // Segments 2..4 are absent because num_ics=2; their voltage and temp packets must be zero-filled.
@@ -8572,6 +9354,7 @@ int main(void){
     test_system_sil_recovery_and_latch_reset_paths(); puts("PASS system SIL warning recovery/latch reset paths");
     test_system_sil_current_boundary_timing_edges(); puts("PASS system SIL current debounce boundary timing");
     test_system_sil_cli_can_diagnostic_consistency(); puts("PASS system SIL CLI/CAN diagnostic consistency");
+    test_current_service_calibration_boundary(); puts("PASS current service calibration ownership boundary");
     test_cli_numeric_and_telemetry_conversion_guards(); puts("PASS CLI numeric/telemetry conversion guards");
     test_adbms6830_diagnostic_commands_and_cli_health(); puts("PASS ADBMS6830 diagnostic commands/CLI health");
     test_adbms_periodic_diagnostics_and_safe_open_wire(); puts("PASS ADBMS6830 periodic diagnostics/safe open-wire");
@@ -8597,12 +9380,17 @@ int main(void){
     test_system_sil_temperature_hard_latch_and_reset_path(); puts("PASS system SIL temperature hard/severe latch/reset");
     test_system_sil_temperature_cli_can_diagnostics(); puts("PASS system SIL temperature CLI/CAN diagnostics");
     test_can_telemetry_packets(); puts("PASS CAN telemetry packetization");
+    test_can_telemetry_pacing_and_snapshot(); puts("PASS CAN telemetry pacing/snapshot contract");
+    test_can_priority_metrics_and_deadlines(); puts("PASS CAN priority metrics/deadline accounting");
     test_logger_can_contract_packets(); puts("PASS logger CAN contract packetization");
     test_telemetry_absent_segments_and_invalid_channels(); puts("PASS telemetry absent segments/invalid channels");
     test_charger_rx_and_tx(); puts("PASS charger RX/TX parse");
+    test_measurement_epoch_contract(); puts("PASS measurement epoch/current-window contract");
     test_estimator_ra8m1_architecture_parity(); puts("PASS estimator RA8M1 architecture parity");
     test_estimator_lut_and_config_matrix(); puts("PASS estimator LUT/config matrix");
     test_estimator_step_faults_and_scalability(); puts("PASS estimator step faults/scalability");
+    test_estimator_epoch_sequence_and_timing(); puts("PASS estimator epoch sequence/timing");
+    test_estimator_model_domain_flags(); puts("PASS estimator model-domain flags");
     test_hil_parser_edge_cases(); puts("PASS HIL parser edge cases");
     test_hil_parser_and_estimator_core(); puts("PASS HIL parser and estimator core");
     test_hil_adbms_image_replaces_raw_reads(); puts("PASS HIL ADBMS image replacement");

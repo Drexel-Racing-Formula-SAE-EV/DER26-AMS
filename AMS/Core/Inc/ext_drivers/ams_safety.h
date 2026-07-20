@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "ams_build_profile.h"
 #include "stm32f7xx_hal.h"
 
 #ifndef AMS_ENABLE_IWDG

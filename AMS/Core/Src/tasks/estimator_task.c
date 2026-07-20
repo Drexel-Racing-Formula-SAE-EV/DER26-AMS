@@ -10,7 +10,6 @@
 #include "tasks/estimator_task.h"
 
 #include "estimator/ams_soc_ekf.h"
-#include "ext_drivers/thermistor_model.h"
 
 #include <math.h>
 #include <stdint.h>
@@ -20,88 +19,43 @@ void estimator_task_fn(void *argument);
 
 #define ESTIMATOR_STACK_WORDS       AMS_STACK_ESTIMATOR_WORDS
 #define ESTIMATOR_HIL_TIMEOUT_TICKS 500U
+#define ESTIMATOR_HW_TIMEOUT_TICKS  500U
 #define ESTIMATOR_HW_MIN_TEMP_C     (-40.0f)
 #define ESTIMATOR_HW_MAX_TEMP_C     120.0f
+#define ESTIMATOR_EPOCH_MIN_DT_MS    1U
+#define ESTIMATOR_EPOCH_MAX_DT_MS    1000U
 
 static StaticTask_t estimator_task_tcb;
 static StackType_t estimator_task_stack[ESTIMATOR_STACK_WORDS];
 static TaskHandle_t estimator_task_handle = NULL;
 
-static float adc_code_to_cell_v(int16_t code)
-{
-    return ((float)code + 10000.0f) * 0.000150f;
-}
-
-static bool cell_code_valid(int16_t code, float *voltage_v)
-{
-    if ((code == 0) || (code == INT16_MIN))
-    {
-        return false;
-    }
-
-    float v = adc_code_to_cell_v(code);
-    if ((!isfinite(v)) || (v < 0.5f) || (v > 5.0f))
-    {
-        return false;
-    }
-
-    if (voltage_v != NULL)
-    {
-        *voltage_v = v;
-    }
-    return true;
-}
-
-static bool temp_raw_to_c(int16_t raw, float *temp_c)
-{
-    thermistor_result_t result = thermistor_from_adbms_raw(
-        raw, THERMISTOR_NOMINAL_VREG_V);
-
-    /* The estimator may use only values inside the characterized model range.
-     * Safety still receives conservative endpoint-clamped temperatures. */
-    if(!result.valid ||
-       !thermistor_status_is_model_valid(result.status) ||
-       !isfinite(result.temperature_c) ||
-       (result.temperature_c < ESTIMATOR_HW_MIN_TEMP_C) ||
-       (result.temperature_c > ESTIMATOR_HW_MAX_TEMP_C))
-    {
-        return false;
-    }
-
-    if(temp_c != NULL)
-    {
-        *temp_c = result.temperature_c;
-    }
-    return true;
-}
-
-static bool collect_group_voltage(const app_data_t *data,
+static bool collect_group_voltage(const ams_measurement_snapshot_t *measurement,
                                   const ams_ekf_config_t *cfg,
                                   float *v_meas_V,
                                   uint16_t *valid_count)
 {
-    if ((data == NULL) || (cfg == NULL) || (v_meas_V == NULL) || (valid_count == NULL))
+    if ((measurement == NULL) || (cfg == NULL) ||
+        (v_meas_V == NULL) || (valid_count == NULL))
     {
         return false;
     }
 
     float sum_v = 0.0f;
     uint16_t count = 0U;
-    uint8_t ic_count = accumulator_configured_smb_count(&data->acc);
-
     for (uint16_t n = 0U; n < cfg->series_group_count; n++)
     {
         uint16_t group = (uint16_t)(cfg->first_series_group + n);
         uint8_t seg = (uint8_t)(group / NCELLS);
         uint8_t cell = (uint8_t)(group % NCELLS);
 
-        if ((seg >= ic_count) || (cell >= NCELLS))
+        if ((seg >= NSMBS) || (cell >= NCELLS) ||
+            ((measurement->cell_usable_mask[seg] & (uint16_t)(1u << cell)) == 0u))
         {
             continue;
         }
 
-        float v = 0.0f;
-        if (cell_code_valid(data->acc.smb.ics[seg].cell.c_codes[cell], &v))
+        float v = (float)measurement->cell_mv[seg][cell] / 1000.0f;
+        if(isfinite(v) && (v >= 0.5f) && (v <= 5.0f))
         {
             sum_v += v;
             count++;
@@ -113,28 +67,32 @@ static bool collect_group_voltage(const app_data_t *data,
     return (count == cfg->series_group_count);
 }
 
-static bool collect_group_temp(const app_data_t *data,
+static bool collect_group_temp(const ams_measurement_snapshot_t *measurement,
                                const ams_ekf_config_t *cfg,
                                float *temp_c)
 {
-    if ((data == NULL) || (cfg == NULL) || (temp_c == NULL))
+    if ((measurement == NULL) || (cfg == NULL) || (temp_c == NULL))
     {
         return false;
     }
 
     float sum = 0.0f;
     uint16_t count = 0U;
-    uint8_t ic_count = accumulator_configured_smb_count(&data->acc);
-
     uint8_t first_seg = (uint8_t)(cfg->first_series_group / NCELLS);
     uint8_t last_seg = (uint8_t)((cfg->first_series_group + cfg->series_group_count - 1U) / NCELLS);
 
-    for (uint8_t seg = first_seg; (seg <= last_seg) && (seg < ic_count); seg++)
+    for (uint8_t seg = first_seg; (seg <= last_seg) && (seg < NSMBS); seg++)
     {
         for (uint8_t sensor = 0U; sensor < NTEMPS; sensor++)
         {
-            float t = 0.0f;
-            if (temp_raw_to_c(data->acc.smb.ics[seg].temp.raw[sensor], &t))
+            if((measurement->temp_usable_mask[seg] & (1UL << sensor)) == 0u)
+            {
+                continue;
+            }
+            float t = (float)measurement->temp_deci_c[seg][sensor] / 10.0f;
+            if(isfinite(t) &&
+               (t >= ESTIMATOR_HW_MIN_TEMP_C) &&
+               (t <= ESTIMATOR_HW_MAX_TEMP_C))
             {
                 sum += t;
                 count++;
@@ -148,31 +106,172 @@ static bool collect_group_temp(const app_data_t *data,
         return true;
     }
 
-    if (isfinite(data->avg_temp) &&
-        (data->avg_temp >= ESTIMATOR_HW_MIN_TEMP_C) &&
-        (data->avg_temp <= ESTIMATOR_HW_MAX_TEMP_C))
-    {
-        *temp_c = data->avg_temp;
-        return true;
-    }
-
     *temp_c = 25.0f;
     return false;
 }
 
-#if AMS_ENABLE_HIL_CAN
-static bool hil_meas_fresh(const app_data_t *data, uint32_t now)
+static void estimator_saturating_add(uint32_t *value, uint32_t increment)
 {
-    if (data == NULL)
+    if(value == NULL)
+    {
+        return;
+    }
+    if((UINT32_MAX - *value) < increment)
+    {
+        *value = UINT32_MAX;
+    }
+    else
+    {
+        *value += increment;
+    }
+}
+
+static uint32_t estimator_sequence_distance(uint32_t newer, uint32_t older)
+{
+    if(newer > older)
+    {
+        return newer - older;
+    }
+    if(newer < older)
+    {
+        /* Measurement sequence zero is reserved, so the wrap is
+         * UINT32_MAX -> 1 rather than UINT32_MAX -> 0. */
+        return (UINT32_MAX - older) + newer;
+    }
+    return 0u;
+}
+
+static void estimator_mark_instances_fault(ams_estimator_t *est,
+                                           uint32_t fault)
+{
+    if(est == NULL)
+    {
+        return;
+    }
+
+    for(uint8_t i = 0u;
+        (i < est->instance_count) && (i < AMS_EKF_MAX_INSTANCES);
+        i++)
+    {
+        if(est->inst[i].cfg.enabled != 0u)
+        {
+            est->inst[i].valid = 0u;
+            est->inst[i].fault_flags = fault;
+        }
+    }
+}
+
+static bool estimator_dt_from_ticks(uint32_t newer_tick,
+                                    uint32_t older_tick,
+                                    float *dt_s)
+{
+    if(dt_s == NULL)
     {
         return false;
     }
 
-    return ((data->hil.meas.fresh != 0U) &&
-            ((now - data->hil.meas.last_rx_tick) <= ESTIMATOR_HIL_TIMEOUT_TICKS) &&
-            isfinite(data->hil.meas.v_pack_V) &&
-            isfinite(data->hil.meas.i_pack_A) &&
-            isfinite(data->hil.meas.t_surf_C));
+    uint32_t dt_ms = (uint32_t)(newer_tick - older_tick);
+    if((dt_ms < ESTIMATOR_EPOCH_MIN_DT_MS) ||
+       (dt_ms > ESTIMATOR_EPOCH_MAX_DT_MS))
+    {
+        return false;
+    }
+
+    *dt_s = (float)dt_ms / 1000.0f;
+    return true;
+}
+
+static bool estimator_step_with_soh(ams_estimator_t *est,
+                                    uint8_t instance_index,
+                                    float i_pack_A,
+                                    float v_meas_V,
+                                    float t_surf_C,
+                                    float dt_s,
+                                    uint32_t measurement_sequence,
+                                    uint32_t measurement_tick,
+                                    bool epoch_coherent,
+                                    bool balance_recovered,
+                                    bool current_calibration_confident)
+{
+    if((est == NULL) || (instance_index >= est->instance_count) ||
+       (instance_index >= AMS_EKF_MAX_INSTANCES))
+    {
+        return false;
+    }
+
+    ams_ekf_instance_t *inst = &est->inst[instance_index];
+    ams_resistance_soh_t *soh = &est->resistance_soh[instance_index];
+    uint32_t reject_flags = ams_resistance_soh_gate(
+        inst,
+        i_pack_A,
+        epoch_coherent,
+        balance_recovered,
+        current_calibration_confident);
+    ams_ekf_r0_update_result_t r0_result =
+        AMS_EKF_R0_UPDATE_NOT_REQUESTED;
+    bool step_ok = ams_ekf_step_gated(inst,
+                                      i_pack_A,
+                                      v_meas_V,
+                                      t_surf_C,
+                                      dt_s,
+                                      reject_flags == AMS_SOH_REJECT_NONE,
+                                      &r0_result);
+    ams_resistance_soh_record(soh,
+                              inst,
+                              measurement_sequence,
+                              measurement_tick,
+                              current_calibration_confident,
+                              reject_flags,
+                              r0_result,
+                              step_ok);
+    return step_ok;
+}
+
+static void estimator_record_unusable_soh_epoch(
+    ams_estimator_t *est,
+    uint8_t instance_index,
+    float i_pack_A,
+    uint32_t measurement_sequence,
+    uint32_t measurement_tick,
+    bool balance_recovered,
+    bool current_calibration_confident)
+{
+    if((est == NULL) || (instance_index >= est->instance_count) ||
+       (instance_index >= AMS_EKF_MAX_INSTANCES))
+    {
+        return;
+    }
+
+    ams_ekf_instance_t *inst = &est->inst[instance_index];
+    uint32_t reject_flags = ams_resistance_soh_gate(
+        inst,
+        i_pack_A,
+        false,
+        balance_recovered,
+        current_calibration_confident);
+    ams_resistance_soh_record(&est->resistance_soh[instance_index],
+                              inst,
+                              measurement_sequence,
+                              measurement_tick,
+                              current_calibration_confident,
+                              reject_flags,
+                              AMS_EKF_R0_UPDATE_NOT_REQUESTED,
+                              false);
+}
+
+#if AMS_ENABLE_HIL_CAN
+static bool hil_meas_fresh(const ams_hil_meas_t *measurement, uint32_t now)
+{
+    if(measurement == NULL)
+    {
+        return false;
+    }
+
+    return ((measurement->fresh != 0U) &&
+            ((now - measurement->last_rx_tick) <= ESTIMATOR_HIL_TIMEOUT_TICKS) &&
+            isfinite(measurement->v_pack_V) &&
+            isfinite(measurement->i_pack_A) &&
+            isfinite(measurement->t_surf_C));
 }
 #endif
 
@@ -199,9 +298,9 @@ TaskHandle_t estimator_task_start(app_data_t *data)
 
 bool estimator_task_update(app_data_t *data, uint32_t now, float cc_dt_s)
 {
-    ams_estimator_input_source_t source = AMS_ESTIMATOR_INPUT_HARDWARE;
-    bool hardware_inputs_ready;
-
+#if !AMS_ENABLE_HIL_CAN
+    (void)cc_dt_s;
+#endif
     if ((data == NULL) || (data->estimator.enabled == 0U) ||
         (data->estimator.instance_count == 0U))
     {
@@ -209,90 +308,304 @@ bool estimator_task_update(app_data_t *data, uint32_t now, float cc_dt_s)
     }
 
 #if AMS_ENABLE_HIL_CAN
-    bool use_hil = hil_meas_fresh(data, now);
-    if (use_hil)
-    {
-        source = AMS_ESTIMATOR_INPUT_HIL_CAN;
-    }
+    ams_hil_meas_t hil_measurement;
+    taskENTER_CRITICAL();
+    hil_measurement = data->hil.meas;
+    taskEXIT_CRITICAL();
+    bool use_hil = hil_meas_fresh(&hil_measurement, now);
 #else
     const bool use_hil = false;
 #endif
 
-    hardware_inputs_ready = data->current_valid &&
-                            !data->current_sensor_fault &&
-                            data->voltage_valid &&
-                            !data->voltage_read_fault &&
-                            data->temp_valid &&
-                            !data->temp_read_fault;
-
-    /* Coulomb count may continue without a voltage/temperature correction,
-     * but never integrate a stale or invalid hardware current sample. */
-    if (use_hil)
+    if(use_hil)
     {
 #if AMS_ENABLE_HIL_CAN
-        (void)ams_estimator_cc_step(&data->estimator,
-                                    data->hil.meas.i_pack_A,
-                                    cc_dt_s);
+        bool new_hil_epoch = (data->estimator.hil_counter_seen == 0u) ||
+                             (hil_measurement.counter !=
+                              data->estimator.last_hil_counter) ||
+                             (hil_measurement.last_rx_tick !=
+                              data->estimator.last_hil_tick);
+        if(!new_hil_epoch)
+        {
+            estimator_saturating_add(
+                &data->estimator.repeated_measurement_count, 1u);
+            return !data->estimator_fault;
+        }
+
+        float dt_s = cc_dt_s;
+        bool dt_valid = true;
+        if(data->estimator.hil_counter_seen != 0u)
+        {
+            dt_valid = estimator_dt_from_ticks(hil_measurement.last_rx_tick,
+                                               data->estimator.last_hil_tick,
+                                               &dt_s);
+        }
+        else
+        {
+            if(!isfinite(dt_s) || (dt_s < 0.001f) || (dt_s > 1.0f))
+            {
+                dt_s = AMS_EKF_DEFAULT_DT_S;
+            }
+        }
+
+        data->estimator.hil_counter_seen = 1u;
+        data->estimator.last_hil_counter = hil_measurement.counter;
+        data->estimator.last_hil_tick = hil_measurement.last_rx_tick;
+
+        if(!dt_valid)
+        {
+            estimator_saturating_add(
+                &data->estimator.epoch_timing_fault_count, 1u);
+            estimator_mark_instances_fault(&data->estimator,
+                                           AMS_EKF_FAULT_EPOCH_TIMING);
+            for(uint8_t i = 0u;
+                (i < data->estimator.instance_count) &&
+                (i < AMS_EKF_MAX_INSTANCES);
+                i++)
+            {
+                if(data->estimator.inst[i].cfg.enabled != 0u)
+                {
+                    estimator_record_unusable_soh_epoch(
+                        &data->estimator,
+                        i,
+                        hil_measurement.i_pack_A,
+                        (uint32_t)hil_measurement.counter,
+                        hil_measurement.last_rx_tick,
+                        true,
+                        true);
+                }
+            }
+        }
+        else
+        {
+            (void)ams_estimator_cc_step(&data->estimator,
+                                        hil_measurement.i_pack_A,
+                                        dt_s);
+            for(uint8_t i = 0u;
+                (i < data->estimator.instance_count) &&
+                (i < AMS_EKF_MAX_INSTANCES);
+                i++)
+            {
+                ams_ekf_instance_t *inst = &data->estimator.inst[i];
+                if(inst->cfg.enabled == 0u)
+                {
+                    continue;
+                }
+
+                if((inst->cfg.first_series_group == 0u) &&
+                   (inst->cfg.series_group_count == AMS_EKF_PACK_SERIES_GROUPS))
+                {
+                    (void)estimator_step_with_soh(
+                        &data->estimator,
+                        i,
+                        hil_measurement.i_pack_A,
+                        hil_measurement.v_pack_V,
+                        hil_measurement.t_surf_C,
+                        dt_s,
+                        (uint32_t)hil_measurement.counter,
+                        hil_measurement.last_rx_tick,
+                        true,
+                        true,
+                        true);
+                    inst->last_measurement_sequence =
+                        (uint32_t)hil_measurement.counter;
+                    inst->last_voltage_tick = hil_measurement.last_rx_tick;
+                }
+                else
+                {
+                    inst->valid = 0u;
+                    inst->fault_flags = AMS_EKF_FAULT_STALE_INPUT;
+                    estimator_record_unusable_soh_epoch(
+                        &data->estimator,
+                        i,
+                        hil_measurement.i_pack_A,
+                        (uint32_t)hil_measurement.counter,
+                        hil_measurement.last_rx_tick,
+                        true,
+                        true);
+                }
+            }
+        }
+
+        ams_estimator_refresh_summary(&data->estimator,
+                                      AMS_ESTIMATOR_INPUT_HIL_CAN,
+                                      now);
+        data->estimator_fault =
+            (data->estimator.fault_flags != AMS_EKF_FAULT_NONE);
+        return !data->estimator_fault;
 #endif
     }
-    else if (data->current_valid && !data->current_sensor_fault &&
-             isfinite(data->current))
+
+    /* The estimator task is the sole caller in production. Keep the large
+     * immutable epoch copy in static task-owned RAM rather than consuming a
+     * substantial fraction of the 4 KiB estimator stack before entering the
+     * EKF call chain. */
+    static ams_measurement_snapshot_t measurement;
+    if(!ams_measurement_store_copy_latest(&data->measurement_store,
+                                          &measurement))
     {
-        (void)ams_estimator_cc_step(&data->estimator, data->current, cc_dt_s);
+        estimator_mark_instances_fault(&data->estimator,
+                                       AMS_EKF_FAULT_STALE_INPUT);
+        ams_estimator_refresh_summary(&data->estimator,
+                                      AMS_ESTIMATOR_INPUT_HARDWARE,
+                                      now);
+        data->estimator_fault = true;
+        return false;
     }
 
-    for (uint8_t i = 0U;
-         (i < data->estimator.instance_count) && (i < AMS_EKF_MAX_INSTANCES);
-         i++)
+    /* A stopped ADBMS publisher must not leave the last advisory estimate
+     * healthy forever merely because the static snapshot remains readable. */
+    if((uint32_t)(now - measurement.publication_tick) >
+       ESTIMATOR_HW_TIMEOUT_TICKS)
+    {
+        estimator_mark_instances_fault(&data->estimator,
+                                       AMS_EKF_FAULT_STALE_INPUT);
+        ams_estimator_refresh_summary(&data->estimator,
+                                      AMS_ESTIMATOR_INPUT_HARDWARE,
+                                      now);
+        data->estimator_fault = true;
+        return false;
+    }
+
+    if(measurement.sequence ==
+       data->estimator.last_consumed_measurement_sequence)
+    {
+        estimator_saturating_add(&data->estimator.repeated_measurement_count,
+                                 1u);
+        return !data->estimator_fault;
+    }
+
+    uint32_t sequence_distance = 1u;
+    if(data->estimator.last_consumed_measurement_sequence != 0u)
+    {
+        sequence_distance = estimator_sequence_distance(
+            measurement.sequence,
+            data->estimator.last_consumed_measurement_sequence);
+        if(sequence_distance > 1u)
+        {
+            estimator_saturating_add(&data->estimator.missed_measurement_count,
+                                     sequence_distance - 1u);
+        }
+    }
+
+    float dt_s = AMS_EKF_DEFAULT_DT_S;
+    bool dt_valid = true;
+    if(data->estimator.last_consumed_measurement_sequence != 0u)
+    {
+        dt_valid = estimator_dt_from_ticks(measurement.voltage_complete_tick,
+                                           data->estimator.last_voltage_tick,
+                                           &dt_s);
+    }
+
+    bool current_contiguous = measurement.current.valid;
+    double charge_delta_As = measurement.current.charge_As;
+    if(data->estimator.current_total_initialized != 0u)
+    {
+        charge_delta_As = measurement.current.total_charge_As -
+                          data->estimator.last_current_total_charge_As;
+        current_contiguous = current_contiguous &&
+            (measurement.current.total_invalid_sample_count ==
+             data->estimator.last_current_total_invalid_sample_count);
+    }
+
+    data->estimator.last_current_total_charge_As =
+        measurement.current.total_charge_As;
+    data->estimator.last_current_total_invalid_sample_count =
+        measurement.current.total_invalid_sample_count;
+    data->estimator.current_total_initialized = 1u;
+
+    bool charge_valid = current_contiguous && isfinite(charge_delta_As);
+    if(charge_valid)
+    {
+        charge_valid = ams_estimator_cc_apply_charge(&data->estimator,
+                                                     charge_delta_As);
+    }
+
+    float i_pack_A = measurement.current.average_A;
+    if((data->estimator.last_consumed_measurement_sequence != 0u) &&
+       dt_valid && isfinite(charge_delta_As))
+    {
+        i_pack_A = (float)(charge_delta_As / (double)dt_s);
+    }
+
+    bool hardware_inputs_ready =
+        ((measurement.validity_flags & AMS_MEAS_VALID_VOLTAGE) != 0u) &&
+        ((measurement.validity_flags & AMS_MEAS_VALID_TEMPERATURE) != 0u) &&
+        ((measurement.validity_flags & AMS_MEAS_VALID_CURRENT) != 0u) &&
+        ((measurement.validity_flags & AMS_MEAS_BALANCE_RECOVERED) != 0u) &&
+        dt_valid && charge_valid && isfinite(i_pack_A);
+    const bool balance_recovered =
+        ((measurement.validity_flags & AMS_MEAS_BALANCE_RECOVERED) != 0u);
+    const bool current_calibration_confident =
+        (AMS_CURRENT_POLARITY_VALIDATED != 0) &&
+        (AMS_CURRENT_CALIBRATION_VALIDATED != 0) &&
+        measurement.current.calibration_record_confident &&
+        (measurement.current.calibration_id != 0u);
+
+    if(!dt_valid)
+    {
+        estimator_saturating_add(&data->estimator.epoch_timing_fault_count, 1u);
+    }
+
+    for(uint8_t i = 0u;
+        (i < data->estimator.instance_count) && (i < AMS_EKF_MAX_INSTANCES);
+        i++)
     {
         ams_ekf_instance_t *inst = &data->estimator.inst[i];
-        float v_meas = 0.0f;
-        float i_pack = data->current;
-        float t_surf = 25.0f;
-        bool input_ok = false;
-        bool instance_uses_hil = false;
-
-        if (inst->cfg.enabled == 0U)
+        if(inst->cfg.enabled == 0u)
         {
             continue;
         }
 
-#if AMS_ENABLE_HIL_CAN
-        if (use_hil &&
-            (inst->cfg.first_series_group == 0U) &&
-            (inst->cfg.series_group_count == AMS_EKF_PACK_SERIES_GROUPS))
-        {
-            v_meas = data->hil.meas.v_pack_V;
-            i_pack = data->hil.meas.i_pack_A;
-            t_surf = data->hil.meas.t_surf_C;
-            input_ok = true;
-            instance_uses_hil = true;
-        }
-        else
-#endif
-        {
-            uint16_t valid_v = 0U;
-            bool voltage_ok = collect_group_voltage(data, &inst->cfg,
-                                                    &v_meas, &valid_v);
-            bool temp_ok = collect_group_temp(data, &inst->cfg, &t_surf);
-            input_ok = hardware_inputs_ready && voltage_ok && temp_ok &&
-                       isfinite(i_pack);
-        }
+        float v_meas_V = 0.0f;
+        float t_surf_C = 25.0f;
+        uint16_t valid_voltage_count = 0u;
+        bool voltage_ok = collect_group_voltage(&measurement,
+                                                &inst->cfg,
+                                                &v_meas_V,
+                                                &valid_voltage_count);
+        bool temp_ok = collect_group_temp(&measurement,
+                                          &inst->cfg,
+                                          &t_surf_C);
 
-        if (input_ok)
+        if(hardware_inputs_ready && voltage_ok && temp_ok)
         {
-            (void)ams_ekf_step(inst, i_pack, v_meas, t_surf,
-                               inst->cfg.sample_time_s);
+            (void)estimator_step_with_soh(
+                &data->estimator,
+                i,
+                i_pack_A,
+                v_meas_V,
+                t_surf_C,
+                dt_s,
+                measurement.sequence,
+                measurement.voltage_complete_tick,
+                true,
+                balance_recovered,
+                current_calibration_confident);
         }
         else
         {
-            inst->valid = 0U;
-            inst->fault_flags = instance_uses_hil ? AMS_EKF_FAULT_STALE_INPUT :
-                                                    AMS_EKF_FAULT_BAD_INPUT;
+            inst->valid = 0u;
+            inst->fault_flags = dt_valid ? AMS_EKF_FAULT_BAD_INPUT :
+                                           AMS_EKF_FAULT_EPOCH_TIMING;
+            estimator_record_unusable_soh_epoch(
+                &data->estimator,
+                i,
+                i_pack_A,
+                measurement.sequence,
+                measurement.voltage_complete_tick,
+                balance_recovered,
+                current_calibration_confident);
         }
+        inst->last_measurement_sequence = measurement.sequence;
+        inst->last_voltage_tick = measurement.voltage_complete_tick;
     }
 
-    ams_estimator_refresh_summary(&data->estimator, source, now);
+    data->estimator.last_consumed_measurement_sequence = measurement.sequence;
+    data->estimator.last_voltage_tick = measurement.voltage_complete_tick;
+    ams_estimator_refresh_summary(&data->estimator,
+                                  AMS_ESTIMATOR_INPUT_HARDWARE,
+                                  now);
     data->estimator_fault =
         (data->estimator.fault_flags != AMS_EKF_FAULT_NONE);
     return !data->estimator_fault;

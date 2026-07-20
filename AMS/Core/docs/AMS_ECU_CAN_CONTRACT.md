@@ -35,6 +35,13 @@ ECU consumes it as physical feedback.
 - Send rate: 10 Hz target
 - ECU freshness check: use the rolling sequence byte in frame `0x680`
 
+Firmware freezes all four compact-frame inputs before sending a bundle, so a
+mid-bundle task update cannot mix old and new thermal/fan/fault state. Only
+`0x680` currently carries the bundle sequence, however. A future SoP contract
+must carry a common sequence and source-measurement timestamp in every
+multi-frame publication; this bench contract must not be represented as that
+future authoritative SoP interface.
+
 The ECU should treat these compact frames as the high-priority AMS heartbeat. The older
 paged telemetry and logger frames may still be transmitted, but ECU torque gating should
 not require parsing those slower bulk frames.

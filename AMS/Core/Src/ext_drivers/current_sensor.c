@@ -51,6 +51,15 @@
 #define CURRENT_SENSOR_SUPPLY_MIN_V             4.5f
 #define CURRENT_SENSOR_SUPPLY_MAX_V             5.5f
 
+#define CURRENT_CAL_TEMP_MIN_DECI_C             (-400)
+#define CURRENT_CAL_TEMP_MAX_DECI_C             1200
+#define CURRENT_CAL_CONFIDENT_50A_UNCERTAINTY_MA 500u
+#define CURRENT_CAL_CONFIDENT_800A_UNCERTAINTY_MA 5000u
+
+_Static_assert(sizeof(current_sensor_calibration_record_t) ==
+               CURRENT_SENSOR_CALIBRATION_RECORD_SIZE,
+               "current calibration record layout changed");
+
 /*
  * Design-file mapping:
  * - C_SENSE_L is buffered outward to the BSPD Hall-effect sensor input.
@@ -65,6 +74,216 @@
 static bool finite_in_range(float value, float min_value, float max_value)
 {
     return isfinite(value) && (value >= min_value) && (value <= max_value);
+}
+
+static uint32_t current_cal_crc32_byte(uint32_t crc, uint8_t value)
+{
+    crc ^= value;
+    for(uint8_t bit = 0u; bit < 8u; bit++)
+    {
+        uint32_t mask = 0u - (crc & 1u);
+        crc = (crc >> 1u) ^ (0xEDB88320u & mask);
+    }
+    return crc;
+}
+
+static uint32_t current_cal_crc32_u16(uint32_t crc, uint16_t value)
+{
+    crc = current_cal_crc32_byte(crc, (uint8_t)(value & 0xFFu));
+    return current_cal_crc32_byte(crc, (uint8_t)(value >> 8u));
+}
+
+static uint32_t current_cal_crc32_u32(uint32_t crc, uint32_t value)
+{
+    for(uint8_t byte = 0u; byte < 4u; byte++)
+    {
+        crc = current_cal_crc32_byte(
+            crc, (uint8_t)(value >> (8u * byte)));
+    }
+    return crc;
+}
+
+static uint32_t current_cal_record_crc(
+    const current_sensor_calibration_record_t *record)
+{
+    if(record == NULL)
+    {
+        return 0u;
+    }
+
+    uint32_t crc = UINT32_MAX;
+    crc = current_cal_crc32_u32(crc, record->magic);
+    crc = current_cal_crc32_u16(crc, record->schema);
+    crc = current_cal_crc32_u16(crc, record->size);
+    crc = current_cal_crc32_u32(crc, record->calibration_id);
+    crc = current_cal_crc32_u32(crc, record->capture_time_s);
+    crc = current_cal_crc32_u32(crc,
+                                (uint32_t)record->zero_offset_50a_mA);
+    crc = current_cal_crc32_u32(crc,
+                                (uint32_t)record->zero_offset_800a_mA);
+    crc = current_cal_crc32_u32(crc, record->adc_vref_uV);
+    crc = current_cal_crc32_u32(crc, record->sensor_supply_uV);
+    crc = current_cal_crc32_u16(
+        crc, (uint16_t)record->calibration_temp_deci_c);
+    crc = current_cal_crc32_u16(crc, record->uncertainty_50a_mA);
+    crc = current_cal_crc32_u16(crc, record->uncertainty_800a_mA);
+    crc = current_cal_crc32_u16(crc, record->reserved);
+    return ~crc;
+}
+
+static void current_sensor_clear_calibration_provenance(current_sensor_t *dev)
+{
+    if(dev == NULL)
+    {
+        return;
+    }
+
+    dev->calibration_loaded_from_record = false;
+    dev->calibration_id = 0u;
+    dev->calibration_capture_time_s = CURRENT_SENSOR_CALIBRATION_TIME_UNKNOWN;
+    dev->calibration_temp_deci_c = 0;
+    dev->calibration_uncertainty_50a_mA =
+        CURRENT_SENSOR_CALIBRATION_UNCERTAINTY_UNKNOWN;
+    dev->calibration_uncertainty_800a_mA =
+        CURRENT_SENSOR_CALIBRATION_UNCERTAINTY_UNKNOWN;
+}
+
+static void current_sensor_mark_calibration_changed(current_sensor_t *dev)
+{
+    if(dev == NULL)
+    {
+        return;
+    }
+
+    /* A value converted under the previous references/offsets is stale even
+     * when its ADC counts are fresh. The owner must run conversion again
+     * before publishing current as valid. */
+    dev->current_valid = false;
+    dev->selected_range = CURRENT_SENSOR_RANGE_UNKNOWN;
+    dev->reason = CURRENT_SENSOR_REASON_CALIBRATION_CHANGED;
+    dev->filter_initialized = false;
+}
+
+static bool current_sensor_live_zero_for_record(
+    const current_sensor_t *dev,
+    const current_sensor_calibration_record_t *record,
+    float *live_50a_A,
+    float *live_800a_A)
+{
+    if((dev == NULL) || (record == NULL) || (live_50a_A == NULL) ||
+       (live_800a_A == NULL) || !dev->last_read_ok ||
+       !dev->count_high_fresh || !dev->count_low_fresh ||
+       (dev->count_high < CURRENT_ADC_IMPLAUS_LOW_COUNT) ||
+       (dev->count_high > CURRENT_ADC_IMPLAUS_HIGH_COUNT) ||
+       (dev->count_low < CURRENT_ADC_IMPLAUS_LOW_COUNT) ||
+       (dev->count_low > CURRENT_ADC_IMPLAUS_HIGH_COUNT))
+    {
+        return false;
+    }
+
+    float adc_vref_v = (float)record->adc_vref_uV / 1000000.0f;
+    float sensor_supply_v = (float)record->sensor_supply_uV / 1000000.0f;
+    float sensor_low_v =
+        (((float)dev->count_low * adc_vref_v) / CURRENT_ADC_MAX_COUNT) /
+        SENSOR_DIVIDER_GAIN;
+    float sensor_high_v =
+        (((float)dev->count_high * adc_vref_v) / CURRENT_ADC_MAX_COUNT) /
+        SENSOR_DIVIDER_GAIN;
+
+    if(!finite_in_range(sensor_low_v,
+                        DHAB_SENSOR_VALID_MIN_V,
+                        DHAB_SENSOR_VALID_MAX_V) ||
+       !finite_in_range(sensor_high_v,
+                        DHAB_SENSOR_VALID_MIN_V,
+                        DHAB_SENSOR_VALID_MAX_V))
+    {
+        return false;
+    }
+
+    float offset_v = sensor_supply_v * 0.5f;
+    float sensitivity_50a = DHAB_CH_50A_SENS_V_PER_A_AT_5V *
+                            (sensor_supply_v /
+                             CURRENT_SENSOR_NOMINAL_SUPPLY_V);
+    float sensitivity_800a = DHAB_CH_800A_SENS_V_PER_A_AT_5V *
+                             (sensor_supply_v /
+                              CURRENT_SENSOR_NOMINAL_SUPPLY_V);
+    if(!finite_in_range(sensitivity_50a, 0.001f, 1.0f) ||
+       !finite_in_range(sensitivity_800a, 0.0001f, 1.0f))
+    {
+        return false;
+    }
+
+#if CURRENT_SENSOR_50A_CHANNEL_IS_HIGH
+    float sensor_50a_v = sensor_high_v;
+    float sensor_800a_v = sensor_low_v;
+#else
+    float sensor_50a_v = sensor_low_v;
+    float sensor_800a_v = sensor_high_v;
+#endif
+
+    *live_50a_A = (sensor_50a_v - offset_v) / sensitivity_50a;
+    *live_800a_A = (sensor_800a_v - offset_v) / sensitivity_800a;
+    return finite_in_range(*live_50a_A,
+                           -CURRENT_ZERO_CAPTURE_MAX_50A_A,
+                           CURRENT_ZERO_CAPTURE_MAX_50A_A) &&
+           finite_in_range(*live_800a_A,
+                           -CURRENT_ZERO_CAPTURE_MAX_800A_A,
+                           CURRENT_ZERO_CAPTURE_MAX_800A_A);
+}
+
+static bool current_sensor_record_matches_live_zero(
+    const current_sensor_t *dev,
+    const current_sensor_calibration_record_t *record)
+{
+    if((dev == NULL) || (record == NULL))
+    {
+        return false;
+    }
+
+    float live_50a_A = 0.0f;
+    float live_800a_A = 0.0f;
+    if(!current_sensor_live_zero_for_record(dev,
+                                            record,
+                                            &live_50a_A,
+                                            &live_800a_A))
+    {
+        return false;
+    }
+
+    float stored_50a_A = (float)record->zero_offset_50a_mA / 1000.0f;
+    float stored_800a_A = (float)record->zero_offset_800a_mA / 1000.0f;
+    float tolerance_50a_A =
+        (float)record->uncertainty_50a_mA / 1000.0f;
+    float tolerance_800a_A =
+        (float)record->uncertainty_800a_mA / 1000.0f;
+
+    /* Never claim sub-resolution agreement, and never let an intentionally
+     * low-confidence record enlarge the restore window beyond the confidence
+     * policy. A record may remain structurally valid for diagnostics while
+     * still being refused for live use. */
+    if(tolerance_50a_A < CURRENT_50A_DEADBAND_A)
+    {
+        tolerance_50a_A = CURRENT_50A_DEADBAND_A;
+    }
+    if(tolerance_800a_A < CURRENT_800A_DEADBAND_A)
+    {
+        tolerance_800a_A = CURRENT_800A_DEADBAND_A;
+    }
+    if(tolerance_50a_A >
+       ((float)CURRENT_CAL_CONFIDENT_50A_UNCERTAINTY_MA / 1000.0f))
+    {
+        tolerance_50a_A =
+            (float)CURRENT_CAL_CONFIDENT_50A_UNCERTAINTY_MA / 1000.0f;
+    }
+    if(tolerance_800a_A >
+       ((float)CURRENT_CAL_CONFIDENT_800A_UNCERTAINTY_MA / 1000.0f))
+    {
+        tolerance_800a_A =
+            (float)CURRENT_CAL_CONFIDENT_800A_UNCERTAINTY_MA / 1000.0f;
+    }
+
+    return fabsf(live_50a_A - stored_50a_A) <= tolerance_50a_A &&
+           fabsf(live_800a_A - stored_800a_A) <= tolerance_800a_A;
 }
 
 static float current_sensor_adc_count_to_voltage(const current_sensor_t *dev, uint16_t count)
@@ -214,6 +433,8 @@ const char *current_sensor_reason_str(current_sensor_reason_t reason)
         case CURRENT_SENSOR_REASON_CHANNEL_MISMATCH:  return "channel_mismatch";
         case CURRENT_SENSOR_REASON_NOT_MAPPED:        return "not_mapped";
         case CURRENT_SENSOR_REASON_ZERO_CAL_REJECTED: return "zero_cal_rejected";
+        case CURRENT_SENSOR_REASON_CALIBRATION_CHANGED:
+                                                        return "calibration_changed";
         default:                                      return "unknown";
     }
 }
@@ -233,6 +454,8 @@ void current_sensor_set_reference_voltages(current_sensor_t *dev,
                                            float adc_vref_v,
                                            float sensor_supply_v)
 {
+    bool changed = false;
+
     if(dev == NULL)
     {
         return;
@@ -240,12 +463,30 @@ void current_sensor_set_reference_voltages(current_sensor_t *dev,
 
     if(finite_in_range(adc_vref_v, CURRENT_ADC_VREF_MIN_V, CURRENT_ADC_VREF_MAX_V))
     {
+        changed = changed || (dev->adc_vref_v != adc_vref_v);
         dev->adc_vref_v = adc_vref_v;
     }
 
     if(finite_in_range(sensor_supply_v, CURRENT_SENSOR_SUPPLY_MIN_V, CURRENT_SENSOR_SUPPLY_MAX_V))
     {
+        changed = changed || (dev->sensor_supply_v != sensor_supply_v);
         dev->sensor_supply_v = sensor_supply_v;
+    }
+
+    /* Offsets are expressed in amperes using these references. Changing a
+     * reference after capture invalidates the calibration rather than silently
+     * applying an offset derived under a different scale. */
+    if(changed && dev->zero_calibrated)
+    {
+        dev->zero_offset_50a = 0.0f;
+        dev->zero_offset_800a = 0.0f;
+        dev->zero_calibrated = false;
+        dev->filter_initialized = false;
+        current_sensor_clear_calibration_provenance(dev);
+    }
+    if(changed)
+    {
+        current_sensor_mark_calibration_changed(dev);
     }
 }
 
@@ -282,6 +523,8 @@ void current_sensor_init(current_sensor_t *dev,
     dev->zero_offset_800a = 0.0f;
     dev->zero_calibrated = false;
     dev->zero_cal_count = 0u;
+    current_sensor_clear_calibration_provenance(dev);
+    dev->calibration_restore_count = 0u;
     dev->adc_vref_v = CURRENT_ADC_NOMINAL_VREF_V;
     dev->sensor_supply_v = CURRENT_SENSOR_NOMINAL_SUPPLY_V;
     dev->current = 0.0f;
@@ -459,8 +702,12 @@ bool current_sensor_zero_calibrate(current_sensor_t *dev)
     dev->zero_offset_50a = offset_50a;
     dev->zero_offset_800a = offset_800a;
     dev->zero_calibrated = true;
-    dev->zero_cal_count++;
-    dev->filter_initialized = false;
+    if(dev->zero_cal_count != UINT32_MAX)
+    {
+        dev->zero_cal_count++;
+    }
+    current_sensor_clear_calibration_provenance(dev);
+    current_sensor_mark_calibration_changed(dev);
     return true;
 }
 
@@ -474,7 +721,156 @@ void current_sensor_zero_clear(current_sensor_t *dev)
     dev->zero_offset_50a = 0.0f;
     dev->zero_offset_800a = 0.0f;
     dev->zero_calibrated = false;
-    dev->filter_initialized = false;
+    current_sensor_clear_calibration_provenance(dev);
+    current_sensor_mark_calibration_changed(dev);
+}
+
+bool current_sensor_calibration_record_create(
+    const current_sensor_t *dev,
+    const current_sensor_calibration_metadata_t *metadata,
+    current_sensor_calibration_record_t *record)
+{
+    if((dev == NULL) || (metadata == NULL) || (record == NULL) ||
+       !current_sensor_offsets_usable(dev) ||
+       (metadata->calibration_id == 0u) ||
+       (metadata->calibration_temp_deci_c < CURRENT_CAL_TEMP_MIN_DECI_C) ||
+       (metadata->calibration_temp_deci_c > CURRENT_CAL_TEMP_MAX_DECI_C) ||
+       (metadata->uncertainty_50a_mA == 0u) ||
+       (metadata->uncertainty_50a_mA ==
+        CURRENT_SENSOR_CALIBRATION_UNCERTAINTY_UNKNOWN) ||
+       (metadata->uncertainty_800a_mA == 0u) ||
+       (metadata->uncertainty_800a_mA ==
+        CURRENT_SENSOR_CALIBRATION_UNCERTAINTY_UNKNOWN) ||
+       !finite_in_range(dev->adc_vref_v,
+                        CURRENT_ADC_VREF_MIN_V,
+                        CURRENT_ADC_VREF_MAX_V) ||
+       !finite_in_range(dev->sensor_supply_v,
+                        CURRENT_SENSOR_SUPPLY_MIN_V,
+                        CURRENT_SENSOR_SUPPLY_MAX_V))
+    {
+        return false;
+    }
+
+    current_sensor_calibration_record_t next = {0};
+    next.magic = CURRENT_SENSOR_CALIBRATION_MAGIC;
+    next.schema = CURRENT_SENSOR_CALIBRATION_SCHEMA;
+    next.size = CURRENT_SENSOR_CALIBRATION_RECORD_SIZE;
+    next.calibration_id = metadata->calibration_id;
+    next.capture_time_s = metadata->capture_time_s;
+    next.zero_offset_50a_mA =
+        (int32_t)lroundf(dev->zero_offset_50a * 1000.0f);
+    next.zero_offset_800a_mA =
+        (int32_t)lroundf(dev->zero_offset_800a * 1000.0f);
+    next.adc_vref_uV = (uint32_t)lroundf(dev->adc_vref_v * 1000000.0f);
+    next.sensor_supply_uV =
+        (uint32_t)lroundf(dev->sensor_supply_v * 1000000.0f);
+    next.calibration_temp_deci_c = metadata->calibration_temp_deci_c;
+    next.uncertainty_50a_mA = metadata->uncertainty_50a_mA;
+    next.uncertainty_800a_mA = metadata->uncertainty_800a_mA;
+    next.reserved = 0u;
+    next.crc32 = current_cal_record_crc(&next);
+    *record = next;
+    return true;
+}
+
+bool current_sensor_calibration_record_valid(
+    const current_sensor_calibration_record_t *record)
+{
+    if((record == NULL) ||
+       (record->magic != CURRENT_SENSOR_CALIBRATION_MAGIC) ||
+       (record->schema != CURRENT_SENSOR_CALIBRATION_SCHEMA) ||
+       (record->size != CURRENT_SENSOR_CALIBRATION_RECORD_SIZE) ||
+       (record->calibration_id == 0u) ||
+       (record->reserved != 0u) ||
+       (record->calibration_temp_deci_c < CURRENT_CAL_TEMP_MIN_DECI_C) ||
+       (record->calibration_temp_deci_c > CURRENT_CAL_TEMP_MAX_DECI_C) ||
+       (record->uncertainty_50a_mA == 0u) ||
+       (record->uncertainty_50a_mA ==
+        CURRENT_SENSOR_CALIBRATION_UNCERTAINTY_UNKNOWN) ||
+       (record->uncertainty_800a_mA == 0u) ||
+       (record->uncertainty_800a_mA ==
+        CURRENT_SENSOR_CALIBRATION_UNCERTAINTY_UNKNOWN) ||
+       (record->zero_offset_50a_mA <
+        -(int32_t)(CURRENT_ZERO_OFFSET_MAX_50A_A * 1000.0f)) ||
+       (record->zero_offset_50a_mA >
+        (int32_t)(CURRENT_ZERO_OFFSET_MAX_50A_A * 1000.0f)) ||
+       (record->zero_offset_800a_mA <
+        -(int32_t)(CURRENT_ZERO_OFFSET_MAX_800A_A * 1000.0f)) ||
+       (record->zero_offset_800a_mA >
+        (int32_t)(CURRENT_ZERO_OFFSET_MAX_800A_A * 1000.0f)) ||
+       (record->adc_vref_uV <
+        (uint32_t)(CURRENT_ADC_VREF_MIN_V * 1000000.0f)) ||
+       (record->adc_vref_uV >
+        (uint32_t)(CURRENT_ADC_VREF_MAX_V * 1000000.0f)) ||
+       (record->sensor_supply_uV <
+        (uint32_t)(CURRENT_SENSOR_SUPPLY_MIN_V * 1000000.0f)) ||
+       (record->sensor_supply_uV >
+        (uint32_t)(CURRENT_SENSOR_SUPPLY_MAX_V * 1000000.0f)))
+    {
+        return false;
+    }
+
+    return record->crc32 == current_cal_record_crc(record);
+}
+
+bool current_sensor_calibration_apply(
+    current_sensor_t *dev,
+    const current_sensor_calibration_record_t *record,
+    bool zero_current_proven)
+{
+    if((dev == NULL) || !zero_current_proven ||
+       !current_sensor_calibration_record_valid(record) ||
+       !current_sensor_record_matches_live_zero(dev, record))
+    {
+        if(dev != NULL)
+        {
+            dev->reason = CURRENT_SENSOR_REASON_ZERO_CAL_REJECTED;
+        }
+        return false;
+    }
+
+    dev->adc_vref_v = (float)record->adc_vref_uV / 1000000.0f;
+    dev->sensor_supply_v = (float)record->sensor_supply_uV / 1000000.0f;
+    dev->zero_offset_50a =
+        (float)record->zero_offset_50a_mA / 1000.0f;
+    dev->zero_offset_800a =
+        (float)record->zero_offset_800a_mA / 1000.0f;
+    dev->zero_calibrated = true;
+    dev->calibration_loaded_from_record = true;
+    dev->calibration_id = record->calibration_id;
+    dev->calibration_capture_time_s = record->capture_time_s;
+    dev->calibration_temp_deci_c = record->calibration_temp_deci_c;
+    dev->calibration_uncertainty_50a_mA = record->uncertainty_50a_mA;
+    dev->calibration_uncertainty_800a_mA = record->uncertainty_800a_mA;
+    if(dev->calibration_restore_count != UINT32_MAX)
+    {
+        dev->calibration_restore_count++;
+    }
+    current_sensor_mark_calibration_changed(dev);
+    return true;
+}
+
+bool current_sensor_calibration_confident(const current_sensor_t *dev)
+{
+    return current_sensor_offsets_usable(dev) &&
+           dev->calibration_loaded_from_record &&
+           (dev->calibration_id != 0u) &&
+           (dev->calibration_capture_time_s !=
+            CURRENT_SENSOR_CALIBRATION_TIME_UNKNOWN) &&
+           (dev->calibration_temp_deci_c >= CURRENT_CAL_TEMP_MIN_DECI_C) &&
+           (dev->calibration_temp_deci_c <= CURRENT_CAL_TEMP_MAX_DECI_C) &&
+           finite_in_range(dev->adc_vref_v,
+                           CURRENT_ADC_VREF_MIN_V,
+                           CURRENT_ADC_VREF_MAX_V) &&
+           finite_in_range(dev->sensor_supply_v,
+                           CURRENT_SENSOR_SUPPLY_MIN_V,
+                           CURRENT_SENSOR_SUPPLY_MAX_V) &&
+           (dev->calibration_uncertainty_50a_mA > 0u) &&
+           (dev->calibration_uncertainty_800a_mA > 0u) &&
+           (dev->calibration_uncertainty_50a_mA <=
+            CURRENT_CAL_CONFIDENT_50A_UNCERTAINTY_MA) &&
+           (dev->calibration_uncertainty_800a_mA <=
+            CURRENT_CAL_CONFIDENT_800A_UNCERTAINTY_MA);
 }
 
 bool current_sensor_read_adc(current_sensor_t *dev)

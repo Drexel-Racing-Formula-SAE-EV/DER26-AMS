@@ -123,6 +123,70 @@ static void accumulator_set_balance_pwm_cell(adbms6830_asic *ic, uint8_t cell, u
     }
 }
 
+bool accumulator_balance_shadow_active(const accumulator_t *dev)
+{
+    if(dev == NULL)
+    {
+        return false;
+    }
+
+    uint8_t ic_count = accumulator_configured_smb_count(dev);
+    const adbms6830_asic *smb_ics = (dev->smb.ics != NULL) ?
+                                      dev->smb.ics : dev->smb_ics;
+
+    for(uint8_t ic = 0u; ic < ic_count; ic++)
+    {
+        if(smb_ics[ic].tx_cfgb.dcc != 0u)
+        {
+            return true;
+        }
+        for(uint8_t cell = 0u; cell < PWMA; cell++)
+        {
+            if(smb_ics[ic].PwmA.pwma[cell] != 0u)
+            {
+                return true;
+            }
+        }
+        for(uint8_t cell = 0u; cell < PWMB; cell++)
+        {
+            if(smb_ics[ic].PwmB.pwmb[cell] != 0u)
+            {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+uint16_t accumulator_balance_shadow_mask(const accumulator_t *dev, uint8_t seg)
+{
+    if(dev == NULL)
+    {
+        return 0u;
+    }
+
+    uint8_t ic_count = accumulator_configured_smb_count(dev);
+    if(seg >= ic_count)
+    {
+        return 0u;
+    }
+
+    const adbms6830_asic *smb_ics = (dev->smb.ics != NULL) ?
+                                      dev->smb.ics : dev->smb_ics;
+    uint16_t mask = (uint16_t)(smb_ics[seg].tx_cfgb.dcc & 0x7FFFu);
+    for(uint8_t cell = 0u; cell < NCELLS; cell++)
+    {
+        uint8_t duty = (cell < PWMA) ? smb_ics[seg].PwmA.pwma[cell] :
+                       smb_ics[seg].PwmB.pwmb[cell - PWMA];
+        if(duty != 0u)
+        {
+            mask |= (uint16_t)(1u << cell);
+        }
+    }
+    return mask;
+}
+
 /* Caller owns the ADBMS SPI lock.  This is intentionally best-effort: the
  * original write/readback error remains the reported result, but every failed
  * balance transaction still gets an immediate second attempt to command all
@@ -615,7 +679,10 @@ float convert_adc_to_volt(int value)
 
 static uint16_t accumulator_code_to_mv(int16_t code)
 {
-    if((code == 0) || (code == INT16_MIN))
+    /* ADBMS6830 cell codes use V = (code + 10000) * 150 uV.
+     * 0x0000 is therefore a valid 1.500 V measurement and must reach the
+     * severe-undervoltage policy.  Only 0x8000 is the reset/clear sentinel. */
+    if(code == INT16_MIN)
     {
         return 0u;
     }

@@ -11,6 +11,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "ams_build_profile.h"
 #include "stm32f7xx_hal.h"
 
 #ifndef AMS_ENABLE_IMD

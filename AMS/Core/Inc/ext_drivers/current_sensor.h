@@ -29,8 +29,48 @@ typedef enum
     CURRENT_SENSOR_REASON_SENSOR_SATURATION,
     CURRENT_SENSOR_REASON_CHANNEL_MISMATCH,
     CURRENT_SENSOR_REASON_NOT_MAPPED,
-    CURRENT_SENSOR_REASON_ZERO_CAL_REJECTED
+    CURRENT_SENSOR_REASON_ZERO_CAL_REJECTED,
+    CURRENT_SENSOR_REASON_CALIBRATION_CHANGED
 } current_sensor_reason_t;
+
+#define CURRENT_SENSOR_CALIBRATION_MAGIC       0x4943414Cu /* 'ICAL' */
+#define CURRENT_SENSOR_CALIBRATION_SCHEMA      1u
+#define CURRENT_SENSOR_CALIBRATION_RECORD_SIZE 44u
+#define CURRENT_SENSOR_CALIBRATION_TIME_UNKNOWN 0u
+#define CURRENT_SENSOR_CALIBRATION_UNCERTAINTY_UNKNOWN UINT16_MAX
+
+/*
+ * Fixed-width, versioned object for a future board-owned flash/EEPROM adapter.
+ * The CRC is calculated field-by-field in a defined little-endian order, so
+ * compiler padding is never part of the integrity check.  No current firmware
+ * path writes this object to nonvolatile memory.
+ */
+typedef struct
+{
+    uint32_t magic;
+    uint16_t schema;
+    uint16_t size;
+    uint32_t calibration_id;
+    uint32_t capture_time_s;
+    int32_t zero_offset_50a_mA;
+    int32_t zero_offset_800a_mA;
+    uint32_t adc_vref_uV;
+    uint32_t sensor_supply_uV;
+    int16_t calibration_temp_deci_c;
+    uint16_t uncertainty_50a_mA;
+    uint16_t uncertainty_800a_mA;
+    uint16_t reserved;
+    uint32_t crc32;
+} current_sensor_calibration_record_t;
+
+typedef struct
+{
+    uint32_t calibration_id;
+    uint32_t capture_time_s;
+    int16_t calibration_temp_deci_c;
+    uint16_t uncertainty_50a_mA;
+    uint16_t uncertainty_800a_mA;
+} current_sensor_calibration_metadata_t;
 
 typedef struct
 {
@@ -68,6 +108,17 @@ typedef struct
     bool zero_calibrated;
     uint32_t zero_cal_count;
 
+    /* Persistent-calibration provenance. A service zero capture alone does
+     * not set loaded_from_record and is therefore insufficient for formal
+     * resistance-SoH confidence. */
+    bool calibration_loaded_from_record;
+    uint32_t calibration_id;
+    uint32_t calibration_capture_time_s;
+    int16_t calibration_temp_deci_c;
+    uint16_t calibration_uncertainty_50a_mA;
+    uint16_t calibration_uncertainty_800a_mA;
+    uint32_t calibration_restore_count;
+
     /* Voltage-reference parameters. Defaults match AMS Rev3.1: STM32 ADC at 3.3 V, DHAB at 5 V. */
     float adc_vref_v;
     float sensor_supply_v;
@@ -101,6 +152,17 @@ void current_sensor_set_reference_voltages(current_sensor_t *dev,
                                            float sensor_supply_v);
 bool current_sensor_zero_calibrate(current_sensor_t *dev);
 void current_sensor_zero_clear(current_sensor_t *dev);
+bool current_sensor_calibration_record_create(
+    const current_sensor_t *dev,
+    const current_sensor_calibration_metadata_t *metadata,
+    current_sensor_calibration_record_t *record);
+bool current_sensor_calibration_record_valid(
+    const current_sensor_calibration_record_t *record);
+bool current_sensor_calibration_apply(
+    current_sensor_t *dev,
+    const current_sensor_calibration_record_t *record,
+    bool zero_current_proven);
+bool current_sensor_calibration_confident(const current_sensor_t *dev);
 const char *current_sensor_reason_str(current_sensor_reason_t reason);
 const char *current_sensor_range_str(current_sensor_range_t range);
 

@@ -21,6 +21,7 @@
 #define AMS_EKF_P0_VP1      1.0e-3f
 #define AMS_EKF_P0_VP2      1.0e-3f
 #define AMS_EKF_P0_R0       1.0e-4f
+#define AMS_EKF_P_R0_MAX    1.0e-2f
 #define AMS_EKF_DSOC        1.0e-4f
 
 /*
@@ -58,6 +59,14 @@ static float clampf_local(float x, float lo, float hi)
 static bool finite3(float a, float b, float c)
 {
     return (isfinite(a) && isfinite(b) && isfinite(c));
+}
+
+static void saturating_increment(uint32_t *value)
+{
+    if((value != NULL) && (*value != UINT32_MAX))
+    {
+        (*value)++;
+    }
 }
 
 void ams_ekf_make_pack_config(ams_ekf_config_t *cfg)
@@ -169,6 +178,7 @@ void ams_ekf_init(ams_ekf_instance_t *ekf, const ams_ekf_config_t *cfg)
 
     ekf->valid = 0U;
     ekf->fault_flags = AMS_EKF_FAULT_NONE;
+    ekf->model_domain_flags = AMS_EKF_MODEL_DOMAIN_NONE;
 }
 
 static void update_adaptive_r(ams_ekf_instance_t *ekf, float innovation_V)
@@ -193,18 +203,25 @@ static void update_adaptive_r(ams_ekf_instance_t *ekf, float innovation_V)
     }
 }
 
-bool ams_ekf_step(ams_ekf_instance_t *ekf,
-                  float i_pack_A,
-                  float v_meas_V,
-                  float t_surf_C,
-                  float dt_s)
+bool ams_ekf_step_gated(ams_ekf_instance_t *ekf,
+                        float i_pack_A,
+                        float v_meas_V,
+                        float t_surf_C,
+                        float dt_s,
+                        bool allow_r0_update,
+                        ams_ekf_r0_update_result_t *r0_result)
 {
+    if(r0_result != NULL)
+    {
+        *r0_result = AMS_EKF_R0_UPDATE_NOT_REQUESTED;
+    }
     if ((ekf == NULL) || (ekf->cfg.enabled == 0U))
     {
         return false;
     }
 
     ekf->fault_flags = AMS_EKF_FAULT_NONE;
+    ekf->model_domain_flags = AMS_EKF_MODEL_DOMAIN_NONE;
 
     if (!config_valid(&ekf->cfg))
     {
@@ -251,6 +268,14 @@ bool ams_ekf_step(ams_ekf_instance_t *ekf,
     }
     dt = clampf_local(dt, 0.001f, 1.0f);
 
+    if(ekf->t_core_C < 5.0f)
+    {
+        ekf->model_domain_flags |= AMS_EKF_MODEL_DOMAIN_TEMP_LOW;
+    }
+    else if(ekf->t_core_C > 40.0f)
+    {
+        ekf->model_domain_flags |= AMS_EKF_MODEL_DOMAIN_TEMP_HIGH;
+    }
     float t_lut_C = clampf_local(ekf->t_core_C, 5.0f, 40.0f);
     float soc0 = clampf_local(ekf->soc, 0.0f, 1.0f);
     float i_cell_A = i_pack_A / ekf->cfg.parallel_cell_count;
@@ -281,20 +306,54 @@ bool ams_ekf_step(ams_ekf_instance_t *ekf,
     update_adaptive_r(ekf, innovation);
     float r_meas = ekf->r_meas_V2;
 
-    float h_r0 = -series_count * i_cell_A;
-    float s_r0 = (h_r0 * h_r0 * ekf->p_r0) + r_meas;
-    float k_r0 = (s_r0 > 1.0e-10f) ? (ekf->p_r0 * h_r0 / s_r0) : 0.0f;
-
-    ekf->r0_ohm += k_r0 * innovation;
-
-    float a_r0 = 1.0f - (k_r0 * h_r0);
-    ekf->p_r0 = (a_r0 * a_r0 * ekf->p_r0) + (k_r0 * k_r0 * r_meas);
-
-    float r0_before_clamp = ekf->r0_ohm;
-    ekf->r0_ohm = clampf_local(ekf->r0_ohm, AMS_EKF_R0_MIN_OHM, AMS_EKF_R0_MAX_OHM);
-    if (ekf->r0_ohm != r0_before_clamp)
+    if(allow_r0_update)
     {
-        ekf->fault_flags |= AMS_EKF_FAULT_CLAMPED;
+        float innovation_per_cell = fabsf(innovation) / series_count;
+        if((!isfinite(innovation_per_cell)) ||
+           (innovation_per_cell > AMS_SOH_MAX_INNOVATION_PER_CELL_V))
+        {
+            if(r0_result != NULL)
+            {
+                *r0_result = AMS_EKF_R0_UPDATE_REJECT_INNOVATION;
+            }
+        }
+        else
+        {
+            float h_r0 = -series_count * i_cell_A;
+            float s_r0 = (h_r0 * h_r0 * ekf->p_r0) + r_meas;
+            float k_r0 = (s_r0 > 1.0e-10f) ?
+                         (ekf->p_r0 * h_r0 / s_r0) : NAN;
+            float r0_candidate = ekf->r0_ohm + (k_r0 * innovation);
+
+            if(!isfinite(k_r0) || !isfinite(r0_candidate))
+            {
+                if(r0_result != NULL)
+                {
+                    *r0_result = AMS_EKF_R0_UPDATE_REJECT_NUMERIC;
+                }
+            }
+            else
+            {
+                float a_r0 = 1.0f - (k_r0 * h_r0);
+                ekf->p_r0 = (a_r0 * a_r0 * ekf->p_r0) +
+                            (k_r0 * k_r0 * r_meas);
+                ekf->r0_ohm = clampf_local(r0_candidate,
+                                           AMS_EKF_R0_MIN_OHM,
+                                           AMS_EKF_R0_MAX_OHM);
+                if(ekf->r0_ohm != r0_candidate)
+                {
+                    ekf->fault_flags |= AMS_EKF_FAULT_CLAMPED;
+                    if(r0_result != NULL)
+                    {
+                        *r0_result = AMS_EKF_R0_UPDATE_CLAMPED;
+                    }
+                }
+                else if(r0_result != NULL)
+                {
+                    *r0_result = AMS_EKF_R0_UPDATE_APPLIED;
+                }
+            }
+        }
     }
 
     float s_hi = clampf_local(soc_p + AMS_EKF_DSOC, 0.0f, 1.0f);
@@ -342,6 +401,7 @@ bool ams_ekf_step(ams_ekf_instance_t *ekf,
     if (ekf->p_vp1 < 1.0e-12f) { ekf->p_vp1 = 1.0e-12f; }
     if (ekf->p_vp2 < 1.0e-12f) { ekf->p_vp2 = 1.0e-12f; }
     if (ekf->p_r0  < 1.0e-14f) { ekf->p_r0  = 1.0e-14f; }
+    if (ekf->p_r0  > AMS_EKF_P_R0_MAX) { ekf->p_r0 = AMS_EKF_P_R0_MAX; }
 
     float inv_r1 = ams_p42a_inv_r1_from_luts(inv_c1, neg_inv_tau1);
     float q_gen = (i_cell_A * i_cell_A * ekf->r0_ohm) +
@@ -349,17 +409,261 @@ bool ams_ekf_step(ams_ekf_instance_t *ekf,
                   (vp2_p * vp2_p * AMS_EKF_INV_R2);
     float q_cs = (ekf->t_core_C - t_surf_C) * AMS_EKF_INV_RCS;
     ekf->t_core_C += (q_gen - q_cs) * AMS_EKF_INV_CC * dt;
+    float core_before_clamp = ekf->t_core_C;
     ekf->t_core_C = clampf_local(ekf->t_core_C, -10.0f, 60.0f);
+    if(ekf->t_core_C != core_before_clamp)
+    {
+        ekf->model_domain_flags |= AMS_EKF_MODEL_DOMAIN_CORE_CLAMP;
+    }
 
     ekf->v_pred_V = v_est;
     ekf->innovation_V = innovation;
     ekf->last_i_pack_A = i_pack_A;
     ekf->last_v_meas_V = v_meas_V;
     ekf->last_t_surf_C = t_surf_C;
-    ekf->step_count++;
+    saturating_increment(&ekf->step_count);
     ekf->valid = 1U;
 
     return true;
+}
+
+bool ams_ekf_step(ams_ekf_instance_t *ekf,
+                  float i_pack_A,
+                  float v_meas_V,
+                  float t_surf_C,
+                  float dt_s)
+{
+    return ams_ekf_step_gated(ekf,
+                              i_pack_A,
+                              v_meas_V,
+                              t_surf_C,
+                              dt_s,
+                              true,
+                              NULL);
+}
+
+uint32_t ams_resistance_soh_gate(const ams_ekf_instance_t *ekf,
+                                 float i_pack_A,
+                                 bool epoch_coherent,
+                                 bool balance_recovered,
+                                 bool current_calibration_confident)
+{
+    uint32_t reject = AMS_SOH_REJECT_NONE;
+
+    if(!epoch_coherent)
+    {
+        reject |= AMS_SOH_REJECT_EPOCH;
+    }
+    if(!balance_recovered)
+    {
+        reject |= AMS_SOH_REJECT_BALANCE_RECOVERY;
+    }
+    if(!current_calibration_confident)
+    {
+        reject |= AMS_SOH_REJECT_CURRENT_CALIBRATION;
+    }
+    if((ekf == NULL) || (ekf->cfg.enabled == 0u) ||
+       !config_valid((ekf != NULL) ? &ekf->cfg : NULL) ||
+       !isfinite(i_pack_A))
+    {
+        return reject | AMS_SOH_REJECT_ESTIMATOR;
+    }
+    if(fabsf(i_pack_A) < AMS_SOH_MIN_PACK_CURRENT_A)
+    {
+        reject |= AMS_SOH_REJECT_LOW_CURRENT;
+    }
+    if((ekf->step_count == 0u) || !isfinite(ekf->last_i_pack_A) ||
+       (fabsf(i_pack_A - ekf->last_i_pack_A) <
+        AMS_SOH_MIN_PACK_CURRENT_STEP_A))
+    {
+        reject |= AMS_SOH_REJECT_LOW_CURRENT_STEP;
+    }
+    if(!isfinite(ekf->soc) || !isfinite(ekf->t_core_C) ||
+       (ekf->soc < AMS_SOH_MIN_SOC) || (ekf->soc > AMS_SOH_MAX_SOC) ||
+       (ekf->t_core_C < AMS_SOH_MIN_MODEL_TEMP_C) ||
+       (ekf->t_core_C > AMS_SOH_MAX_MODEL_TEMP_C) ||
+       (ekf->model_domain_flags != AMS_EKF_MODEL_DOMAIN_NONE))
+    {
+        reject |= AMS_SOH_REJECT_MODEL_DOMAIN;
+    }
+
+    return reject;
+}
+
+static void resistance_soh_count_reasons(ams_resistance_soh_t *soh,
+                                         uint32_t flags)
+{
+    if((flags & AMS_SOH_REJECT_EPOCH) != 0u)
+    {
+        saturating_increment(&soh->reject_epoch_count);
+    }
+    if((flags & AMS_SOH_REJECT_CURRENT_CALIBRATION) != 0u)
+    {
+        saturating_increment(&soh->reject_current_calibration_count);
+    }
+    if((flags & AMS_SOH_REJECT_LOW_CURRENT) != 0u)
+    {
+        saturating_increment(&soh->reject_low_current_count);
+    }
+    if((flags & AMS_SOH_REJECT_LOW_CURRENT_STEP) != 0u)
+    {
+        saturating_increment(&soh->reject_low_current_step_count);
+    }
+    if((flags & AMS_SOH_REJECT_BALANCE_RECOVERY) != 0u)
+    {
+        saturating_increment(&soh->reject_balance_recovery_count);
+    }
+    if((flags & AMS_SOH_REJECT_MODEL_DOMAIN) != 0u)
+    {
+        saturating_increment(&soh->reject_model_domain_count);
+    }
+    if((flags & AMS_SOH_REJECT_INNOVATION) != 0u)
+    {
+        saturating_increment(&soh->reject_innovation_count);
+    }
+    if((flags & AMS_SOH_REJECT_R0_CLAMP) != 0u)
+    {
+        saturating_increment(&soh->reject_r0_clamp_count);
+    }
+    if((flags & AMS_SOH_REJECT_NUMERIC) != 0u)
+    {
+        saturating_increment(&soh->reject_numeric_count);
+    }
+    if((flags & AMS_SOH_REJECT_ESTIMATOR) != 0u)
+    {
+        saturating_increment(&soh->reject_estimator_count);
+    }
+}
+
+void ams_resistance_soh_record(ams_resistance_soh_t *soh,
+                               const ams_ekf_instance_t *ekf,
+                               uint32_t measurement_sequence,
+                               uint32_t tick,
+                               bool current_calibration_confident,
+                               uint32_t precheck_reject_flags,
+                               ams_ekf_r0_update_result_t r0_result,
+                               bool estimator_step_ok)
+{
+    if(soh == NULL)
+    {
+        return;
+    }
+
+    uint32_t reject = precheck_reject_flags;
+    if(!estimator_step_ok || (ekf == NULL) || (ekf->valid == 0u))
+    {
+        reject |= AMS_SOH_REJECT_ESTIMATOR;
+    }
+    switch(r0_result)
+    {
+    case AMS_EKF_R0_UPDATE_REJECT_INNOVATION:
+        reject |= AMS_SOH_REJECT_INNOVATION;
+        break;
+    case AMS_EKF_R0_UPDATE_REJECT_NUMERIC:
+        reject |= AMS_SOH_REJECT_NUMERIC;
+        break;
+    case AMS_EKF_R0_UPDATE_CLAMPED:
+        reject |= AMS_SOH_REJECT_R0_CLAMP;
+        break;
+    case AMS_EKF_R0_UPDATE_NOT_REQUESTED:
+        if(reject == AMS_SOH_REJECT_NONE)
+        {
+            reject |= AMS_SOH_REJECT_NUMERIC;
+        }
+        break;
+    case AMS_EKF_R0_UPDATE_APPLIED:
+    default:
+        break;
+    }
+
+    soh->last_measurement_sequence = measurement_sequence;
+    soh->last_observation_tick = tick;
+    soh->last_reject_flags = reject;
+    soh->status_flags = 0u;
+    if(current_calibration_confident)
+    {
+        soh->status_flags |= AMS_SOH_STATUS_CALIBRATION_CONFIDENT;
+    }
+
+    /* Never retain a plausible value from an older record when the current
+     * estimator object cannot produce a finite reference. */
+    soh->estimated_cell_r0_ohm = NAN;
+    soh->reference_cell_r0_ohm = NAN;
+    soh->resistance_growth_ratio = NAN;
+    soh->r0_variance_ohm2 = NAN;
+
+    if(ekf != NULL)
+    {
+        soh->estimated_cell_r0_ohm = ekf->r0_ohm;
+        soh->r0_variance_ohm2 = ekf->p_r0;
+        if(isfinite(ekf->soc) && isfinite(ekf->t_core_C))
+        {
+            float t_ref_C = clampf_local(ekf->t_core_C,
+                                         AMS_SOH_MIN_MODEL_TEMP_C,
+                                         AMS_SOH_MAX_MODEL_TEMP_C);
+            soh->reference_cell_r0_ohm =
+                ams_p42a_r0_ohm(clampf_local(ekf->soc, 0.0f, 1.0f),
+                                 t_ref_C);
+            if(isfinite(soh->reference_cell_r0_ohm) &&
+               (soh->reference_cell_r0_ohm > 0.0f))
+            {
+                soh->resistance_growth_ratio =
+                    soh->estimated_cell_r0_ohm /
+                    soh->reference_cell_r0_ohm;
+            }
+        }
+    }
+
+    if((reject == AMS_SOH_REJECT_NONE) &&
+       (r0_result == AMS_EKF_R0_UPDATE_APPLIED))
+    {
+        saturating_increment(&soh->accepted_count);
+        soh->last_accept_tick = tick;
+        soh->status_flags |= AMS_SOH_STATUS_LAST_OBSERVABLE;
+    }
+    else
+    {
+        saturating_increment(&soh->rejected_count);
+        resistance_soh_count_reasons(soh, reject);
+    }
+
+    uint32_t confidence = (soh->accepted_count >=
+                           AMS_SOH_MIN_ACCEPTED_OBSERVATIONS) ? 100u :
+        ((soh->accepted_count * 100u) /
+         AMS_SOH_MIN_ACCEPTED_OBSERVATIONS);
+    if(!current_calibration_confident)
+    {
+        confidence = 0u;
+    }
+    soh->observation_confidence_pct = (uint8_t)confidence;
+
+    bool converged = (soh->accepted_count >=
+                      AMS_SOH_MIN_ACCEPTED_OBSERVATIONS) &&
+                     isfinite(soh->resistance_growth_ratio) &&
+                     (soh->resistance_growth_ratio > 0.0f) &&
+                     isfinite(soh->r0_variance_ohm2) &&
+                     (soh->r0_variance_ohm2 <=
+                      AMS_SOH_MAX_R0_VARIANCE_OHM2);
+    if(converged)
+    {
+        soh->status_flags |= AMS_SOH_STATUS_CONVERGED;
+    }
+    bool observation_fresh = (soh->accepted_count != 0u) &&
+        ((uint32_t)(tick - soh->last_accept_tick) <=
+         AMS_SOH_MAX_ACCEPT_AGE_MS);
+    uint32_t current_invalid_flags = AMS_SOH_REJECT_CURRENT_CALIBRATION |
+                                     AMS_SOH_REJECT_MODEL_DOMAIN |
+                                     AMS_SOH_REJECT_NUMERIC |
+                                     AMS_SOH_REJECT_ESTIMATOR;
+    if(converged && current_calibration_confident && observation_fresh &&
+       ((reject & current_invalid_flags) == 0u))
+    {
+        soh->status_flags |= AMS_SOH_STATUS_ADVISORY_VALID;
+    }
+    if(soh->persistence_valid != 0u)
+    {
+        soh->status_flags |= AMS_SOH_STATUS_PERSISTED;
+    }
 }
 
 bool ams_estimator_configure_pack(ams_estimator_t *est)
@@ -370,9 +674,11 @@ bool ams_estimator_configure_pack(ams_estimator_t *est)
     }
 
     memset(est->inst, 0, sizeof(est->inst));
+    memset(est->resistance_soh, 0, sizeof(est->resistance_soh));
     est->enabled = 1U;
     est->instance_count = 1U;
     est->active_index = 0U;
+    est->fault_flags = AMS_EKF_FAULT_NONE;
 
     ams_ekf_config_t cfg;
     ams_ekf_make_pack_config(&cfg);
@@ -388,9 +694,11 @@ bool ams_estimator_configure_segments(ams_estimator_t *est)
     }
 
     memset(est->inst, 0, sizeof(est->inst));
+    memset(est->resistance_soh, 0, sizeof(est->resistance_soh));
     est->enabled = 1U;
     est->instance_count = 5U;
     est->active_index = 0U;
+    est->fault_flags = AMS_EKF_FAULT_NONE;
 
     for (uint8_t i = 0U; i < est->instance_count; i++)
     {
@@ -416,9 +724,11 @@ bool ams_estimator_configure_even_split(ams_estimator_t *est, uint8_t instance_c
     }
 
     memset(est->inst, 0, sizeof(est->inst));
+    memset(est->resistance_soh, 0, sizeof(est->resistance_soh));
     est->enabled = 1U;
     est->instance_count = instance_count;
     est->active_index = 0U;
+    est->fault_flags = AMS_EKF_FAULT_NONE;
 
     uint16_t first = 0U;
     uint16_t base = (uint16_t)(AMS_EKF_PACK_SERIES_GROUPS / instance_count);
@@ -477,13 +787,29 @@ bool ams_estimator_cc_step(ams_estimator_t *est, float i_pack_A, float dt_s)
         return false;
     }
 
-    float i_cell_A = i_pack_A / AMS_EKF_PACK_PARALLEL_CELLS;
-    float q_nom_inv = 1.0f / (3600.0f * AMS_EKF_CELL_CAPACITY_AH);
+    return ams_estimator_cc_apply_charge(est, (double)i_pack_A * (double)dt);
+}
 
-    /* Positive current is discharge in the ESP32 plant and EKF convention. */
-    est->cc_soc -= q_nom_inv * i_cell_A * dt;
+bool ams_estimator_cc_apply_charge(ams_estimator_t *est, double charge_As)
+{
+    if((est == NULL) || (est->cc_valid == 0U) || !isfinite(charge_As))
+    {
+        return false;
+    }
+
+    double pack_capacity_As = (double)AMS_EKF_PACK_PARALLEL_CELLS *
+                              3600.0 *
+                              (double)AMS_EKF_CELL_CAPACITY_AH;
+    if(pack_capacity_As <= 0.0)
+    {
+        return false;
+    }
+
+    /* Positive current/charge is discharge in the existing estimator
+     * convention. The physical sign remains a target-validation gate. */
+    est->cc_soc -= (float)(charge_As / pack_capacity_As);
     est->cc_soc = clampf_local(est->cc_soc, 0.0f, 1.0f);
-    est->cc_step_count++;
+    saturating_increment(&est->cc_step_count);
     return true;
 }
 
@@ -497,7 +823,15 @@ void ams_estimator_init_default(ams_estimator_t *est)
     memset(est, 0, sizeof(*est));
     est->input_source = AMS_ESTIMATOR_INPUT_NONE;
     ams_estimator_cc_reset(est, AMS_EKF_DEFAULT_SOC_INIT);
-    (void)ams_estimator_configure_pack(est);
+#if AMS_ESTIMATOR_DEFAULT_TOPOLOGY == AMS_ESTIMATOR_TOPOLOGY_SEGMENTS
+    if(!ams_estimator_configure_segments(est))
+#else
+    if(!ams_estimator_configure_pack(est))
+#endif
+    {
+        est->enabled = 0u;
+        est->fault_flags |= AMS_EKF_FAULT_BAD_CONFIG;
+    }
 }
 
 void ams_estimator_refresh_summary(ams_estimator_t *est,
@@ -511,8 +845,9 @@ void ams_estimator_refresh_summary(ams_estimator_t *est,
 
     est->input_source = source;
     est->last_update_tick = tick;
-    est->step_count++;
+    saturating_increment(&est->step_count);
     est->fault_flags = AMS_EKF_FAULT_NONE;
+    est->model_domain_flags = AMS_EKF_MODEL_DOMAIN_NONE;
 
     if ((est->active_index >= est->instance_count) ||
         (est->active_index >= AMS_EKF_MAX_INSTANCES))
@@ -527,6 +862,21 @@ void ams_estimator_refresh_summary(ams_estimator_t *est,
         if (est->inst[i].cfg.enabled != 0U)
         {
             aggregate_faults |= est->inst[i].fault_flags;
+
+            /* Convergence is historical evidence, but advisory validity is
+             * a live contract. If acquisition stops or this estimator input
+             * becomes unusable, do not retain a plausible current-valid bit
+             * merely because no new SoH observation arrived to clear it. */
+            ams_resistance_soh_t *soh = &est->resistance_soh[i];
+            bool observation_fresh = (soh->accepted_count != 0u) &&
+                ((uint32_t)(tick - soh->last_accept_tick) <=
+                 AMS_SOH_MAX_ACCEPT_AGE_MS);
+            if((est->inst[i].valid == 0u) || !observation_fresh)
+            {
+                soh->status_flags &=
+                    (uint8_t)~(AMS_SOH_STATUS_ADVISORY_VALID |
+                               AMS_SOH_STATUS_LAST_OBSERVABLE);
+            }
         }
     }
 
@@ -551,13 +901,14 @@ void ams_estimator_refresh_summary(ams_estimator_t *est,
             v_pred_sum += inst->v_pred_V;
             innov_sum += inst->innovation_V;
             weight_sum += weight;
+            est->model_domain_flags |= inst->model_domain_flags;
         }
     }
 
     if (weight_sum > 0.0f)
     {
         est->pack_soc = soc_weighted / weight_sum;
-        est->pack_r0_ohm = r0_weighted / weight_sum;
+        est->representative_cell_r0_ohm = r0_weighted / weight_sum;
         est->pack_t_core_C = t_core_weighted / weight_sum;
         est->pack_v_pred_V = v_pred_sum;
         est->pack_innovation_V = innov_sum;
@@ -565,7 +916,7 @@ void ams_estimator_refresh_summary(ams_estimator_t *est,
     else if (est->cc_valid != 0U)
     {
         est->pack_soc = est->cc_soc;
-        est->pack_r0_ohm = active->r0_ohm;
+        est->representative_cell_r0_ohm = active->r0_ohm;
         est->pack_v_pred_V = active->v_pred_V;
         est->pack_innovation_V = active->innovation_V;
         est->pack_t_core_C = active->t_core_C;
@@ -573,12 +924,16 @@ void ams_estimator_refresh_summary(ams_estimator_t *est,
     else
     {
         est->pack_soc = active->soc;
-        est->pack_r0_ohm = active->r0_ohm;
+        est->representative_cell_r0_ohm = active->r0_ohm;
         est->pack_v_pred_V = active->v_pred_V;
         est->pack_innovation_V = active->innovation_V;
         est->pack_t_core_C = active->t_core_C;
     }
 
+    est->pack_r0_ohm = est->representative_cell_r0_ohm;
+    est->estimated_pack_r0_ohm =
+        est->representative_cell_r0_ohm *
+        ((float)AMS_EKF_PACK_SERIES_GROUPS / AMS_EKF_PACK_PARALLEL_CELLS);
     est->fault_flags = aggregate_faults;
 }
 
@@ -617,6 +972,15 @@ uint8_t ams_estimator_status_flags(const ams_estimator_t *est)
     if ((active->valid == 0U) && (est->cc_valid != 0U))
     {
         flags |= AMS_EKF_FLAG_CC_FALLBACK;
+    }
+    if(est->model_domain_flags != AMS_EKF_MODEL_DOMAIN_NONE)
+    {
+        flags |= AMS_EKF_FLAG_MODEL_CLAMPED;
+    }
+    if((est->resistance_soh[est->active_index].status_flags &
+        AMS_SOH_STATUS_ADVISORY_VALID) != 0u)
+    {
+        flags |= AMS_EKF_FLAG_SOH_ADVISORY;
     }
 
     return flags;

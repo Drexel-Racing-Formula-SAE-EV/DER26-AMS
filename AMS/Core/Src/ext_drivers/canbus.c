@@ -302,38 +302,53 @@ static void canbus_parse_hil_frame(app_data_t *data, const canbus_rx_frame_t *fr
         case AMS_HIL_CAN_ID_MEAS:
             if(frame->dlc >= 7U)
             {
-                data->hil.meas.v_pack_V = (float)be_u16(&rx_data[0]) * 0.01f;
-                data->hil.meas.i_pack_A = (float)be_i16(&rx_data[2]) * 0.01f;
-                data->hil.meas.t_surf_C = (float)be_i16(&rx_data[4]) * 0.01f;
-                data->hil.meas.counter = rx_data[6];
-                data->hil.meas.last_rx_tick = now;
-                data->hil.meas.fresh = 1U;
+                const ams_hil_meas_t next = {
+                    .fresh = 1u,
+                    .counter = rx_data[6],
+                    .last_rx_tick = now,
+                    .v_pack_V = (float)be_u16(&rx_data[0]) * 0.01f,
+                    .i_pack_A = (float)be_i16(&rx_data[2]) * 0.01f,
+                    .t_surf_C = (float)be_i16(&rx_data[4]) * 0.01f
+                };
+                taskENTER_CRITICAL();
+                data->hil.meas = next;
+                taskEXIT_CRITICAL();
             }
             break;
 
         case AMS_HIL_CAN_ID_TRUTH:
             if(frame->dlc >= 8U)
             {
-                data->hil.truth.soc_true = (float)be_u16(&rx_data[0]) * 0.0001f;
-                data->hil.truth.t_core_C = (float)be_i16(&rx_data[2]) * 0.01f;
-                data->hil.truth.counter = rx_data[4];
-                data->hil.truth.plant_step = ((uint32_t)rx_data[5] << 16) |
-                                            ((uint32_t)rx_data[6] << 8)  |
-                                            ((uint32_t)rx_data[7]);
-                data->hil.truth.last_rx_tick = now;
-                data->hil.truth.fresh = 1U;
+                const ams_hil_truth_t next = {
+                    .fresh = 1u,
+                    .counter = rx_data[4],
+                    .last_rx_tick = now,
+                    .plant_step = ((uint32_t)rx_data[5] << 16) |
+                                  ((uint32_t)rx_data[6] << 8) |
+                                  (uint32_t)rx_data[7],
+                    .soc_true = (float)be_u16(&rx_data[0]) * 0.0001f,
+                    .t_core_C = (float)be_i16(&rx_data[2]) * 0.01f
+                };
+                taskENTER_CRITICAL();
+                data->hil.truth = next;
+                taskEXIT_CRITICAL();
             }
             break;
 
         case AMS_HIL_CAN_ID_SUMMARY:
             if(frame->dlc >= 8U)
             {
-                data->hil.summary.v_min_V = (float)be_u16(&rx_data[0]) * 0.001f;
-                data->hil.summary.v_max_V = (float)be_u16(&rx_data[2]) * 0.001f;
-                data->hil.summary.t_max_C = (float)be_i16(&rx_data[4]) * 0.01f;
-                data->hil.summary.t_avg_C = (float)be_i16(&rx_data[6]) * 0.01f;
-                data->hil.summary.last_rx_tick = now;
-                data->hil.summary.fresh = 1U;
+                const ams_hil_summary_t next = {
+                    .fresh = 1u,
+                    .last_rx_tick = now,
+                    .v_min_V = (float)be_u16(&rx_data[0]) * 0.001f,
+                    .v_max_V = (float)be_u16(&rx_data[2]) * 0.001f,
+                    .t_max_C = (float)be_i16(&rx_data[4]) * 0.01f,
+                    .t_avg_C = (float)be_i16(&rx_data[6]) * 0.01f
+                };
+                taskENTER_CRITICAL();
+                data->hil.summary = next;
+                taskEXIT_CRITICAL();
             }
             break;
 
@@ -346,11 +361,13 @@ static void canbus_parse_hil_frame(app_data_t *data, const canbus_rx_frame_t *fr
                     be_u16(&rx_data[6])
                 };
 
+                adbms_spi_lock();
                 (void)accumulator_hil_ingest_cell_triplet(&data->acc,
                                                           rx_data[0],
                                                           rx_data[1],
                                                           cell_mv,
                                                           now);
+                adbms_spi_unlock();
             }
             break;
 
@@ -363,11 +380,13 @@ static void canbus_parse_hil_frame(app_data_t *data, const canbus_rx_frame_t *fr
                     be_i16(&rx_data[6])
                 };
 
+                adbms_spi_lock();
                 (void)accumulator_hil_ingest_temp_triplet(&data->acc,
                                                           rx_data[0],
                                                           rx_data[1],
                                                           temp_deci_c,
                                                           now);
+                adbms_spi_unlock();
             }
             break;
 

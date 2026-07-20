@@ -24,6 +24,8 @@ UNIT_SRC := unit/ams_unit_test_runner.c
 UNIT_BIN = $(BUILD_DIR)/ams_unit_tests
 OWNER_SRC := production/bms_owner_test.c
 OWNER_BIN = $(BUILD_DIR)/bms_owner_test
+PROFILE_SRC := production/profile_compile_test.c
+ESTIMATOR_TOPOLOGY_SRC := production/estimator_topology_test.c
 ESTIMATOR_SRC := \
 	$(AMS_ROOT)/Core/Src/estimator/ams_soc_ekf.c \
 	$(AMS_ROOT)/Core/Src/estimator/ams_estimator_lut.c
@@ -36,6 +38,8 @@ AIR_MONITOR_SRC := \
 
 THERMISTOR_SRC := \
 	$(AMS_ROOT)/Core/Src/ext_drivers/thermistor_model.c
+MEASUREMENT_SRC := \
+	$(AMS_ROOT)/Core/Src/measurement/ams_measurement.c
 THERMISTOR_UNIT_SRC := unit/thermistor_model_unit_test.c
 THERMISTOR_UNIT_BIN = $(BUILD_DIR)/thermistor_model_unit_tests
 THERMISTOR_TOOL_DIR := $(REPO_ROOT)/Tools/thermistor_model
@@ -47,9 +51,34 @@ COMMON_DEFS := \
 	-DUSE_HAL_DRIVER \
 	-DAMS_HOST_TEST=1
 
-HOST_EXERCISE_DEFS := \
+HOST_HW_BRINGUP ?= 0
+HOST_BALANCE_INHIBIT_DEFAULT ?= 0
+
+HOST_EXERCISE_DEFS = \
+	-DAMS_BUILD_PROFILE=1 \
+	-DAMS_HW_BRINGUP=$(HOST_HW_BRINGUP) \
+	-DAMS_HW_BRINGUP_BALANCE_INHIBIT_DEFAULT=$(HOST_BALANCE_INHIBIT_DEFAULT) \
 	-DAMS_ENABLE_HIL_CAN=1 \
 	-DAMS_ENABLE_SERVICE_CLI=1
+
+VEHICLE_VALIDATION_DEFS := \
+	-DAMS_BUILD_PROFILE=3 \
+	-DAMS_VEHICLE_PROFILE_REVIEWED=1 \
+	-DAMS_IMD_TARGET_VALIDATED=1 \
+	-DAMS_IWDG_TARGET_VALIDATED=1 \
+	-DAMS_CURRENT_POLARITY_VALIDATED=1 \
+	-DAMS_CURRENT_CALIBRATION_VALIDATED=1 \
+	-DAMS_BALANCE_TARGET_VALIDATED=1 \
+	-DAMS_CAN_VEHICLE_CONTRACT_VALIDATED=1
+
+VEHICLE_MANIFEST_DEFS := \
+	-DAMS_BUILD_GIT_COMMIT=\"host-profile-gate\" \
+	-DAMS_CURRENT_CALIBRATION_REVISION=\"host-gate-not-release\" \
+	-DAMS_CAN_CONTRACT_REVISION=\"host-gate-not-release\" \
+	-DAMS_THRESHOLD_REVISION=\"host-gate-not-release\" \
+	-DAMS_ESTIMATOR_MODEL_REVISION=\"host-gate-not-release\"
+
+VEHICLE_PROFILE_DEFS := $(VEHICLE_VALIDATION_DEFS) $(VEHICLE_MANIFEST_DEFS)
 
 INC := \
 	-Iinclude \
@@ -76,7 +105,7 @@ WARN := \
 CFLAGS_COMMON := -std=c11 -g -O0 $(WARN) $(COMMON_DEFS) $(INC)
 LDLIBS := -lm
 
-.PHONY: help check-root compile unit thermistor-validate test production-gates static-allocation-gate state-ownership-gate system-sil apm-sil bringup-test hil-adbms-test imd-test air-feedback-stub-test safety-test stress ci asan ubsan analyze clang-analyze clean list make-build-dir
+.PHONY: help check-root compile unit thermistor-validate test profile-gates estimator-topology-gates production-gates static-allocation-gate state-ownership-gate target-project-gate system-sil apm-sil bringup-test hil-adbms-test imd-test air-feedback-stub-test safety-test stress ci asan ubsan analyze clang-analyze clean list make-build-dir
 
 help:
 	@echo "DER26 AMS host test harness"
@@ -85,9 +114,11 @@ help:
 	@echo "  make unit          Build and run isolated unit tests"
 	@echo "  make test          Build and run comprehensive host tests"
 	@echo "  make thermistor-validate Compile C model and compare against every Vishay CSV row"
+	@echo "  make profile-gates Verify bench/HIL/vehicle defaults and vehicle evidence lock"
 	@echo "  make production-gates Verify HIL/service CLI are disabled by default"
 	@echo "  make static-allocation-gate Verify every application task uses fixed storage"
 	@echo "  make state-ownership-gate Verify state and CAN-control ownership boundaries"
+	@echo "  make target-project-gate Verify CubeIDE project identity, paths, warnings and linker scripts"
 	@echo "  make system-sil    Alias for comprehensive system-level SIL/injection tests"
 	@echo "  make apm-sil       Run actual-driver ADBMS2950 unit tests plus final-ring CLI/SIL tests"
 	@echo "  make bringup-test  Run comprehensive tests with AMS_HW_BRINGUP=1"
@@ -132,7 +163,7 @@ unit: check-root make-build-dir
 	$(CC) $(CFLAGS_COMMON) $(THERMISTOR_UNIT_SRC) $(THERMISTOR_SRC) -o $(THERMISTOR_UNIT_BIN) $(LDLIBS)
 	$(THERMISTOR_UNIT_BIN)
 
-ci: unit thermistor-validate test apm-sil production-gates static-allocation-gate state-ownership-gate analyze
+ci: unit thermistor-validate test apm-sil profile-gates estimator-topology-gates production-gates static-allocation-gate state-ownership-gate target-project-gate analyze
 
 thermistor-validate: check-root make-build-dir
 	$(PYTHON) "$(THERMISTOR_TOOL_DIR)/validate_compiled_model.py" \
@@ -146,14 +177,63 @@ test: CFLAGS_COMMON += $(HOST_EXERCISE_DEFS)
 test: compile
 	$(BIN)
 
+profile-gates: check-root make-build-dir
+	$(CC) $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=1 -DAMS_EXPECTED_PROFILE=1 \
+		$(PROFILE_SRC) -o "$(BUILD_DIR)/profile_bench" $(LDLIBS)
+	"$(BUILD_DIR)/profile_bench"
+	$(CC) $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=2 -DAMS_EXPECTED_PROFILE=2 \
+		$(PROFILE_SRC) -o "$(BUILD_DIR)/profile_hil" $(LDLIBS)
+	"$(BUILD_DIR)/profile_hil"
+	$(CC) $(CFLAGS_COMMON) -Werror $(VEHICLE_PROFILE_DEFS) -DAMS_EXPECTED_PROFILE=3 \
+		$(PROFILE_SRC) -o "$(BUILD_DIR)/profile_vehicle" $(LDLIBS)
+	"$(BUILD_DIR)/profile_vehicle"
+	@if $(CC) $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=3 -DAMS_EXPECTED_PROFILE=3 \
+		$(PROFILE_SRC) -o "$(BUILD_DIR)/profile_vehicle_unsafe" $(LDLIBS) \
+		>"$(BUILD_DIR)/profile_vehicle_unsafe.log" 2>&1; then \
+		echo "ERROR: vehicle profile compiled without release-evidence acknowledgements"; \
+		exit 1; \
+	fi
+	@if $(CC) $(CFLAGS_COMMON) -Werror $(VEHICLE_VALIDATION_DEFS) \
+		-DAMS_EXPECTED_PROFILE=3 $(PROFILE_SRC) \
+		-o "$(BUILD_DIR)/profile_vehicle_missing_manifest" $(LDLIBS) \
+		>"$(BUILD_DIR)/profile_vehicle_missing_manifest.log" 2>&1; then \
+		echo "ERROR: vehicle profile compiled without explicit manifest revisions"; \
+		exit 1; \
+	fi
+	@echo "PASS explicit profiles and fail-closed vehicle evidence/manifest gates"
+
+estimator-topology-gates: check-root make-build-dir
+	$(CC) $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=1 \
+		-DAMS_ESTIMATOR_DEFAULT_TOPOLOGY=1 \
+		-DAMS_EXPECTED_ESTIMATOR_INSTANCES=1 \
+		$(ESTIMATOR_TOPOLOGY_SRC) $(ESTIMATOR_SRC) \
+		-o "$(BUILD_DIR)/estimator_topology_pack" $(LDLIBS)
+	"$(BUILD_DIR)/estimator_topology_pack"
+	$(CC) $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=1 \
+		-DAMS_ESTIMATOR_DEFAULT_TOPOLOGY=2 \
+		-DAMS_EXPECTED_ESTIMATOR_INSTANCES=5 \
+		$(ESTIMATOR_TOPOLOGY_SRC) $(ESTIMATOR_SRC) \
+		-o "$(BUILD_DIR)/estimator_topology_segments" $(LDLIBS)
+	"$(BUILD_DIR)/estimator_topology_segments"
+	@if $(CC) $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=2 \
+		-DAMS_ESTIMATOR_DEFAULT_TOPOLOGY=2 \
+		-DAMS_EXPECTED_ESTIMATOR_INSTANCES=5 \
+		$(ESTIMATOR_TOPOLOGY_SRC) $(ESTIMATOR_SRC) \
+		-o "$(BUILD_DIR)/estimator_topology_hil_invalid" $(LDLIBS) \
+		>"$(BUILD_DIR)/estimator_topology_hil_invalid.log" 2>&1; then \
+		echo "ERROR: segment topology compiled against pack-only HIL contract"; \
+		exit 1; \
+	fi
+	@echo "PASS pack/segment estimator topology and pack-only HIL contract gates"
+
 production-gates: BUILD_DIR = build-production
-production-gates: CFLAGS_COMMON += -DAMS_HOST_PRODUCTION_GATE_TEST=1
+production-gates: CFLAGS_COMMON += $(VEHICLE_PROFILE_DEFS) -DAMS_HOST_PRODUCTION_GATE_TEST=1
 production-gates: check-root
 	@mkdir -p "$(BUILD_DIR)"
 	$(CC) $(CFLAGS_COMMON) $(SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC) -o $(BIN) $(LDLIBS)
 	$(BIN)
 	$(CC) $(CFLAGS_COMMON) -ffunction-sections -fdata-sections \
-		$(AMS_ROOT)/Core/Src/app.c $(OWNER_SRC) \
+		$(AMS_ROOT)/Core/Src/app.c $(MEASUREMENT_SRC) $(OWNER_SRC) \
 		-Wl,--gc-sections -o $(OWNER_BIN) $(LDLIBS)
 	$(OWNER_BIN)
 
@@ -179,7 +259,8 @@ static-allocation-gate: check-root
 	@grep -q 'xQueueCreateStatic' \
 		"$(AMS_ROOT)/Middlewares/Third_Party/FreeRTOS/Source/timers.c"
 	@grep -q 'cb_mem = &adbms_spi_mutex_cb' "$(AMS_ROOT)/Core/Src/app.c"
-	@echo "PASS application, idle, timer-task, timer-queue, and ADBMS mutex static-allocation gate"
+	@grep -q 'cb_mem = &current_window_mutex_cb' "$(AMS_ROOT)/Core/Src/app.c"
+	@echo "PASS application, idle, timer-task, timer-queue, ADBMS and current-window static-allocation gate"
 
 state-ownership-gate: check-root
 	@if grep -R -nE '(data->state|app\.state)[[:space:]]*=[^=]' \
@@ -199,6 +280,19 @@ state-ownership-gate: check-root
 	@grep -q 'ams_state_transition_begin' "$(AMS_ROOT)/Core/Src/tasks/cli_task.c"
 	@echo "PASS centralized state writers and CAN control ownership gate"
 
+target-project-gate: check-root
+	@$(PYTHON) -c 'import xml.etree.ElementTree as E; E.parse("$(AMS_ROOT)/.project"); E.parse("$(AMS_ROOT)/.cproject")'
+	@grep -q '<name>DER26-AMS</name>' "$(AMS_ROOT)/.project"
+	@grep -q 'project id="DER26-AMS' "$(AMS_ROOT)/.cproject"
+	@if grep -q 'DER25-AMS' "$(AMS_ROOT)/.cproject" "$(AMS_ROOT)/.project"; then \
+		echo "ERROR: stale DER25 CubeIDE project metadata remains"; exit 1; \
+	fi
+	@grep -Fq 'buildPath="$${workspace_loc:/$${ProjName}/Debug}"' "$(AMS_ROOT)/.cproject"
+	@grep -Fq 'buildPath="$${workspace_loc:/$${ProjName}/Release}"' "$(AMS_ROOT)/.cproject"
+	@test "$$(grep -c 'value="-Wall -Wextra"' "$(AMS_ROOT)/.cproject")" -eq 2
+	@test "$$(grep -c 'STM32F767ZITX_FLASH.ld' "$(AMS_ROOT)/.cproject")" -eq 4
+	@echo "PASS CubeIDE project identity, build paths, warning flags, XML and linker-script metadata"
+
 system-sil: test
 
 # Dedicated final-ring ADBMS2950 gate.  The unit binary links the real driver;
@@ -215,7 +309,8 @@ apm-sil: check-root
 		$(SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC) -o "$(BUILD_DIR)-apm/ams_apm_sil_tests" $(LDLIBS)
 	"$(BUILD_DIR)-apm/ams_apm_sil_tests"
 
-bringup-test: CFLAGS_COMMON += -DAMS_HW_BRINGUP=1
+bringup-test: HOST_HW_BRINGUP = 1
+bringup-test: HOST_BALANCE_INHIBIT_DEFAULT = 1
 bringup-test: test
 
 hil-adbms-test: CFLAGS_COMMON += -DAMS_HIL_REPLACE_ADBMS=1 -DAMS_HOST_ONLY_HIL_ADBMS_TEST=1

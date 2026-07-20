@@ -392,6 +392,154 @@ static void test_r0_initialization_clamp(void)
     EXPECT_NEAR(low.r0_ohm, 0.005f, TEST_EPS_SMALL);
 }
 
+static void test_r0_observability_and_accounting(void)
+{
+    ams_ekf_config_t cfg;
+    ams_ekf_make_pack_config(&cfg);
+    cfg.soc_init = 0.50f;
+
+    ams_ekf_instance_t ekf;
+    ams_ekf_init(&ekf, &cfg);
+
+    uint32_t reject = ams_resistance_soh_gate(&ekf,
+                                              30.0f,
+                                              true,
+                                              true,
+                                              true);
+    EXPECT_TRUE((reject & AMS_SOH_REJECT_LOW_CURRENT_STEP) != 0u);
+
+    ekf.step_count = 1u;
+    ekf.last_i_pack_A = 0.0f;
+    reject = ams_resistance_soh_gate(&ekf,
+                                     30.0f,
+                                     true,
+                                     true,
+                                     true);
+    EXPECT_TRUE(reject == AMS_SOH_REJECT_NONE);
+
+    float i_cell_A = 30.0f / cfg.parallel_cell_count;
+    float v_meas_V = (float)cfg.series_group_count *
+        (ams_p42a_ocv_v(ekf.soc, 25.0f) - (ekf.r0_ohm * i_cell_A));
+    float r0_before = ekf.r0_ohm;
+    ams_ekf_r0_update_result_t result = AMS_EKF_R0_UPDATE_APPLIED;
+    EXPECT_TRUE(ams_ekf_step_gated(&ekf,
+                                   30.0f,
+                                   v_meas_V,
+                                   25.0f,
+                                   0.1f,
+                                   false,
+                                   &result));
+    EXPECT_TRUE(result == AMS_EKF_R0_UPDATE_NOT_REQUESTED);
+    EXPECT_NEAR(ekf.r0_ohm, r0_before, TEST_EPS_SMALL);
+
+    ams_ekf_init(&ekf, &cfg);
+    ekf.step_count = 1u;
+    ekf.last_i_pack_A = 0.0f;
+    i_cell_A = 30.0f / cfg.parallel_cell_count;
+    v_meas_V = (float)cfg.series_group_count *
+        (ams_p42a_ocv_v(ekf.soc, 25.0f) - (ekf.r0_ohm * i_cell_A));
+    EXPECT_TRUE(ams_ekf_step_gated(&ekf,
+                                   30.0f,
+                                   v_meas_V,
+                                   25.0f,
+                                   0.1f,
+                                   true,
+                                   &result));
+    EXPECT_TRUE(result == AMS_EKF_R0_UPDATE_APPLIED);
+
+    ams_resistance_soh_t soh = {0};
+    ams_resistance_soh_record(&soh,
+                              &ekf,
+                              7u,
+                              1000u,
+                              true,
+                              AMS_SOH_REJECT_NONE,
+                              result,
+                              true);
+    EXPECT_TRUE(soh.accepted_count == 1u);
+    EXPECT_TRUE(soh.rejected_count == 0u);
+    EXPECT_TRUE((soh.status_flags & AMS_SOH_STATUS_LAST_OBSERVABLE) != 0u);
+    EXPECT_FINITE(soh.reference_cell_r0_ohm);
+    EXPECT_FINITE(soh.resistance_growth_ratio);
+
+    ams_resistance_soh_record(&soh,
+                              &ekf,
+                              8u,
+                              1100u,
+                              false,
+                              AMS_SOH_REJECT_CURRENT_CALIBRATION |
+                                  AMS_SOH_REJECT_LOW_CURRENT,
+                              AMS_EKF_R0_UPDATE_NOT_REQUESTED,
+                              true);
+    EXPECT_TRUE(soh.rejected_count == 1u);
+    EXPECT_TRUE(soh.reject_current_calibration_count == 1u);
+    EXPECT_TRUE(soh.reject_low_current_count == 1u);
+    EXPECT_TRUE(soh.observation_confidence_pct == 0u);
+
+    ams_ekf_init(&ekf, &cfg);
+    ekf.step_count = 1u;
+    ekf.last_i_pack_A = 0.0f;
+    i_cell_A = 30.0f / cfg.parallel_cell_count;
+    v_meas_V = (float)cfg.series_group_count *
+        (ams_p42a_ocv_v(ekf.soc, 25.0f) - (ekf.r0_ohm * i_cell_A)) +
+        ((float)cfg.series_group_count *
+         (AMS_SOH_MAX_INNOVATION_PER_CELL_V + 0.01f));
+    EXPECT_TRUE(ams_ekf_step_gated(&ekf,
+                                   30.0f,
+                                   v_meas_V,
+                                   25.0f,
+                                   0.1f,
+                                   true,
+                                   &result));
+    EXPECT_TRUE(result == AMS_EKF_R0_UPDATE_REJECT_INNOVATION);
+
+    memset(&soh, 0, sizeof(soh));
+    soh.accepted_count = AMS_SOH_MIN_ACCEPTED_OBSERVATIONS - 1u;
+    ekf.valid = 1u;
+    ekf.p_r0 = AMS_SOH_MAX_R0_VARIANCE_OHM2 * 0.5f;
+    ams_resistance_soh_record(&soh,
+                              &ekf,
+                              99u,
+                              2000u,
+                              true,
+                              AMS_SOH_REJECT_NONE,
+                              AMS_EKF_R0_UPDATE_APPLIED,
+                              true);
+    EXPECT_TRUE(soh.accepted_count == AMS_SOH_MIN_ACCEPTED_OBSERVATIONS);
+    EXPECT_TRUE(soh.observation_confidence_pct == 100u);
+    EXPECT_TRUE((soh.status_flags & AMS_SOH_STATUS_ADVISORY_VALID) != 0u);
+    EXPECT_TRUE((soh.status_flags & AMS_SOH_STATUS_PERSISTED) == 0u);
+    EXPECT_TRUE(soh.persistence_valid == 0u);
+
+    ams_estimator_t summary_estimator;
+    ams_estimator_init_default(&summary_estimator);
+    summary_estimator.inst[0].valid = 1u;
+    summary_estimator.resistance_soh[0] = soh;
+    ams_estimator_refresh_summary(&summary_estimator,
+                                  AMS_ESTIMATOR_INPUT_HARDWARE,
+                                  2000u + AMS_SOH_MAX_ACCEPT_AGE_MS);
+    EXPECT_TRUE((summary_estimator.resistance_soh[0].status_flags &
+                 AMS_SOH_STATUS_ADVISORY_VALID) != 0u);
+    ams_estimator_refresh_summary(&summary_estimator,
+                                  AMS_ESTIMATOR_INPUT_HARDWARE,
+                                  2000u + AMS_SOH_MAX_ACCEPT_AGE_MS + 1u);
+    EXPECT_TRUE((summary_estimator.resistance_soh[0].status_flags &
+                 AMS_SOH_STATUS_ADVISORY_VALID) == 0u);
+    EXPECT_TRUE((summary_estimator.resistance_soh[0].status_flags &
+                 AMS_SOH_STATUS_CONVERGED) != 0u);
+
+    ams_resistance_soh_record(&soh,
+                              &ekf,
+                              100u,
+                              2000u + AMS_SOH_MAX_ACCEPT_AGE_MS + 1u,
+                              true,
+                              AMS_SOH_REJECT_LOW_CURRENT,
+                              AMS_EKF_R0_UPDATE_NOT_REQUESTED,
+                              true);
+    EXPECT_TRUE((soh.status_flags & AMS_SOH_STATUS_CONVERGED) != 0u);
+    EXPECT_TRUE((soh.status_flags & AMS_SOH_STATUS_ADVISORY_VALID) == 0u);
+}
+
 static void test_single_step_nominal_pack(void)
 {
     ams_ekf_config_t cfg;
@@ -586,6 +734,21 @@ static uint16_t unit_adc_count_for_mcu_voltage(float voltage_v)
 static uint16_t unit_adc_count_for_sensor_voltage(float sensor_voltage_v)
 {
     return unit_adc_count_for_mcu_voltage(sensor_voltage_v * 0.6f);
+}
+
+static uint16_t unit_adc_count_for_sensor_voltage_vref(float sensor_voltage_v,
+                                                       float adc_vref_v)
+{
+    float count = (sensor_voltage_v * 0.6f * 4095.0f) / adc_vref_v;
+    if(count < 0.0f)
+    {
+        count = 0.0f;
+    }
+    if(count > 4095.0f)
+    {
+        count = 4095.0f;
+    }
+    return (uint16_t)lroundf(count);
 }
 
 static void unit_adc_set_sequence(uint16_t high_count, uint16_t low_count)
@@ -842,6 +1005,8 @@ static void test_current_sensor_zero_cal_and_hysteresis(void)
     EXPECT_TRUE(current_sensor_zero_calibrate(&sensor));
     EXPECT_TRUE(sensor.zero_calibrated);
     EXPECT_TRUE(sensor.zero_cal_count == 1u);
+    EXPECT_FALSE(sensor.current_valid);
+    EXPECT_TRUE(sensor.reason == CURRENT_SENSOR_REASON_CALIBRATION_CHANGED);
 
     (void)current_sensor_convert(&sensor);
     EXPECT_TRUE(sensor.current_valid);
@@ -851,6 +1016,8 @@ static void test_current_sensor_zero_cal_and_hysteresis(void)
 
     current_sensor_zero_clear(&sensor);
     EXPECT_FALSE(sensor.zero_calibrated);
+    EXPECT_FALSE(sensor.current_valid);
+    EXPECT_TRUE(sensor.reason == CURRENT_SENSOR_REASON_CALIBRATION_CHANGED);
 
     sensor = (current_sensor_t){0};
     sensor.count_high = unit_adc_count_for_sensor_voltage(2.650f);  /* +60 A on 800 A channel */
@@ -873,6 +1040,170 @@ static void test_current_sensor_zero_cal_and_hysteresis(void)
     (void)current_sensor_convert(&sensor);
     EXPECT_TRUE(sensor.current_valid);
     EXPECT_TRUE(sensor.selected_range == CURRENT_SENSOR_RANGE_50A);
+}
+
+static void test_current_sensor_calibration_record_integrity(void)
+{
+    current_sensor_t source;
+    current_sensor_t restored;
+    current_sensor_calibration_record_t record;
+    current_sensor_calibration_record_t corrupted;
+    current_sensor_calibration_metadata_t metadata = {
+        .calibration_id = 42u,
+        .capture_time_s = 1784563200u,
+        .calibration_temp_deci_c = 235,
+        .uncertainty_50a_mA = 200u,
+        .uncertainty_800a_mA = 2000u
+    };
+
+    current_sensor_init(&source, NULL, NULL, 0u, 0u);
+    source.count_high = unit_adc_count_for_sensor_voltage(2.505f);
+    source.count_low = unit_adc_count_for_sensor_voltage(2.540f);
+    unit_current_sensor_mark_fresh(&source);
+    (void)current_sensor_convert(&source);
+    EXPECT_TRUE(current_sensor_zero_calibrate(&source));
+    EXPECT_FALSE(current_sensor_calibration_confident(&source));
+    EXPECT_TRUE(current_sensor_calibration_record_create(&source,
+                                                          &metadata,
+                                                          &record));
+    EXPECT_TRUE(current_sensor_calibration_record_valid(&record));
+    EXPECT_TRUE(record.magic == CURRENT_SENSOR_CALIBRATION_MAGIC);
+    EXPECT_TRUE(record.schema == CURRENT_SENSOR_CALIBRATION_SCHEMA);
+    EXPECT_TRUE(record.size == CURRENT_SENSOR_CALIBRATION_RECORD_SIZE);
+    EXPECT_TRUE(record.calibration_id == metadata.calibration_id);
+
+    corrupted = record;
+    corrupted.zero_offset_50a_mA++;
+    EXPECT_FALSE(current_sensor_calibration_record_valid(&corrupted));
+    corrupted = record;
+    corrupted.magic ^= 1u;
+    EXPECT_FALSE(current_sensor_calibration_record_valid(&corrupted));
+
+    current_sensor_init(&restored, NULL, NULL, 0u, 0u);
+    /* Restoring a record requires a newly sampled, physically proven zero
+     * whose live offsets agree with the stored board calibration. */
+    restored.count_high = source.count_high;
+    restored.count_low = source.count_low;
+    unit_current_sensor_mark_fresh(&restored);
+    (void)current_sensor_convert(&restored);
+    EXPECT_FALSE(current_sensor_calibration_apply(&restored,
+                                                   &record,
+                                                   false));
+    EXPECT_FALSE(restored.zero_calibrated);
+
+    current_sensor_t wrong_board;
+    current_sensor_init(&wrong_board, NULL, NULL, 0u, 0u);
+    wrong_board.count_high = unit_adc_count_for_sensor_voltage(2.5f);
+    wrong_board.count_low = unit_adc_count_for_sensor_voltage(2.5f);
+    unit_current_sensor_mark_fresh(&wrong_board);
+    (void)current_sensor_convert(&wrong_board);
+    EXPECT_FALSE(current_sensor_calibration_apply(&wrong_board,
+                                                   &record,
+                                                   true));
+    EXPECT_FALSE(wrong_board.zero_calibrated);
+
+    EXPECT_TRUE(current_sensor_calibration_apply(&restored,
+                                                  &record,
+                                                  true));
+    EXPECT_TRUE(restored.zero_calibrated);
+    EXPECT_TRUE(restored.calibration_loaded_from_record);
+    EXPECT_TRUE(restored.calibration_restore_count == 1u);
+    EXPECT_TRUE(restored.calibration_id == metadata.calibration_id);
+    EXPECT_TRUE(restored.calibration_capture_time_s ==
+                metadata.capture_time_s);
+    EXPECT_TRUE(restored.calibration_temp_deci_c ==
+                metadata.calibration_temp_deci_c);
+    EXPECT_NEAR(restored.zero_offset_50a,
+                source.zero_offset_50a,
+                0.0011f);
+    EXPECT_NEAR(restored.zero_offset_800a,
+                source.zero_offset_800a,
+                0.0011f);
+    EXPECT_TRUE(current_sensor_calibration_confident(&restored));
+    EXPECT_FALSE(restored.current_valid);
+    EXPECT_TRUE(restored.reason == CURRENT_SENSOR_REASON_CALIBRATION_CHANGED);
+
+    restored.calibration_capture_time_s =
+        CURRENT_SENSOR_CALIBRATION_TIME_UNKNOWN;
+    EXPECT_FALSE(current_sensor_calibration_confident(&restored));
+    restored.calibration_capture_time_s = metadata.capture_time_s;
+    restored.calibration_temp_deci_c = 1201;
+    EXPECT_FALSE(current_sensor_calibration_confident(&restored));
+    restored.calibration_temp_deci_c = metadata.calibration_temp_deci_c;
+    restored.calibration_uncertainty_50a_mA = 0u;
+    EXPECT_FALSE(current_sensor_calibration_confident(&restored));
+    restored.calibration_uncertainty_50a_mA = metadata.uncertainty_50a_mA;
+    EXPECT_TRUE(current_sensor_calibration_confident(&restored));
+
+    current_sensor_set_reference_voltages(&restored, 3.2f, 4.9f);
+    EXPECT_FALSE(restored.zero_calibrated);
+    EXPECT_FALSE(restored.calibration_loaded_from_record);
+    EXPECT_FALSE(current_sensor_calibration_confident(&restored));
+
+    metadata.uncertainty_50a_mA = 501u;
+    metadata.uncertainty_800a_mA = 5001u;
+    EXPECT_TRUE(current_sensor_calibration_record_create(&source,
+                                                          &metadata,
+                                                          &record));
+    current_sensor_init(&restored, NULL, NULL, 0u, 0u);
+    restored.count_high = source.count_high;
+    restored.count_low = source.count_low;
+    unit_current_sensor_mark_fresh(&restored);
+    EXPECT_TRUE(current_sensor_calibration_apply(&restored,
+                                                  &record,
+                                                  true));
+    EXPECT_FALSE(current_sensor_calibration_confident(&restored));
+
+    current_sensor_zero_clear(&restored);
+    restored.count_high = unit_adc_count_for_sensor_voltage(2.5f);
+    restored.count_low = unit_adc_count_for_sensor_voltage(2.74f);
+    unit_current_sensor_mark_fresh(&restored);
+    EXPECT_FALSE(current_sensor_calibration_apply(&restored,
+                                                   &record,
+                                                   true));
+    EXPECT_FALSE(restored.zero_calibrated);
+
+    metadata.calibration_temp_deci_c = 1201;
+    EXPECT_FALSE(current_sensor_calibration_record_create(&source,
+                                                           &metadata,
+                                                           &record));
+
+    /* Restore must evaluate the live ADC pair using the reference voltages
+     * captured in the record, not whatever defaults happen to be loaded in
+     * the destination object before restore. */
+    current_sensor_t referenced_source;
+    current_sensor_t referenced_restore;
+    current_sensor_calibration_record_t referenced_record;
+    metadata.calibration_temp_deci_c = 250;
+    metadata.uncertainty_50a_mA = 300u;
+    metadata.uncertainty_800a_mA = 3000u;
+    metadata.calibration_id = 43u;
+    current_sensor_init(&referenced_source, NULL, NULL, 0u, 0u);
+    current_sensor_set_reference_voltages(&referenced_source, 3.2f, 4.9f);
+    referenced_source.count_low =
+        unit_adc_count_for_sensor_voltage_vref(2.4892f, 3.2f);
+    referenced_source.count_high =
+        unit_adc_count_for_sensor_voltage_vref(2.4549f, 3.2f);
+    unit_current_sensor_mark_fresh(&referenced_source);
+    (void)current_sensor_convert(&referenced_source);
+    EXPECT_TRUE(current_sensor_zero_calibrate(&referenced_source));
+    EXPECT_TRUE(current_sensor_calibration_record_create(&referenced_source,
+                                                          &metadata,
+                                                          &referenced_record));
+
+    current_sensor_init(&referenced_restore, NULL, NULL, 0u, 0u);
+    referenced_restore.count_low = referenced_source.count_low;
+    referenced_restore.count_high = referenced_source.count_high;
+    unit_current_sensor_mark_fresh(&referenced_restore);
+    EXPECT_TRUE(current_sensor_calibration_apply(&referenced_restore,
+                                                  &referenced_record,
+                                                  true));
+    EXPECT_NEAR(referenced_restore.adc_vref_v, 3.2f, 0.00001f);
+    EXPECT_NEAR(referenced_restore.sensor_supply_v, 4.9f, 0.00001f);
+    EXPECT_FALSE(referenced_restore.current_valid);
+    (void)current_sensor_convert(&referenced_restore);
+    EXPECT_TRUE(referenced_restore.current_valid);
+    EXPECT_NEAR(referenced_restore.current, 0.0f, 0.30f);
 }
 
 static void test_current_fault_threshold_edges_and_recovery(void)
@@ -3078,6 +3409,7 @@ int main(void)
     run_test("even split configuration", test_even_split_configuration);
     run_test("bad config rejection", test_bad_config_rejected);
     run_test("R0 initialization clamp", test_r0_initialization_clamp);
+    run_test("R0 observability/accounting", test_r0_observability_and_accounting);
     run_test("single-step nominal pack", test_single_step_nominal_pack);
     run_test("invalid step inputs", test_invalid_step_inputs);
     run_test("200-step numerical stability", test_200_step_numerical_stability);
@@ -3111,6 +3443,7 @@ int main(void)
     run_test("current sensor invalid conditions", test_current_sensor_invalid_conditions);
     run_test("current sensor fresh pair/channel mapping", test_current_sensor_requires_fresh_pair_and_channel_mapping);
     run_test("current sensor zero calibration/hysteresis", test_current_sensor_zero_cal_and_hysteresis);
+    run_test("current sensor calibration record integrity", test_current_sensor_calibration_record_integrity);
     run_test("current sensor ADC status path", test_current_sensor_read_adc_status_path);
     run_test("current fault policy", test_current_fault_policy);
     run_test("current fault threshold edges/recovery", test_current_fault_threshold_edges_and_recovery);

@@ -22,8 +22,24 @@
 #include "task.h"
 
 app_data_t app = {0};
+
+const ams_build_manifest_t ams_build_manifest = {
+    .magic = AMS_BUILD_MANIFEST_MAGIC,
+    .schema = AMS_BUILD_MANIFEST_SCHEMA,
+    .profile = AMS_BUILD_PROFILE,
+    .feature_flags = AMS_BUILD_FEATURE_FLAGS_VALUE,
+    .estimator_topology = AMS_ESTIMATOR_DEFAULT_TOPOLOGY,
+    .profile_name = AMS_BUILD_PROFILE_NAME,
+    .git_commit = AMS_BUILD_GIT_COMMIT,
+    .estimator_model_revision = AMS_ESTIMATOR_MODEL_REVISION,
+    .current_calibration_revision = AMS_CURRENT_CALIBRATION_REVISION,
+    .can_contract_revision = AMS_CAN_CONTRACT_REVISION,
+    .threshold_revision = AMS_THRESHOLD_REVISION
+};
 static osMutexId_t adbms_spi_mutex;
 static StaticSemaphore_t adbms_spi_mutex_cb;
+static osMutexId_t current_window_mutex;
+static StaticSemaphore_t current_window_mutex_cb;
 
 /*
  * ADBMS operations contain nested helper calls and prepare shared driver
@@ -38,6 +54,14 @@ static const osMutexAttr_t adbms_spi_mutex_attr =
 	.attr_bits = osMutexRecursive | osMutexPrioInherit,
 	.cb_mem = &adbms_spi_mutex_cb,
 	.cb_size = sizeof(adbms_spi_mutex_cb),
+};
+
+static const osMutexAttr_t current_window_mutex_attr =
+{
+	.name = "current window",
+	.attr_bits = osMutexPrioInherit,
+	.cb_mem = &current_window_mutex_cb,
+	.cb_size = sizeof(current_window_mutex_cb),
 };
 
 static void adbms_spi_lock_panic(ams_panic_reason_t reason)
@@ -198,6 +222,29 @@ void adbms_spi_unlock(void)
 	}
 }
 
+void ams_current_window_lock(void)
+{
+	if(current_window_mutex == NULL)
+	{
+		adbms_spi_lock_panic(AMS_PANIC_MUTEX_ACQUIRE_FAILED);
+	}
+
+	if(osMutexAcquire(current_window_mutex,
+	                  AMS_CURRENT_WINDOW_MUTEX_TIMEOUT_TICKS) != osOK)
+	{
+		adbms_spi_lock_panic(AMS_PANIC_MUTEX_ACQUIRE_FAILED);
+	}
+}
+
+void ams_current_window_unlock(void)
+{
+	if((current_window_mutex == NULL) ||
+	   (osMutexRelease(current_window_mutex) != osOK))
+	{
+		adbms_spi_lock_panic(AMS_PANIC_MUTEX_RELEASE_FAILED);
+	}
+}
+
 void app_create(void)
 {
 	app.hard_fault = false;
@@ -287,6 +334,8 @@ void app_create(void)
 	app.min_voltage_cell = 0u;
 	voltage_fault_init(&app.voltage_fault_state);
 	app.estimator_fault = false;
+	ams_current_window_init(&app.current_window, osKernelGetTickCount());
+	ams_measurement_store_init(&app.measurement_store);
 
 	app.charger_fault = false;
 	app.adbms_diag_fault = false;
@@ -295,18 +344,28 @@ void app_create(void)
 	app.adbms_open_wire_fault = false;
 	app.adbms_balance_write_fault = false;
 	app.adbms_scan_active = false;
+	app.adbms_balance_active = false;
 	app.adbms_scan_count = 0u;
 	app.adbms_status_diag_count = 0u;
 	app.adbms_config_diag_count = 0u;
 	app.adbms_open_wire_diag_count = 0u;
 	app.adbms_balance_write_fail_count = 0u;
+	app.adbms_balance_recovery_count = 0u;
+	app.adbms_scan_deadline_miss_count = 0u;
+	app.adbms_last_scan_duration_ms = 0u;
+	app.adbms_max_scan_duration_ms = 0u;
+	app.adbms_last_schedule_interval_ms = AMS_ADBMS_TASK_PERIOD_MS;
+	app.adbms_last_balance_on_ms = 0u;
+	app.adbms_last_balance_off_ms = 0u;
+	app.adbms_balance_apply_tick = 0u;
 	app.adbms_last_diag_status = HAL_OK;
 	app.task_heartbeat_fault = false;
 	app.logger_heartbeat_fault = false;
 	app.heartbeat_stale_mask = 0u;
 	app.heartbeat_seen_mask = 0u;
     app.bms_state     = false;
-#if AMS_HW_BRINGUP && !AMS_HW_BRINGUP_BMS_OK_RELEASED_DEFAULT
+#if AMS_PROFILE_BMS_OUTPUT_INHIBIT_DEFAULT || \
+    (AMS_HW_BRINGUP && !AMS_HW_BRINGUP_BMS_OK_RELEASED_DEFAULT)
 	app.bms_output_inhibit = true;
 #else
 	app.bms_output_inhibit = false;
@@ -354,6 +413,8 @@ void app_create(void)
 	app.min_voltage = 0.0;
 	app.current = 0.0;
 	app.current_valid = false;
+	app.current_sample_tick = 0u;
+	app.current_sample_sequence = 0u;
 	app.current_selected_range = CURRENT_SENSOR_RANGE_UNKNOWN;
 	app.current_meas_reason = CURRENT_SENSOR_REASON_ADC_READ;
 
@@ -384,6 +445,11 @@ void app_create(void)
 	set_bms(0);
 	adbms_spi_mutex = osMutexNew(&adbms_spi_mutex_attr);
 	if(adbms_spi_mutex == NULL)
+	{
+		adbms_spi_lock_panic(AMS_PANIC_MUTEX_CREATE_FAILED);
+	}
+	current_window_mutex = osMutexNew(&current_window_mutex_attr);
+	if(current_window_mutex == NULL)
 	{
 		adbms_spi_lock_panic(AMS_PANIC_MUTEX_CREATE_FAILED);
 	}

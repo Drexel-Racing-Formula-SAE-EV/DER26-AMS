@@ -61,21 +61,41 @@ static current_fault_mode_t current_task_fault_mode_from_state(state_t state)
 static void current_task_publish_fault_state(app_data_t *app_data,
                                              const current_fault_state_t *fault,
                                              const current_sensor_t *sensor,
-                                             float published_current)
+                                             float published_current,
+                                             uint32_t sample_tick)
 {
     if((app_data == NULL) || (fault == NULL) || (sensor == NULL))
     {
         return;
     }
 
-    /* The supervisor runs at a higher priority.  Publish the measurement,
-     * state-machine internals, and flattened gates as one snapshot so it can
-     * never combine fields from two different current samples. */
+    /* The caller owns the current-data mutex across sensor conversion, fault
+     * evaluation, and this interval update. This keeps service calibration
+     * from changing offsets or references halfway through a sample. */
+    bool calibration_record_confident =
+        current_sensor_calibration_confident(sensor);
+    uint32_t calibration_id = calibration_record_confident ?
+                              sensor->calibration_id : 0u;
+    ams_current_window_update(&app_data->current_window,
+                              sample_tick,
+                              published_current,
+                              sensor->current_filtered,
+                              sensor->current_valid,
+                              calibration_record_confident,
+                              calibration_id);
+
+    /* The supervisor runs at a higher priority. Publish the scalar safety
+     * fields in one short critical section so it cannot combine two samples. */
     taskENTER_CRITICAL();
     app_data->current_valid = sensor->current_valid;
     app_data->current_selected_range = sensor->selected_range;
     app_data->current_meas_reason = sensor->reason;
     app_data->current = published_current;
+    app_data->current_sample_tick = sample_tick;
+    if(app_data->current_sample_sequence != UINT32_MAX)
+    {
+        app_data->current_sample_sequence++;
+    }
     app_data->current_fault_state = *fault;
     app_data->current_sensor_fault = fault->sensor_fault;
     app_data->current_overcurrent_warning = fault->warning;
@@ -129,6 +149,10 @@ void current_task_fn(void *argument)
     {
         entry = osKernelGetTickCount();
 
+        /* This task owns normal DHAB sampling. The same bounded mutex is used
+         * by bench-only calibration commands and by the ADBMS task when it
+         * closes a current-integration window. */
+        ams_current_window_lock();
         if(current_sensor_read_adc(current_sensor))
         {
             (void)current_sensor_convert(current_sensor);
@@ -149,7 +173,9 @@ void current_task_fn(void *argument)
         current_task_publish_fault_state(app_data,
                                          &next_fault,
                                          current_sensor,
-                                         published_current);
+                                         published_current,
+                                         entry);
+        ams_current_window_unlock();
 
         if(app_data->current_fault_latched &&
            (!current_was_latched ||
