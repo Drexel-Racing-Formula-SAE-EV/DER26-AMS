@@ -349,6 +349,10 @@ void cli_task_fn(void *arg)
              AMS_ESTIMATOR_MODEL_REVISION);
     cli_printline(local_cli, outline);
     cli_printline(local_cli, "ADBMS6822 SPI6 expected: mode3 CPOL HIGH CPHA 2EDGE");
+#if AMS_ACCUMULATOR_5SMB_NO_APM
+    cli_printline(local_cli,
+                  "FIXTURE LOCK: 5x SMB / no APM / String A; BMS_OK, fans, balance activation, open-wire and String-B traffic disabled");
+#endif
 	cli_printline(local_cli, "Type 'help' for list of commands");
 
 	for(;;)
@@ -560,7 +564,11 @@ int get_status(int argc, char *argv[])
         ret |= cli_printline(cli, "SPI6 handle unavailable");
     }
 
+#if AMS_ACCUMULATOR_5SMB_NO_APM
+    ret |= cli_printline(cli, "Fixture order: spi pins -> spi probea -> spi sid -> spi stat -> spi cfgchk -> volt -> temp -> current; BMS_OK release unavailable");
+#else
     ret |= cli_printline(cli, "Bring-up order: spi clear -> spi preset normal -> spi scope -> spi probe -> spi status -> volt -> current -> bmsok release");
+#endif
     return ret;
 }
 
@@ -1577,6 +1585,61 @@ static int get_spi_debug_locked(int argc, char *argv[])
     }
 #endif
 
+#if AMS_ADBMS_RESTRICTED_BENCH_COMMANDS
+    if((argc >= 2) && (argv[1] != NULL))
+    {
+        const char *action = argv[1];
+        bool blocked = (!strcmp(action, "staterr") ||
+                        !strcmp(action, "clrflag") ||
+                        !strcmp(action, "cellst") ||
+                        !strcmp(action, "owcheck") ||
+                        !strcmp(action, "oweven") ||
+                        !strcmp(action, "owodd") ||
+                        !strcmp(action, "auxdiag") ||
+                        !strcmp(action, "toggle") ||
+                        !strcmp(action, "probeb") ||
+                        !strcmp(action, "cspins"));
+
+        if(!strcmp(action, "preset") && (argc >= 3) && (argv[2] != NULL))
+        {
+            blocked = (!strcmp(argv[2], "cmd") ||
+                       !strcmp(argv[2], "pattern") ||
+                       !strcmp(argv[2], "toggle") ||
+                       !strcmp(argv[2], "b"));
+        }
+
+        if(!strcmp(action, "scope"))
+        {
+            if((argc >= 3) && (argv[2] != NULL) &&
+               (!strcmp(argv[2], "b") || !strcmp(argv[2], "B") ||
+                !strcmp(argv[2], "1")))
+            {
+                blocked = true;
+            }
+            if((argc >= 4) && (argv[3] != NULL) &&
+               (!strcmp(argv[3], "cmd") || !strcmp(argv[3], "pattern")))
+            {
+                blocked = true;
+            }
+        }
+
+        if(!strcmp(action, "cs") && (argc >= 3) && (argv[2] != NULL) &&
+           (strcmp(argv[2], "a") != 0) && (strcmp(argv[2], "A") != 0) &&
+           (strcmp(argv[2], "0") != 0))
+        {
+            blocked = true;
+        }
+
+        if(blocked)
+        {
+            snprintf(outline, CLI_LINESZ,
+                     "spi %s blocked: five-SMB/no-APM fixture permits String-A monitor traffic only",
+                     action);
+            return cli_printline(cli, outline);
+        }
+    }
+#endif
+
     adbms6830_driver_t *smb = &data->acc.smb;
     const adbms6830_spi_debug_t *dbg;
     const adbms6830_diag_health_t *health;
@@ -2255,6 +2318,14 @@ static int get_apm_debug_locked(int argc, char *argv[])
 {
     int ret = 0;
 
+#if !AMS_ENABLE_APM_2950
+    (void)argc;
+    (void)argv;
+    ret |= cli_printline(cli,
+                         "APM disabled/physically absent in this build; no String-B transaction sent");
+    return ret;
+#endif
+
 #if !AMS_ENABLE_SERVICE_CLI
     if((argc >= 2) && (argv[1] != NULL) &&
        strcmp(argv[1], "status") && strcmp(argv[1], "health"))
@@ -2502,6 +2573,15 @@ int get_current(int argc, char *argv[])
     int decimal = 0;
     current_sensor_t *cs = &data->board.current_sensor;
     current_sensor_t cs_snapshot;
+
+#if AMS_ACCUMULATOR_5SMB_NO_APM
+    if((argc >= 2) && (argv[1] != NULL) && !strcmp(argv[1], "zero") &&
+       !((argc >= 3) && (argv[2] != NULL) && !strcmp(argv[2], "status")))
+    {
+        return cli_printline(cli,
+            "current zero mutation blocked: record raw DHAB evidence first in the five-SMB/no-APM fixture");
+    }
+#endif
 
     if((argc >= 2) && (argv[1] != NULL) && !strcmp(argv[1], "zero"))
     {
@@ -3222,6 +3302,9 @@ int get_bringup(int argc, char *argv[])
     const adbms6830_spi_debug_t *smb_dbg = adbms6830_spi_debug_get(smb);
     const adbms6830_diag_health_t *smb_health = adbms6830_diag_health_get(smb);
     const adbms2950_spi_debug_t *apm_dbg = adbms2950_spi_debug_get(apm);
+#if !AMS_ENABLE_APM_2950
+    (void)apm_dbg;
+#endif
     uint8_t smb_count = smb_ic_count(smb);
     uint16_t expected_mask = cli_expected_ic_mask(smb_count);
 
@@ -3229,13 +3312,25 @@ int get_bringup(int argc, char *argv[])
     {
         ret |= cli_printline(cli, "bringup board          - LV board-only checklist, no accumulator required");
         ret |= cli_printline(cli, "bringup adbms6830      - SMB chain SPI/CS/PEC/SID/status summary");
+#if AMS_ACCUMULATOR_5SMB_NO_APM
+        ret |= cli_printline(cli, "bringup apm2950        - reports APM absent; sends no bus traffic");
+#else
 		ret |= cli_printline(cli, "bringup apm2950        - final-ring ADBMS2950/APM advisory summary");
+#endif
         ret |= cli_printline(cli, "bringup charger-lv     - charger CAN low-voltage sniffer checklist");
         ret |= cli_printline(cli, "bringup charger-battery - stricter charger test once battery path is safe");
+#if AMS_ACCUMULATOR_5SMB_NO_APM
+        ret |= cli_printline(cli, "bringup ready          - monitor-health checklist; BMS_OK remains locked low");
+#else
         ret |= cli_printline(cli, "bringup ready          - BMS_OK release checklist; does not release output");
+#endif
         ret |= cli_printline(cli, "bringup snapshot       - compact state snapshot");
         ret |= cli_printline(cli, "bringup evidence       - bench evidence to capture before changing phase");
+#if AMS_ACCUMULATOR_5SMB_NO_APM
+        ret |= cli_printline(cli, "fixture start: 5 SMBs from String A; no APM and no automatic reverse-direction scan");
+#else
         ret |= cli_printline(cli, "final ring start: SMB spi cs a/scope a; APM apm sid/sample on CS_B");
+#endif
         return ret;
     }
 
@@ -3304,7 +3399,11 @@ int get_bringup(int argc, char *argv[])
                  data->heartbeat.safety_stale_mask);
         ret |= cli_printline(cli, outline);
 
+#if AMS_ACCUMULATOR_5SMB_NO_APM
+        ret |= cli_printline(cli, "pin_check: active path is CS_A/PE2; String-B service traffic is disabled");
+#else
         ret |= cli_printline(cli, "pin_check: run spi pins; use spi cspins both 10 to compare PE4 vs PF4");
+#endif
         ret |= cli_printline(cli, "scope_check: run spi cs a pulse 10, then spi scope a read 20");
 
         if(!strcmp(mode, "snapshot"))
@@ -3405,12 +3504,21 @@ int get_bringup(int argc, char *argv[])
         }
 
         ret |= cli_printline(cli, "next: spi pins -> spi cspins both 10 -> spi cs a pulse 10 -> spi preset normal -> spi scope a read 20");
+#if AMS_ACCUMULATOR_5SMB_NO_APM
+        ret |= cli_printline(cli, "then: spi probea -> spi sid -> spi stat -> spi cfgchk; expected IC mask 0x001F");
+#else
 		ret |= cli_printline(cli, "then: spi probea -> spi sid -> spi stat; use apm sid for the String-B ADBMS2950");
+#endif
         return ret;
     }
 
     if(!strcmp(mode, "apm2950") || !strcmp(mode, "apm"))
     {
+#if !AMS_ENABLE_APM_2950
+        ret |= cli_printline(cli,
+                             "APM2950 ABSENT: disabled by five-SMB/no-APM fixture; no String-B transaction sent");
+        return ret;
+#else
         bool initialized = data->acc.apm_ready && apm->health.initialized;
         bool rx_all_zero = (apm_dbg != NULL) &&
                            cli_preview_all_value(apm_dbg->last_rx_preview,
@@ -3455,6 +3563,7 @@ int get_bringup(int argc, char *argv[])
         ret |= cli_printline(cli, outline);
 		ret |= cli_printline(cli, "next: apm status -> apm sid -> apm config -> apm sample -> apm scope 20; keep HV dividers disabled");
         return ret;
+#endif
     }
 
     if(!strcmp(mode, "charger-lv") || !strcmp(mode, "charger"))
@@ -3555,6 +3664,9 @@ int get_bringup(int argc, char *argv[])
         bool heartbeat_ready = !data->task_heartbeat_fault;
         bool hard_ready = !data->hard_fault && !data->fuse_fault && !data->adbms_diag_fault;
         bool release_ok = voltage_ready && temp_ready && current_ready && heartbeat_ready && hard_ready;
+#if AMS_ACCUMULATOR_5SMB_NO_APM
+        release_ok = false;
+#endif
 
         snprintf(outline, CLI_LINESZ,
                  "BRINGUP READY release_allowed=%s output_inhibit:%d BMS_OK:%d",
@@ -3581,7 +3693,11 @@ int get_bringup(int argc, char *argv[])
                  (unsigned)AMS_EXPECTED_TEMP_SENSOR_COUNT,
                  data->charge_voltage_stop);
         ret |= cli_printline(cli, outline);
+#if AMS_ACCUMULATOR_5SMB_NO_APM
+        ret |= cli_printline(cli, "note: monitor health only; compile-time fixture lock keeps BMS_OK low");
+#else
         ret |= cli_printline(cli, "note: this command does not run bmsok release");
+#endif
         return ret;
     }
 
@@ -3589,9 +3705,15 @@ int get_bringup(int argc, char *argv[])
     {
         ret |= cli_printline(cli, "BRINGUP EVIDENCE capture before phase changes:");
         ret |= cli_printline(cli, "1 status; bringup board; bmsok status; fault");
+#if AMS_ACCUMULATOR_5SMB_NO_APM
+        ret |= cli_printline(cli, "2 spi pins; scope CS_A/PE2, SCK/PG13, MOSI/PG14 and MISO/PG12");
+        ret |= cli_printline(cli, "3 spi clear; spi enable; spi cs a pulse 10; spi preset normal; spi scope a read 20");
+        ret |= cli_printline(cli, "4 spi probea; spi sid; spi stat; spi cfgchk; confirm masks 0x001F");
+#else
         ret |= cli_printline(cli, "2 spi pins; spi cspins both 10; scope CS_A/PE2 and candidate CS_B PE4/PF4 pins");
         ret |= cli_printline(cli, "3 spi clear; spi enable; spi cs a pulse 10; spi preset normal; spi scope a read 20");
 		ret |= cli_printline(cli, "4 spi probea; spi sid; spi stat; apm sid; apm sample");
+#endif
         ret |= cli_printline(cli, "5 current; volt; temp; bringup ready");
         ret |= cli_printline(cli, "6 charger; bringup charger-lv plus CAN sniffer frame screenshots/logs");
         ret |= cli_printline(cli, "7 for battery/charger only: bringup charger-battery after approved safe setup");
@@ -3638,7 +3760,12 @@ int bmsok_control(int argc, char *argv[])
     {
         if(!strcmp(argv[1], "release") || !strcmp(argv[1], "enable"))
         {
-#if AMS_ENABLE_SERVICE_CLI
+#if AMS_ACCUMULATOR_5SMB_NO_APM
+            data->bms_output_inhibit = true;
+            set_bms(false);
+            ret |= cli_printline(cli,
+                                 "BMS_OK release blocked: five-SMB/no-APM fixture is compile-time output-inhibited");
+#elif AMS_ENABLE_SERVICE_CLI
             data->bms_output_inhibit = false;
             ret |= cli_printline(cli, "BMS_OK output release enabled; safety gates still apply");
 #else
@@ -3699,7 +3826,11 @@ int balance_control(int argc, char *argv[])
         }
         else if(!strcmp(argv[1], "release") || !strcmp(argv[1], "enable"))
         {
-#if AMS_ENABLE_SERVICE_CLI
+#if AMS_ACCUMULATOR_5SMB_NO_APM
+            data->balance_inhibit = true;
+            ret |= cli_printline(cli,
+                                 "Balancing release blocked: five-SMB/no-APM fixture permits clear/off writes only");
+#elif AMS_ENABLE_SERVICE_CLI
             data->balance_inhibit = false;
             ret |= cli_printline(cli, "Balancing release enabled; safety gates still apply");
 #else
@@ -3751,7 +3882,14 @@ int set_state(int argc, char *argv[])
     }
     else if(argc == 2)
     {
-#if !AMS_ENABLE_SERVICE_CLI
+#if AMS_ACCUMULATOR_5SMB_NO_APM
+        data->bms_output_inhibit = true;
+        data->balance_inhibit = true;
+        set_bms(false);
+        ret |= cli_printline(cli,
+                             "State change blocked: five-SMB/no-APM fixture remains in START/monitor mode");
+        return ret;
+#elif !AMS_ENABLE_SERVICE_CLI
         return cli_service_action_refused("AMS state change");
 #else
         state_t requested_state;

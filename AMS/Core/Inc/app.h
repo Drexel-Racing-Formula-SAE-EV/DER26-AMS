@@ -165,6 +165,10 @@
 #error "AMS_ADBMS_SCAN_HZ must be between 1 and 1000 Hz"
 #endif
 
+#if AMS_ACCUMULATOR_5SMB_NO_APM && (AMS_ADBMS_SCAN_HZ != 1u)
+#error "Five-SMB/no-APM fixture requires AMS_ADBMS_SCAN_HZ=1"
+#endif
+
 #define ADBMS_FREQ AMS_ADBMS_SCAN_HZ
 #define AMS_ADBMS_TASK_PERIOD_MS ((1000u + ADBMS_FREQ - 1u) / ADBMS_FREQ)
 

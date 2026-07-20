@@ -24,6 +24,8 @@ UNIT_SRC := unit/ams_unit_test_runner.c
 UNIT_BIN = $(BUILD_DIR)/ams_unit_tests
 OWNER_SRC := production/bms_owner_test.c
 OWNER_BIN = $(BUILD_DIR)/bms_owner_test
+FIVE_SMB_OWNER_SRC := production/five_smb_noapm_bms_lock_test.c
+FIVE_SMB_OWNER_BIN = $(BUILD_DIR)/five_smb_noapm_bms_lock_test
 PROFILE_SRC := production/profile_compile_test.c
 ESTIMATOR_TOPOLOGY_SRC := production/estimator_topology_test.c
 ESTIMATOR_SRC := \
@@ -60,6 +62,11 @@ HOST_EXERCISE_DEFS = \
 	-DAMS_HW_BRINGUP_BALANCE_INHIBIT_DEFAULT=$(HOST_BALANCE_INHIBIT_DEFAULT) \
 	-DAMS_ENABLE_HIL_CAN=1 \
 	-DAMS_ENABLE_SERVICE_CLI=1
+
+FIVE_SMB_NO_APM_PROFILE_DEFS := \
+	-DAMS_ACCUMULATOR_5SMB_NO_APM=1 \
+	-DAMS_BUILD_PROFILE=1 \
+	-DAMS_HOST_ONLY_5SMB_NO_APM_TEST=1
 
 VEHICLE_VALIDATION_DEFS := \
 	-DAMS_BUILD_PROFILE=3 \
@@ -105,7 +112,7 @@ WARN := \
 CFLAGS_COMMON := -std=c11 -g -O0 $(WARN) $(COMMON_DEFS) $(INC)
 LDLIBS := -lm
 
-.PHONY: help check-root compile unit thermistor-validate test profile-gates estimator-topology-gates production-gates static-allocation-gate state-ownership-gate target-project-gate system-sil apm-sil bringup-test hil-adbms-test imd-test air-feedback-stub-test safety-test stress ci asan ubsan analyze clang-analyze clean list make-build-dir
+.PHONY: help check-root compile unit thermistor-validate test profile-gates estimator-topology-gates production-gates five-smb-noapm-test five-smb-noapm-sanitize five-smb-noapm-analyze static-allocation-gate state-ownership-gate target-project-gate system-sil apm-sil bringup-test hil-adbms-test imd-test air-feedback-stub-test safety-test stress ci asan ubsan analyze clang-analyze clean list make-build-dir
 
 help:
 	@echo "DER26 AMS host test harness"
@@ -116,6 +123,9 @@ help:
 	@echo "  make thermistor-validate Compile C model and compare against every Vishay CSV row"
 	@echo "  make profile-gates Verify bench/HIL/vehicle defaults and vehicle evidence lock"
 	@echo "  make production-gates Verify HIL/service CLI are disabled by default"
+	@echo "  make five-smb-noapm-test Verify five-SMB physical topology, no APM traffic and fixture locks"
+	@echo "  make five-smb-noapm-sanitize Run fixture profile with ASan + UBSan"
+	@echo "  make five-smb-noapm-analyze Run GCC analyzer on the fixture profile"
 	@echo "  make static-allocation-gate Verify every application task uses fixed storage"
 	@echo "  make state-ownership-gate Verify state and CAN-control ownership boundaries"
 	@echo "  make target-project-gate Verify CubeIDE project identity, paths, warnings and linker scripts"
@@ -236,6 +246,40 @@ production-gates: check-root
 		$(AMS_ROOT)/Core/Src/app.c $(MEASUREMENT_SRC) $(OWNER_SRC) \
 		-Wl,--gc-sections -o $(OWNER_BIN) $(LDLIBS)
 	$(OWNER_BIN)
+
+five-smb-noapm-test: BUILD_DIR = build-five-smb-noapm
+five-smb-noapm-test: CFLAGS_COMMON += $(FIVE_SMB_NO_APM_PROFILE_DEFS) -Werror
+five-smb-noapm-test: check-root
+	@mkdir -p "$(BUILD_DIR)"
+	$(CC) $(CFLAGS_COMMON) $(SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC) -o $(BIN) $(LDLIBS)
+	$(BIN)
+	$(CC) $(CFLAGS_COMMON) -ffunction-sections -fdata-sections \
+		$(AMS_ROOT)/Core/Src/app.c $(MEASUREMENT_SRC) $(FIVE_SMB_OWNER_SRC) \
+		-Wl,--gc-sections -o $(FIVE_SMB_OWNER_BIN) $(LDLIBS)
+	$(FIVE_SMB_OWNER_BIN)
+
+five-smb-noapm-sanitize: BUILD_DIR = build-five-smb-noapm-sanitize
+five-smb-noapm-sanitize: CFLAGS_COMMON += $(FIVE_SMB_NO_APM_PROFILE_DEFS) -Werror
+five-smb-noapm-sanitize: check-root
+	@mkdir -p "$(BUILD_DIR)"
+	$(CC) $(CFLAGS_COMMON) -fsanitize=address,undefined -fno-sanitize-recover=all \
+		-fno-omit-frame-pointer $(SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC) \
+		-o $(BIN)-sanitize $(LDLIBS)
+	ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 $(BIN)-sanitize
+	$(CC) $(CFLAGS_COMMON) -fsanitize=address,undefined -fno-sanitize-recover=all \
+		-fno-omit-frame-pointer -ffunction-sections -fdata-sections \
+		$(AMS_ROOT)/Core/Src/app.c $(MEASUREMENT_SRC) $(FIVE_SMB_OWNER_SRC) \
+		-Wl,--gc-sections -o $(FIVE_SMB_OWNER_BIN)-sanitize $(LDLIBS)
+	ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 $(FIVE_SMB_OWNER_BIN)-sanitize
+
+five-smb-noapm-analyze: BUILD_DIR = build-five-smb-noapm-analyze
+five-smb-noapm-analyze: CFLAGS_COMMON += $(FIVE_SMB_NO_APM_PROFILE_DEFS) -Werror
+five-smb-noapm-analyze: check-root
+	@mkdir -p "$(BUILD_DIR)"
+	$(CC) $(CFLAGS_COMMON) -fanalyzer -fsyntax-only \
+		$(SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC)
+	$(CC) $(CFLAGS_COMMON) -fanalyzer -fsyntax-only \
+		$(AMS_ROOT)/Core/Src/app.c $(MEASUREMENT_SRC) $(FIVE_SMB_OWNER_SRC)
 
 static-allocation-gate: check-root
 	@task_sources="$$(find "$(AMS_ROOT)/Core/Src/tasks" -maxdepth 1 -name '*_task.c' -type f)"; \

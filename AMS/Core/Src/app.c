@@ -375,7 +375,7 @@ void app_create(void)
 	app.heartbeat_stale_mask = 0u;
 	app.heartbeat_seen_mask = 0u;
     app.bms_state     = false;
-#if AMS_PROFILE_BMS_OUTPUT_INHIBIT_DEFAULT || \
+#if AMS_ACCUMULATOR_5SMB_NO_APM || AMS_PROFILE_BMS_OUTPUT_INHIBIT_DEFAULT || \
     (AMS_HW_BRINGUP && !AMS_HW_BRINGUP_BMS_OK_RELEASED_DEFAULT)
 	app.bms_output_inhibit = true;
 #else
@@ -383,7 +383,7 @@ void app_create(void)
 #endif
 	app.bms_output_block_count = 0u;
 	app.bms_supervisor_ready = false;
-#if AMS_HW_BRINGUP_BALANCE_INHIBIT_DEFAULT
+#if AMS_ACCUMULATOR_5SMB_NO_APM || AMS_HW_BRINGUP_BALANCE_INHIBIT_DEFAULT
 	app.balance_inhibit = true;
 #else
 	app.balance_inhibit = false;
@@ -560,6 +560,7 @@ void set_bms(bool state)
 	}
 
 	if(state && (!assertion_owner ||
+	             (AMS_ACCUMULATOR_5SMB_NO_APM != 0) ||
 	             app.bms_output_inhibit ||
 	             ams_safety_panic_active()))
 	{

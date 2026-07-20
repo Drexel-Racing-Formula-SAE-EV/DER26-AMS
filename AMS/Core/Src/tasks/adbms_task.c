@@ -24,6 +24,7 @@ static bool adbms_status_diag_has_safety_fault(const adbms6830_driver_t *smb)
     return !adbms6830_safety_diagnostics_ok(smb);
 }
 
+#if AMS_ADBMS_OPEN_WIRE_ENABLED
 static bool adbms_open_wire_auto_allowed(const app_data_t *data)
 {
     return (data != NULL) &&
@@ -38,6 +39,7 @@ static bool adbms_open_wire_auto_allowed(const app_data_t *data)
            !data->temp_fault &&
            !data->current_fault;
 }
+#endif
 
 static bool adbms_diag_deadline_due(uint32_t now, uint32_t deadline)
 {
@@ -131,6 +133,7 @@ static void adbms_task_run_periodic_diagnostics(app_data_t *data,
         taskEXIT_CRITICAL();
     }
 
+#if AMS_ADBMS_OPEN_WIRE_ENABLED
     if(adbms_diag_deadline_due(now, data->adbms_open_wire_diag_next_tick))
     {
         uint32_t open_wire_lateness = now - data->adbms_open_wire_diag_next_tick;
@@ -160,6 +163,7 @@ static void adbms_task_run_periodic_diagnostics(app_data_t *data,
             taskEXIT_CRITICAL();
         }
     }
+#endif
 
     if(ran_diagnostic)
     {
@@ -626,7 +630,7 @@ void adbms_task_fn(void *argument)
 	     * permitted to drive the output high. */
 
         /* Voltage charge-stop can still balance; hard faults/temp stop cannot. */
-#if !AMS_HIL_REPLACE_ADBMS
+#if !AMS_HIL_REPLACE_ADBMS && AMS_ADBMS_BALANCE_ACTIVATION_ENABLED
 	        bool balance_applied_active = false;
 	        if((data->state == STATE_CHARGE) &&
 	           !data->balance_inhibit &&

@@ -77,6 +77,12 @@ static HAL_StatusTypeDef fake_adbms_read_cell_status = HAL_OK;
 static HAL_StatusTypeDef fake_apm_init_status = HAL_OK;
 static HAL_StatusTypeDef fake_apm_sample_status = HAL_OK;
 static HAL_StatusTypeDef fake_apm_probe_status = HAL_OK;
+static uint32_t fake_apm_init_call_count = 0u;
+static uint32_t fake_apm_sample_call_count = 0u;
+static uint32_t fake_apm_probe_call_count = 0u;
+static uint32_t fake_adbms_wrcfgb_call_count = 0u;
+static uint32_t fake_adbms_wrpwm_call_count = 0u;
+static uint32_t fake_adbms_open_wire_call_count = 0u;
 static int32_t fake_apm_i1_raw = 1234;
 static int16_t fake_apm_vb1_raw = 18000;
 static adbms_string fake_apm_init_string = STRING_A;
@@ -366,7 +372,7 @@ static HAL_StatusTypeDef fake_adbms_wrpwm_next_status(void)
     }
     return fake_adbms_wrpwm_status;
 }
-void adbms6830_reset_cfg(adbms6830_driver_t *dev){(void)dev;} void adbms6830_srst(adbms6830_driver_t *dev){(void)dev;} void adbms6830_wrcfga(adbms6830_driver_t *dev){(void)dev;} void adbms6830_wrcfgb(adbms6830_driver_t *dev){(void)adbms6830_wrcfgb_checked(dev);} HAL_StatusTypeDef adbms6830_wrcfgb_checked(adbms6830_driver_t *dev){(void)dev; return fake_adbms_wrcfgb_status;} HAL_StatusTypeDef adbms6830_wrpwma_checked(adbms6830_driver_t *dev){(void)dev; return fake_adbms_wrpwm_next_status();} HAL_StatusTypeDef adbms6830_wrpwmb_checked(adbms6830_driver_t *dev){(void)dev; return fake_adbms_wrpwm_next_status();} HAL_StatusTypeDef adbms6830_write_pwm_checked(adbms6830_driver_t *dev){(void)dev; return fake_adbms_wrpwm_next_status();} void adbms6830_rdcfga(adbms6830_driver_t *dev){(void)dev;} void adbms6830_rdcfgb(adbms6830_driver_t *dev){(void)dev;}
+void adbms6830_reset_cfg(adbms6830_driver_t *dev){(void)dev;} void adbms6830_srst(adbms6830_driver_t *dev){(void)dev;} void adbms6830_wrcfga(adbms6830_driver_t *dev){(void)dev;} void adbms6830_wrcfgb(adbms6830_driver_t *dev){(void)adbms6830_wrcfgb_checked(dev);} HAL_StatusTypeDef adbms6830_wrcfgb_checked(adbms6830_driver_t *dev){(void)dev; fake_adbms_wrcfgb_call_count++; return fake_adbms_wrcfgb_status;} HAL_StatusTypeDef adbms6830_wrpwma_checked(adbms6830_driver_t *dev){(void)dev; fake_adbms_wrpwm_call_count++; return fake_adbms_wrpwm_next_status();} HAL_StatusTypeDef adbms6830_wrpwmb_checked(adbms6830_driver_t *dev){(void)dev; fake_adbms_wrpwm_call_count++; return fake_adbms_wrpwm_next_status();} HAL_StatusTypeDef adbms6830_write_pwm_checked(adbms6830_driver_t *dev){(void)dev; fake_adbms_wrpwm_call_count++; return fake_adbms_wrpwm_next_status();} void adbms6830_rdcfga(adbms6830_driver_t *dev){(void)dev;} void adbms6830_rdcfgb(adbms6830_driver_t *dev){(void)dev;}
 HAL_StatusTypeDef adbms6830_verify_balance_readback(adbms6830_driver_t *dev){(void)dev; return fake_adbms_balance_verify_status;}
 void adbms6830_adcv(adbms6830_driver_t *dev, RD rd, CONT cont, DCP dcp, RSTF rstf, OW_C_S owcs){(void)dev;(void)rd;(void)cont;(void)dcp;(void)rstf;(void)owcs;}
 void adbms6830_wakeup(adbms6830_driver_t* dev){(void)dev;}
@@ -679,6 +685,7 @@ static HAL_StatusTypeDef fake_adbms6830_open_wire_phase(adbms6830_driver_t *dev,
 
 HAL_StatusTypeDef adbms6830_run_open_wire_check(adbms6830_driver_t *dev, bool odd_channels)
 {
+    fake_adbms_open_wire_call_count++;
     HAL_StatusTypeDef status = fake_adbms6830_open_wire_baseline(dev);
     if(status != HAL_OK) return status;
     return fake_adbms6830_open_wire_phase(dev, odd_channels);
@@ -691,6 +698,7 @@ HAL_StatusTypeDef adbms6830_run_open_wire_diagnostic(adbms6830_driver_t *dev)
     HAL_StatusTypeDef odd_status;
     HAL_StatusTypeDef result;
     if(dev == NULL) return HAL_ERROR;
+    fake_adbms_open_wire_call_count++;
     dev->health.open_wire_full_count++;
     baseline_status = fake_adbms6830_open_wire_baseline(dev);
     even_status = (baseline_status == HAL_OK) ?
@@ -751,6 +759,7 @@ HAL_StatusTypeDef adbms2950_init_mixed_chain(adbms2950_driver_t *dev,
                                               bool issue_chain_reset,
                                               bool enable_hv_dividers)
 {
+    fake_apm_init_call_count++;
     if((dev == NULL) || (ics == NULL) || (num_asics == 0u) ||
        (num_asics > ics_capacity) || (num_asics > ADBMS2950_MAX_TRACKED_ICS) ||
        (hspi == NULL) || (htim == NULL) || (cs_a == NULL) || (cs_b == NULL) ||
@@ -824,10 +833,11 @@ HAL_StatusTypeDef adbms2950_read_sid(adbms2950_driver_t *dev){
     return fake_apm_probe_status;
 }
 HAL_StatusTypeDef adbms2950_spi_probe_sid(adbms2950_driver_t *dev){
-    HAL_StatusTypeDef s=adbms2950_read_sid(dev); if(dev){ dev->spi_debug.last_op=ADBMS2950_SPI_OP_PROBE; dev->spi_debug.last_status=s; dev->spi_debug.rx_count++; } return s;
+    fake_apm_probe_call_count++; HAL_StatusTypeDef s=adbms2950_read_sid(dev); if(dev){ dev->spi_debug.last_op=ADBMS2950_SPI_OP_PROBE; dev->spi_debug.last_status=s; dev->spi_debug.rx_count++; } return s;
 }
 HAL_StatusTypeDef adbms2950_read_status(adbms2950_driver_t *dev){ if(!dev) return HAL_ERROR; dev->health.i1_calibrated=(fake_apm_sample_status==HAL_OK); return fake_apm_sample_status; }
 HAL_StatusTypeDef adbms2950_read_primary_sample(adbms2950_driver_t *dev, uint32_t now_ms){
+    fake_apm_sample_call_count++;
     if((dev == NULL) || !dev->health.initialized) return HAL_ERROR;
     dev->health.last_status=fake_apm_sample_status;
     if(fake_apm_sample_status != HAL_OK){ dev->health.sample_valid=false; dev->health.current_valid=false; dev->health.pack_voltage_valid=false; if(dev->health.sample_error_count!=UINT32_MAX) dev->health.sample_error_count++; return fake_apm_sample_status; }
@@ -1015,7 +1025,7 @@ static void sil_bind_final_ring_topology(accumulator_t *acc)
     acc->apm.write_string = STRING_B;
 }
 
-static void init_fake_app(void){ fake_tick = 0u; memset(&app,0,sizeof(app)); ams_safety_host_reset_state(); ams_rtos_host_reset_state(); ams_rtos_diag_init(&app); app.state = STATE_START; app.acc.smb.num_ics = NSMBS; app.acc.smb.physical_chain_count = (uint8_t)(NSMBS + NAPMS); app.acc.smb.ics_capacity = NSMBS; app.acc.smb.ics = app.acc.smb_ics; app.acc.smb.string = STRING_A; app.acc.smb.health.startup_baseline_passed = true; app.acc.delay_timer_ready = true; app.acc.delay_timer_status = HAL_OK; app.acc.smb_ready = true; app.acc.smb_init_status = HAL_OK; app.acc.apm.num_ics = NAPMS; app.acc.apm.ics_capacity = NAPMS; app.acc.apm.ics = app.acc.apm_ics; app.acc.apm.string = STRING_B; app.acc.apm_ready = true; app.acc.apm_init_status = HAL_OK; app.acc.apm.health.initialized = true; app.acc.apm.health.i1_calibrated = true; app.acc.apm.health.i1_continuous_ready = true; app.acc.apm.health.sid_valid = true; app.acc.apm.health.config_valid = true; app.acc.apm.health.device_id = ADBMS2950B_DEVICE_ID; app.acc.apm.health.sid[5] = (uint8_t)(ADBMS2950B_DEVICE_ID << 1u); sil_bind_final_ring_topology(&app.acc); current_fault_init(&app.current_fault_state); voltage_fault_init(&app.voltage_fault_state); temperature_fault_init(&app.temp_fault_state); ams_heartbeat_init(&app, fake_tick); ams_safety_watchdog_boot_arm(&app); app.current_meas_reason = CURRENT_SENSOR_REASON_ADC_READ; app.current_fault_reason = CURRENT_FAULT_REASON_SENSOR_NOT_READY; app.voltage_fault_reason = VOLTAGE_FAULT_REASON_NOT_READY; app.temp_fault = true; app.temp_read_fault = true; app.temp_fan_max = true; app.temp_fault_reason = TEMPERATURE_FAULT_REASON_NOT_READY; app.imd_valid = true; app.imd_ok = true; app.imd_fault = false; app.imd_status = IMD_NORMAL; app.balance_inhibit = (AMS_HW_BRINGUP_BALANCE_INHIBIT_DEFAULT != 0); fake_adbms_voltage_masks_full_update(); fake_adc_read_index = 0u; fake_adbms_init_status = HAL_OK; fake_adbms_start_conversion_status = HAL_OK; fake_adbms_read_cell_status = HAL_OK; fake_apm_init_status = HAL_OK; fake_apm_sample_status = HAL_OK; fake_apm_probe_status = HAL_OK; fake_apm_i1_raw = 1234; fake_apm_vb1_raw = 18000; fake_apm_init_string = STRING_A; fake_apm_init_requested_reset = true; fake_apm_init_enabled_dividers = true; fake_adbms_wrcfgb_status = HAL_OK; fake_adbms_wrpwm_status = HAL_OK; fake_adbms_balance_verify_status = HAL_OK; fake_adbms_wrpwm_fail_after_ok = -1; fake_adbms_diag_status = HAL_OK; fake_adbms_config_mismatch_mask = 0u; fake_adbms_delay_advances_tick = false; fake_can_add_tx_status = HAL_OK; fake_can_add_tx_call_count = 0u; fake_can_fail_on_call = 0u; fake_can_advance_tick_per_tx_ms = 0u; fake_can_mutate_after_tx_count = 0u; fake_can_error = HAL_CAN_ERROR_NONE; fake_can_recover_status = HAL_OK; fake_can_notification_status = HAL_OK; fake_can_filter_status = HAL_OK; fake_can_filter_count = 0u; memset(fake_can_filter_log, 0, sizeof(fake_can_filter_log)); fake_rx_status = HAL_OK; fake_tim_base_start_status = HAL_OK; fake_tim_pwm_start_status = HAL_OK; fake_tim_ic_start_it_status = HAL_OK; fake_tim_ic_start_status = HAL_OK; fake_tim_total_capture = 1000u; fake_tim_high_capture = 500u; memset(&fake_rx_hdr, 0, sizeof(fake_rx_hdr)); memset(fake_rx_data, 0, sizeof(fake_rx_data)); bms_pin_state = GPIO_PIN_RESET; }
+static void init_fake_app(void){ fake_tick = 0u; memset(&app,0,sizeof(app)); ams_safety_host_reset_state(); ams_rtos_host_reset_state(); ams_rtos_diag_init(&app); app.state = STATE_START; app.acc.smb.num_ics = NSMBS; app.acc.smb.physical_chain_count = (uint8_t)AMS_ADBMS_PHYSICAL_CHAIN_COUNT; app.acc.smb.ics_capacity = NSMBS; app.acc.smb.ics = app.acc.smb_ics; app.acc.smb.string = STRING_A; app.acc.smb.health.startup_baseline_passed = true; app.acc.delay_timer_ready = true; app.acc.delay_timer_status = HAL_OK; app.acc.smb_ready = true; app.acc.smb_init_status = HAL_OK; app.acc.apm.num_ics = NAPMS; app.acc.apm.ics_capacity = NAPMS; app.acc.apm.ics = app.acc.apm_ics; app.acc.apm.string = STRING_B; app.acc.apm_ready = true; app.acc.apm_init_status = HAL_OK; app.acc.apm.health.initialized = true; app.acc.apm.health.i1_calibrated = true; app.acc.apm.health.i1_continuous_ready = true; app.acc.apm.health.sid_valid = true; app.acc.apm.health.config_valid = true; app.acc.apm.health.device_id = ADBMS2950B_DEVICE_ID; app.acc.apm.health.sid[5] = (uint8_t)(ADBMS2950B_DEVICE_ID << 1u); sil_bind_final_ring_topology(&app.acc); current_fault_init(&app.current_fault_state); voltage_fault_init(&app.voltage_fault_state); temperature_fault_init(&app.temp_fault_state); ams_heartbeat_init(&app, fake_tick); ams_safety_watchdog_boot_arm(&app); app.current_meas_reason = CURRENT_SENSOR_REASON_ADC_READ; app.current_fault_reason = CURRENT_FAULT_REASON_SENSOR_NOT_READY; app.voltage_fault_reason = VOLTAGE_FAULT_REASON_NOT_READY; app.temp_fault = true; app.temp_read_fault = true; app.temp_fan_max = true; app.temp_fault_reason = TEMPERATURE_FAULT_REASON_NOT_READY; app.imd_valid = true; app.imd_ok = true; app.imd_fault = false; app.imd_status = IMD_NORMAL; app.balance_inhibit = (AMS_HW_BRINGUP_BALANCE_INHIBIT_DEFAULT != 0); fake_adbms_voltage_masks_full_update(); fake_adc_read_index = 0u; fake_adbms_init_status = HAL_OK; fake_adbms_start_conversion_status = HAL_OK; fake_adbms_read_cell_status = HAL_OK; fake_apm_init_status = HAL_OK; fake_apm_sample_status = HAL_OK; fake_apm_probe_status = HAL_OK; fake_apm_init_call_count = 0u; fake_apm_sample_call_count = 0u; fake_apm_probe_call_count = 0u; fake_adbms_wrcfgb_call_count = 0u; fake_adbms_wrpwm_call_count = 0u; fake_adbms_open_wire_call_count = 0u; fake_apm_i1_raw = 1234; fake_apm_vb1_raw = 18000; fake_apm_init_string = STRING_A; fake_apm_init_requested_reset = true; fake_apm_init_enabled_dividers = true; fake_adbms_wrcfgb_status = HAL_OK; fake_adbms_wrpwm_status = HAL_OK; fake_adbms_balance_verify_status = HAL_OK; fake_adbms_wrpwm_fail_after_ok = -1; fake_adbms_diag_status = HAL_OK; fake_adbms_config_mismatch_mask = 0u; fake_adbms_delay_advances_tick = false; fake_can_add_tx_status = HAL_OK; fake_can_add_tx_call_count = 0u; fake_can_fail_on_call = 0u; fake_can_advance_tick_per_tx_ms = 0u; fake_can_mutate_after_tx_count = 0u; fake_can_error = HAL_CAN_ERROR_NONE; fake_can_recover_status = HAL_OK; fake_can_notification_status = HAL_OK; fake_can_filter_status = HAL_OK; fake_can_filter_count = 0u; memset(fake_can_filter_log, 0, sizeof(fake_can_filter_log)); fake_rx_status = HAL_OK; fake_tim_base_start_status = HAL_OK; fake_tim_pwm_start_status = HAL_OK; fake_tim_ic_start_it_status = HAL_OK; fake_tim_ic_start_status = HAL_OK; fake_tim_total_capture = 1000u; fake_tim_high_capture = 500u; memset(&fake_rx_hdr, 0, sizeof(fake_rx_hdr)); memset(fake_rx_data, 0, sizeof(fake_rx_data)); bms_pin_state = GPIO_PIN_RESET; }
 
 static void host_mark_updated_cells(app_data_t *d)
 {
@@ -9124,6 +9134,146 @@ static void test_periods_and_driver_edge_cases(void){
 }
 
 
+#if AMS_HOST_ONLY_5SMB_NO_APM_TEST
+static void test_five_smb_no_apm_topology_and_measurement_paths(void)
+{
+    accumulator_t acc;
+    SPI_HandleTypeDef spi = {0};
+    GPIO_TypeDef gpio_a = {0};
+    GPIO_TypeDef gpio_b = {0};
+    TIM_HandleTypeDef timer = {0};
+
+    CHECK(AMS_ACCUMULATOR_5SMB_NO_APM == 1);
+    CHECK(AMS_BUILD_PROFILE == AMS_PROFILE_BENCH);
+    CHECK(AMS_HW_BRINGUP == 1);
+    CHECK(AMS_HIL_REPLACE_ADBMS == 0);
+    CHECK(AMS_ENABLE_HIL_CAN == 0);
+    CHECK(AMS_ENABLE_APM_2950 == 0);
+    CHECK(AMS_ADBMS_PHYSICAL_CHAIN_COUNT == 5u);
+    CHECK(AMS_ADBMS_BALANCE_ACTIVATION_ENABLED == 0);
+    CHECK(AMS_ADBMS_OPEN_WIRE_ENABLED == 0);
+    CHECK(NSMBS == 5u);
+    CHECK(NCELLS == 15u);
+    CHECK(NTEMPS == 24u);
+
+    fake_tim_base_start_status = HAL_OK;
+    fake_adbms_init_status = HAL_OK;
+    fake_adbms_diag_status = HAL_OK;
+    fake_adbms_config_mismatch_mask = 0u;
+    fake_apm_init_call_count = 0u;
+    fake_apm_sample_call_count = 0u;
+    fake_adbms_wrcfgb_call_count = 0u;
+    fake_adbms_wrpwm_call_count = 0u;
+    memset(&acc, 0xA5, sizeof(acc));
+
+    accumulator_init(&acc,
+                     &spi,
+                     &gpio_a,
+                     &gpio_b,
+                     1u,
+                     2u,
+                     &timer);
+
+    CHECK(acc.delay_timer_ready == true);
+    CHECK(acc.smb_ready == true);
+    CHECK(acc.smb.num_ics == 5);
+    CHECK(acc.smb.physical_chain_count == 5u);
+    CHECK(acc.smb.ics_capacity == 5u);
+    CHECK(acc.smb.ics == acc.smb_ics);
+    CHECK(acc.smb.string == STRING_A);
+    CHECK(acc.smb.write_string == STRING_A);
+    CHECK(acc.smb.monitored_cell_count == 15u);
+    CHECK(accumulator_final_ring_topology_valid(&acc));
+    CHECK(acc.apm_ready == false);
+    CHECK(acc.apm_init_status == HAL_ERROR);
+    CHECK(fake_apm_init_call_count == 0u);
+
+    CHECK(accumulator_read_volt(&acc) == 0);
+    CHECK(acc.apm_full_ring_awake_token == false);
+    CHECK(accumulator_read_apm(&acc, 100u) == -1);
+    CHECK(fake_apm_sample_call_count == 0u);
+    CHECK(accumulator_read_temp(&acc) == 0);
+
+    /* Activation is compile-time disabled, while an explicit all-off write
+     * remains available to clear any stale discharge state safely. */
+    uint32_t cfg_before = fake_adbms_wrcfgb_call_count;
+    uint32_t pwm_before = fake_adbms_wrpwm_call_count;
+    CHECK(accumulator_set_balance(&acc) == -1);
+    CHECK(fake_adbms_wrcfgb_call_count == cfg_before);
+    CHECK(fake_adbms_wrpwm_call_count == pwm_before);
+    CHECK(accumulator_clear_balance(&acc) == 0);
+    CHECK(fake_adbms_wrcfgb_call_count > cfg_before);
+    CHECK(fake_adbms_wrpwm_call_count > pwm_before);
+}
+
+static void test_five_smb_no_apm_cli_lockouts(void)
+{
+    char *apm_sid[] = {"apm", "sid", NULL};
+    char *probe_b[] = {"spi", "probeb", NULL};
+    char *open_wire[] = {"spi", "owcheck", NULL};
+    char *bms_release[] = {"bmsok", "release", NULL};
+    char *balance_release[] = {"balance", "release", NULL};
+    char *state_charge[] = {"state", "charge", NULL};
+    char *current_zero[] = {"current", "zero", NULL};
+    char *evidence[] = {"bringup", "evidence", NULL};
+
+    init_fake_app();
+    app.acc.apm_ready = false;
+    app.acc.apm_init_status = HAL_ERROR;
+    app.acc.apm.health.initialized = false;
+    app.bms_output_inhibit = true;
+    app.balance_inhibit = true;
+    sil_prepare_cli_capture();
+
+    fake_apm_probe_call_count = 0u;
+    CHECK(get_apm_debug(2, apm_sid) == 0);
+    CHECK(fake_apm_probe_call_count == 0u);
+    CHECK(strstr(cli_capture, "physically absent") != NULL);
+
+    cli_capture_clear();
+    CHECK(get_spi_debug(2, probe_b) == 0);
+    CHECK(fake_apm_probe_call_count == 0u);
+    CHECK(strstr(cli_capture, "blocked") != NULL);
+
+    cli_capture_clear();
+    fake_adbms_open_wire_call_count = 0u;
+    CHECK(get_spi_debug(2, open_wire) == 0);
+    CHECK(fake_adbms_open_wire_call_count == 0u);
+    CHECK(strstr(cli_capture, "blocked") != NULL);
+
+    cli_capture_clear();
+    CHECK(bmsok_control(2, bms_release) == 0);
+    CHECK(app.bms_output_inhibit == true);
+    CHECK(app.bms_state == false);
+    CHECK(strstr(cli_capture, "compile-time output-inhibited") != NULL);
+
+    cli_capture_clear();
+    CHECK(balance_control(2, balance_release) == 0);
+    CHECK(app.balance_inhibit == true);
+    CHECK(strstr(cli_capture, "clear/off writes only") != NULL);
+
+    cli_capture_clear();
+    CHECK(set_state(2, state_charge) == 0);
+    CHECK(app.state == STATE_START);
+    CHECK(strstr(cli_capture, "START/monitor") != NULL);
+
+    cli_capture_clear();
+    CHECK(get_current(2, current_zero) == 0);
+    CHECK(strstr(cli_capture, "mutation blocked") != NULL);
+
+    app.temp_valid = false;
+    app.temp_read_fault = true;
+    run_one_fan_task_iteration(&app);
+    CHECK(app.fan_state == false);
+    CHECK(app.fan_command_percent == 0.0f);
+
+    cli_capture_clear();
+    CHECK(get_bringup(2, evidence) == 0);
+    CHECK(strstr(cli_capture, "confirm masks 0x001F") != NULL);
+    CHECK(strstr(cli_capture, "apm sample") == NULL);
+}
+#endif
+
 #if AMS_HOST_PRODUCTION_GATE_TEST
 static void test_production_safety_gates(void)
 {
@@ -9354,7 +9504,18 @@ static void test_air_feedback_future_gate_is_fail_closed(void)
 #endif
 
 int main(void){
-#if AMS_HOST_PRODUCTION_GATE_TEST
+#if AMS_HOST_ONLY_5SMB_NO_APM_TEST
+    test_five_smb_no_apm_topology_and_measurement_paths();
+    puts("PASS five-SMB/no-APM topology and voltage/temperature paths");
+    test_five_smb_no_apm_cli_lockouts();
+    puts("PASS five-SMB/no-APM CLI and actuation lockouts");
+    test_current_sensor_measurement_model();
+    puts("PASS DHAB dual-range measurement model in fixture build");
+    test_current_task_measurement_state();
+    puts("PASS DHAB current-task publication in fixture build");
+    puts("ALL FIVE-SMB/NO-APM FIXTURE TESTS PASSED");
+    return 0;
+#elif AMS_HOST_PRODUCTION_GATE_TEST
     test_production_safety_gates();
     puts("PASS production HIL/service/IMD/AIR/supervisor gates");
     puts("ALL PRODUCTION SAFETY GATE TESTS PASSED");

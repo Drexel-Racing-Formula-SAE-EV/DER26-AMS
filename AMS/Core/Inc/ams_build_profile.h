@@ -15,6 +15,18 @@
 #define AMS_PROFILE_HIL     2
 #define AMS_PROFILE_VEHICLE 3
 
+/* Dedicated initial-accumulator fixture: five ADBMS6830 SMBs are present,
+ * while the ADBMS2950 APM is physically absent.  Keep the normal final-ring
+ * image as the default; this profile must be selected explicitly. */
+#ifndef AMS_ACCUMULATOR_5SMB_NO_APM
+#define AMS_ACCUMULATOR_5SMB_NO_APM 0
+#endif
+
+#if (AMS_ACCUMULATOR_5SMB_NO_APM != 0) && \
+    (AMS_ACCUMULATOR_5SMB_NO_APM != 1)
+#error "AMS_ACCUMULATOR_5SMB_NO_APM must be 0 or 1"
+#endif
+
 #define AMS_ESTIMATOR_TOPOLOGY_PACK     1
 #define AMS_ESTIMATOR_TOPOLOGY_SEGMENTS 2
 
@@ -46,7 +58,11 @@
 
 #if AMS_BUILD_PROFILE == AMS_PROFILE_BENCH
 
+#if AMS_ACCUMULATOR_5SMB_NO_APM
+#define AMS_BUILD_PROFILE_NAME "bench-5smb-noapm"
+#else
 #define AMS_BUILD_PROFILE_NAME "bench"
+#endif
 #ifndef AMS_HW_BRINGUP
 #define AMS_HW_BRINGUP 1
 #endif
@@ -162,6 +178,44 @@
 
 #else
 #error "AMS_BUILD_PROFILE must be AMS_PROFILE_BENCH, AMS_PROFILE_HIL or AMS_PROFILE_VEHICLE"
+#endif
+
+/* The no-APM accumulator fixture is a deliberately restricted bench image.
+ * Normal final-ring builds retain six physical devices and all existing
+ * behavior. */
+#if AMS_ACCUMULATOR_5SMB_NO_APM
+#if AMS_BUILD_PROFILE != AMS_PROFILE_BENCH
+#error "Five-SMB/no-APM fixture requires AMS_PROFILE_BENCH"
+#endif
+#if !AMS_HW_BRINGUP
+#error "Five-SMB/no-APM fixture requires AMS_HW_BRINGUP=1"
+#endif
+#if AMS_HIL_REPLACE_ADBMS || AMS_ENABLE_HIL_CAN
+#error "Physical five-SMB/no-APM testing cannot use CAN-fed ADBMS HIL"
+#endif
+#if !AMS_ENABLE_SERVICE_CLI
+#error "Five-SMB/no-APM fixture requires the controlled service CLI"
+#endif
+
+#define AMS_ADBMS_PHYSICAL_CHAIN_COUNT        5
+#define AMS_ADBMS_BALANCE_ACTIVATION_ENABLED  0
+#define AMS_ADBMS_OPEN_WIRE_ENABLED           0
+#define AMS_ADBMS_RESTRICTED_BENCH_COMMANDS   1
+
+#ifndef AMS_ENABLE_APM_2950
+#define AMS_ENABLE_APM_2950 0
+#endif
+#if AMS_ENABLE_APM_2950
+#error "ADBMS2950/APM must remain disabled in the five-SMB/no-APM fixture"
+#endif
+
+#else
+
+#define AMS_ADBMS_PHYSICAL_CHAIN_COUNT        6
+#define AMS_ADBMS_BALANCE_ACTIVATION_ENABLED  1
+#define AMS_ADBMS_OPEN_WIRE_ENABLED           1
+#define AMS_ADBMS_RESTRICTED_BENCH_COMMANDS   0
+
 #endif
 
 #ifndef AMS_ESTIMATOR_DEFAULT_TOPOLOGY

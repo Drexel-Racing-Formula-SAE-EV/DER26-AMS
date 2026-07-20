@@ -172,7 +172,15 @@ void fan_task_fn(void *argument)
     {
         entry = osKernelGetTickCount();
 
+#if AMS_ACCUMULATOR_5SMB_NO_APM
+        /* Initial accumulator instrumentation profile: do not let the normal
+         * fail-safe 100% command for not-yet-valid thermistors unexpectedly
+         * energize fan outputs during wiring/SPI bring-up. */
+        percent = 0.0f;
+        reason = FAN_CONTROL_REASON_OFF_COOL;
+#else
         percent = fan_percent_from_temp(data, &reason);
+#endif
         data->fan_state = (percent > 0.5f);
         data->fan_command_percent = percent;
         data->fan_control_reason = reason;

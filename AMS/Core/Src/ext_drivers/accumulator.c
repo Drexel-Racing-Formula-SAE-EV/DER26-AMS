@@ -32,7 +32,8 @@ bool accumulator_final_ring_topology_valid(const accumulator_t *dev)
 {
     if((dev == NULL) ||
        (dev->smb.num_ics != NSMBS) ||
-       (dev->smb.physical_chain_count != (uint8_t)(NSMBS + NAPMS)) ||
+       (dev->smb.physical_chain_count !=
+        (uint8_t)AMS_ADBMS_PHYSICAL_CHAIN_COUNT) ||
        (dev->smb.ics_capacity != NSMBS) ||
        (dev->smb.ics != dev->smb_ics) ||
        (dev->smb.string != STRING_A) ||
@@ -321,12 +322,12 @@ void accumulator_init(accumulator_t *dev,
     }
 
 	/* String A owns the one global chain reset.  The five SMB monitors are the
-	 * leading devices from that end, so their five-packet transactions stop at
-	 * the SMB/APM boundary. */
+	 * leading devices from that end.  The physical wake count is profile-owned:
+	 * five for the initial no-APM fixture and six for the final mixed ring. */
 	memset(dev->smb_ics, 0, sizeof(dev->smb_ics));
 	dev->smb_init_status = adBms6830_init(&dev->smb,
 	                                      NSMBS,
-	                                      (uint8_t)(NSMBS + NAPMS),
+	                                      (uint8_t)AMS_ADBMS_PHYSICAL_CHAIN_COUNT,
 	                                      dev->smb_ics,
 	                                      NSMBS,
 	                                      hspi,
@@ -1463,6 +1464,10 @@ void accumulator_update_temp_stats_at(accumulator_t *dev, uint32_t now_ms)
 
 int accumulator_set_balance(accumulator_t *dev)
 {
+#if !AMS_ADBMS_BALANCE_ACTIVATION_ENABLED
+    (void)dev;
+    return -1;
+#else
     if((dev == NULL) || !dev->smb_ready ||
        !accumulator_final_ring_topology_valid(dev) ||
        !dev->voltage_full_usable || (dev->min_voltage_mv == 0u))
@@ -1537,6 +1542,7 @@ int accumulator_set_balance(accumulator_t *dev)
 
     adbms_spi_unlock();
     return result;
+#endif
 }
 
 int accumulator_clear_balance(accumulator_t *dev)

@@ -10,6 +10,7 @@
 #define INC_EXT_DRIVERS_ACCUMULATOR_H_
 
 #include <stdbool.h>
+#include "ams_build_profile.h"
 #include "stm32f7xx_hal.h"
 #include "ext_drivers/adbms2950.h"
 #include "ext_drivers/adbms6830_functions.h"
@@ -44,11 +45,10 @@
 #define ACCUMULATOR_CELL_STUCK_SAME_COUNT     120u
 
 
-/* Final-ring topology:
+/* Normal final-ring topology:
  *   String A -> five ADBMS6830 SMBs -> one ADBMS2950 APM -> String B.
- * The APM is initialized and sampled by default, but remains advisory and
- * cannot affect BMS_OK until its scaling, polarity and fault policy are
- * validated on final hardware. */
+ * The explicit AMS_ACCUMULATOR_5SMB_NO_APM bench profile instead describes
+ * the physically shorter five-SMB chain and compiles APM traffic out. */
 #ifndef AMS_ENABLE_APM_2950
 #define AMS_ENABLE_APM_2950 1
 #endif
@@ -70,6 +70,10 @@
 #define HVEN2 GPO2
 
 #define NSMBS 5
+
+#if AMS_ADBMS_PHYSICAL_CHAIN_COUNT < NSMBS
+#error "Physical ADBMS chain cannot contain fewer devices than monitored SMBs"
+#endif
 
 typedef struct
 {
