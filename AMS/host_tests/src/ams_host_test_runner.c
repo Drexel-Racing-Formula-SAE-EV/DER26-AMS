@@ -1692,6 +1692,12 @@ static uint32_t host_publish_measurement_snapshot(app_data_t *d,
 {
     CHECK(d != NULL);
 
+    if((validity_flags & AMS_MEAS_VALID_CURRENT) != 0u)
+    {
+        /* Synthetic SIL current belongs to one exact epoch. */
+        validity_flags |= AMS_MEAS_CURRENT_TIMING_VALID;
+    }
+
     ams_measurement_snapshot_t previous;
     bool have_previous =
         ams_measurement_store_copy_latest(&d->measurement_store, &previous);
@@ -6070,33 +6076,28 @@ static void test_adbms_periodic_diagnostics_and_safe_open_wire(void)
     app.bms_state = true;
     bms_pin_state = GPIO_PIN_SET;
 
-    /* The bring-up profile intentionally scans at 1 Hz while the normal
-     * profile scans at 10 Hz.  Prove the same nominal wall-clock diagnostic
-     * contract in both profiles instead of baking the normal-profile loop
-     * counts into the test. */
-    for(uint32_t i = 1u; i < ADBMS_STATUS_DIAG_PERIOD_CYCLES; i++)
-    {
-        run_one_adbms_task_iteration(&app);
-    }
+    /* Diagnostics are scheduled from monotonic time, independent of scan
+     * frequency. The first iteration establishes the deadlines. */
+    run_one_adbms_task_iteration(&app);
     CHECK(app.adbms_status_diag_count == 0u);
     CHECK(app.adbms_config_diag_count == 0u);
     CHECK(app.adbms_open_wire_diag_count == 0u);
     CHECK(app.adbms_diag_fault == false);
+    CHECK(app.temp_policy_last_elapsed_ms == AMS_ADBMS_TASK_PERIOD_MS);
 
+    fake_tick = app.adbms_status_diag_next_tick + 37u;
     run_one_adbms_task_iteration(&app);
     CHECK(app.adbms_status_diag_count == 1u);
     CHECK(app.adbms_config_diag_count == 0u);
     CHECK(app.adbms_open_wire_diag_count == 0u);
     CHECK(app.adbms_diag_fault == false);
+    CHECK(app.adbms_diag_last_lateness_ms == 37u);
+    CHECK(app.temp_policy_last_elapsed_ms > AMS_ADBMS_TASK_PERIOD_MS);
 
-    while((app.adbms_scan_count + 1u) < ADBMS_CONFIG_DIAG_PERIOD_CYCLES)
-    {
-        run_one_adbms_task_iteration(&app);
-    }
-    CHECK(app.adbms_scan_count == (ADBMS_CONFIG_DIAG_PERIOD_CYCLES - 1u));
     CHECK(app.adbms_config_diag_count == 0u);
 
     fake_adbms_config_mismatch_mask = 0x0004u;
+    fake_tick = app.adbms_config_diag_next_tick;
     run_one_adbms_task_iteration(&app);
     CHECK(app.adbms_config_diag_count == 1u);
     CHECK(app.adbms_config_fault == true);
@@ -6115,7 +6116,9 @@ static void test_adbms_periodic_diagnostics_and_safe_open_wire(void)
     app.current_valid = true;
     app.current_fault = false;
     app.bms_state = true;
-    app.adbms_scan_count = ADBMS_OPEN_WIRE_DIAG_PERIOD_CYCLES - 1u;
+    run_one_adbms_task_iteration(&app);
+    fake_tick = app.adbms_open_wire_diag_next_tick;
+    fill_nominal_pack(&app, 3.700f);
     run_one_adbms_task_iteration(&app);
     CHECK(app.adbms_open_wire_diag_count == 1u);
     CHECK(app.acc.smb.health.open_wire_even_count == 1u);
@@ -6131,7 +6134,8 @@ static void test_adbms_periodic_diagnostics_and_safe_open_wire(void)
     fake_adbms_diag_status = HAL_ERROR;
     app.bms_state = true;
     bms_pin_state = GPIO_PIN_SET;
-    app.adbms_scan_count = ADBMS_OPEN_WIRE_DIAG_PERIOD_CYCLES - 1u;
+    fake_tick = app.adbms_open_wire_diag_next_tick;
+    fill_nominal_pack(&app, 3.700f);
     run_one_adbms_task_iteration(&app);
     CHECK(app.adbms_open_wire_fault == true);
     CHECK(app.adbms_diag_fault == true);
@@ -6139,7 +6143,8 @@ static void test_adbms_periodic_diagnostics_and_safe_open_wire(void)
     CHECK(bms_pin_state == GPIO_PIN_RESET);
 
     fake_adbms_diag_status = HAL_OK;
-    app.adbms_scan_count = ADBMS_OPEN_WIRE_DIAG_PERIOD_CYCLES - 1u;
+    fake_tick = app.adbms_open_wire_diag_next_tick;
+    fill_nominal_pack(&app, 3.700f);
     run_one_adbms_task_iteration(&app);
     CHECK(app.adbms_open_wire_fault == true);
     CHECK(app.adbms_diag_fault == true);
@@ -6153,7 +6158,8 @@ static void test_adbms_periodic_diagnostics_and_safe_open_wire(void)
 	bms_pin_state = GPIO_PIN_SET;
 	app.acc.delay_timer_ready = false;
 	app.acc.delay_timer_status = HAL_ERROR;
-	app.adbms_scan_count = ADBMS_STATUS_DIAG_PERIOD_CYCLES - 1u;
+	run_one_adbms_task_iteration(&app);
+	fake_tick = app.adbms_status_diag_next_tick;
 	run_one_adbms_task_iteration(&app);
 	CHECK(app.adbms_status_fault == true);
 	CHECK(app.adbms_diag_fault == true);
@@ -6168,7 +6174,8 @@ static void test_adbms_periodic_diagnostics_and_safe_open_wire(void)
 	bms_pin_state = GPIO_PIN_SET;
 	app.acc.smb_ready = false;
 	app.acc.smb_init_status = HAL_TIMEOUT;
-	app.adbms_scan_count = ADBMS_STATUS_DIAG_PERIOD_CYCLES - 1u;
+	run_one_adbms_task_iteration(&app);
+	fake_tick = app.adbms_status_diag_next_tick;
 	run_one_adbms_task_iteration(&app);
 	CHECK(app.adbms_status_fault == true);
 	CHECK(app.adbms_diag_fault == true);
@@ -7976,6 +7983,47 @@ static void test_measurement_epoch_contract(void)
                                      0u,
                                      AMS_MEAS_VALID_CURRENT);
     CHECK(ams_measurement_store_publish(&wrap_store, write) == 1u);
+
+    /* A failed producer can explicitly release its reservation. A mismatched
+     * pointer cannot cancel somebody else's in-progress write. */
+    write = ams_measurement_store_begin_write(&wrap_store);
+    CHECK(write != NULL);
+    CHECK(!ams_measurement_store_abort_write(&wrap_store,
+                                              &wrap_store.buffer[wrap_store.write_index ^ 1u]));
+    CHECK(wrap_store.write_in_progress);
+    CHECK(ams_measurement_store_abort_write(&wrap_store, write));
+    CHECK(!wrap_store.write_in_progress);
+    CHECK(ams_measurement_store_publish(&wrap_store, write) == 0u);
+    CHECK(ams_measurement_store_begin_write(&wrap_store) != NULL);
+
+    /* Diagnostic masks belong to the same immutable epoch as measurements. */
+    accumulator_t snapshot_acc;
+    memset(&snapshot_acc, 0, sizeof(snapshot_acc));
+    snapshot_acc.smb.num_ics = 1u;
+    snapshot_acc.smb.ics_capacity = NSMBS;
+    snapshot_acc.smb.ics = snapshot_acc.smb_ics;
+    snapshot_acc.updated_voltage_mask[0] = 0x0015u;
+    snapshot_acc.stale_voltage_mask[0] = 0x0020u;
+    snapshot_acc.pec_fail_voltage_mask[0] = 0x0040u;
+    snapshot_acc.temp_open_mask[0] = 0x000123u;
+    snapshot_acc.temp_rate_rise_mask[0] = 0x000456u;
+    ams_measurement_snapshot_t mask_snapshot;
+    ams_measurement_snapshot_prepare(&mask_snapshot,
+                                     &snapshot_acc,
+                                     &completed,
+                                     20u,
+                                     21u,
+                                     22u,
+                                     NULL,
+                                     0u,
+                                     0u);
+    snapshot_acc.updated_voltage_mask[0] = 0u;
+    snapshot_acc.temp_open_mask[0] = 0u;
+    CHECK(mask_snapshot.voltage_updated_mask[0] == 0x0015u);
+    CHECK(mask_snapshot.voltage_stale_mask[0] == 0x0020u);
+    CHECK(mask_snapshot.voltage_pec_fail_mask[0] == 0x0040u);
+    CHECK(mask_snapshot.temp_open_mask[0] == 0x000123u);
+    CHECK(mask_snapshot.temp_rate_rise_mask[0] == 0x000456u);
 }
 
 static void test_estimator_ra8m1_architecture_parity(void){

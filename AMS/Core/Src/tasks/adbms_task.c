@@ -11,14 +11,7 @@
 #define ADBMS_STATUS_DIAG_PERIOD_MS            1000u
 #define ADBMS_CONFIG_DIAG_PERIOD_MS            6000u
 #define ADBMS_OPEN_WIRE_DIAG_PERIOD_MS        30000u
-#define ADBMS_DIAG_CYCLES(period_ms) \
-    ((((period_ms) * ADBMS_FREQ) + 999u) / 1000u)
-#define ADBMS_STATUS_DIAG_PERIOD_CYCLES \
-    ADBMS_DIAG_CYCLES(ADBMS_STATUS_DIAG_PERIOD_MS)
-#define ADBMS_CONFIG_DIAG_PERIOD_CYCLES \
-    ADBMS_DIAG_CYCLES(ADBMS_CONFIG_DIAG_PERIOD_MS)
-#define ADBMS_OPEN_WIRE_DIAG_PERIOD_CYCLES \
-    ADBMS_DIAG_CYCLES(ADBMS_OPEN_WIRE_DIAG_PERIOD_MS)
+#define ADBMS_TEMP_POLICY_MAX_ELAPSED_MS       1000u
 
 void adbms_task_fn(void *argument);
 
@@ -46,11 +39,28 @@ static bool adbms_open_wire_auto_allowed(const app_data_t *data)
            !data->current_fault;
 }
 
-static void adbms_task_run_periodic_diagnostics(app_data_t *data)
+static bool adbms_diag_deadline_due(uint32_t now, uint32_t deadline)
+{
+    return ((int32_t)(now - deadline) >= 0);
+}
+
+static uint32_t adbms_diag_next_deadline(uint32_t now,
+                                         uint32_t deadline,
+                                         uint32_t period_ms)
+{
+    uint32_t next = deadline + period_ms;
+    return adbms_diag_deadline_due(now, next) ? (now + period_ms) : next;
+}
+
+static void adbms_task_run_periodic_diagnostics(app_data_t *data,
+                                                uint32_t now)
 {
     accumulator_t *acc;
     adbms6830_driver_t *smb;
     HAL_StatusTypeDef status;
+    bool ran_diagnostic = false;
+    uint32_t diagnostic_start = now;
+    uint32_t lateness_ms = 0u;
 
     if(data == NULL)
     {
@@ -60,9 +70,23 @@ static void adbms_task_run_periodic_diagnostics(app_data_t *data)
     acc = &data->acc;
     smb = &acc->smb;
 
-    if((data->adbms_scan_count % ADBMS_STATUS_DIAG_PERIOD_CYCLES) == 0u)
+    if(!data->adbms_diag_schedule_initialized)
+    {
+        data->adbms_status_diag_next_tick = now + ADBMS_STATUS_DIAG_PERIOD_MS;
+        data->adbms_config_diag_next_tick = now + ADBMS_CONFIG_DIAG_PERIOD_MS;
+        data->adbms_open_wire_diag_next_tick = now + ADBMS_OPEN_WIRE_DIAG_PERIOD_MS;
+        data->adbms_diag_schedule_initialized = true;
+    }
+
+    if(adbms_diag_deadline_due(now, data->adbms_status_diag_next_tick))
     {
         bool status_fault;
+        lateness_ms = now - data->adbms_status_diag_next_tick;
+        data->adbms_status_diag_next_tick =
+            adbms_diag_next_deadline(now,
+                                     data->adbms_status_diag_next_tick,
+                                     ADBMS_STATUS_DIAG_PERIOD_MS);
+        ran_diagnostic = true;
 
         status = adbms6830_refresh_diagnostics(smb);
         status_fault = (!acc->delay_timer_ready ||
@@ -79,9 +103,19 @@ static void adbms_task_run_periodic_diagnostics(app_data_t *data)
         taskEXIT_CRITICAL();
     }
 
-    if((data->adbms_scan_count % ADBMS_CONFIG_DIAG_PERIOD_CYCLES) == 0u)
+    if(adbms_diag_deadline_due(now, data->adbms_config_diag_next_tick))
     {
         const adbms6830_diag_health_t *health;
+        uint32_t config_lateness = now - data->adbms_config_diag_next_tick;
+        if(config_lateness > lateness_ms)
+        {
+            lateness_ms = config_lateness;
+        }
+        data->adbms_config_diag_next_tick =
+            adbms_diag_next_deadline(now,
+                                     data->adbms_config_diag_next_tick,
+                                     ADBMS_CONFIG_DIAG_PERIOD_MS);
+        ran_diagnostic = true;
 
         status = adbms6830_verify_config_readback(smb);
         health = adbms6830_diag_health_get(smb);
@@ -97,28 +131,49 @@ static void adbms_task_run_periodic_diagnostics(app_data_t *data)
         taskEXIT_CRITICAL();
     }
 
-    if(((data->adbms_scan_count % ADBMS_OPEN_WIRE_DIAG_PERIOD_CYCLES) == 0u) &&
-       adbms_open_wire_auto_allowed(data))
+    if(adbms_diag_deadline_due(now, data->adbms_open_wire_diag_next_tick))
     {
-        /* One diagnostic is an inseparable even+odd S-ADC pair.  Reporting a
-         * successfully transmitted conversion command as a passed open-wire
-         * test would hide the very lead break this diagnostic is meant to
-         * detect. */
-        status = adbms6830_run_open_wire_diagnostic(smb);
-        taskENTER_CRITICAL();
-        data->adbms_last_diag_status = status;
-        if(data->adbms_open_wire_diag_count != UINT32_MAX)
+        uint32_t open_wire_lateness = now - data->adbms_open_wire_diag_next_tick;
+        if(open_wire_lateness > lateness_ms)
         {
-            data->adbms_open_wire_diag_count++;
+            lateness_ms = open_wire_lateness;
         }
-        if(status != HAL_OK)
+        data->adbms_open_wire_diag_next_tick =
+            adbms_diag_next_deadline(now,
+                                     data->adbms_open_wire_diag_next_tick,
+                                     ADBMS_OPEN_WIRE_DIAG_PERIOD_MS);
+        if(adbms_open_wire_auto_allowed(data))
         {
-            /* A successful later sample is useful diagnostically, but it does
-             * not explain why a sense lead appeared open. Require a reset (and
-             * the retained log) before this safety latch can clear. */
-            data->adbms_open_wire_fault = true;
+            /* One diagnostic is an inseparable even+odd S-ADC pair. */
+            ran_diagnostic = true;
+            status = adbms6830_run_open_wire_diagnostic(smb);
+            taskENTER_CRITICAL();
+            data->adbms_last_diag_status = status;
+            if(data->adbms_open_wire_diag_count != UINT32_MAX)
+            {
+                data->adbms_open_wire_diag_count++;
+            }
+            if(status != HAL_OK)
+            {
+                data->adbms_open_wire_fault = true;
+            }
+            taskEXIT_CRITICAL();
         }
-        taskEXIT_CRITICAL();
+    }
+
+    if(ran_diagnostic)
+    {
+        uint32_t duration_ms = osKernelGetTickCount() - diagnostic_start;
+        data->adbms_diag_last_duration_ms = duration_ms;
+        if(duration_ms > data->adbms_diag_max_duration_ms)
+        {
+            data->adbms_diag_max_duration_ms = duration_ms;
+        }
+        data->adbms_diag_last_lateness_ms = lateness_ms;
+        if(lateness_ms > data->adbms_diag_max_lateness_ms)
+        {
+            data->adbms_diag_max_lateness_ms = lateness_ms;
+        }
     }
 
     taskENTER_CRITICAL();
@@ -369,6 +424,7 @@ void adbms_task_fn(void *argument)
 	    uint32_t balance_clear_tick = 0u;
 	    bool balance_clear_timed = false;
 	    ams_current_window_t current_window = {0};
+	    bool current_window_timing_valid = false;
 	    uint32_t voltage_complete_tick;
 	    uint32_t balance_apply_tick = 0u;
 	    /* Own the complete accumulator-image epoch, including the initial
@@ -389,9 +445,8 @@ void adbms_task_fn(void *argument)
 	        balance_was_active || data->adbms_balance_write_fault;
 #endif
 	    data->adbms_scan_active = true;
-	    /* This counter is also the modulo schedule for periodic diagnostics.
-	     * Unsigned wrap is intentional so those diagnostics cannot stop after
-	     * the counter reaches its maximum value. */
+	    /* Retained as a saturating-free lifetime scan counter. Diagnostic
+	     * scheduling uses independent wrap-safe wall-clock deadlines. */
 	    data->adbms_scan_count++;
 
         bool voltage_was_latched = data->voltage_fault_latched;
@@ -461,6 +516,11 @@ void adbms_task_fn(void *argument)
 	    (void)ams_current_window_rotate(&data->current_window,
 	                                    voltage_complete_tick,
 	                                    &current_window);
+	    current_window_timing_valid =
+	        (data->current_timing_fault_count ==
+	         data->current_timing_fault_count_at_last_epoch);
+	    data->current_timing_fault_count_at_last_epoch =
+	        data->current_timing_fault_count;
 	    ams_current_window_unlock();
 
         voltage_fault_state_t next_voltage_fault = data->voltage_fault_state;
@@ -492,10 +552,23 @@ void adbms_task_fn(void *argument)
         (void)accumulator_read_temp(acc);
 #endif
         accumulator_update_temp_stats_at(acc, osKernelGetTickCount());
+        uint32_t temp_policy_tick = osKernelGetTickCount();
+        uint32_t temp_policy_elapsed_ms = AMS_ADBMS_TASK_PERIOD_MS;
+        if(data->temp_policy_tick_valid)
+        {
+            temp_policy_elapsed_ms = temp_policy_tick - data->temp_policy_last_tick;
+            if(temp_policy_elapsed_ms > ADBMS_TEMP_POLICY_MAX_ELAPSED_MS)
+            {
+                temp_policy_elapsed_ms = ADBMS_TEMP_POLICY_MAX_ELAPSED_MS;
+            }
+        }
+        data->temp_policy_last_tick = temp_policy_tick;
+        data->temp_policy_last_elapsed_ms = temp_policy_elapsed_ms;
+        data->temp_policy_tick_valid = true;
         temperature_fault_state_t next_temp_fault = data->temp_fault_state;
         temperature_fault_update_with_period(&next_temp_fault,
                                              acc,
-                                             AMS_ADBMS_TASK_PERIOD_MS);
+                                             temp_policy_elapsed_ms);
         adbms_task_publish_temperature_state(data, &next_temp_fault, acc);
 
         if(data->temp_fault_latched &&
@@ -528,7 +601,7 @@ void adbms_task_fn(void *argument)
 	    data->adbms_last_diag_status = data->adbms_diag_fault ? HAL_ERROR : HAL_OK;
 	    taskEXIT_CRITICAL();
 #else
-	    adbms_task_run_periodic_diagnostics(data);
+	    adbms_task_run_periodic_diagnostics(data, osKernelGetTickCount());
         if(data->adbms_diag_fault && !adbms_diag_was_faulted)
         {
             ams_fault_log_event(AMS_FAULT_LOG_ADBMS_DIAG_FAIL,
@@ -596,10 +669,15 @@ void adbms_task_fn(void *argument)
 	        {
 	            measurement_flags |= AMS_MEAS_VALID_TEMPERATURE;
 	        }
-	        if(current_window.valid)
-	        {
-	            measurement_flags |= AMS_MEAS_VALID_CURRENT;
-	        }
+        if(current_window.valid)
+        {
+            measurement_flags |= AMS_MEAS_VALID_CURRENT;
+        }
+        if((data->current_sample_sequence != 0u) &&
+           current_window_timing_valid)
+        {
+            measurement_flags |= AMS_MEAS_CURRENT_TIMING_VALID;
+        }
 	        if(balance_recovery_verified)
 	        {
 	            measurement_flags |= AMS_MEAS_BALANCE_RECOVERED;

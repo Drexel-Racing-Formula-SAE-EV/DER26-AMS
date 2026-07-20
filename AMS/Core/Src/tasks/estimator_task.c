@@ -539,6 +539,7 @@ bool estimator_task_update(app_data_t *data, uint32_t now, float cc_dt_s)
     const bool current_calibration_confident =
         (AMS_CURRENT_POLARITY_VALIDATED != 0) &&
         (AMS_CURRENT_CALIBRATION_VALIDATED != 0) &&
+        ((measurement.validity_flags & AMS_MEAS_CURRENT_TIMING_VALID) != 0u) &&
         measurement.current.calibration_record_confident &&
         (measurement.current.calibration_id != 0u);
 

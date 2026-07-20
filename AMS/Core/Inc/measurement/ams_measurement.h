@@ -28,6 +28,8 @@ extern "C" {
 #define AMS_MEAS_VALID_CURRENT       (1u << 2u)
 #define AMS_MEAS_BALANCE_RECOVERED   (1u << 3u)
 #define AMS_MEAS_BALANCE_WAS_ACTIVE  (1u << 4u)
+#define AMS_MEAS_CURRENT_TIMING_VALID (1u << 5u)
+#define AMS_CURRENT_ACQUISITION_MAX_MS 10u
 
 typedef struct
 {
@@ -82,10 +84,22 @@ typedef struct
     uint16_t cell_mv[NSMBS][NCELLS];
     uint32_t cell_age_ms[NSMBS][NCELLS];
     uint16_t cell_usable_mask[NSMBS];
+    uint16_t voltage_updated_mask[NSMBS];
+    uint16_t voltage_stale_mask[NSMBS];
+    uint16_t voltage_pec_fail_mask[NSMBS];
+    uint16_t voltage_jump_mask[NSMBS];
+    uint16_t voltage_stuck_mask[NSMBS];
 
     int16_t temp_deci_c[NSMBS][NTEMPS];
     uint32_t temp_age_ms[NSMBS][NTEMPS];
     uint32_t temp_usable_mask[NSMBS];
+    uint32_t temp_updated_mask[NSMBS];
+    uint32_t temp_stale_mask[NSMBS];
+    uint32_t temp_invalid_mask[NSMBS];
+    uint32_t temp_open_mask[NSMBS];
+    uint32_t temp_short_mask[NSMBS];
+    uint32_t temp_jump_mask[NSMBS];
+    uint32_t temp_rate_rise_mask[NSMBS];
 
     ams_current_window_t current;
     uint16_t balancing_mask[NSMBS];
@@ -122,6 +136,8 @@ bool ams_current_window_rotate(ams_current_window_accumulator_t *acc,
 void ams_measurement_store_init(ams_measurement_store_t *store);
 ams_measurement_snapshot_t *ams_measurement_store_begin_write(
     ams_measurement_store_t *store);
+bool ams_measurement_store_abort_write(ams_measurement_store_t *store,
+                                       ams_measurement_snapshot_t *snapshot);
 void ams_measurement_snapshot_prepare(ams_measurement_snapshot_t *snapshot,
                                       const accumulator_t *acc,
                                       const ams_current_window_t *current,

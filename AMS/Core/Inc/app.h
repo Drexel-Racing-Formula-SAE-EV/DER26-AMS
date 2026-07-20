@@ -430,6 +430,12 @@ struct app_data_t
 	bool current_valid;
 	uint32_t current_sample_tick;
 	uint32_t current_sample_sequence;
+	uint32_t current_acquisition_start_tick;
+	uint32_t current_acquisition_end_tick;
+	uint32_t current_acquisition_duration_ms;
+	uint32_t current_channel_skew_bound_ms;
+	uint32_t current_timing_fault_count;
+	uint32_t current_timing_fault_count_at_last_epoch;
 	current_sensor_range_t current_selected_range;
 	current_sensor_reason_t current_meas_reason;
 
@@ -589,6 +595,14 @@ struct app_data_t
 	uint32_t adbms_status_diag_count;
 	uint32_t adbms_config_diag_count;
 	uint32_t adbms_open_wire_diag_count;
+	uint32_t adbms_status_diag_next_tick;
+	uint32_t adbms_config_diag_next_tick;
+	uint32_t adbms_open_wire_diag_next_tick;
+	uint32_t adbms_diag_last_duration_ms;
+	uint32_t adbms_diag_max_duration_ms;
+	uint32_t adbms_diag_last_lateness_ms;
+	uint32_t adbms_diag_max_lateness_ms;
+	bool adbms_diag_schedule_initialized;
 	uint32_t adbms_balance_write_fail_count;
 	uint32_t adbms_balance_recovery_count;
 	uint32_t adbms_scan_deadline_miss_count;
@@ -599,6 +613,9 @@ struct app_data_t
 	uint32_t adbms_last_balance_off_ms;
 	uint32_t adbms_balance_apply_tick;
 	HAL_StatusTypeDef adbms_last_diag_status;
+	uint32_t temp_policy_last_tick;
+	uint32_t temp_policy_last_elapsed_ms;
+	bool temp_policy_tick_valid;
 	bool task_heartbeat_fault;
 	bool logger_heartbeat_fault;
 	uint16_t heartbeat_stale_mask;

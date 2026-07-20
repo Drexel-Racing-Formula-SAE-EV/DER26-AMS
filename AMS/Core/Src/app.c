@@ -349,6 +349,14 @@ void app_create(void)
 	app.adbms_status_diag_count = 0u;
 	app.adbms_config_diag_count = 0u;
 	app.adbms_open_wire_diag_count = 0u;
+	app.adbms_status_diag_next_tick = 0u;
+	app.adbms_config_diag_next_tick = 0u;
+	app.adbms_open_wire_diag_next_tick = 0u;
+	app.adbms_diag_last_duration_ms = 0u;
+	app.adbms_diag_max_duration_ms = 0u;
+	app.adbms_diag_last_lateness_ms = 0u;
+	app.adbms_diag_max_lateness_ms = 0u;
+	app.adbms_diag_schedule_initialized = false;
 	app.adbms_balance_write_fail_count = 0u;
 	app.adbms_balance_recovery_count = 0u;
 	app.adbms_scan_deadline_miss_count = 0u;
@@ -359,6 +367,9 @@ void app_create(void)
 	app.adbms_last_balance_off_ms = 0u;
 	app.adbms_balance_apply_tick = 0u;
 	app.adbms_last_diag_status = HAL_OK;
+	app.temp_policy_last_tick = 0u;
+	app.temp_policy_last_elapsed_ms = 0u;
+	app.temp_policy_tick_valid = false;
 	app.task_heartbeat_fault = false;
 	app.logger_heartbeat_fault = false;
 	app.heartbeat_stale_mask = 0u;
@@ -415,6 +426,12 @@ void app_create(void)
 	app.current_valid = false;
 	app.current_sample_tick = 0u;
 	app.current_sample_sequence = 0u;
+	app.current_acquisition_start_tick = 0u;
+	app.current_acquisition_end_tick = 0u;
+	app.current_acquisition_duration_ms = 0u;
+	app.current_channel_skew_bound_ms = 0u;
+	app.current_timing_fault_count = 0u;
+	app.current_timing_fault_count_at_last_epoch = 0u;
 	app.current_selected_range = CURRENT_SENSOR_RANGE_UNKNOWN;
 	app.current_meas_reason = CURRENT_SENSOR_REASON_ADC_READ;
 

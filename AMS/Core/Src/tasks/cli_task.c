@@ -2799,6 +2799,18 @@ int get_estimator_diag(int argc, char *argv[])
     ret |= cli_printline(cli, outline);
 
     snprintf(outline, CLI_LINESZ,
+             "Current timing start:%lu end:%lu midpoint:%lu duration:%lums skew_bound:%lums timing_ok:%u",
+             (unsigned long)data->current_acquisition_start_tick,
+             (unsigned long)data->current_acquisition_end_tick,
+             (unsigned long)data->current_sample_tick,
+             (unsigned long)data->current_acquisition_duration_ms,
+             (unsigned long)data->current_channel_skew_bound_ms,
+             (unsigned)(data->current_sample_sequence != 0u &&
+                        data->current_acquisition_duration_ms <=
+                            AMS_CURRENT_ACQUISITION_MAX_MS));
+    ret |= cli_printline(cli, outline);
+
+    snprintf(outline, CLI_LINESZ,
              "SoC:%.4f cell_R0:%.5f ohm pack_R0:%.5f ohm innovation:%.4f V p_R0:%.7f",
              (double)data->estimator.pack_soc,
              (double)data->estimator.representative_cell_r0_ohm,
@@ -2808,9 +2820,9 @@ int get_estimator_diag(int argc, char *argv[])
     ret |= cli_printline(cli, outline);
 
     snprintf(outline, CLI_LINESZ,
-             "R0-SoH ADVISORY status:0x%02X confidence:%u%% persisted:%u last_reject:0x%03lX",
+             "R0-SoH ADVISORY status:0x%02X maturity:%u%% persisted:%u last_reject:0x%03lX",
              (unsigned)soh->status_flags,
-             (unsigned)soh->observation_confidence_pct,
+             (unsigned)soh->observation_maturity_pct,
              (unsigned)soh->persistence_valid,
              (unsigned long)soh->last_reject_flags);
     ret |= cli_printline(cli, outline);

@@ -1551,6 +1551,9 @@ static HAL_StatusTypeDef send_logger_detail_phase(
 
     HAL_StatusTypeDef ret = HAL_OK;
     const accumulator_t *acc = &data->acc;
+    const ams_measurement_snapshot_t *snapshot =
+        (view != NULL) ? view->snapshot : NULL;
+    bool snapshot_valid = (snapshot != NULL);
     uint8_t payload[8] = {0};
 
     for(uint8_t cell = 0u; cell < NCELLS; cell = (uint8_t)(cell + 3u))
@@ -1593,19 +1596,20 @@ static HAL_StatusTypeDef send_logger_detail_phase(
         ret |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_TEMP_DETAIL, payload);
     }
 
-    uint16_t updated =
-        (phase < accumulator_configured_smb_count(acc)) ?
-        acc->updated_voltage_mask[phase] : 0u;
-    uint16_t usable = (view != NULL) && (view->snapshot != NULL) ?
-        view->snapshot->cell_usable_mask[phase] :
+    uint16_t updated = snapshot_valid ?
+        snapshot->voltage_updated_mask[phase] :
+        ((phase < accumulator_configured_smb_count(acc)) ?
+         acc->updated_voltage_mask[phase] : 0u);
+    uint16_t usable = snapshot_valid ?
+        snapshot->cell_usable_mask[phase] :
         ((phase < accumulator_configured_smb_count(acc)) ?
          acc->usable_voltage_mask[phase] : 0u);
-    uint16_t stale =
-        (phase < accumulator_configured_smb_count(acc)) ?
-        acc->stale_voltage_mask[phase] : 0u;
-    uint16_t pec =
-        (phase < accumulator_configured_smb_count(acc)) ?
-        acc->pec_fail_voltage_mask[phase] : 0u;
+    uint16_t stale = snapshot_valid ? snapshot->voltage_stale_mask[phase] :
+        ((phase < accumulator_configured_smb_count(acc)) ?
+         acc->stale_voltage_mask[phase] : 0u);
+    uint16_t pec = snapshot_valid ? snapshot->voltage_pec_fail_mask[phase] :
+        ((phase < accumulator_configured_smb_count(acc)) ?
+         acc->pec_fail_voltage_mask[phase] : 0u);
 
     memset(payload, 0, sizeof(payload));
     payload[0] = phase;
@@ -1620,19 +1624,19 @@ static HAL_StatusTypeDef send_logger_detail_phase(
     payload[3] = logger_count_bits16(pec);
     ret |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_VOLTAGE_PEC, payload);
 
-    uint32_t temp_updated =
-        (phase < accumulator_configured_smb_count(acc)) ?
-        acc->updated_temp_mask[phase] : 0u;
-    uint32_t temp_usable = (view != NULL) && (view->snapshot != NULL) ?
-        view->snapshot->temp_usable_mask[phase] :
+    uint32_t temp_updated = snapshot_valid ? snapshot->temp_updated_mask[phase] :
+        ((phase < accumulator_configured_smb_count(acc)) ?
+         acc->updated_temp_mask[phase] : 0u);
+    uint32_t temp_usable = snapshot_valid ?
+        snapshot->temp_usable_mask[phase] :
         ((phase < accumulator_configured_smb_count(acc)) ?
          acc->usable_temp_mask[phase] : 0u);
-    uint32_t temp_stale =
-        (phase < accumulator_configured_smb_count(acc)) ?
-        acc->stale_temp_mask[phase] : 0u;
-    uint32_t temp_invalid =
-        (phase < accumulator_configured_smb_count(acc)) ?
-        acc->invalid_temp_mask[phase] : 0u;
+    uint32_t temp_stale = snapshot_valid ? snapshot->temp_stale_mask[phase] :
+        ((phase < accumulator_configured_smb_count(acc)) ?
+         acc->stale_temp_mask[phase] : 0u);
+    uint32_t temp_invalid = snapshot_valid ? snapshot->temp_invalid_mask[phase] :
+        ((phase < accumulator_configured_smb_count(acc)) ?
+         acc->invalid_temp_mask[phase] : 0u);
 
     memset(payload, 0, sizeof(payload));
     payload[0] = phase;
@@ -1683,24 +1687,24 @@ static HAL_StatusTypeDef send_logger_detail_phase(
         ret |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_TEMP_DIAG, payload);
     }
 
-    uint32_t temp_open =
-        (phase < accumulator_configured_smb_count(acc)) ?
-        acc->temp_open_mask[phase] : 0u;
-    uint32_t temp_short =
-        (phase < accumulator_configured_smb_count(acc)) ?
-        acc->temp_short_mask[phase] : 0u;
-    uint32_t temp_jump =
-        (phase < accumulator_configured_smb_count(acc)) ?
-        acc->temp_jump_mask[phase] : 0u;
-    uint32_t temp_rate =
-        (phase < accumulator_configured_smb_count(acc)) ?
-        acc->temp_rate_rise_mask[phase] : 0u;
-    uint16_t voltage_jump =
-        (phase < accumulator_configured_smb_count(acc)) ?
-        acc->voltage_jump_mask[phase] : 0u;
-    uint16_t voltage_stuck =
-        (phase < accumulator_configured_smb_count(acc)) ?
-        acc->voltage_stuck_mask[phase] : 0u;
+    uint32_t temp_open = snapshot_valid ? snapshot->temp_open_mask[phase] :
+        ((phase < accumulator_configured_smb_count(acc)) ?
+         acc->temp_open_mask[phase] : 0u);
+    uint32_t temp_short = snapshot_valid ? snapshot->temp_short_mask[phase] :
+        ((phase < accumulator_configured_smb_count(acc)) ?
+         acc->temp_short_mask[phase] : 0u);
+    uint32_t temp_jump = snapshot_valid ? snapshot->temp_jump_mask[phase] :
+        ((phase < accumulator_configured_smb_count(acc)) ?
+         acc->temp_jump_mask[phase] : 0u);
+    uint32_t temp_rate = snapshot_valid ? snapshot->temp_rate_rise_mask[phase] :
+        ((phase < accumulator_configured_smb_count(acc)) ?
+         acc->temp_rate_rise_mask[phase] : 0u);
+    uint16_t voltage_jump = snapshot_valid ? snapshot->voltage_jump_mask[phase] :
+        ((phase < accumulator_configured_smb_count(acc)) ?
+         acc->voltage_jump_mask[phase] : 0u);
+    uint16_t voltage_stuck = snapshot_valid ? snapshot->voltage_stuck_mask[phase] :
+        ((phase < accumulator_configured_smb_count(acc)) ?
+         acc->voltage_stuck_mask[phase] : 0u);
 
     memset(payload, 0, sizeof(payload));
     payload[0] = phase;

@@ -349,6 +349,29 @@ ams_measurement_snapshot_t *ams_measurement_store_begin_write(
     return snapshot;
 }
 
+bool ams_measurement_store_abort_write(ams_measurement_store_t *store,
+                                       ams_measurement_snapshot_t *snapshot)
+{
+    if((store == NULL) || (snapshot == NULL))
+    {
+        return false;
+    }
+
+    bool aborted = false;
+    taskENTER_CRITICAL();
+    uint8_t index = store->write_index;
+    if(store->write_in_progress &&
+       (index <= 1u) &&
+       (snapshot == &store->buffer[index]))
+    {
+        store->write_in_progress = false;
+        store->write_sequence = 0u;
+        aborted = true;
+    }
+    taskEXIT_CRITICAL();
+    return aborted;
+}
+
 void ams_measurement_snapshot_prepare(ams_measurement_snapshot_t *snapshot,
                                       const accumulator_t *acc,
                                       const ams_current_window_t *current,
@@ -394,7 +417,19 @@ void ams_measurement_snapshot_prepare(ams_measurement_snapshot_t *snapshot,
             continue;
         }
         snapshot->cell_usable_mask[seg] = acc->usable_voltage_mask[seg];
+        snapshot->voltage_updated_mask[seg] = acc->updated_voltage_mask[seg];
+        snapshot->voltage_stale_mask[seg] = acc->stale_voltage_mask[seg];
+        snapshot->voltage_pec_fail_mask[seg] = acc->pec_fail_voltage_mask[seg];
+        snapshot->voltage_jump_mask[seg] = acc->voltage_jump_mask[seg];
+        snapshot->voltage_stuck_mask[seg] = acc->voltage_stuck_mask[seg];
         snapshot->temp_usable_mask[seg] = acc->usable_temp_mask[seg];
+        snapshot->temp_updated_mask[seg] = acc->updated_temp_mask[seg];
+        snapshot->temp_stale_mask[seg] = acc->stale_temp_mask[seg];
+        snapshot->temp_invalid_mask[seg] = acc->invalid_temp_mask[seg];
+        snapshot->temp_open_mask[seg] = acc->temp_open_mask[seg];
+        snapshot->temp_short_mask[seg] = acc->temp_short_mask[seg];
+        snapshot->temp_jump_mask[seg] = acc->temp_jump_mask[seg];
+        snapshot->temp_rate_rise_mask[seg] = acc->temp_rate_rise_mask[seg];
         for(uint8_t cell = 0u; cell < NCELLS; cell++)
         {
             snapshot->cell_mv[seg][cell] = acc->cell_voltage_mv[seg][cell];

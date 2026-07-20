@@ -291,6 +291,10 @@ target-project-gate: check-root
 	@grep -Fq 'buildPath="$${workspace_loc:/$${ProjName}/Release}"' "$(AMS_ROOT)/.cproject"
 	@test "$$(grep -c 'value="-Wall -Wextra"' "$(AMS_ROOT)/.cproject")" -eq 2
 	@test "$$(grep -c 'STM32F767ZITX_FLASH.ld' "$(AMS_ROOT)/.cproject")" -eq 4
+	@grep -q 'hcan1.Init.TransmitFifoPriority = ENABLE;' "$(AMS_ROOT)/Core/Src/main.c"
+	@if grep -q 'hcan1.Init.TransmitFifoPriority = DISABLE;' "$(AMS_ROOT)/Core/Src/main.c"; then \
+		echo "ERROR: bxCAN transmit request-order priority is disabled"; exit 1; \
+	fi
 	@echo "PASS CubeIDE project identity, build paths, warning flags, XML and linker-script metadata"
 
 system-sil: test

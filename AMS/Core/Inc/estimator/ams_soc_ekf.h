@@ -133,7 +133,7 @@ typedef struct
     float reference_cell_r0_ohm;
     float resistance_growth_ratio;
     float r0_variance_ohm2;
-    uint8_t observation_confidence_pct;
+    uint8_t observation_maturity_pct;
     uint8_t status_flags;
     /* Persistence remains false until a versioned, CRC-protected,
      * wear-managed target storage contract is implemented and validated. */
