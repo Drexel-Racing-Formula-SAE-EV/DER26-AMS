@@ -10,6 +10,7 @@
 #include "tasks/estimator_task.h"
 
 #include "estimator/ams_soc_ekf.h"
+#include "ext_drivers/thermistor_model.h"
 
 #include <math.h>
 #include <stdint.h>
@@ -53,33 +54,23 @@ static bool cell_code_valid(int16_t code, float *voltage_v)
 
 static bool temp_raw_to_c(int16_t raw, float *temp_c)
 {
-    if ((raw == 0) || (raw == -1) || (raw == INT16_MIN))
+    thermistor_result_t result = thermistor_from_adbms_raw(
+        raw, THERMISTOR_NOMINAL_VREG_V);
+
+    /* The estimator may use only values inside the characterized model range.
+     * Safety still receives conservative endpoint-clamped temperatures. */
+    if(!result.valid ||
+       !thermistor_status_is_model_valid(result.status) ||
+       !isfinite(result.temperature_c) ||
+       (result.temperature_c < ESTIMATOR_HW_MIN_TEMP_C) ||
+       (result.temperature_c > ESTIMATOR_HW_MAX_TEMP_C))
     {
         return false;
     }
 
-    float voltage = adc_code_to_cell_v(raw);
-    if ((!isfinite(voltage)) || (voltage <= 0.0f) || (voltage >= 5.0f))
+    if(temp_c != NULL)
     {
-        return false;
-    }
-
-    float resistance = 10000.0f * (5.0f - voltage) / voltage;
-    if ((!isfinite(resistance)) || (resistance <= 0.0f))
-    {
-        return false;
-    }
-
-    float x = logf(resistance / 10000.0f);
-    float t = (1.0f / (3.354016435e-3f + (2.565235509e-4f * x))) - 273.15f;
-    if ((!isfinite(t)) || (t < ESTIMATOR_HW_MIN_TEMP_C) || (t > ESTIMATOR_HW_MAX_TEMP_C))
-    {
-        return false;
-    }
-
-    if (temp_c != NULL)
-    {
-        *temp_c = t;
+        *temp_c = result.temperature_c;
     }
     return true;
 }

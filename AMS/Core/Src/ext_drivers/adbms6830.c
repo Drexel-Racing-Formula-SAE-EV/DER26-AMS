@@ -11,6 +11,7 @@
 #include <string.h>
 
 #include "ext_drivers/adbms6830_functions.h"
+#include "ext_drivers/thermistor_model.h"
 
 static unsigned char shared_buf[BUFSZ] = {0};
 static uint8_t write_buf[BUFSZ] = {0};
@@ -4201,20 +4202,14 @@ float adbms6830_convert_temp(adbms6830_driver_t *dev,
 
 float voltage_to_temp(float v)
 {
-    float V = (10000.0f + v) * 0.00015f;
-
-    if((V <= 0.0f) || (V >= 5.0f))
+    /* Legacy public wrapper retained for existing callers. The input is the
+     * signed DER26 ADBMS AUX code, despite the historic function name. */
+    if(!isfinite(v) || (v < (float)INT16_MIN) || (v > (float)INT16_MAX))
     {
-        return -273.15f;
+        return NAN;
     }
 
-    float R = 10000.0f * (5.0f - V) / V;
-    if(R <= 0.0f)
-    {
-        return -273.15f;
-    }
-
-    float x = logf(R / 10000.0f);
-    float T = 1.0f / (3.354016435e-3f + 2.565235509e-4f*x) - 273.15f;
-    return T;
+    thermistor_result_t result = thermistor_from_adbms_raw(
+        (int16_t)lroundf(v), THERMISTOR_NOMINAL_VREG_V);
+    return result.valid ? result.temperature_c : NAN;
 }

@@ -35,8 +35,6 @@
 #define ACCUMULATOR_TEMP_MAX_CONSEC_MISSES     10u
 #define ACCUMULATOR_TEMP_VALID_MIN_DECI_C      (-400)
 #define ACCUMULATOR_TEMP_VALID_MAX_DECI_C      1500
-#define ACCUMULATOR_TEMP_OPEN_LOW_MV          100u
-#define ACCUMULATOR_TEMP_SHORT_HIGH_MV        4900u
 #define ACCUMULATOR_TEMP_IMPLAUSIBLE_JUMP_DECI_C 250
 #define ACCUMULATOR_TEMP_RATE_WARN_DECI_C_PER_S 50
 #define ACCUMULATOR_TEMP_FILTER_ALPHA_NUM     1
@@ -199,7 +197,6 @@ int accumulator_read_temp(accumulator_t *dev);
 int accumulator_set_temp_ch(accumulator_t *dev, uint8_t channel);
 int accumulator_stat_temp(accumulator_t *dev);
 int accumulator_set_mux_ch(accumulator_t *dev, uint8_t channel, uint8_t addr7);
-float NXFT15XV103FEAB050_convert(float ratio);
 void accumulator_update_voltage_stats(accumulator_t *dev);
 void accumulator_update_voltage_stats_at(accumulator_t *dev, uint32_t now_ms);
 bool accumulator_cell_voltage_usable(const accumulator_t *dev, uint8_t seg, uint8_t cell);

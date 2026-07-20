@@ -7,6 +7,7 @@
  */
 
 #include "ext_drivers/accumulator.h"
+#include "ext_drivers/thermistor_model.h"
 #include <math.h>
 #include <string.h>
 
@@ -605,18 +606,6 @@ int accumulator_set_mux_ch(accumulator_t *dev, uint8_t channel, uint8_t addr7)
 	return status;
 }
 
-float NXFT15XV103FEAB050_convert(float ratio)
-{
-	// TODO: Verify
-    if(!isfinite(ratio))
-    {
-        return 0.0f;
-    }
-	double a = 104.517;
-	double b = 0.221876;
-	return a * pow(b, ratio);
-}
-
 float convert_adc_to_volt(int value)
 {
 	/* Convert before adding the signed offset so even an adversarial full-range
@@ -669,40 +658,17 @@ static int16_t accumulator_mv_to_code(uint16_t mv)
 
 static int16_t accumulator_temp_deci_c_to_raw(int16_t deci_c)
 {
-    float temp_c = (float)deci_c / 10.0f;
-    float temp_k = temp_c + 273.15f;
+    int16_t raw = 0;
+    float temperature_c = (float)deci_c / 10.0f;
 
-    if((temp_k <= 0.0f) || !isfinite(temp_k))
+    if(!thermistor_adbms_raw_from_temperature_c(temperature_c,
+                                                 THERMISTOR_NOMINAL_VREG_V,
+                                                 &raw))
     {
-        return 0;
+        return THERMISTOR_ADBMS_RESET_CODE;
     }
 
-    const float a = 3.354016435e-3f;
-    const float b = 2.565235509e-4f;
-    float r = 10000.0f * expf(((1.0f / temp_k) - a) / b);
-
-    if((r <= 0.0f) || !isfinite(r))
-    {
-        return 0;
-    }
-
-    float voltage = 5.0f * 10000.0f / (r + 10000.0f);
-    float raw = (voltage / 0.000150f) - 10000.0f;
-
-    if(!isfinite(raw))
-    {
-        return 0;
-    }
-    if(raw >= (float)INT16_MAX)
-    {
-        return INT16_MAX;
-    }
-    if(raw <= (float)INT16_MIN)
-    {
-        return INT16_MIN;
-    }
-
-    return (int16_t)lroundf(raw);
+    return raw;
 }
 
 int accumulator_hil_ingest_cell_triplet(accumulator_t *dev,
@@ -1097,58 +1063,31 @@ void accumulator_update_temp_stats(accumulator_t *dev)
     accumulator_update_temp_stats_at(dev, 0u);
 }
 
-static bool accumulator_temp_raw_to_mv(int16_t raw, uint16_t *mv_out)
+static bool accumulator_temp_code_to_deci_c(int16_t raw,
+                                                int16_t *deci_c,
+                                                thermistor_status_t *status_out)
 {
-    if((raw == -1) || (raw == INT16_MIN))
+    thermistor_result_t result = thermistor_from_adbms_raw(
+        raw, THERMISTOR_NOMINAL_VREG_V);
+
+    if(status_out != NULL)
     {
-        return false;
+        *status_out = result.status;
     }
 
-    float mv = ((float)raw + 10000.0f) * 0.15f;
-    if(!isfinite(mv) || (mv < 0.0f) || (mv > 5000.0f))
-    {
-        return false;
-    }
-
-    if(mv_out != NULL)
-    {
-        *mv_out = (uint16_t)(mv + 0.5f);
-    }
-    return true;
-}
-
-static bool accumulator_temp_code_to_deci_c(int16_t raw, int16_t *deci_c)
-{
-    if((raw == -1) || (raw == INT16_MIN) || (raw == 0))
-    {
-        return false;
-    }
-
-    float temp = voltage_to_temp(raw);
-    if(!isfinite(temp) ||
-       (temp < ((float)ACCUMULATOR_TEMP_VALID_MIN_DECI_C / 10.0f)) ||
-       (temp > ((float)ACCUMULATOR_TEMP_VALID_MAX_DECI_C / 10.0f)))
+    if(!result.valid ||
+       !isfinite(result.temperature_c) ||
+       (result.temperature_c < ((float)ACCUMULATOR_TEMP_VALID_MIN_DECI_C / 10.0f)) ||
+       (result.temperature_c > ((float)ACCUMULATOR_TEMP_VALID_MAX_DECI_C / 10.0f)))
     {
         return false;
     }
 
     if(deci_c != NULL)
     {
-        *deci_c = (int16_t)lroundf(temp * 10.0f);
+        *deci_c = (int16_t)lroundf(result.temperature_c * 10.0f);
     }
     return true;
-}
-
-static bool accumulator_temp_raw_looks_open(int16_t raw)
-{
-    uint16_t mv = 0u;
-    return accumulator_temp_raw_to_mv(raw, &mv) && (mv <= ACCUMULATOR_TEMP_OPEN_LOW_MV);
-}
-
-static bool accumulator_temp_raw_looks_short(int16_t raw)
-{
-    uint16_t mv = 0u;
-    return accumulator_temp_raw_to_mv(raw, &mv) && (mv >= ACCUMULATOR_TEMP_SHORT_HIGH_MV);
 }
 
 static int16_t accumulator_iir_deci_c(int16_t old_deci_c, int16_t new_deci_c)
@@ -1255,13 +1194,14 @@ void accumulator_update_temp_stats_at(accumulator_t *dev, uint32_t now_ms)
             {
                 int16_t deci_c = 0;
                 int16_t raw = smb_ics[ic].temp.raw[sensor];
+                thermistor_status_t thermistor_status = THERMISTOR_STATUS_NUMERIC_FAULT;
                 bool had_previous = dev->temp_sensor_valid[ic][sensor];
                 int16_t previous_deci_c = dev->temp_deci_c[ic][sensor];
                 uint32_t previous_tick = dev->temp_last_update_ms[ic][sensor];
 
                 dev->temp_raw_code[ic][sensor] = raw;
 
-                if(accumulator_temp_code_to_deci_c(raw, &deci_c))
+                if(accumulator_temp_code_to_deci_c(raw, &deci_c, &thermistor_status))
                 {
                     if(had_previous)
                     {
@@ -1321,12 +1261,12 @@ void accumulator_update_temp_stats_at(accumulator_t *dev, uint32_t now_ms)
                     dev->temp_filter_valid_mask[ic] &= ~bit;
                     dev->invalid_temp_mask[ic] |= bit;
                     invalid_count++;
-                    if(accumulator_temp_raw_looks_open(raw))
+                    if(thermistor_status == THERMISTOR_STATUS_OPEN_CIRCUIT)
                     {
                         dev->temp_open_mask[ic] |= bit;
                         open_count++;
                     }
-                    else if(accumulator_temp_raw_looks_short(raw))
+                    else if(thermistor_status == THERMISTOR_STATUS_SHORT_CIRCUIT)
                     {
                         dev->temp_short_mask[ic] |= bit;
                         short_count++;

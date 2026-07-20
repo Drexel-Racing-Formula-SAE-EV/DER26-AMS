@@ -32,6 +32,7 @@
 #include "app.h"
 #include "ext_drivers/adbms2950.h"
 #include "ext_drivers/adbms6830_functions.h"
+#include "ext_drivers/thermistor_model.h"
 
 GPIO_TypeDef dummy_gpio;
 TIM_TypeDef tim3_inst, tim4_inst, tim5_inst;
@@ -694,7 +695,7 @@ int mux_read_gpio_voltage(adbms6830_driver_t *dev, uint8_t sensor_num){
 }
 int adbms6830_read_temp_raw(adbms6830_driver_t *dev, uint8_t ic_idx, uint8_t sensor_num, int16_t *out_raw){ (void)dev;(void)ic_idx;(void)sensor_num; if(out_raw) *out_raw=0; return 0; }
 float adbms6830_convert_temp(adbms6830_driver_t *dev, uint8_t ic_idx, uint8_t sensor_num, float vref){ (void)dev;(void)ic_idx;(void)sensor_num;(void)vref; return 25.0f; }
-float voltage_to_temp(float raw){ float voltage = ((float)raw + 10000.0f) * 0.000150f; if(voltage <= 0.0f || voltage >= 5.0f) return NAN; float resistance = 10000.0f * (5.0f - voltage) / voltage; float x = logf(resistance / 10000.0f); return (1.0f / (3.354016435e-3f + 2.565235509e-4f * x)) - 273.15f; }
+float voltage_to_temp(float raw){ if(!isfinite(raw) || raw < (float)INT16_MIN || raw > (float)INT16_MAX) return NAN; thermistor_result_t result = thermistor_from_adbms_raw((int16_t)lroundf(raw), THERMISTOR_NOMINAL_VREG_V); return result.valid ? result.temperature_c : NAN; }
 int mux_set_channel(adbms6830_driver_t *dev, uint8_t sensor_num){ (void)dev; return sensor_num < 24 ? 0 : -1; }
 
 void adbms2950_gpo_set(adbms2950_driver_t *dev, GPO gp, CFGA_GPO state){(void)dev;(void)gp;(void)state;} void adbms2950_wakeup(adbms2950_driver_t *dev){(void)dev;} void adbms2950_wrcfga(adbms2950_driver_t *dev){(void)dev;} void adbms2950_rdcfga(adbms2950_driver_t *dev){(void)dev;} void adbms2950_rdvb(adbms2950_driver_t *dev){(void)dev;} void adbms2950_rdi(adbms2950_driver_t *dev){(void)dev;} void adbms2950_adv(adbms2950_driver_t *dev, adv_ *adv){(void)dev;(void)adv;} void adbms2950_plv(adbms2950_driver_t *dev){(void)dev;} void adbms2950_rdv1d(adbms2950_driver_t *dev){(void)dev;}
@@ -929,14 +930,13 @@ static uint32_t host_receive_can_frame(CAN_HandleTypeDef *hcan)
 static uint16_t word_at(uint32_t frame, uint8_t word_index){ return ((uint16_t)tx_log[frame].data[word_index*2] << 8) | tx_log[frame].data[word_index*2+1]; }
 static int16_t code_for_volts(float v){ return (int16_t)((v / 0.000150f) - 10000.0f); }
 static int16_t raw_for_ntc_voltage(float v){ return (int16_t)((v / 0.000150f) - 10000.0f); }
-static float ntc_voltage_for_temp_c(float temp_c){
-    const float A = 3.354016435e-3f;
-    const float B = 2.565235509e-4f;
-    float t_k = temp_c + 273.15f;
-    float r = 10000.0f * expf(((1.0f / t_k) - A) / B);
-    return 50000.0f / (r + 10000.0f);
+static int16_t raw_for_temp_c(float temp_c)
+{
+    int16_t raw = 0;
+    return thermistor_adbms_raw_from_temperature_c(
+               temp_c, THERMISTOR_NOMINAL_VREG_V, &raw) ?
+           raw : THERMISTOR_ADBMS_RESET_CODE;
 }
-static int16_t raw_for_temp_c(float temp_c){ return raw_for_ntc_voltage(ntc_voltage_for_temp_c(temp_c)); }
 #define CHECK(cond) do{ if(!(cond)){ fprintf(stderr,"FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); exit(1);} }while(0)
 #define HOST_LOGGER_FRAME_COUNT 120u
 #define HOST_ECU_FRAME_COUNT 62u
@@ -1098,7 +1098,7 @@ static void test_adbms_voltage_scan_timing_contract(void)
 static void test_temp_stats(void){
     init_fake_app();
     for(int ic=0; ic<NSMBS; ic++) for(int s=0;s<NTEMPS;s++) app.acc.smb_ics[ic].temp.raw[s] = raw_for_ntc_voltage(2.5f);
-    app.acc.smb_ics[1].temp.raw[2] = 0; // invalid skip
+    app.acc.smb_ics[1].temp.raw[2] = -1; // ADBMS reset sentinel
     app.acc.smb_ics[3].temp.raw[5] = INT16_MIN; // invalid skip
     host_mark_updated_temps(&app, (1UL << NTEMPS) - 1UL);
     accumulator_update_temp_stats(&app.acc);
@@ -1163,7 +1163,7 @@ static void test_logger_can_contract_packets(void){
     }
     app.acc.smb_ics[4].cell.c_codes[14] = code_for_volts(4.014f);
     app.acc.smb_ics[4].temp.raw[23] = raw_for_temp_c(44.4f);
-    app.acc.smb_ics[2].temp.raw[5] = 0;
+    app.acc.smb_ics[2].temp.raw[5] = -1;
     host_mark_updated_cells(&app);
     host_mark_updated_temps(&app, (1UL << NTEMPS) - 1UL);
     accumulator_update_voltage_stats_at(&app.acc, fake_tick);
@@ -6827,7 +6827,7 @@ static void test_temp_invalid_and_cold_valid_fault_behavior(void){
     init_fake_app();
     fill_nominal_pack(&app, 3.700f);
     sil_clear_temp_history(&app);
-    for(int ic=0; ic<NSMBS; ic++) for(int s=0; s<NTEMPS; s++) app.acc.smb_ics[ic].temp.raw[s] = 0;
+    for(int ic=0; ic<NSMBS; ic++) for(int s=0; s<NTEMPS; s++) app.acc.smb_ics[ic].temp.raw[s] = -1;
     app.state = STATE_DISCARGE; app.bms_state = true; bms_pin_state = GPIO_PIN_SET; fake_tick = 0;
     run_one_adbms_task_iteration(&app);
     CHECK(app.voltage_fault == false);
@@ -6906,7 +6906,7 @@ static void test_system_sil_temperature_invalid_update_overrides_history(void)
     sil_prepare_ready_system(STATE_DISCARGE, 0.0f, 3.700f);
 
     CHECK(accumulator_temp_sensor_usable(&app.acc, 2u, 5u));
-    app.acc.smb_ics[2].temp.raw[5] = 0;
+    app.acc.smb_ics[2].temp.raw[5] = -1;
     app.acc.smb.last_temp_updated_mask[2] = (uint32_t)(1UL << 5);
     accumulator_update_temp_stats_at(&app.acc, fake_tick);
     sil_publish_temp_state(&app);
@@ -7131,7 +7131,7 @@ static void test_system_sil_temperature_cli_can_diagnostics(void)
     sil_prepare_ready_system(STATE_DISCARGE, 0.0f, 3.700f);
     app.board.canbus.hcan = &hcan;
     sil_set_all_temps(&app, 25.0f, (1UL << NTEMPS) - 1UL);
-    app.acc.smb_ics[2].temp.raw[5] = 0;
+    app.acc.smb_ics[2].temp.raw[5] = -1;
     app.acc.smb.last_temp_updated_mask[2] |= (uint32_t)(1UL << 5);
     accumulator_update_temp_stats_at(&app.acc, fake_tick);
     sil_publish_temp_state(&app);
@@ -7666,7 +7666,7 @@ static void test_estimator_rejects_invalid_hardware_inputs(void)
     {
         for(uint8_t sensor = 0u; sensor < NTEMPS; sensor++)
         {
-            app.acc.smb_ics[seg].temp.raw[sensor] = 0;
+            app.acc.smb_ics[seg].temp.raw[sensor] = -1;
         }
     }
     CHECK(!estimator_task_update(&app, 500u, 0.1f));
@@ -8194,7 +8194,7 @@ static void test_telemetry_absent_segments_and_invalid_channels(void){
         for(int s=0; s<NTEMPS; s++) app.acc.smb_ics[ic].temp.raw[s] = raw_for_temp_c(25.0f);
     }
     app.acc.smb_ics[0].cell.c_codes[1] = INT16_MIN;
-    app.acc.smb_ics[1].temp.raw[3] = 0;
+    app.acc.smb_ics[1].temp.raw[3] = -1;
     host_mark_updated_cells(&app);
     accumulator_update_voltage_stats_at(&app.acc, fake_tick);
     host_mark_updated_temps(&app, (1UL << NTEMPS) - 1UL);

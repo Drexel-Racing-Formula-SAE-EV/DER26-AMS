@@ -12,9 +12,11 @@
 #   make AMS_ROOT=/path/to/DER26-AMS-feature-canbus_charger test
 
 AMS_ROOT ?= ..
+REPO_ROOT ?= $(abspath $(AMS_ROOT)/..)
 BUILD_DIR ?= build
 CC ?= gcc
 CLANG ?= clang
+PYTHON ?= python3
 
 SRC := src/ams_host_test_runner.c
 BIN = $(BUILD_DIR)/ams_host_tests
@@ -31,6 +33,14 @@ ADBMS2950_SRC := \
 
 AIR_MONITOR_SRC := \
 	$(AMS_ROOT)/Core/Src/ext_drivers/air_monitor.c
+
+THERMISTOR_SRC := \
+	$(AMS_ROOT)/Core/Src/ext_drivers/thermistor_model.c
+THERMISTOR_UNIT_SRC := unit/thermistor_model_unit_test.c
+THERMISTOR_UNIT_BIN = $(BUILD_DIR)/thermistor_model_unit_tests
+THERMISTOR_TOOL_DIR := $(REPO_ROOT)/Tools/thermistor_model
+THERMISTOR_SOURCE_CSV := $(THERMISTOR_TOOL_DIR)/source/NTC_RT_Calculation_Vishay_NTCLE350E4103FHB0.csv
+THERMISTOR_COMPILED_REPORT := $(BUILD_DIR)/thermistor_compiled_validation.json
 
 COMMON_DEFS := \
 	-DSTM32F767xx \
@@ -66,7 +76,7 @@ WARN := \
 CFLAGS_COMMON := -std=c11 -g -O0 $(WARN) $(COMMON_DEFS) $(INC)
 LDLIBS := -lm
 
-.PHONY: help check-root compile unit test production-gates static-allocation-gate state-ownership-gate system-sil apm-sil bringup-test hil-adbms-test imd-test air-feedback-stub-test safety-test stress ci asan ubsan analyze clang-analyze clean list make-build-dir
+.PHONY: help check-root compile unit thermistor-validate test production-gates static-allocation-gate state-ownership-gate system-sil apm-sil bringup-test hil-adbms-test imd-test air-feedback-stub-test safety-test stress ci asan ubsan analyze clang-analyze clean list make-build-dir
 
 help:
 	@echo "DER26 AMS host test harness"
@@ -74,6 +84,7 @@ help:
 	@echo "Targets:"
 	@echo "  make unit          Build and run isolated unit tests"
 	@echo "  make test          Build and run comprehensive host tests"
+	@echo "  make thermistor-validate Compile C model and compare against every Vishay CSV row"
 	@echo "  make production-gates Verify HIL/service CLI are disabled by default"
 	@echo "  make static-allocation-gate Verify every application task uses fixed storage"
 	@echo "  make state-ownership-gate Verify state and CAN-control ownership boundaries"
@@ -102,6 +113,9 @@ check-root:
 	@test -f "$(AMS_ROOT)/Core/Src/ext_drivers/accumulator.c" || (echo "ERROR: missing Core/Src/ext_drivers/accumulator.c under AMS_ROOT"; exit 2)
 	@test -f "$(AMS_ROOT)/Core/Src/estimator/ams_soc_ekf.c" || (echo "ERROR: missing Core/Src/estimator/ams_soc_ekf.c under AMS_ROOT"; exit 2)
 	@test -f "$(AMS_ROOT)/Core/Src/estimator/ams_estimator_lut.c" || (echo "ERROR: missing Core/Src/estimator/ams_estimator_lut.c under AMS_ROOT"; exit 2)
+	@test -f "$(AMS_ROOT)/Core/Src/ext_drivers/thermistor_model.c" || (echo "ERROR: missing thermistor_model.c under AMS_ROOT"; exit 2)
+	@test -f "$(THERMISTOR_TOOL_DIR)/validate_compiled_model.py" || (echo "ERROR: missing thermistor compiled-model validator"; exit 2)
+	@test -f "$(THERMISTOR_SOURCE_CSV)" || (echo "ERROR: missing Vishay thermistor source CSV"; exit 2)
 
 
 build:
@@ -110,13 +124,22 @@ make-build-dir:
 	@mkdir -p "$(BUILD_DIR)"
 
 compile: check-root make-build-dir
-	$(CC) $(CFLAGS_COMMON) $(SRC) $(AIR_MONITOR_SRC) -o $(BIN) $(LDLIBS)
+	$(CC) $(CFLAGS_COMMON) $(SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC) -o $(BIN) $(LDLIBS)
 
 unit: check-root make-build-dir
-	$(CC) $(CFLAGS_COMMON) $(UNIT_SRC) $(ESTIMATOR_SRC) $(ADBMS2950_SRC) $(AIR_MONITOR_SRC) -o $(UNIT_BIN) $(LDLIBS)
+	$(CC) $(CFLAGS_COMMON) $(UNIT_SRC) $(ESTIMATOR_SRC) $(ADBMS2950_SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC) -o $(UNIT_BIN) $(LDLIBS)
 	$(UNIT_BIN)
+	$(CC) $(CFLAGS_COMMON) $(THERMISTOR_UNIT_SRC) $(THERMISTOR_SRC) -o $(THERMISTOR_UNIT_BIN) $(LDLIBS)
+	$(THERMISTOR_UNIT_BIN)
 
-ci: unit test apm-sil production-gates static-allocation-gate state-ownership-gate analyze
+ci: unit thermistor-validate test apm-sil production-gates static-allocation-gate state-ownership-gate analyze
+
+thermistor-validate: check-root make-build-dir
+	$(PYTHON) "$(THERMISTOR_TOOL_DIR)/validate_compiled_model.py" \
+		--repo "$(REPO_ROOT)" \
+		--csv "$(THERMISTOR_SOURCE_CSV)" \
+		--output "$(THERMISTOR_COMPILED_REPORT)" \
+		--cc "$(CC)"
 
 # Normal run: catches logic regressions and compile/link problems.
 test: CFLAGS_COMMON += $(HOST_EXERCISE_DEFS)
@@ -127,7 +150,7 @@ production-gates: BUILD_DIR = build-production
 production-gates: CFLAGS_COMMON += -DAMS_HOST_PRODUCTION_GATE_TEST=1
 production-gates: check-root
 	@mkdir -p "$(BUILD_DIR)"
-	$(CC) $(CFLAGS_COMMON) $(SRC) $(AIR_MONITOR_SRC) -o $(BIN) $(LDLIBS)
+	$(CC) $(CFLAGS_COMMON) $(SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC) -o $(BIN) $(LDLIBS)
 	$(BIN)
 	$(CC) $(CFLAGS_COMMON) -ffunction-sections -fdata-sections \
 		$(AMS_ROOT)/Core/Src/app.c $(OWNER_SRC) \
@@ -184,12 +207,12 @@ system-sil: test
 apm-sil: check-root
 	@mkdir -p "$(BUILD_DIR)-apm"
 	$(CC) $(CFLAGS_COMMON) -DAMS_ENABLE_APM_2950=1 -DAMS_APM_ENABLE_HV_DIVIDERS=0 \
-		$(UNIT_SRC) $(ESTIMATOR_SRC) $(ADBMS2950_SRC) $(AIR_MONITOR_SRC) \
+		$(UNIT_SRC) $(ESTIMATOR_SRC) $(ADBMS2950_SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC) \
 		-o "$(BUILD_DIR)-apm/ams_apm_unit_tests" $(LDLIBS)
 	"$(BUILD_DIR)-apm/ams_apm_unit_tests"
 	$(CC) $(CFLAGS_COMMON) $(HOST_EXERCISE_DEFS) \
 		-DAMS_ENABLE_APM_2950=1 -DAMS_APM_ENABLE_HV_DIVIDERS=0 \
-		$(SRC) $(AIR_MONITOR_SRC) -o "$(BUILD_DIR)-apm/ams_apm_sil_tests" $(LDLIBS)
+		$(SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC) -o "$(BUILD_DIR)-apm/ams_apm_sil_tests" $(LDLIBS)
 	"$(BUILD_DIR)-apm/ams_apm_sil_tests"
 
 bringup-test: CFLAGS_COMMON += -DAMS_HW_BRINGUP=1
@@ -220,34 +243,34 @@ asan: CFLAGS_COMMON += $(HOST_EXERCISE_DEFS)
 asan: check-root
 	@mkdir -p "$(BUILD_DIR)"
 	$(CC) $(CFLAGS_COMMON) -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer \
-		$(UNIT_SRC) $(ESTIMATOR_SRC) $(ADBMS2950_SRC) $(AIR_MONITOR_SRC) -o $(UNIT_BIN)-asan $(LDLIBS)
+		$(UNIT_SRC) $(ESTIMATOR_SRC) $(ADBMS2950_SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC) -o $(UNIT_BIN)-asan $(LDLIBS)
 	ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 $(UNIT_BIN)-asan
 	$(CC) $(CFLAGS_COMMON) -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer \
-		$(SRC) $(AIR_MONITOR_SRC) -o $(BIN)-asan $(LDLIBS)
+		$(SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC) -o $(BIN)-asan $(LDLIBS)
 	ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 $(BIN)-asan
 
 ubsan: CFLAGS_COMMON += $(HOST_EXERCISE_DEFS)
 ubsan: check-root
 	@mkdir -p "$(BUILD_DIR)"
 	$(CC) $(CFLAGS_COMMON) -fsanitize=undefined -fno-sanitize-recover=all -fno-omit-frame-pointer \
-		$(UNIT_SRC) $(ESTIMATOR_SRC) $(ADBMS2950_SRC) $(AIR_MONITOR_SRC) -o $(UNIT_BIN)-ubsan $(LDLIBS)
+		$(UNIT_SRC) $(ESTIMATOR_SRC) $(ADBMS2950_SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC) -o $(UNIT_BIN)-ubsan $(LDLIBS)
 	UBSAN_OPTIONS=halt_on_error=1 $(UNIT_BIN)-ubsan
 	$(CC) $(CFLAGS_COMMON) -fsanitize=undefined -fno-sanitize-recover=all -fno-omit-frame-pointer \
-		$(SRC) $(AIR_MONITOR_SRC) -o $(BIN)-ubsan $(LDLIBS)
+		$(SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC) -o $(BIN)-ubsan $(LDLIBS)
 	UBSAN_OPTIONS=halt_on_error=1 $(BIN)-ubsan
 
 # GCC static analyzer. Useful for null/bounds/uninitialized regressions.
 analyze: CFLAGS_COMMON += $(HOST_EXERCISE_DEFS)
 analyze: check-root
 	@mkdir -p "$(BUILD_DIR)"
-	$(CC) $(CFLAGS_COMMON) -fanalyzer -fsyntax-only $(SRC)
-	$(CC) $(CFLAGS_COMMON) -fanalyzer -fsyntax-only $(UNIT_SRC) $(ADBMS2950_SRC) $(AIR_MONITOR_SRC)
+	$(CC) $(CFLAGS_COMMON) -fanalyzer -fsyntax-only $(SRC) $(THERMISTOR_SRC)
+	$(CC) $(CFLAGS_COMMON) -fanalyzer -fsyntax-only $(UNIT_SRC) $(ADBMS2950_SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC)
 
 clang-analyze: CFLAGS_COMMON += $(HOST_EXERCISE_DEFS)
 clang-analyze: check-root
 	@mkdir -p "$(BUILD_DIR)"
-	$(CLANG) $(CFLAGS_COMMON) --analyze $(SRC)
-	$(CLANG) $(CFLAGS_COMMON) --analyze $(UNIT_SRC) $(ADBMS2950_SRC) $(AIR_MONITOR_SRC)
+	$(CLANG) $(CFLAGS_COMMON) --analyze $(SRC) $(THERMISTOR_SRC)
+	$(CLANG) $(CFLAGS_COMMON) --analyze $(UNIT_SRC) $(ADBMS2950_SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC)
 
 list:
 	@grep -E '^static void test_' $(SRC) | sed -E 's/static void (test_[^(]+).*/\1/'

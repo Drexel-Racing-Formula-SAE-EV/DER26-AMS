@@ -21,6 +21,7 @@
 #include <stdio.h>
 #include "ext_drivers/cli.h"
 #include "ext_drivers/ams_rtos_diag.h"
+#include "ext_drivers/thermistor_model.h"
 
 /**
 * @brief Actual CLI task function
@@ -271,46 +272,16 @@ static int cli_print_hex_preview(const char *label, const uint8_t *buf, uint16_t
 
 static bool cli_raw_temp_to_values(int16_t raw, float *voltage_out, float *temp_out)
 {
-    float volt = ((float)raw + 10000.0f) * 0.000150f;
-
     if((voltage_out == NULL) || (temp_out == NULL))
     {
         return false;
     }
 
-    *voltage_out = volt;
-    *temp_out = 0.0f;
-
-    if((volt <= 0.0f) || (volt >= 5.0f))
-    {
-        return false;
-    }
-
-    float resistance = 10000.0f * (5.0f - volt) / volt;
-    if(resistance <= 0.0f)
-    {
-        return false;
-    }
-
-    float x = logf(resistance / 10000.0f);
-    float denom = 3.354016435e-3f +
-                  (2.565235509e-4f * x) +
-                  (2.605970121e-6f * x * x) +
-                  (6.329261265e-8f * x * x * x);
-
-    if(denom == 0.0f)
-    {
-        return false;
-    }
-
-    float temp = (1.0f / denom) - 273.15f;
-    if(!isfinite(temp) || (temp < -40.0f) || (temp > 150.0f))
-    {
-        return false;
-    }
-
-    *temp_out = temp;
-    return true;
+    thermistor_result_t result = thermistor_from_adbms_raw(
+        raw, THERMISTOR_NOMINAL_VREG_V);
+    *voltage_out = result.divider_voltage_v;
+    *temp_out = result.valid ? result.temperature_c : 0.0f;
+    return result.valid;
 }
 
 TaskHandle_t cli_task_start(app_data_t *data)

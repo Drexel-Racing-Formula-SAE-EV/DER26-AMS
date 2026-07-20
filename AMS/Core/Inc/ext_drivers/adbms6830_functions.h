@@ -115,6 +115,7 @@ int adbms6830_read_temp_raw(adbms6830_driver_t *dev,
                             uint8_t sensor_num,
                             int16_t *out_raw);
 float adbms6830_convert_temp(adbms6830_driver_t *dev, uint8_t ic_idx, uint8_t sensor_num, float vref);
+/* Legacy wrapper: input is the signed DER26 ADBMS AUX code. */
 float voltage_to_temp(float v);
 int mux_set_channel(adbms6830_driver_t *dev, uint8_t sensor_num);
 
