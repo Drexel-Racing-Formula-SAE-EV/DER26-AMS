@@ -356,3 +356,48 @@ Hard safety faults must drop BMS_OK.
 ```
 
 If any of those assumptions are wrong for the final car, change the production firmware and the harness together.
+
+## SoP metamorphic CI gate
+
+The CI suite includes a deterministic black-box property test for
+`ams_sop_solve()`:
+
+```bash
+make power-metamorphic
+```
+
+The default gate runs 20,000 seeded drive states and 20,000 seeded charge
+states. It fails on:
+
+- non-nested horizon limits;
+- increased DCL after lowering the weakest cell voltage;
+- increased CCL after raising the strongest cell voltage;
+- increased capability after increasing resistance or uncertainty;
+- increased DCL after raising temperature or lowering SoC;
+- increased CCL after raising SoC;
+- increased capability after tightening static current ceilings;
+- nonzero CCL below the configured minimum charge temperature;
+- any nonzero authority from NaN, infinity, or stale measurements.
+
+A failure prints the first reproducible seed. Override the state count for a
+quick local run or a deeper campaign:
+
+```bash
+make power-metamorphic SOP_METAMORPHIC_STATES=1000
+make power-metamorphic SOP_METAMORPHIC_STATES=100000
+```
+
+This gate verifies structural monotonicity and fail-zero behavior. It does not
+prove physical calibration or independently reproduce the electrothermal
+trajectory. Those still require HIL and hardware evidence.
+
+The related sensitivity probe is intentionally non-gating:
+
+```bash
+make power-sensitivity
+```
+
+It reports how selected model/configuration perturbations change the 30-second
+DCL at nominal, hot, and low-SoC operating points. Use it when reviewing
+calibration changes; do not treat unchanged output as proof that the model is
+irrelevant, because a static current-path ceiling may be masking it.

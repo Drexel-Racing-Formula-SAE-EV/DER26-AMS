@@ -1,4 +1,4 @@
-﻿# DER26 AMS reusable host-side test harness
+# DER26 AMS reusable host-side test harness
 #
 # Intended location:
 #   <AMS repo root>/host_tests/Makefile
@@ -130,7 +130,7 @@ WARN := \
 CFLAGS_COMMON := -std=c11 -g -O0 $(WARN) $(COMMON_DEFS) $(INC)
 LDLIBS := -lm
 
-.PHONY: help check-root compile unit power-core power-oracle power-consumer power-resources dashboard-decoder thermistor-validate test profile-gates estimator-topology-gates production-gates static-allocation-gate state-ownership-gate target-project-gate whole-source-analyze system-sil apm-sil bringup-test hil-adbms-test imd-test air-feedback-stub-test safety-test stress ci asan ubsan analyze clang-analyze clean list make-build-dir
+.PHONY: help check-root compile unit power-core power-metamorphic power-sensitivity power-oracle power-consumer power-resources dashboard-decoder thermistor-validate test profile-gates estimator-topology-gates production-gates static-allocation-gate state-ownership-gate target-project-gate whole-source-analyze system-sil apm-sil bringup-test hil-adbms-test imd-test air-feedback-stub-test safety-test stress ci asan ubsan analyze clang-analyze clean list make-build-dir
 
 help:
 	@echo "DER26 AMS host test harness"
@@ -138,6 +138,8 @@ help:
 	@echo "Targets:"
 	@echo "  make unit          Build and run isolated unit tests"
 	@echo "  make power-core    Run production SoP/SoH/CRC/brute-force tests"
+	@echo "  make power-metamorphic Run 40k seeded SoP monotonicity/fail-zero states"
+	@echo "  make power-sensitivity Run non-gating 30 s DCL sensitivity characterization"
 	@echo "  make power-oracle  Differential-test C SoP against independent HIL-table Python oracle"
 	@echo "  make power-consumer Test the fail-zero ECU SoP/SoH bundle consumer"
 	@echo "  make power-resources Report host runtime, static object sizes, and GCC stack frames"
@@ -196,10 +198,17 @@ unit: check-root make-build-dir
 	$(CC) $(CFLAGS_COMMON) $(THERMISTOR_UNIT_SRC) $(THERMISTOR_SRC) -o $(THERMISTOR_UNIT_BIN) $(LDLIBS)
 	$(THERMISTOR_UNIT_BIN)
 
-ci: unit power-core power-oracle power-consumer dashboard-decoder thermistor-validate test apm-sil profile-gates estimator-topology-gates production-gates static-allocation-gate state-ownership-gate target-project-gate analyze whole-source-analyze
+ci: unit power-core power-metamorphic power-oracle power-consumer dashboard-decoder thermistor-validate test apm-sil profile-gates estimator-topology-gates production-gates static-allocation-gate state-ownership-gate target-project-gate analyze whole-source-analyze
 
 power-core: check-root
-	$(MAKE) -C sop clean test
+	$(MAKE) -C sop test
+
+power-metamorphic: check-root
+	$(MAKE) -C sop metamorphic
+
+# Useful when changing limits/model calibration; not a pass/fail CI target.
+power-sensitivity: check-root
+	$(MAKE) -C sop sensitivity
 
 power-oracle: check-root
 	PYTHONDONTWRITEBYTECODE=1 $(PYTHON) -m unittest discover -v \

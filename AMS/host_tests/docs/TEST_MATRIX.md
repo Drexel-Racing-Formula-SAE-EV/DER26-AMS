@@ -125,3 +125,10 @@ Hardware bring-up notes:
 | Watchdog gate | Optional IWDG support is disabled by default and, when compiled in, is fed only by the error task after safety heartbeat and sensor freshness gates pass. |
 | CAN bus-off recovery | CAN error polling tracks HAL error code, bus-off count, recovery count, and attempts a delayed peripheral restart after bus-off. |
 | Hardware SPI bring-up guide | `docs/HARDWARE_SPI_BRINGUP.md` documents first-flash setup, logic-analyzer channels, expected SPI mode 3 behavior, CLI command order, fault isolation, APM probing, and BMS_OK release criteria. |
+
+## SoP black-box property and characterization tools
+
+| Target / source | Purpose |
+|---|---|
+| `make power-metamorphic` / `sop/sop_metamorphic_oracle.c` | CI-gating deterministic test over 20,000 drive and 20,000 charge states. Verifies horizon nesting, monotonic response to stricter voltage/resistance/uncertainty/temperature/SoC/current-ceiling conditions, charge blocking below the minimum temperature, and fail-zero behavior for NaN, infinity, and stale data. Reports the first failing seed. |
+| `make power-sensitivity` / `sop/sop_sensitivity_probe.c` | Non-gating characterization of 30-second DCL sensitivity to thermal-network, uncertainty, temperature-limit, and R0-prior changes at representative operating points. Used to identify when static current ceilings mask the battery model. |

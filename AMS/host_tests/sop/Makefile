@@ -20,13 +20,44 @@ SRC := sop_test.c \
 BENCH_SRC := sop_benchmark.c \
 	$(AMS_ROOT)/Core/Src/sop/ams_sop.c \
 	$(AMS_ROOT)/Core/Src/estimator/ams_estimator_lut.c
-all: test
+METAMORPHIC_SRC := sop_metamorphic_oracle.c \
+	$(AMS_ROOT)/Core/Src/sop/ams_sop.c \
+	$(AMS_ROOT)/Core/Src/estimator/ams_estimator_lut.c
+SENSITIVITY_SRC := sop_sensitivity_probe.c \
+	$(AMS_ROOT)/Core/Src/sop/ams_sop.c \
+	$(AMS_ROOT)/Core/Src/estimator/ams_estimator_lut.c
+METAMORPHIC_BIN := sop_metamorphic_oracle
+SENSITIVITY_BIN := sop_sensitivity_probe
+SOP_METAMORPHIC_STATES ?= 20000
+SOP_METAMORPHIC_ASAN_STATES ?= 500
+
+.PHONY: all test metamorphic sensitivity asan metamorphic-asan benchmark stack-report clean
+
+all: test metamorphic
 test:
 	$(CC) $(CFLAGS) $(SRC) -lm -o sop_test
 	./sop_test
+
+metamorphic:
+	$(CC) $(CFLAGS) $(METAMORPHIC_SRC) -lm -o $(METAMORPHIC_BIN)
+	./$(METAMORPHIC_BIN) $(SOP_METAMORPHIC_STATES)
+
+# Characterization only: intentionally not part of the pass/fail CI gate.
+sensitivity:
+	$(CC) $(CFLAGS) $(SENSITIVITY_SRC) -lm -o $(SENSITIVITY_BIN)
+	./$(SENSITIVITY_BIN)
+
 asan:
 	$(CC) $(CFLAGS) -O1 -g -fsanitize=address,undefined $(SRC) -lm -o sop_test_asan
 	ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 ./sop_test_asan
+	$(MAKE) metamorphic-asan
+
+metamorphic-asan:
+	$(CC) $(CFLAGS) -O1 -g -fsanitize=address,undefined \
+		$(METAMORPHIC_SRC) -lm -o $(METAMORPHIC_BIN)_asan
+	ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 \
+		./$(METAMORPHIC_BIN)_asan $(SOP_METAMORPHIC_ASAN_STATES)
+
 benchmark:
 	$(CC) $(CFLAGS) $(BENCH_SRC) -lm -o sop_benchmark
 	./sop_benchmark
@@ -47,4 +78,4 @@ stack-report:
 		-o build-resources/ams_power_state.o
 	@cat build-resources/*.su
 clean:
-	rm -rf sop_test sop_test_asan sop_benchmark build-resources
+	rm -rf sop_test sop_test_asan sop_benchmark $(METAMORPHIC_BIN) $(METAMORPHIC_BIN)_asan $(SENSITIVITY_BIN) build-resources
