@@ -53,6 +53,7 @@ THERMISTOR_TOOL_DIR := $(REPO_ROOT)/Tools/thermistor_model
 THERMISTOR_SOURCE_CSV := $(THERMISTOR_TOOL_DIR)/source/NTC_RT_Calculation_Vishay_NTCLE350E4103FHB0.csv
 THERMISTOR_COMPILED_REPORT := $(BUILD_DIR)/thermistor_compiled_validation.json
 SOP_REFERENCE_DIR := $(REPO_ROOT)/Tools/sop_reference
+FUSE_REPLAY_DIR := $(REPO_ROOT)/Tools/fuse_replay
 DASHBOARD_TEST_DIR := $(REPO_ROOT)/Tools/esp32_ams_dashboard_logger/tests
 POWER_CONSUMER_SRC := \
 	$(SOP_REFERENCE_DIR)/tests/ecu_power_consumer_test.c \
@@ -130,7 +131,7 @@ WARN := \
 CFLAGS_COMMON := -std=c11 -g -O0 $(WARN) $(COMMON_DEFS) $(INC)
 LDLIBS := -lm
 
-.PHONY: help check-root compile unit power-core power-metamorphic power-sensitivity power-oracle power-consumer power-resources dashboard-decoder thermistor-validate test profile-gates estimator-topology-gates production-gates static-allocation-gate state-ownership-gate target-project-gate whole-source-analyze system-sil apm-sil bringup-test hil-adbms-test imd-test air-feedback-stub-test safety-test stress ci asan ubsan analyze clang-analyze clean list make-build-dir
+.PHONY: help check-root compile unit power-core power-metamorphic power-sensitivity power-oracle power-consumer power-resources fuse-oracle fuse-replay dashboard-decoder thermistor-validate test profile-gates estimator-topology-gates production-gates static-allocation-gate state-ownership-gate target-project-gate whole-source-analyze system-sil apm-sil bringup-test hil-adbms-test imd-test air-feedback-stub-test safety-test stress ci asan ubsan analyze clang-analyze clean list make-build-dir
 
 help:
 	@echo "DER26 AMS host test harness"
@@ -143,6 +144,8 @@ help:
 	@echo "  make power-oracle  Differential-test C SoP against independent HIL-table Python oracle"
 	@echo "  make power-consumer Test the fail-zero ECU SoP/SoH bundle consumer"
 	@echo "  make power-resources Report host runtime, static object sizes, and GCC stack frames"
+	@echo "  make fuse-oracle   Compare production fuse observer to independent exact I2t oracle"
+	@echo "  make fuse-replay   Build replay tool and run synthetic policy characterization"
 	@echo "  make dashboard-decoder Test logger SoP/SoH CRC, freshness and decode paths"
 	@echo "  make test          Build and run comprehensive host tests"
 	@echo "  make thermistor-validate Compile C model and compare against every Vishay CSV row"
@@ -181,6 +184,7 @@ check-root:
 	@test -f "$(THERMISTOR_TOOL_DIR)/validate_compiled_model.py" || (echo "ERROR: missing thermistor compiled-model validator"; exit 2)
 	@test -f "$(THERMISTOR_SOURCE_CSV)" || (echo "ERROR: missing Vishay thermistor source CSV"; exit 2)
 	@test -f "$(SOP_REFERENCE_DIR)/model.py" || (echo "ERROR: missing independent SoP oracle"; exit 2)
+	@test -f "$(FUSE_REPLAY_DIR)/fuse_reference_oracle.c" || (echo "ERROR: missing independent fuse oracle"; exit 2)
 	@test -f "$(DASHBOARD_TEST_DIR)/decoder_smoke_test.c" || (echo "ERROR: missing dashboard decoder tests"; exit 2)
 
 
@@ -198,7 +202,7 @@ unit: check-root make-build-dir
 	$(CC) $(CFLAGS_COMMON) $(THERMISTOR_UNIT_SRC) $(THERMISTOR_SRC) -o $(THERMISTOR_UNIT_BIN) $(LDLIBS)
 	$(THERMISTOR_UNIT_BIN)
 
-ci: unit power-core power-metamorphic power-oracle power-consumer dashboard-decoder thermistor-validate test apm-sil profile-gates estimator-topology-gates production-gates static-allocation-gate state-ownership-gate target-project-gate analyze whole-source-analyze
+ci: unit power-core power-metamorphic fuse-oracle power-oracle power-consumer dashboard-decoder thermistor-validate test apm-sil profile-gates estimator-topology-gates production-gates static-allocation-gate state-ownership-gate target-project-gate analyze whole-source-analyze
 
 power-core: check-root
 	$(MAKE) -C sop test
@@ -219,6 +223,16 @@ power-consumer: check-root make-build-dir
 		-I"$(SOP_REFERENCE_DIR)" $(POWER_CONSUMER_SRC) \
 		-o "$(POWER_CONSUMER_BIN)"
 	"$(POWER_CONSUMER_BIN)"
+
+
+fuse-oracle: check-root
+	$(MAKE) -C fuse clean test
+	$(MAKE) -C "$(FUSE_REPLAY_DIR)" clean all smoke-ci
+
+# Characterization only: builds the replay tool, regenerates deterministic
+# traces, and writes the policy sweep.  It is intentionally not a CI gate.
+fuse-replay: check-root
+	$(MAKE) -C "$(FUSE_REPLAY_DIR)" clean all traces policy-sweep
 
 power-resources: check-root
 	$(MAKE) -C sop clean benchmark stack-report
@@ -416,6 +430,8 @@ asan: check-root
 		$(SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC) $(POWER_SRC) -o $(BIN)-asan $(LDLIBS)
 	ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 $(BIN)-asan
 	$(MAKE) -C sop clean asan
+	$(MAKE) -C fuse clean asan
+	$(MAKE) -C "$(FUSE_REPLAY_DIR)" clean asan
 
 ubsan: CFLAGS_COMMON += $(HOST_EXERCISE_DEFS)
 ubsan: check-root

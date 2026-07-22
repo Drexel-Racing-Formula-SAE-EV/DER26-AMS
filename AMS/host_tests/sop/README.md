@@ -31,3 +31,10 @@ smaller metamorphic campaign by default; override it with
 The metamorphic test is not an independent electrothermal model. It verifies
 necessary public-API properties and fail-zero behavior. Numeric calibration
 still requires the HIL/segment/vehicle validation path.
+
+## Fuse observer companion validation
+
+The SoP directory's directed fuse tests are supplemented by an independent
+fuse oracle in `../fuse` and the replay tooling in `Tools/fuse_replay`. Run
+`make -C .. fuse-oracle` from this directory's parent. The independent oracle
+does not call production fuse integration code.

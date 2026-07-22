@@ -132,3 +132,11 @@ Hardware bring-up notes:
 |---|---|
 | `make power-metamorphic` / `sop/sop_metamorphic_oracle.c` | CI-gating deterministic test over 20,000 drive and 20,000 charge states. Verifies horizon nesting, monotonic response to stricter voltage/resistance/uncertainty/temperature/SoC/current-ceiling conditions, charge blocking below the minimum temperature, and fail-zero behavior for NaN, infinity, and stale data. Reports the first failing seed. |
 | `make power-sensitivity` / `sop/sop_sensitivity_probe.c` | Non-gating characterization of 30-second DCL sensitivity to thermal-network, uncertainty, temperature-limit, and R0-prior changes at representative operating points. Used to identify when static current ceilings mask the battery model. |
+
+## Main-fuse independent oracle and replay
+
+| Target / source | Purpose |
+|---|---|
+| `make fuse-oracle` / `fuse/fuse_oracle_test.c` | CI-gating independent validation of the production fuse observer. Checks an exact `long double` zero-order-hold reference against high-resolution trapezoidal integration, then compares 50,000 randomized production updates for no thermal-state underestimate, no nonconservative current cap, bounded numeric error, conservative latch behavior, and fail-closed invalid inputs. |
+| `Tools/fuse_replay/fuse_replay` | Strict per-sample CSV replay through production and independent reference paths. Reports state/cap deltas, initialization, authority, exhaustion, recovery, reason flags, and reset behavior. |
+| `make fuse-replay` | Non-gating generation and characterization of pulse, corner-exit, autocross, endurance, invalid-input, and warm-reset traces over startup/reset, budget-fraction, and cooling-time policies. Does not enable fuse authority or select final calibration. |

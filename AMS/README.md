@@ -1,4 +1,4 @@
-# DER 2026 AMS Firmware v0.3.0
+# DER 2026 AMS Firmware v0.3.2
 
 Major firmware/test updates by Mahad Faisal, 2026.
 Designed and written by Cole Bardin (cab572) and Brendan Hoag (beh73)
@@ -104,6 +104,19 @@ sequences, per-record CRC, and commit-last publication. Corrupt or interrupted
 records are rejected and ring progress is reconstructed from valid records
 after reset. Upgrading from the previous unversioned ring intentionally clears
 old entries because their integrity cannot be established.
+
+
+### v0.3.2 independent fuse-model validation
+
+v0.3.2 adds host-only independent validation and replay tooling for the
+main-fuse observer. The exact `long double` reference does not call production
+observer code, is cross-checked against high-resolution trapezoidal
+integration, and is compared against 50,000 randomized production updates.
+`make ci` now includes `make fuse-oracle`. A separate `make fuse-replay` target
+generates synthetic pulse/endurance/reset traces and calibration-policy
+reports. No production fuse logic or vehicle authority gate is changed;
+`AMS_FUSE_MODEL_VALIDATED` must remain zero until installed-fuse evidence is
+complete. See `Docs/FUSE_ORACLE_REPLAY_VALIDATION_2026-07-22.md`.
 
 ## Dynamic power and State of Health
 

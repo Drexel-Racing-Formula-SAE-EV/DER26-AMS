@@ -21,6 +21,7 @@ cd DER26-AMS-feature-canbus_charger/host_tests
 make test
 make system-sil
 make apm-sil
+make fuse-oracle
 make asan
 make analyze
 ```
@@ -156,6 +157,32 @@ Clean build artifacts:
 ```bash
 make clean
 ```
+
+
+## Independent fuse observer validation
+
+The main-fuse replay path has an independent mathematical oracle rather than
+reusing the production observer as its expected result:
+
+```bash
+make fuse-oracle
+```
+
+This compares the production `q*dt` update against a standalone `long double`
+exact zero-order-hold solution, checks the reference against high-resolution
+trapezoidal integration, runs 50,000 randomized updates, and exercises CSV
+replay reset/invalid-sample paths. Production state must never understate the
+exact reference and production caps must never exceed it.
+
+Policy characterization is deliberately separate from CI:
+
+```bash
+make fuse-replay
+```
+
+That generates deterministic synthetic traces and writes
+`Tools/fuse_replay/results/policy_sweep.csv`. It does not select final fuse
+calibration or enable vehicle authority.
 
 ## Running without copying into the repo
 
