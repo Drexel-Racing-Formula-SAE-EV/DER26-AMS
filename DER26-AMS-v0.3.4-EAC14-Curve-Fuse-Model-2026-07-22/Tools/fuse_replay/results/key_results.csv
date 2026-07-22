@@ -1,0 +1,15 @@
+scenario,startup_policy,reset_policy,reset_utilization,first_authority_ms,first_reset_ms,pre_reset_utilization,post_reset_seed_utilization,first_post_reset_authority_ms,first_post_reset_exhaust_ms,first_exhaust_ms,first_recovery_ms,max_utilization,strict_pass
+single_100a_0p5s.csv,cold-soak,unknown,0.8,300000,-1,0,0,-1,-1,305400,524000,1.03602814674,1
+single_100a_1p0s.csv,cold-soak,unknown,0.8,300000,-1,0,0,-1,-1,305400,732200,2.07033157349,1
+single_100a_1p5s.csv,cold-soak,unknown,0.8,300000,-1,0,0,-1,-1,305400,854100,3.10291171074,1
+single_100a_3p0s.csv,cold-soak,unknown,0.8,300000,-1,0,0,-1,-1,305400,931800,4,1
+reset_pre_exhaust.csv:unknown:0.8,cold-soak,unknown,0.8,300000,305200,0.260629158305,0,-1,305900,305900,-1,4,1
+reset_pre_exhaust.csv:known-cold:0.8,cold-soak,known-cold,0.8,300000,305200,0.260629158305,0,305200,305900,305900,-1,4,1
+reset_pre_exhaust.csv:seeded:0.5,cold-soak,seeded,0.5,300000,305200,0.260629158305,0.5,305200,305500,305500,-1,4,1
+reset_pre_exhaust.csv:seeded:0.8,cold-soak,seeded,0.8,300000,305200,0.260629158305,0.8,305200,305300,305300,-1,4,1
+reset_pre_exhaust.csv:restore:0.8,cold-soak,restore,0.8,300000,305200,0.260629158305,0.260629158305,305200,305700,305700,-1,4,1
+reset_midrun.csv:unknown:0.8,cold-soak,unknown,0.8,300000,335000,3.93389110232,0,-1,337700,305700,-1,4,1
+reset_midrun.csv:known-cold:0.8,cold-soak,known-cold,0.8,300000,335000,3.93389110232,0,335000,337700,305700,-1,4,1
+reset_midrun.csv:seeded:0.5,cold-soak,seeded,0.5,300000,335000,3.93389110232,0.5,335000,337300,305700,-1,4,1
+reset_midrun.csv:seeded:0.8,cold-soak,seeded,0.8,300000,335000,3.93389110232,0.8,335000,337100,305700,-1,4,1
+reset_midrun.csv:restore:0.8,cold-soak,restore,0.8,300000,335000,3.93389110232,3.93389110232,335000,335000,305700,-1,4,1

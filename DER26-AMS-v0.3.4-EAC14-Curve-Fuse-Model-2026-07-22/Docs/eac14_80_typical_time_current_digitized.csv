@@ -1,0 +1,19 @@
+current_a,typical_melt_time_s,source_page,source_kind,status,note
+154.0,100.0,4,current-vs-time chart,approximate digitization,80 A curve centerline at upper chart boundary
+168.0,50.0,4,current-vs-time chart,approximate digitization,80 A curve centerline
+180.9,30.0,4,current-vs-time chart,approximate digitization,80 A curve centerline
+192.8,20.0,4,current-vs-time chart,approximate digitization,80 A curve centerline
+219.2,10.0,4,current-vs-time chart,approximate digitization,80 A curve centerline
+249.2,5.0,4,current-vs-time chart,approximate digitization,80 A curve centerline
+274.9,3.0,4,current-vs-time chart,approximate digitization,80 A curve centerline
+300.8,2.0,4,current-vs-time chart,approximate digitization,80 A curve centerline
+350.9,1.0,4,current-vs-time chart,approximate digitization,80 A curve centerline
+411.1,0.5,4,current-vs-time chart,approximate digitization,80 A curve centerline
+458.9,0.3,4,current-vs-time chart,approximate digitization,80 A curve centerline
+500.2,0.2,4,current-vs-time chart,approximate digitization,80 A curve centerline
+576.6,0.1,4,current-vs-time chart,approximate digitization,80 A curve centerline
+652.8,0.05,4,current-vs-time chart,approximate digitization,80 A curve centerline
+705.8,0.03,4,current-vs-time chart,approximate digitization,80 A curve centerline
+752.5,0.02,4,current-vs-time chart,approximate digitization,80 A curve centerline
+800.0,0.01253125,2,8020 A2s at 10 In,exact table-derived anchor,8020 divided by 800 squared
+850.0,0.01078,4,current-vs-time chart,approximate digitization,rounded near lower chart boundary

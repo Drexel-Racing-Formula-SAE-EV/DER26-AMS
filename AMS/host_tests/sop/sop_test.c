@@ -992,8 +992,22 @@ static bool test_power_can_contract(void)
     snapshot.resistance_confidence_pct = 80u;
     snapshot.capacity_valid = 1u;
     snapshot.resistance_valid = 1u;
-    snapshot.discharge_binding_1s = AMS_SOP_BIND_CURRENT_PATH;
-    snapshot.discharge_limiting_segment_1s = AMS_SOP_INVALID_INDEX;
+    snapshot.discharge_binding[0] = AMS_SOP_BIND_CELL_UV;
+    snapshot.discharge_binding[1] = AMS_SOP_BIND_CURRENT_PATH;
+    snapshot.discharge_binding[2] = AMS_SOP_BIND_CORE_TEMP;
+    snapshot.discharge_binding[3] = AMS_SOP_BIND_MISSION_PROFILE;
+    snapshot.charge_binding[0] = AMS_SOP_BIND_CELL_OV;
+    snapshot.charge_binding[1] = AMS_SOP_BIND_FUSE_THERMAL;
+    snapshot.charge_binding[2] = AMS_SOP_BIND_SURFACE_TEMP;
+    snapshot.charge_binding[3] = AMS_SOP_BIND_SOC_HIGH;
+    snapshot.discharge_limiting_segment[0] = 0u;
+    snapshot.discharge_limiting_segment[1] = AMS_SOP_INVALID_INDEX;
+    snapshot.discharge_limiting_segment[2] = 2u;
+    snapshot.discharge_limiting_segment[3] = 4u;
+    snapshot.charge_limiting_segment[0] = 1u;
+    snapshot.charge_limiting_segment[1] = 3u;
+    snapshot.charge_limiting_segment[2] = 4u;
+    snapshot.charge_limiting_segment[3] = AMS_SOP_INVALID_INDEX;
 
     uint8_t payload[8];
     ams_power_can_encode_dcl(&snapshot, 5u, 1100u, payload);
@@ -1024,9 +1038,12 @@ static bool test_power_can_contract(void)
     ams_power_can_encode_envelope(&snapshot, 8u, 1100u, payload);
     ams_power_can_envelope_t envelope;
     TEST_ASSERT(ams_power_can_decode_envelope(payload, &envelope));
-    TEST_ASSERT(envelope.discharge_current_a[0] == 100.0f);
-    TEST_ASSERT(envelope.discharge_current_a[3] == 65.0f);
-    TEST_ASSERT(envelope.charge_current_a[3] == -8.0f);
+    TEST_ASSERT(envelope.discharge_constant_current_a
+                [AMS_POWER_CAN_HORIZON_0P1_S] == 100.0f);
+    TEST_ASSERT(envelope.discharge_constant_current_a
+                [AMS_POWER_CAN_HORIZON_30_S] == 65.0f);
+    TEST_ASSERT(envelope.charge_constant_current_a
+                [AMS_POWER_CAN_HORIZON_30_S] == 8.0f);
 
     snapshot.mission_profile = AMS_MISSION_LIMP_HOME;
     snapshot.mission_horizon_index = 3u;
@@ -1048,6 +1065,29 @@ static bool test_power_can_contract(void)
     TEST_ASSERT(fabsf(strategy.thermal_energy_to_target_wh - 26.4f) < 0.11f);
     TEST_ASSERT(strategy.fuse_authority_valid && strategy.limp_latched);
     TEST_ASSERT(strategy.r0_bootstrap_progress_pct == 65u);
+
+    ams_power_can_encode_bindings(&snapshot, 5u, 1100u, payload);
+    ams_power_can_bindings_t bindings;
+    TEST_ASSERT(ams_power_can_decode_bindings(payload, &bindings));
+    TEST_ASSERT(bindings.counter == 5u);
+    TEST_ASSERT(bindings.discharge_binding
+                [AMS_POWER_CAN_HORIZON_0P1_S] == AMS_SOP_BIND_CELL_UV);
+    TEST_ASSERT(bindings.discharge_binding
+                [AMS_POWER_CAN_HORIZON_10_S] == AMS_SOP_BIND_CORE_TEMP);
+    TEST_ASSERT(bindings.discharge_binding
+                [AMS_POWER_CAN_HORIZON_30_S] ==
+                AMS_SOP_BIND_MISSION_PROFILE);
+    TEST_ASSERT(bindings.charge_binding
+                [AMS_POWER_CAN_HORIZON_0P1_S] == AMS_SOP_BIND_CELL_OV);
+    TEST_ASSERT(bindings.charge_binding
+                [AMS_POWER_CAN_HORIZON_30_S] == AMS_SOP_BIND_SOC_HIGH);
+    TEST_ASSERT(bindings.discharge_limiting_segment
+                [AMS_POWER_CAN_HORIZON_30_S] == 4u);
+    TEST_ASSERT(bindings.charge_limiting_segment
+                [AMS_POWER_CAN_HORIZON_30_S] == 0x0Fu);
+    payload[6] = 0x5Eu; /* invalid segment nibble 14 */
+    payload[7] = ams_power_can_crc8(AMS_POWER_CAN_BINDINGS_ID, payload);
+    TEST_ASSERT(!ams_power_can_decode_bindings(payload, &bindings));
     return true;
 }
 

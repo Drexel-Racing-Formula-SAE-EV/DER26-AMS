@@ -91,8 +91,8 @@ and 250 ms freshness. CRC and counters detect corruption and discontinuity;
 they are not cryptographic authentication. A stale or invalid request selects
 Endurance immediately. The separate `0x689` advisory status reports the active
 profile, selected horizon, fuse utilization, thermal readiness, and R0
-bootstrap progress. Loss of `0x689` does not invalidate the four-frame hard
-power bundle.
+bootstrap progress. Loss of `0x689` or optional binding metadata `0x68A`
+does not invalidate the four-frame hard power bundle.
 
 Qualify never permits a predicted threshold violation. It removes only the
 Endurance transient suppression and therefore cannot exceed the hard 1 s
