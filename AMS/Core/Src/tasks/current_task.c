@@ -36,6 +36,26 @@ static uint32_t current_task_abs_deciamps(float current_a)
     return (uint32_t)(scaled + 0.5);
 }
 
+static uint16_t current_task_selected_uncertainty_mA(
+    const current_sensor_t *sensor)
+{
+    if((sensor == NULL) || !current_sensor_calibration_confident(sensor))
+    {
+        return 0u;
+    }
+
+    switch(sensor->selected_range)
+    {
+    case CURRENT_SENSOR_RANGE_50A:
+        return sensor->calibration_uncertainty_50a_mA;
+    case CURRENT_SENSOR_RANGE_800A:
+        return sensor->calibration_uncertainty_800a_mA;
+    case CURRENT_SENSOR_RANGE_UNKNOWN:
+    default:
+        return 0u;
+    }
+}
+
 static current_fault_mode_t current_task_fault_mode_from_state(state_t state)
 {
     switch(state)
@@ -62,8 +82,7 @@ static void current_task_publish_fault_state(app_data_t *app_data,
                                              const current_fault_state_t *fault,
                                              const current_sensor_t *sensor,
                                              float published_current,
-                                             uint32_t acquisition_start_tick,
-                                             uint32_t acquisition_end_tick)
+                                             uint32_t sample_tick)
 {
     if((app_data == NULL) || (fault == NULL) || (sensor == NULL))
     {
@@ -77,10 +96,10 @@ static void current_task_publish_fault_state(app_data_t *app_data,
         current_sensor_calibration_confident(sensor);
     uint32_t calibration_id = calibration_record_confident ?
                               sensor->calibration_id : 0u;
-    uint32_t acquisition_duration_ms =
-        acquisition_end_tick - acquisition_start_tick;
-    uint32_t sample_tick =
-        acquisition_start_tick + (acquisition_duration_ms / 2u);
+    ams_current_window_set_sensor_metadata(
+        &app_data->current_window,
+        current_task_selected_uncertainty_mA(sensor),
+        (uint8_t)sensor->selected_range);
     ams_current_window_update(&app_data->current_window,
                               sample_tick,
                               published_current,
@@ -97,17 +116,6 @@ static void current_task_publish_fault_state(app_data_t *app_data,
     app_data->current_meas_reason = sensor->reason;
     app_data->current = published_current;
     app_data->current_sample_tick = sample_tick;
-    app_data->current_acquisition_start_tick = acquisition_start_tick;
-    app_data->current_acquisition_end_tick = acquisition_end_tick;
-    app_data->current_acquisition_duration_ms = acquisition_duration_ms;
-    /* Until dual-ADC simultaneous triggering exists, the full sequential
-     * acquisition duration is the conservative upper bound on channel skew. */
-    app_data->current_channel_skew_bound_ms = acquisition_duration_ms;
-    if((acquisition_duration_ms > AMS_CURRENT_ACQUISITION_MAX_MS) &&
-       (app_data->current_timing_fault_count != UINT32_MAX))
-    {
-        app_data->current_timing_fault_count++;
-    }
     if(app_data->current_sample_sequence != UINT32_MAX)
     {
         app_data->current_sample_sequence++;
@@ -169,12 +177,10 @@ void current_task_fn(void *argument)
          * by bench-only calibration commands and by the ADBMS task when it
          * closes a current-integration window. */
         ams_current_window_lock();
-        uint32_t acquisition_start_tick = osKernelGetTickCount();
         if(current_sensor_read_adc(current_sensor))
         {
             (void)current_sensor_convert(current_sensor);
         }
-        uint32_t acquisition_end_tick = osKernelGetTickCount();
 
         bool current_was_latched = app_data->current_fault_latched;
         current_fault_reason_t current_prev_latched_reason = app_data->current_fault_latched_reason;
@@ -192,8 +198,7 @@ void current_task_fn(void *argument)
                                          &next_fault,
                                          current_sensor,
                                          published_current,
-                                         acquisition_start_tick,
-                                         acquisition_end_tick);
+                                         entry);
         ams_current_window_unlock();
 
         if(app_data->current_fault_latched &&

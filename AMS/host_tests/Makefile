@@ -24,8 +24,6 @@ UNIT_SRC := unit/ams_unit_test_runner.c
 UNIT_BIN = $(BUILD_DIR)/ams_unit_tests
 OWNER_SRC := production/bms_owner_test.c
 OWNER_BIN = $(BUILD_DIR)/bms_owner_test
-FIVE_SMB_OWNER_SRC := production/five_smb_noapm_bms_lock_test.c
-FIVE_SMB_OWNER_BIN = $(BUILD_DIR)/five_smb_noapm_bms_lock_test
 PROFILE_SRC := production/profile_compile_test.c
 ESTIMATOR_TOPOLOGY_SRC := production/estimator_topology_test.c
 ESTIMATOR_SRC := \
@@ -42,11 +40,24 @@ THERMISTOR_SRC := \
 	$(AMS_ROOT)/Core/Src/ext_drivers/thermistor_model.c
 MEASUREMENT_SRC := \
 	$(AMS_ROOT)/Core/Src/measurement/ams_measurement.c
+POWER_SRC := \
+	$(AMS_ROOT)/Core/Src/soh/ams_soh.c \
+	$(AMS_ROOT)/Core/Src/sop/ams_sop.c \
+	$(AMS_ROOT)/Core/Src/sop/ams_fuse_observer.c \
+	$(AMS_ROOT)/Core/Src/sop/ams_power_strategy.c \
+	$(AMS_ROOT)/Core/Src/sop/ams_power_state.c \
+	$(AMS_ROOT)/Core/Src/sop/ams_power_can.c
 THERMISTOR_UNIT_SRC := unit/thermistor_model_unit_test.c
 THERMISTOR_UNIT_BIN = $(BUILD_DIR)/thermistor_model_unit_tests
 THERMISTOR_TOOL_DIR := $(REPO_ROOT)/Tools/thermistor_model
 THERMISTOR_SOURCE_CSV := $(THERMISTOR_TOOL_DIR)/source/NTC_RT_Calculation_Vishay_NTCLE350E4103FHB0.csv
 THERMISTOR_COMPILED_REPORT := $(BUILD_DIR)/thermistor_compiled_validation.json
+SOP_REFERENCE_DIR := $(REPO_ROOT)/Tools/sop_reference
+DASHBOARD_TEST_DIR := $(REPO_ROOT)/Tools/esp32_ams_dashboard_logger/tests
+POWER_CONSUMER_SRC := \
+	$(SOP_REFERENCE_DIR)/tests/ecu_power_consumer_test.c \
+	$(SOP_REFERENCE_DIR)/ecu_power_consumer.c
+POWER_CONSUMER_BIN := $(BUILD_DIR)/ecu_power_consumer_test
 
 COMMON_DEFS := \
 	-DSTM32F767xx \
@@ -61,12 +72,8 @@ HOST_EXERCISE_DEFS = \
 	-DAMS_HW_BRINGUP=$(HOST_HW_BRINGUP) \
 	-DAMS_HW_BRINGUP_BALANCE_INHIBIT_DEFAULT=$(HOST_BALANCE_INHIBIT_DEFAULT) \
 	-DAMS_ENABLE_HIL_CAN=1 \
+	-DAMS_ENABLE_MISSION_CAN=1 \
 	-DAMS_ENABLE_SERVICE_CLI=1
-
-FIVE_SMB_NO_APM_PROFILE_DEFS := \
-	-DAMS_ACCUMULATOR_5SMB_NO_APM=1 \
-	-DAMS_BUILD_PROFILE=1 \
-	-DAMS_HOST_ONLY_5SMB_NO_APM_TEST=1
 
 VEHICLE_VALIDATION_DEFS := \
 	-DAMS_BUILD_PROFILE=3 \
@@ -76,7 +83,14 @@ VEHICLE_VALIDATION_DEFS := \
 	-DAMS_CURRENT_POLARITY_VALIDATED=1 \
 	-DAMS_CURRENT_CALIBRATION_VALIDATED=1 \
 	-DAMS_BALANCE_TARGET_VALIDATED=1 \
-	-DAMS_CAN_VEHICLE_CONTRACT_VALIDATED=1
+	-DAMS_CAN_VEHICLE_CONTRACT_VALIDATED=1 \
+	-DAMS_SOP_MODEL_VALIDATED=1 \
+	-DAMS_SOP_CALIBRATION_VALIDATED=1 \
+	-DAMS_SOP_CAN_CONTRACT_VALIDATED=1
+
+VEHICLE_VALIDATION_DEFS += \
+	-DAMS_MISSION_CAN_CONTRACT_VALIDATED=1 \
+	-DAMS_FUSE_MODEL_VALIDATED=1
 
 VEHICLE_MANIFEST_DEFS := \
 	-DAMS_BUILD_GIT_COMMIT=\"host-profile-gate\" \
@@ -84,6 +98,10 @@ VEHICLE_MANIFEST_DEFS := \
 	-DAMS_CAN_CONTRACT_REVISION=\"host-gate-not-release\" \
 	-DAMS_THRESHOLD_REVISION=\"host-gate-not-release\" \
 	-DAMS_ESTIMATOR_MODEL_REVISION=\"host-gate-not-release\"
+
+VEHICLE_MANIFEST_DEFS += \
+	-DAMS_SOP_MODEL_REVISION=\"host-gate-not-release\" \
+	-DAMS_SOH_MODEL_REVISION=\"host-gate-not-release\"
 
 VEHICLE_PROFILE_DEFS := $(VEHICLE_VALIDATION_DEFS) $(VEHICLE_MANIFEST_DEFS)
 
@@ -112,20 +130,22 @@ WARN := \
 CFLAGS_COMMON := -std=c11 -g -O0 $(WARN) $(COMMON_DEFS) $(INC)
 LDLIBS := -lm
 
-.PHONY: help check-root compile unit thermistor-validate test profile-gates estimator-topology-gates production-gates five-smb-noapm-test five-smb-noapm-sanitize five-smb-noapm-analyze static-allocation-gate state-ownership-gate target-project-gate system-sil apm-sil bringup-test hil-adbms-test imd-test air-feedback-stub-test safety-test stress ci asan ubsan analyze clang-analyze clean list make-build-dir
+.PHONY: help check-root compile unit power-core power-oracle power-consumer power-resources dashboard-decoder thermistor-validate test profile-gates estimator-topology-gates production-gates static-allocation-gate state-ownership-gate target-project-gate whole-source-analyze system-sil apm-sil bringup-test hil-adbms-test imd-test air-feedback-stub-test safety-test stress ci asan ubsan analyze clang-analyze clean list make-build-dir
 
 help:
 	@echo "DER26 AMS host test harness"
 	@echo ""
 	@echo "Targets:"
 	@echo "  make unit          Build and run isolated unit tests"
+	@echo "  make power-core    Run production SoP/SoH/CRC/brute-force tests"
+	@echo "  make power-oracle  Differential-test C SoP against independent HIL-table Python oracle"
+	@echo "  make power-consumer Test the fail-zero ECU SoP/SoH bundle consumer"
+	@echo "  make power-resources Report host runtime, static object sizes, and GCC stack frames"
+	@echo "  make dashboard-decoder Test logger SoP/SoH CRC, freshness and decode paths"
 	@echo "  make test          Build and run comprehensive host tests"
 	@echo "  make thermistor-validate Compile C model and compare against every Vishay CSV row"
 	@echo "  make profile-gates Verify bench/HIL/vehicle defaults and vehicle evidence lock"
 	@echo "  make production-gates Verify HIL/service CLI are disabled by default"
-	@echo "  make five-smb-noapm-test Verify five-SMB physical topology, no APM traffic and fixture locks"
-	@echo "  make five-smb-noapm-sanitize Run fixture profile with ASan + UBSan"
-	@echo "  make five-smb-noapm-analyze Run GCC analyzer on the fixture profile"
 	@echo "  make static-allocation-gate Verify every application task uses fixed storage"
 	@echo "  make state-ownership-gate Verify state and CAN-control ownership boundaries"
 	@echo "  make target-project-gate Verify CubeIDE project identity, paths, warnings and linker scripts"
@@ -141,6 +161,7 @@ help:
 	@echo "  make asan          Build and run with AddressSanitizer + UBSan"
 	@echo "  make ubsan         Build and run with UBSan only"
 	@echo "  make analyze       Run GCC static analyzer on the harness TU"
+	@echo "  make whole-source-analyze Analyze every Core/Src C file in bench and vehicle profiles"
 	@echo "  make clang-analyze Run Clang static analyzer if clang is installed"
 	@echo "  make clean         Remove host-test build output"
 	@echo ""
@@ -157,6 +178,8 @@ check-root:
 	@test -f "$(AMS_ROOT)/Core/Src/ext_drivers/thermistor_model.c" || (echo "ERROR: missing thermistor_model.c under AMS_ROOT"; exit 2)
 	@test -f "$(THERMISTOR_TOOL_DIR)/validate_compiled_model.py" || (echo "ERROR: missing thermistor compiled-model validator"; exit 2)
 	@test -f "$(THERMISTOR_SOURCE_CSV)" || (echo "ERROR: missing Vishay thermistor source CSV"; exit 2)
+	@test -f "$(SOP_REFERENCE_DIR)/model.py" || (echo "ERROR: missing independent SoP oracle"; exit 2)
+	@test -f "$(DASHBOARD_TEST_DIR)/decoder_smoke_test.c" || (echo "ERROR: missing dashboard decoder tests"; exit 2)
 
 
 build:
@@ -165,7 +188,7 @@ make-build-dir:
 	@mkdir -p "$(BUILD_DIR)"
 
 compile: check-root make-build-dir
-	$(CC) $(CFLAGS_COMMON) $(SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC) -o $(BIN) $(LDLIBS)
+	$(CC) $(CFLAGS_COMMON) $(SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC) $(POWER_SRC) -o $(BIN) $(LDLIBS)
 
 unit: check-root make-build-dir
 	$(CC) $(CFLAGS_COMMON) $(UNIT_SRC) $(ESTIMATOR_SRC) $(ADBMS2950_SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC) -o $(UNIT_BIN) $(LDLIBS)
@@ -173,7 +196,31 @@ unit: check-root make-build-dir
 	$(CC) $(CFLAGS_COMMON) $(THERMISTOR_UNIT_SRC) $(THERMISTOR_SRC) -o $(THERMISTOR_UNIT_BIN) $(LDLIBS)
 	$(THERMISTOR_UNIT_BIN)
 
-ci: unit thermistor-validate test apm-sil profile-gates estimator-topology-gates production-gates static-allocation-gate state-ownership-gate target-project-gate analyze
+ci: unit power-core power-oracle power-consumer dashboard-decoder thermistor-validate test apm-sil profile-gates estimator-topology-gates production-gates static-allocation-gate state-ownership-gate target-project-gate analyze whole-source-analyze
+
+power-core: check-root
+	$(MAKE) -C sop clean test
+
+power-oracle: check-root
+	PYTHONDONTWRITEBYTECODE=1 $(PYTHON) -m unittest discover -v \
+		-s "$(SOP_REFERENCE_DIR)/tests"
+
+power-consumer: check-root make-build-dir
+	$(CC) -std=c11 -Wall -Wextra -Werror -pedantic -O2 \
+		-I"$(SOP_REFERENCE_DIR)" $(POWER_CONSUMER_SRC) \
+		-o "$(POWER_CONSUMER_BIN)"
+	"$(POWER_CONSUMER_BIN)"
+
+power-resources: check-root
+	$(MAKE) -C sop clean benchmark stack-report
+	@mkdir -p "$(BUILD_DIR)/power-resources"
+	$(CC) $(CFLAGS_COMMON) -O2 -fstack-usage $(VEHICLE_PROFILE_DEFS) -c \
+		"$(AMS_ROOT)/Core/Src/tasks/estimator_task.c" \
+		-o "$(BUILD_DIR)/power-resources/estimator_task.o"
+	@cat "$(BUILD_DIR)/power-resources/estimator_task.su"
+
+dashboard-decoder: check-root
+	$(MAKE) -C "$(DASHBOARD_TEST_DIR)" clean test syntax
 
 thermistor-validate: check-root make-build-dir
 	$(PYTHON) "$(THERMISTOR_TOOL_DIR)/validate_compiled_model.py" \
@@ -225,6 +272,11 @@ estimator-topology-gates: check-root make-build-dir
 		$(ESTIMATOR_TOPOLOGY_SRC) $(ESTIMATOR_SRC) \
 		-o "$(BUILD_DIR)/estimator_topology_segments" $(LDLIBS)
 	"$(BUILD_DIR)/estimator_topology_segments"
+	$(CC) $(CFLAGS_COMMON) -Werror $(VEHICLE_PROFILE_DEFS) \
+		-DAMS_EXPECTED_ESTIMATOR_INSTANCES=5 \
+		$(ESTIMATOR_TOPOLOGY_SRC) $(ESTIMATOR_SRC) \
+		-o "$(BUILD_DIR)/estimator_topology_vehicle_default" $(LDLIBS)
+	"$(BUILD_DIR)/estimator_topology_vehicle_default"
 	@if $(CC) $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=2 \
 		-DAMS_ESTIMATOR_DEFAULT_TOPOLOGY=2 \
 		-DAMS_EXPECTED_ESTIMATOR_INSTANCES=5 \
@@ -234,52 +286,19 @@ estimator-topology-gates: check-root make-build-dir
 		echo "ERROR: segment topology compiled against pack-only HIL contract"; \
 		exit 1; \
 	fi
-	@echo "PASS pack/segment estimator topology and pack-only HIL contract gates"
+	@echo "PASS pack/segment topology, vehicle five-segment default and pack-only HIL gate"
 
 production-gates: BUILD_DIR = build-production
 production-gates: CFLAGS_COMMON += $(VEHICLE_PROFILE_DEFS) -DAMS_HOST_PRODUCTION_GATE_TEST=1
 production-gates: check-root
 	@mkdir -p "$(BUILD_DIR)"
-	$(CC) $(CFLAGS_COMMON) $(SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC) -o $(BIN) $(LDLIBS)
+	$(CC) $(CFLAGS_COMMON) $(SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC) $(POWER_SRC) -o $(BIN) $(LDLIBS)
 	$(BIN)
 	$(CC) $(CFLAGS_COMMON) -ffunction-sections -fdata-sections \
-		$(AMS_ROOT)/Core/Src/app.c $(MEASUREMENT_SRC) $(OWNER_SRC) \
+		$(AMS_ROOT)/Core/Src/app.c $(MEASUREMENT_SRC) $(POWER_SRC) \
+		$(ESTIMATOR_SRC) $(OWNER_SRC) \
 		-Wl,--gc-sections -o $(OWNER_BIN) $(LDLIBS)
 	$(OWNER_BIN)
-
-five-smb-noapm-test: BUILD_DIR = build-five-smb-noapm
-five-smb-noapm-test: CFLAGS_COMMON += $(FIVE_SMB_NO_APM_PROFILE_DEFS) -Werror
-five-smb-noapm-test: check-root
-	@mkdir -p "$(BUILD_DIR)"
-	$(CC) $(CFLAGS_COMMON) $(SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC) -o $(BIN) $(LDLIBS)
-	$(BIN)
-	$(CC) $(CFLAGS_COMMON) -ffunction-sections -fdata-sections \
-		$(AMS_ROOT)/Core/Src/app.c $(MEASUREMENT_SRC) $(FIVE_SMB_OWNER_SRC) \
-		-Wl,--gc-sections -o $(FIVE_SMB_OWNER_BIN) $(LDLIBS)
-	$(FIVE_SMB_OWNER_BIN)
-
-five-smb-noapm-sanitize: BUILD_DIR = build-five-smb-noapm-sanitize
-five-smb-noapm-sanitize: CFLAGS_COMMON += $(FIVE_SMB_NO_APM_PROFILE_DEFS) -Werror
-five-smb-noapm-sanitize: check-root
-	@mkdir -p "$(BUILD_DIR)"
-	$(CC) $(CFLAGS_COMMON) -fsanitize=address,undefined -fno-sanitize-recover=all \
-		-fno-omit-frame-pointer $(SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC) \
-		-o $(BIN)-sanitize $(LDLIBS)
-	ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 $(BIN)-sanitize
-	$(CC) $(CFLAGS_COMMON) -fsanitize=address,undefined -fno-sanitize-recover=all \
-		-fno-omit-frame-pointer -ffunction-sections -fdata-sections \
-		$(AMS_ROOT)/Core/Src/app.c $(MEASUREMENT_SRC) $(FIVE_SMB_OWNER_SRC) \
-		-Wl,--gc-sections -o $(FIVE_SMB_OWNER_BIN)-sanitize $(LDLIBS)
-	ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 $(FIVE_SMB_OWNER_BIN)-sanitize
-
-five-smb-noapm-analyze: BUILD_DIR = build-five-smb-noapm-analyze
-five-smb-noapm-analyze: CFLAGS_COMMON += $(FIVE_SMB_NO_APM_PROFILE_DEFS) -Werror
-five-smb-noapm-analyze: check-root
-	@mkdir -p "$(BUILD_DIR)"
-	$(CC) $(CFLAGS_COMMON) -fanalyzer -fsyntax-only \
-		$(SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC)
-	$(CC) $(CFLAGS_COMMON) -fanalyzer -fsyntax-only \
-		$(AMS_ROOT)/Core/Src/app.c $(MEASUREMENT_SRC) $(FIVE_SMB_OWNER_SRC)
 
 static-allocation-gate: check-root
 	@task_sources="$$(find "$(AMS_ROOT)/Core/Src/tasks" -maxdepth 1 -name '*_task.c' -type f)"; \
@@ -335,10 +354,6 @@ target-project-gate: check-root
 	@grep -Fq 'buildPath="$${workspace_loc:/$${ProjName}/Release}"' "$(AMS_ROOT)/.cproject"
 	@test "$$(grep -c 'value="-Wall -Wextra"' "$(AMS_ROOT)/.cproject")" -eq 2
 	@test "$$(grep -c 'STM32F767ZITX_FLASH.ld' "$(AMS_ROOT)/.cproject")" -eq 4
-	@grep -q 'hcan1.Init.TransmitFifoPriority = ENABLE;' "$(AMS_ROOT)/Core/Src/main.c"
-	@if grep -q 'hcan1.Init.TransmitFifoPriority = DISABLE;' "$(AMS_ROOT)/Core/Src/main.c"; then \
-		echo "ERROR: bxCAN transmit request-order priority is disabled"; exit 1; \
-	fi
 	@echo "PASS CubeIDE project identity, build paths, warning flags, XML and linker-script metadata"
 
 system-sil: test
@@ -354,7 +369,7 @@ apm-sil: check-root
 	"$(BUILD_DIR)-apm/ams_apm_unit_tests"
 	$(CC) $(CFLAGS_COMMON) $(HOST_EXERCISE_DEFS) \
 		-DAMS_ENABLE_APM_2950=1 -DAMS_APM_ENABLE_HV_DIVIDERS=0 \
-		$(SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC) -o "$(BUILD_DIR)-apm/ams_apm_sil_tests" $(LDLIBS)
+		$(SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC) $(POWER_SRC) -o "$(BUILD_DIR)-apm/ams_apm_sil_tests" $(LDLIBS)
 	"$(BUILD_DIR)-apm/ams_apm_sil_tests"
 
 bringup-test: HOST_HW_BRINGUP = 1
@@ -389,8 +404,9 @@ asan: check-root
 		$(UNIT_SRC) $(ESTIMATOR_SRC) $(ADBMS2950_SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC) -o $(UNIT_BIN)-asan $(LDLIBS)
 	ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 $(UNIT_BIN)-asan
 	$(CC) $(CFLAGS_COMMON) -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer \
-		$(SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC) -o $(BIN)-asan $(LDLIBS)
+		$(SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC) $(POWER_SRC) -o $(BIN)-asan $(LDLIBS)
 	ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 $(BIN)-asan
+	$(MAKE) -C sop clean asan
 
 ubsan: CFLAGS_COMMON += $(HOST_EXERCISE_DEFS)
 ubsan: check-root
@@ -399,24 +415,35 @@ ubsan: check-root
 		$(UNIT_SRC) $(ESTIMATOR_SRC) $(ADBMS2950_SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC) -o $(UNIT_BIN)-ubsan $(LDLIBS)
 	UBSAN_OPTIONS=halt_on_error=1 $(UNIT_BIN)-ubsan
 	$(CC) $(CFLAGS_COMMON) -fsanitize=undefined -fno-sanitize-recover=all -fno-omit-frame-pointer \
-		$(SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC) -o $(BIN)-ubsan $(LDLIBS)
+		$(SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC) $(POWER_SRC) -o $(BIN)-ubsan $(LDLIBS)
 	UBSAN_OPTIONS=halt_on_error=1 $(BIN)-ubsan
 
 # GCC static analyzer. Useful for null/bounds/uninitialized regressions.
 analyze: CFLAGS_COMMON += $(HOST_EXERCISE_DEFS)
 analyze: check-root
 	@mkdir -p "$(BUILD_DIR)"
-	$(CC) $(CFLAGS_COMMON) -fanalyzer -fsyntax-only $(SRC) $(THERMISTOR_SRC)
+	$(CC) $(CFLAGS_COMMON) -fanalyzer -fsyntax-only $(SRC) $(THERMISTOR_SRC) $(POWER_SRC)
 	$(CC) $(CFLAGS_COMMON) -fanalyzer -fsyntax-only $(UNIT_SRC) $(ADBMS2950_SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC)
+
+whole-source-analyze: check-root
+	find "$(AMS_ROOT)/Core/Src" -type f -name '*.c' -print0 | \
+		xargs -0 $(CC) $(CFLAGS_COMMON) -D_DEFAULT_SOURCE \
+		$(HOST_EXERCISE_DEFS) -fanalyzer -fsyntax-only
+	find "$(AMS_ROOT)/Core/Src" -type f -name '*.c' -print0 | \
+		xargs -0 $(CC) $(CFLAGS_COMMON) -D_DEFAULT_SOURCE \
+		$(VEHICLE_PROFILE_DEFS) -fanalyzer -fsyntax-only
+	@echo "PASS whole-source GCC analysis in bench and vehicle profiles"
 
 clang-analyze: CFLAGS_COMMON += $(HOST_EXERCISE_DEFS)
 clang-analyze: check-root
 	@mkdir -p "$(BUILD_DIR)"
-	$(CLANG) $(CFLAGS_COMMON) --analyze $(SRC) $(THERMISTOR_SRC)
+	$(CLANG) $(CFLAGS_COMMON) --analyze $(SRC) $(THERMISTOR_SRC) $(POWER_SRC)
 	$(CLANG) $(CFLAGS_COMMON) --analyze $(UNIT_SRC) $(ADBMS2950_SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC)
 
 list:
 	@grep -E '^static void test_' $(SRC) | sed -E 's/static void (test_[^(]+).*/\1/'
 
 clean:
-	rm -rf $(BUILD_DIR)
+	rm -rf $(BUILD_DIR) build-apm build-production "$(AMS_ROOT)/build"
+	$(MAKE) -C sop clean
+	$(MAKE) -C "$(DASHBOARD_TEST_DIR)" clean

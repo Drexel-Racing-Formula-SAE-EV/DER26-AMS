@@ -635,7 +635,7 @@ void ams_resistance_soh_record(ams_resistance_soh_t *soh,
     {
         confidence = 0u;
     }
-    soh->observation_maturity_pct = (uint8_t)confidence;
+    soh->observation_confidence_pct = (uint8_t)confidence;
 
     bool converged = (soh->accepted_count >=
                       AMS_SOH_MIN_ACCEPTED_OBSERVATIONS) &&

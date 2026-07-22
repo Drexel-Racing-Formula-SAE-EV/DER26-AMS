@@ -70,6 +70,13 @@ jobs:
         run: |
           make CC=gcc test | tee host_test_output.txt
 
+      - name: Run SoP, SoH, oracle, and logger-contract tests
+        working-directory: AMS/host_tests
+        run: |
+          make CC=gcc power-core
+          make CC=gcc power-oracle
+          make CC=gcc dashboard-decoder
+
       - name: Print host test outputs
         if: always()
         working-directory: AMS/host_tests

@@ -21,6 +21,7 @@ extern app_data_t app;
 #define CANBUS_FILTER_BANK_CHARGER 0u
 #define CANBUS_FILTER_BANK_HIL_0   1u
 #define CANBUS_FILTER_BANK_HIL_1   2u
+#define CANBUS_FILTER_BANK_MISSION 3u
 #define CANBUS_SLAVE_FILTER_START 14u
 
 static uint16_t canbus_filter_ext_high(uint32_t id)
@@ -102,6 +103,24 @@ HAL_StatusTypeDef canbus_configure_rx_filters(CAN_HandleTypeDef *hcan)
     }
 #endif
 
+#if AMS_ENABLE_MISSION_CAN
+    memset(&filter, 0, sizeof(filter));
+    filter.FilterBank = CANBUS_FILTER_BANK_MISSION;
+    filter.FilterMode = CAN_FILTERMODE_IDLIST;
+    filter.FilterFIFOAssignment = CAN_RX_FIFO0;
+    filter.FilterIdHigh = canbus_filter_std16(AMS_MISSION_CAN_REQUEST_ID);
+    filter.FilterIdLow = canbus_filter_std16(AMS_MISSION_CAN_REQUEST_ID);
+    filter.FilterMaskIdHigh = canbus_filter_std16(AMS_MISSION_CAN_REQUEST_ID);
+    filter.FilterMaskIdLow = canbus_filter_std16(AMS_MISSION_CAN_REQUEST_ID);
+    filter.FilterScale = CAN_FILTERSCALE_16BIT;
+    filter.FilterActivation = ENABLE;
+    filter.SlaveStartFilterBank = CANBUS_SLAVE_FILTER_START;
+    if(HAL_CAN_ConfigFilter(hcan, &filter) != HAL_OK)
+    {
+        return HAL_ERROR;
+    }
+#endif
+
     return HAL_OK;
 }
 
@@ -165,6 +184,13 @@ static bool canbus_rx_header_allowed(const CAN_RxHeaderTypeDef *header)
         default:
             break;
         }
+    }
+#endif
+#if AMS_ENABLE_MISSION_CAN
+    if((header->IDE == CAN_ID_STD) &&
+       (header->StdId == AMS_MISSION_CAN_REQUEST_ID))
+    {
+        return header->DLC == 8u;
     }
 #endif
     return false;
@@ -517,6 +543,19 @@ static void canbus_process_rx_frame(canbus_device_t *dev,
 
 #if AMS_ENABLE_HIL_CAN
     canbus_parse_hil_frame(data, frame);
+#endif
+
+#if AMS_ENABLE_MISSION_CAN
+    if((frame->rtr == CAN_RTR_DATA) && (frame->ide == CAN_ID_STD) &&
+       (frame->id == AMS_MISSION_CAN_REQUEST_ID) && (frame->dlc == 8u))
+    {
+        taskENTER_CRITICAL();
+        (void)ams_mission_request_ingest(&data->mission_request,
+                                         frame->data,
+                                         frame->tick);
+        taskEXIT_CRITICAL();
+        return;
+    }
 #endif
 
     if((frame->rtr != CAN_RTR_DATA) ||

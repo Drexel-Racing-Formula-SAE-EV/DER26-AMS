@@ -104,6 +104,16 @@ The decoder includes the expanded AMS diagnostic frames:
 | `0x6A8..0x6AB` | temperature/fan and voltage plausibility diagnostics |
 | `0x6AC` | RTOS heap free/min-free, stack warning mask, minimum stack high-water mark, RTOS flags |
 | `0x421` | estimator active instance, flags, SoC, innovation, R0 |
+| `0x684` | 1 s DCL/current, discharge power, flags, binding and limiting segment |
+| `0x685` | 1 s CCL/current, charge power, flags, binding and limiting segment |
+| `0x686` | capacity SoH, conservative lower bound, resistance growth and confidence |
+| `0x687` | 0.1/10/30 s discharge and charge current envelope |
+| `0x689` | Advisory mission profile, fuse utilization, thermal readiness and R0 bootstrap progress |
+
+`0x688` is the CRC/counter-protected ECU-to-AMS mission request. It is not a
+logger authority path. The four-frame `0x684`-`0x687` bundle remains the only
+required fail-zero power contract; loss of advisory `0x689` does not invalidate
+the hard bundle.
 | `0x200..0x202` | optional HIL plant measurement/truth/summary frames when present |
 
 Known non-dashboard frames such as ECU compatibility packet `0x069`, HIL image
@@ -121,7 +131,15 @@ make -C tests test
 
 This checks the AMS logger frame layout, stale heartbeat detection, invalid
 temperature sentinel handling, masks, safety/watchdog/ADBMS diagnostics,
-estimator/HIL decode, and clean handling of ignored versus unknown frames.
+estimator/HIL decode, SoP/SoH CRC/version/counter/freshness handling, and clean
+handling of ignored versus unknown frames.
+
+The dashboard is not a safety consumer. It decodes each power-frame stream for
+display and marks the power object stale if any required frame is older than
+250 ms. The production ECU contract is stricter: it stages all four frames as
+one same-counter bundle, limits skew to 50 ms, and requires two consecutive
+complete bundles after startup or a fault. See
+`../../Docs/SOP_SOH_CAN_CONTRACT.md`.
 
 ## Bring-Up Checklist
 

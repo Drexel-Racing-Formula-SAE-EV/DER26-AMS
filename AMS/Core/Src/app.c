@@ -31,7 +31,9 @@ const ams_build_manifest_t ams_build_manifest = {
     .estimator_topology = AMS_ESTIMATOR_DEFAULT_TOPOLOGY,
     .profile_name = AMS_BUILD_PROFILE_NAME,
     .git_commit = AMS_BUILD_GIT_COMMIT,
-    .estimator_model_revision = AMS_ESTIMATOR_MODEL_REVISION,
+	.estimator_model_revision = AMS_ESTIMATOR_MODEL_REVISION,
+	.sop_model_revision = AMS_SOP_MODEL_REVISION,
+	.soh_model_revision = AMS_SOH_MODEL_REVISION,
     .current_calibration_revision = AMS_CURRENT_CALIBRATION_REVISION,
     .can_contract_revision = AMS_CAN_CONTRACT_REVISION,
     .threshold_revision = AMS_THRESHOLD_REVISION
@@ -83,6 +85,7 @@ uint32_t ams_heartbeat_timeout_ms(ams_heartbeat_id_t id)
 	case AMS_HEARTBEAT_LOGGER:  return AMS_HEARTBEAT_LOGGER_TIMEOUT_MS;
 	case AMS_HEARTBEAT_IMD:     return AMS_HEARTBEAT_IMD_TIMEOUT_MS;
 	case AMS_HEARTBEAT_FAN:     return AMS_HEARTBEAT_FAN_TIMEOUT_MS;
+	case AMS_HEARTBEAT_ESTIMATOR: return AMS_HEARTBEAT_ESTIMATOR_TIMEOUT_MS;
 	default:                    return 0u;
 	}
 }
@@ -98,6 +101,7 @@ const char *ams_heartbeat_name(ams_heartbeat_id_t id)
 	case AMS_HEARTBEAT_LOGGER:  return "logger";
 	case AMS_HEARTBEAT_IMD:     return "imd";
 	case AMS_HEARTBEAT_FAN:     return "fan";
+	case AMS_HEARTBEAT_ESTIMATOR: return "estimator";
 	default:                    return "unknown";
 	}
 }
@@ -334,6 +338,10 @@ void app_create(void)
 	app.min_voltage_cell = 0u;
 	voltage_fault_init(&app.voltage_fault_state);
 	app.estimator_fault = false;
+	ams_power_state_init(&app.power_state);
+	app.power_can_snapshot = app.power_state.can_snapshot;
+	ams_mission_request_init(&app.mission_request);
+	app.power_limit_fault = true;
 	ams_current_window_init(&app.current_window, osKernelGetTickCount());
 	ams_measurement_store_init(&app.measurement_store);
 
@@ -349,14 +357,6 @@ void app_create(void)
 	app.adbms_status_diag_count = 0u;
 	app.adbms_config_diag_count = 0u;
 	app.adbms_open_wire_diag_count = 0u;
-	app.adbms_status_diag_next_tick = 0u;
-	app.adbms_config_diag_next_tick = 0u;
-	app.adbms_open_wire_diag_next_tick = 0u;
-	app.adbms_diag_last_duration_ms = 0u;
-	app.adbms_diag_max_duration_ms = 0u;
-	app.adbms_diag_last_lateness_ms = 0u;
-	app.adbms_diag_max_lateness_ms = 0u;
-	app.adbms_diag_schedule_initialized = false;
 	app.adbms_balance_write_fail_count = 0u;
 	app.adbms_balance_recovery_count = 0u;
 	app.adbms_scan_deadline_miss_count = 0u;
@@ -367,15 +367,12 @@ void app_create(void)
 	app.adbms_last_balance_off_ms = 0u;
 	app.adbms_balance_apply_tick = 0u;
 	app.adbms_last_diag_status = HAL_OK;
-	app.temp_policy_last_tick = 0u;
-	app.temp_policy_last_elapsed_ms = 0u;
-	app.temp_policy_tick_valid = false;
 	app.task_heartbeat_fault = false;
 	app.logger_heartbeat_fault = false;
 	app.heartbeat_stale_mask = 0u;
 	app.heartbeat_seen_mask = 0u;
     app.bms_state     = false;
-#if AMS_ACCUMULATOR_5SMB_NO_APM || AMS_PROFILE_BMS_OUTPUT_INHIBIT_DEFAULT || \
+#if AMS_PROFILE_BMS_OUTPUT_INHIBIT_DEFAULT || \
     (AMS_HW_BRINGUP && !AMS_HW_BRINGUP_BMS_OK_RELEASED_DEFAULT)
 	app.bms_output_inhibit = true;
 #else
@@ -383,7 +380,7 @@ void app_create(void)
 #endif
 	app.bms_output_block_count = 0u;
 	app.bms_supervisor_ready = false;
-#if AMS_ACCUMULATOR_5SMB_NO_APM || AMS_HW_BRINGUP_BALANCE_INHIBIT_DEFAULT
+#if AMS_HW_BRINGUP_BALANCE_INHIBIT_DEFAULT
 	app.balance_inhibit = true;
 #else
 	app.balance_inhibit = false;
@@ -426,12 +423,6 @@ void app_create(void)
 	app.current_valid = false;
 	app.current_sample_tick = 0u;
 	app.current_sample_sequence = 0u;
-	app.current_acquisition_start_tick = 0u;
-	app.current_acquisition_end_tick = 0u;
-	app.current_acquisition_duration_ms = 0u;
-	app.current_channel_skew_bound_ms = 0u;
-	app.current_timing_fault_count = 0u;
-	app.current_timing_fault_count_at_last_epoch = 0u;
 	app.current_selected_range = CURRENT_SENSOR_RANGE_UNKNOWN;
 	app.current_meas_reason = CURRENT_SENSOR_REASON_ADC_READ;
 
@@ -560,7 +551,6 @@ void set_bms(bool state)
 	}
 
 	if(state && (!assertion_owner ||
-	             (AMS_ACCUMULATOR_5SMB_NO_APM != 0) ||
 	             app.bms_output_inhibit ||
 	             ams_safety_panic_active()))
 	{

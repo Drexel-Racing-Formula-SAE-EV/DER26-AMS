@@ -19,6 +19,62 @@ static uint32_t be_u24(const uint8_t *p)
             (uint32_t)p[2]);
 }
 
+static bool is_power_id(uint32_t id)
+{
+    return ((id >= AMS_POWER_CAN_ID_DCL) &&
+            (id <= AMS_POWER_CAN_ID_ENVELOPE)) ||
+           (id == AMS_POWER_CAN_ID_STRATEGY);
+}
+
+static uint8_t power_slot(uint32_t id)
+{
+    return (id == AMS_POWER_CAN_ID_STRATEGY) ? 4u :
+        (uint8_t)(id - AMS_POWER_CAN_ID_DCL);
+}
+
+uint8_t ams_dash_power_crc8(uint16_t can_id, const uint8_t payload[7])
+{
+    if(payload == NULL)
+    {
+        return 0u;
+    }
+
+    uint8_t crc = 0xFFu;
+    uint8_t bytes[9];
+    bytes[0] = (uint8_t)(can_id >> 8u);
+    bytes[1] = (uint8_t)can_id;
+    memcpy(&bytes[2], payload, 7u);
+    for(uint8_t index = 0u; index < sizeof(bytes); index++)
+    {
+        crc ^= bytes[index];
+        for(uint8_t bit = 0u; bit < 8u; bit++)
+        {
+            crc = ((crc & 0x80u) != 0u) ?
+                (uint8_t)((crc << 1u) ^ 0x1Du) :
+                (uint8_t)(crc << 1u);
+        }
+    }
+    return (uint8_t)(crc ^ 0xFFu);
+}
+
+static void update_power_counter(ams_dash_state_t *state,
+                                 uint8_t slot,
+                                 uint8_t counter)
+{
+    const uint8_t slot_mask = (uint8_t)(1u << slot);
+    if((state->power_counter_seen_mask & slot_mask) != 0u)
+    {
+        const uint8_t expected =
+            (uint8_t)((state->power_counter[slot] + 1u) & 0x0Fu);
+        if(counter != expected)
+        {
+            state->power_counter_error_count++;
+        }
+    }
+    state->power_counter[slot] = counter;
+    state->power_counter_seen_mask |= slot_mask;
+}
+
 static void init_temp_array(ams_dash_state_t *state)
 {
     for(uint8_t seg = 0u; seg < AMS_DASH_SEGMENTS; seg++)
@@ -56,6 +112,27 @@ bool ams_dash_data_stale(const ams_dash_state_t *state,
     }
 
     return (now_ms - state->last_heartbeat_ms) > timeout_ms;
+}
+
+bool ams_dash_power_data_stale(const ams_dash_state_t *state,
+                               uint32_t now_ms,
+                               uint32_t timeout_ms)
+{
+    if(state == NULL)
+    {
+        return true;
+    }
+    /* Strategy status is advisory.  Missing it must not make the four-frame
+     * fail-zero DCL/CCL/SoH/envelope bundle appear stale. */
+    for(uint8_t slot = 0u; slot < AMS_POWER_CAN_REQUIRED_FRAME_COUNT; slot++)
+    {
+        if(((state->power_counter_seen_mask & (uint8_t)(1u << slot)) == 0u) ||
+           ((uint32_t)(now_ms - state->power_last_rx_ms[slot]) > timeout_ms))
+        {
+            return true;
+        }
+    }
+    return false;
 }
 
 static void decode_cell_detail(ams_dash_state_t *state, const uint8_t data[8])
@@ -171,8 +248,84 @@ bool ams_dash_decode_frame(ams_dash_state_t *state,
     const uint8_t *d = frame->data;
     bool decoded = true;
 
+    if(is_power_id(frame->id))
+    {
+        if((d[0] >> 4u) != AMS_POWER_CAN_PROTOCOL_VERSION)
+        {
+            state->power_version_error_count++;
+            state->malformed_frames++;
+            return false;
+        }
+        if(d[7] != ams_dash_power_crc8((uint16_t)frame->id, d))
+        {
+            state->power_crc_error_count++;
+            state->malformed_frames++;
+            return false;
+        }
+        const uint8_t slot = power_slot(frame->id);
+        update_power_counter(state, slot, d[0] & 0x0Fu);
+        state->power_last_rx_ms[slot] = now_ms;
+    }
+
     switch(frame->id)
     {
+        case AMS_POWER_CAN_ID_DCL:
+            state->dcl_flags = d[1];
+            state->dcl_current_dA = be_u16(&d[2]);
+            state->dcl_power_10W = be_u16(&d[4]);
+            state->dcl_binding = d[6] >> 4u;
+            state->dcl_limiting_segment = d[6] & 0x0Fu;
+            break;
+
+        case AMS_POWER_CAN_ID_CCL:
+            state->ccl_flags = d[1];
+            state->ccl_current_dA = be_u16(&d[2]);
+            state->ccl_power_10W = be_u16(&d[4]);
+            state->ccl_binding = d[6] >> 4u;
+            state->ccl_limiting_segment = d[6] & 0x0Fu;
+            break;
+
+        case AMS_POWER_CAN_ID_SOH:
+            state->capacity_soh_pct = d[1];
+            state->capacity_soh_lower_pct = d[2];
+            state->resistance_growth_upper_pct = d[3];
+            state->combined_soh_pct = d[4];
+            state->capacity_confidence_pct = d[5] & 0x7Fu;
+            state->resistance_confidence_pct = d[6] & 0x7Fu;
+            state->capacity_soh_valid =
+                ((d[5] & 0x80u) != 0u) ? 1u : 0u;
+            state->resistance_soh_valid =
+                ((d[6] & 0x80u) != 0u) ? 1u : 0u;
+            break;
+
+        case AMS_POWER_CAN_ID_ENVELOPE:
+            state->envelope_discharge_a[0] = d[1];
+            state->envelope_discharge_a[1] = d[2];
+            state->envelope_discharge_a[2] = d[3];
+            state->envelope_charge_a[0] = d[4];
+            state->envelope_charge_a[1] = d[5];
+            state->envelope_charge_a[2] = d[6];
+            break;
+
+        case AMS_POWER_CAN_ID_STRATEGY:
+            if(((d[1] & 0x03u) > 2u) || (d[6] > 100u))
+            {
+                state->malformed_frames++;
+                return false;
+            }
+            state->mission_profile = d[1] & 0x03u;
+            state->mission_horizon_index = (d[1] >> 2u) & 0x03u;
+            state->thermal_ready = ((d[1] & 0x10u) != 0u) ? 1u : 0u;
+            state->fuse_authority_valid =
+                ((d[1] & 0x20u) != 0u) ? 1u : 0u;
+            state->limp_latched = ((d[1] & 0x40u) != 0u) ? 1u : 0u;
+            state->mission_fallback = ((d[1] & 0x80u) != 0u) ? 1u : 0u;
+            state->fuse_utilization_pct = d[2];
+            state->minimum_core_temp_c = (int8_t)((int16_t)d[3] - 40);
+            state->thermal_energy_to_target_dWh = be_u16(&d[4]);
+            state->r0_bootstrap_progress_pct = d[6];
+            break;
+
         case AMS_LOGGER_CAN_ID_HEARTBEAT:
             state->protocol_version = d[0];
             state->sequence = d[1];

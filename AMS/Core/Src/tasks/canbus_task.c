@@ -16,6 +16,7 @@
 #include "ext_drivers/charger.h"
 #include "app.h"
 #include "estimator/ams_soc_ekf.h"
+#include "sop/ams_power_can.h"
 
 #include <math.h>
 #include <string.h>
@@ -29,13 +30,8 @@ static ams_measurement_snapshot_t canbus_measurement_cache;
 static const ams_measurement_snapshot_t canbus_invalid_measurement = {0};
 
 #define ECU_SEG_CELLS 15u
-/*
- * Hardware has 24 thermistors per SMB (3x ADG728 muxes into GPIO1/2/3).
- * The ECU telemetry contract currently exports 17 temps per segment in six
- * packets. Keep this as an interface choice unless the ECU/dashboard packet
- * contract is changed with the rest of the vehicle.
- */
-#define ECU_SEG_TEMPS 17u
+/* Hardware and the production contract both expose all 24 thermistors/SMB. */
+#define ECU_SEG_TEMPS NTEMPS
 #define ECU_FANS      10u
 #define ECU_TEMP_INVALID_DECI_C ((uint16_t)0x8000u)
 #define CAN_TX_TIMEOUT_TICKS 1u
@@ -675,6 +671,39 @@ static HAL_StatusTypeDef send_ecu_compact_telemetry(canbus_device_t *canbus,
     return ret;
 }
 
+static HAL_StatusTypeDef send_ecu_power_bundle(canbus_device_t *canbus,
+                                               const app_data_t *data,
+                                               uint8_t sequence,
+                                               uint32_t now_ms)
+{
+    if((canbus == NULL) || (data == NULL))
+    {
+        return HAL_ERROR;
+    }
+
+    ams_power_can_snapshot_t snapshot;
+    taskENTER_CRITICAL();
+    snapshot = data->power_can_snapshot;
+    taskEXIT_CRITICAL();
+
+    uint8_t payload[8];
+    HAL_StatusTypeDef status = HAL_OK;
+    ams_power_can_encode_dcl(&snapshot, sequence, now_ms, payload);
+    status |= canbus_send(canbus, CAN_ID_STD, AMS_POWER_CAN_DCL_ID, payload);
+    ams_power_can_encode_ccl(&snapshot, sequence, now_ms, payload);
+    status |= canbus_send(canbus, CAN_ID_STD, AMS_POWER_CAN_CCL_ID, payload);
+    ams_power_can_encode_soh(&snapshot, sequence, now_ms, payload);
+    status |= canbus_send(canbus, CAN_ID_STD, AMS_POWER_CAN_SOH_ID, payload);
+    ams_power_can_encode_envelope(&snapshot, sequence, now_ms, payload);
+    status |= canbus_send(canbus, CAN_ID_STD, AMS_POWER_CAN_ENVELOPE_ID,
+                          payload);
+    ams_power_can_encode_strategy(&snapshot, sequence, now_ms, payload);
+    /* Strategy status is advisory. Its loss must not invalidate or reclassify
+     * the atomic four-frame fail-zero power bundle. */
+    (void)canbus_send(canbus, CAN_ID_STD, AMS_POWER_CAN_STRATEGY_ID, payload);
+    return status;
+}
+
 
 static HAL_StatusTypeDef send_ecu_ams_status_view(
     canbus_device_t *canbus,
@@ -754,11 +783,11 @@ static HAL_StatusTypeDef send_ecu_ams_temps(canbus_device_t *canbus, const app_d
 
     for(uint8_t seg = 0u; seg < NSMBS; seg++)
     {
-        for(uint8_t packet = 0u; packet < 6u; packet++)
+        for(uint8_t packet = 0u; packet < 8u; packet++)
         {
             uint8_t sensor = (uint8_t)(packet * 3u);
             ret |= send_ams_packet(canbus,
-                                   (uint16_t)(28u + (seg * 6u) + packet),
+                                   (uint16_t)(28u + (seg * 8u) + packet),
                                    temp_deci_c_for_ecu(data, seg, sensor),
                                    temp_deci_c_for_ecu(data, seg, (uint8_t)(sensor + 1u)),
                                    (sensor + 2u < ECU_SEG_TEMPS) ? temp_deci_c_for_ecu(data, seg, (uint8_t)(sensor + 2u)) : 0u);
@@ -776,7 +805,7 @@ static HAL_StatusTypeDef send_ecu_ams_fans(canbus_device_t *canbus, const app_da
     {
         uint8_t fan = (uint8_t)(packet * 3u);
         ret |= send_ams_packet(canbus,
-                               (uint16_t)(58u + packet),
+                               (uint16_t)(68u + packet),
                                fan_percent_for_ecu(data, fan),
                                fan_percent_for_ecu(data, (uint8_t)(fan + 1u)),
                                (fan + 2u < ECU_FANS) ? fan_percent_for_ecu(data, (uint8_t)(fan + 2u)) : 0u);
@@ -813,12 +842,12 @@ static HAL_StatusTypeDef send_ecu_ams_phase(canbus_device_t *canbus,
             cell_mv_for_view(data, view, phase, (uint8_t)(cell + 2u)));
     }
 
-    for(uint8_t packet = 0u; packet < 6u; packet++)
+    for(uint8_t packet = 0u; packet < 8u; packet++)
     {
         uint8_t sensor = (uint8_t)(packet * 3u);
         ret |= send_ams_packet(
             canbus,
-            (uint16_t)(28u + (phase * 6u) + packet),
+            (uint16_t)(28u + (phase * 8u) + packet),
             temp_deci_c_for_view(data, view, phase, sensor),
             temp_deci_c_for_view(data, view, phase, (uint8_t)(sensor + 1u)),
             (sensor + 2u < ECU_SEG_TEMPS) ?
@@ -1551,9 +1580,6 @@ static HAL_StatusTypeDef send_logger_detail_phase(
 
     HAL_StatusTypeDef ret = HAL_OK;
     const accumulator_t *acc = &data->acc;
-    const ams_measurement_snapshot_t *snapshot =
-        (view != NULL) ? view->snapshot : NULL;
-    bool snapshot_valid = (snapshot != NULL);
     uint8_t payload[8] = {0};
 
     for(uint8_t cell = 0u; cell < NCELLS; cell = (uint8_t)(cell + 3u))
@@ -1596,20 +1622,19 @@ static HAL_StatusTypeDef send_logger_detail_phase(
         ret |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_TEMP_DETAIL, payload);
     }
 
-    uint16_t updated = snapshot_valid ?
-        snapshot->voltage_updated_mask[phase] :
-        ((phase < accumulator_configured_smb_count(acc)) ?
-         acc->updated_voltage_mask[phase] : 0u);
-    uint16_t usable = snapshot_valid ?
-        snapshot->cell_usable_mask[phase] :
+    uint16_t updated =
+        (phase < accumulator_configured_smb_count(acc)) ?
+        acc->updated_voltage_mask[phase] : 0u;
+    uint16_t usable = (view != NULL) && (view->snapshot != NULL) ?
+        view->snapshot->cell_usable_mask[phase] :
         ((phase < accumulator_configured_smb_count(acc)) ?
          acc->usable_voltage_mask[phase] : 0u);
-    uint16_t stale = snapshot_valid ? snapshot->voltage_stale_mask[phase] :
-        ((phase < accumulator_configured_smb_count(acc)) ?
-         acc->stale_voltage_mask[phase] : 0u);
-    uint16_t pec = snapshot_valid ? snapshot->voltage_pec_fail_mask[phase] :
-        ((phase < accumulator_configured_smb_count(acc)) ?
-         acc->pec_fail_voltage_mask[phase] : 0u);
+    uint16_t stale =
+        (phase < accumulator_configured_smb_count(acc)) ?
+        acc->stale_voltage_mask[phase] : 0u;
+    uint16_t pec =
+        (phase < accumulator_configured_smb_count(acc)) ?
+        acc->pec_fail_voltage_mask[phase] : 0u;
 
     memset(payload, 0, sizeof(payload));
     payload[0] = phase;
@@ -1624,19 +1649,19 @@ static HAL_StatusTypeDef send_logger_detail_phase(
     payload[3] = logger_count_bits16(pec);
     ret |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_VOLTAGE_PEC, payload);
 
-    uint32_t temp_updated = snapshot_valid ? snapshot->temp_updated_mask[phase] :
-        ((phase < accumulator_configured_smb_count(acc)) ?
-         acc->updated_temp_mask[phase] : 0u);
-    uint32_t temp_usable = snapshot_valid ?
-        snapshot->temp_usable_mask[phase] :
+    uint32_t temp_updated =
+        (phase < accumulator_configured_smb_count(acc)) ?
+        acc->updated_temp_mask[phase] : 0u;
+    uint32_t temp_usable = (view != NULL) && (view->snapshot != NULL) ?
+        view->snapshot->temp_usable_mask[phase] :
         ((phase < accumulator_configured_smb_count(acc)) ?
          acc->usable_temp_mask[phase] : 0u);
-    uint32_t temp_stale = snapshot_valid ? snapshot->temp_stale_mask[phase] :
-        ((phase < accumulator_configured_smb_count(acc)) ?
-         acc->stale_temp_mask[phase] : 0u);
-    uint32_t temp_invalid = snapshot_valid ? snapshot->temp_invalid_mask[phase] :
-        ((phase < accumulator_configured_smb_count(acc)) ?
-         acc->invalid_temp_mask[phase] : 0u);
+    uint32_t temp_stale =
+        (phase < accumulator_configured_smb_count(acc)) ?
+        acc->stale_temp_mask[phase] : 0u;
+    uint32_t temp_invalid =
+        (phase < accumulator_configured_smb_count(acc)) ?
+        acc->invalid_temp_mask[phase] : 0u;
 
     memset(payload, 0, sizeof(payload));
     payload[0] = phase;
@@ -1687,24 +1712,24 @@ static HAL_StatusTypeDef send_logger_detail_phase(
         ret |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_TEMP_DIAG, payload);
     }
 
-    uint32_t temp_open = snapshot_valid ? snapshot->temp_open_mask[phase] :
-        ((phase < accumulator_configured_smb_count(acc)) ?
-         acc->temp_open_mask[phase] : 0u);
-    uint32_t temp_short = snapshot_valid ? snapshot->temp_short_mask[phase] :
-        ((phase < accumulator_configured_smb_count(acc)) ?
-         acc->temp_short_mask[phase] : 0u);
-    uint32_t temp_jump = snapshot_valid ? snapshot->temp_jump_mask[phase] :
-        ((phase < accumulator_configured_smb_count(acc)) ?
-         acc->temp_jump_mask[phase] : 0u);
-    uint32_t temp_rate = snapshot_valid ? snapshot->temp_rate_rise_mask[phase] :
-        ((phase < accumulator_configured_smb_count(acc)) ?
-         acc->temp_rate_rise_mask[phase] : 0u);
-    uint16_t voltage_jump = snapshot_valid ? snapshot->voltage_jump_mask[phase] :
-        ((phase < accumulator_configured_smb_count(acc)) ?
-         acc->voltage_jump_mask[phase] : 0u);
-    uint16_t voltage_stuck = snapshot_valid ? snapshot->voltage_stuck_mask[phase] :
-        ((phase < accumulator_configured_smb_count(acc)) ?
-         acc->voltage_stuck_mask[phase] : 0u);
+    uint32_t temp_open =
+        (phase < accumulator_configured_smb_count(acc)) ?
+        acc->temp_open_mask[phase] : 0u;
+    uint32_t temp_short =
+        (phase < accumulator_configured_smb_count(acc)) ?
+        acc->temp_short_mask[phase] : 0u;
+    uint32_t temp_jump =
+        (phase < accumulator_configured_smb_count(acc)) ?
+        acc->temp_jump_mask[phase] : 0u;
+    uint32_t temp_rate =
+        (phase < accumulator_configured_smb_count(acc)) ?
+        acc->temp_rate_rise_mask[phase] : 0u;
+    uint16_t voltage_jump =
+        (phase < accumulator_configured_smb_count(acc)) ?
+        acc->voltage_jump_mask[phase] : 0u;
+    uint16_t voltage_stuck =
+        (phase < accumulator_configured_smb_count(acc)) ?
+        acc->voltage_stuck_mask[phase] : 0u;
 
     memset(payload, 0, sizeof(payload));
     payload[0] = phase;
@@ -2121,11 +2146,16 @@ void canbus_task_fn(void *arg)
                 current10x);
         }
 
+        const uint8_t bundle_sequence = ecu_sequence++;
         HAL_StatusTypeDef compact_status = send_ecu_compact_telemetry(
             canbus,
             data,
             &measurement_view,
-            ecu_sequence++);
+            bundle_sequence);
+        compact_status |= send_ecu_power_bundle(canbus,
+                                                data,
+                                                bundle_sequence,
+                                                entry);
         canbus_record_tx_class(&data->can_tx_compact_bundle_count,
                                &data->can_tx_compact_bundle_fail_count,
                                compact_status);

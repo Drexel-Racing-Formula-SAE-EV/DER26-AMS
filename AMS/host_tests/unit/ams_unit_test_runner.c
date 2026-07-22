@@ -474,7 +474,7 @@ static void test_r0_observability_and_accounting(void)
     EXPECT_TRUE(soh.rejected_count == 1u);
     EXPECT_TRUE(soh.reject_current_calibration_count == 1u);
     EXPECT_TRUE(soh.reject_low_current_count == 1u);
-    EXPECT_TRUE(soh.observation_maturity_pct == 0u);
+    EXPECT_TRUE(soh.observation_confidence_pct == 0u);
 
     ams_ekf_init(&ekf, &cfg);
     ekf.step_count = 1u;
@@ -506,7 +506,7 @@ static void test_r0_observability_and_accounting(void)
                               AMS_EKF_R0_UPDATE_APPLIED,
                               true);
     EXPECT_TRUE(soh.accepted_count == AMS_SOH_MIN_ACCEPTED_OBSERVATIONS);
-    EXPECT_TRUE(soh.observation_maturity_pct == 100u);
+    EXPECT_TRUE(soh.observation_confidence_pct == 100u);
     EXPECT_TRUE((soh.status_flags & AMS_SOH_STATUS_ADVISORY_VALID) != 0u);
     EXPECT_TRUE((soh.status_flags & AMS_SOH_STATUS_PERSISTED) == 0u);
     EXPECT_TRUE(soh.persistence_valid == 0u);

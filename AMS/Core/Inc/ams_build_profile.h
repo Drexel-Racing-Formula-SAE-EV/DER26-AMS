@@ -15,18 +15,6 @@
 #define AMS_PROFILE_HIL     2
 #define AMS_PROFILE_VEHICLE 3
 
-/* Dedicated initial-accumulator fixture: five ADBMS6830 SMBs are present,
- * while the ADBMS2950 APM is physically absent.  Keep the normal final-ring
- * image as the default; this profile must be selected explicitly. */
-#ifndef AMS_ACCUMULATOR_5SMB_NO_APM
-#define AMS_ACCUMULATOR_5SMB_NO_APM 0
-#endif
-
-#if (AMS_ACCUMULATOR_5SMB_NO_APM != 0) && \
-    (AMS_ACCUMULATOR_5SMB_NO_APM != 1)
-#error "AMS_ACCUMULATOR_5SMB_NO_APM must be 0 or 1"
-#endif
-
 #define AMS_ESTIMATOR_TOPOLOGY_PACK     1
 #define AMS_ESTIMATOR_TOPOLOGY_SEGMENTS 2
 
@@ -55,14 +43,28 @@
 #ifndef AMS_CAN_VEHICLE_CONTRACT_VALIDATED
 #define AMS_CAN_VEHICLE_CONTRACT_VALIDATED 0
 #endif
+#ifndef AMS_SOP_MODEL_VALIDATED
+#define AMS_SOP_MODEL_VALIDATED 0
+#endif
+#ifndef AMS_SOP_CALIBRATION_VALIDATED
+#define AMS_SOP_CALIBRATION_VALIDATED 0
+#endif
+#ifndef AMS_SOP_CAN_CONTRACT_VALIDATED
+#define AMS_SOP_CAN_CONTRACT_VALIDATED 0
+#endif
+#ifndef AMS_REGEN_TARGET_VALIDATED
+#define AMS_REGEN_TARGET_VALIDATED 0
+#endif
+#ifndef AMS_MISSION_CAN_CONTRACT_VALIDATED
+#define AMS_MISSION_CAN_CONTRACT_VALIDATED 0
+#endif
+#ifndef AMS_FUSE_MODEL_VALIDATED
+#define AMS_FUSE_MODEL_VALIDATED 0
+#endif
 
 #if AMS_BUILD_PROFILE == AMS_PROFILE_BENCH
 
-#if AMS_ACCUMULATOR_5SMB_NO_APM
-#define AMS_BUILD_PROFILE_NAME "bench-5smb-noapm"
-#else
 #define AMS_BUILD_PROFILE_NAME "bench"
-#endif
 #ifndef AMS_HW_BRINGUP
 #define AMS_HW_BRINGUP 1
 #endif
@@ -71,6 +73,9 @@
 #endif
 #ifndef AMS_ENABLE_HIL_CAN
 #define AMS_ENABLE_HIL_CAN 0
+#endif
+#ifndef AMS_ENABLE_MISSION_CAN
+#define AMS_ENABLE_MISSION_CAN 0
 #endif
 #ifndef AMS_ENABLE_SERVICE_CLI
 #define AMS_ENABLE_SERVICE_CLI 1
@@ -83,6 +88,7 @@
 #endif
 #define AMS_PROFILE_BMS_OUTPUT_INHIBIT_DEFAULT 1
 #define AMS_PROFILE_BALANCE_INHIBIT_DEFAULT 1
+#define AMS_SOP_AUTHORITY_REQUIRED 0
 
 #elif AMS_BUILD_PROFILE == AMS_PROFILE_HIL
 
@@ -96,6 +102,9 @@
 #ifndef AMS_ENABLE_HIL_CAN
 #define AMS_ENABLE_HIL_CAN 1
 #endif
+#ifndef AMS_ENABLE_MISSION_CAN
+#define AMS_ENABLE_MISSION_CAN 0
+#endif
 #ifndef AMS_ENABLE_SERVICE_CLI
 #define AMS_ENABLE_SERVICE_CLI 1
 #endif
@@ -107,6 +116,7 @@
 #endif
 #define AMS_PROFILE_BMS_OUTPUT_INHIBIT_DEFAULT 1
 #define AMS_PROFILE_BALANCE_INHIBIT_DEFAULT 1
+#define AMS_SOP_AUTHORITY_REQUIRED 0
 
 #elif AMS_BUILD_PROFILE == AMS_PROFILE_VEHICLE
 
@@ -120,6 +130,9 @@
 #ifndef AMS_ENABLE_HIL_CAN
 #define AMS_ENABLE_HIL_CAN 0
 #endif
+#ifndef AMS_ENABLE_MISSION_CAN
+#define AMS_ENABLE_MISSION_CAN 1
+#endif
 #ifndef AMS_ENABLE_SERVICE_CLI
 #define AMS_ENABLE_SERVICE_CLI 0
 #endif
@@ -131,6 +144,7 @@
 #endif
 #define AMS_PROFILE_BMS_OUTPUT_INHIBIT_DEFAULT 0
 #define AMS_PROFILE_BALANCE_INHIBIT_DEFAULT 0
+#define AMS_SOP_AUTHORITY_REQUIRED 1
 
 #if !AMS_VEHICLE_PROFILE_REVIEWED
 #error "Vehicle profile requires AMS_VEHICLE_PROFILE_REVIEWED=1"
@@ -153,6 +167,21 @@
 #if !AMS_CAN_VEHICLE_CONTRACT_VALIDATED
 #error "Vehicle profile requires reviewed whole-vehicle CAN timing and stale-data policy"
 #endif
+#if !AMS_SOP_MODEL_VALIDATED
+#error "Vehicle profile requires target-validated SoP electrothermal model and WCET evidence"
+#endif
+#if !AMS_SOP_CALIBRATION_VALIDATED
+#error "Vehicle profile requires reviewed SoP uncertainty and hardware-limit calibration"
+#endif
+#if !AMS_SOP_CAN_CONTRACT_VALIDATED
+#error "Vehicle profile requires ECU-tested SoP/SoH CAN freshness and fail-zero contract"
+#endif
+#if !AMS_MISSION_CAN_CONTRACT_VALIDATED
+#error "Vehicle profile requires validated ECU-to-AMS mission request CAN contract"
+#endif
+#if !AMS_FUSE_MODEL_VALIDATED
+#error "Vehicle profile requires installed EAC14-80 thermal-model calibration"
+#endif
 #ifndef AMS_BUILD_GIT_COMMIT
 #error "Vehicle profile requires an explicit immutable source commit in the build manifest"
 #endif
@@ -168,58 +197,30 @@
 #ifndef AMS_ESTIMATOR_MODEL_REVISION
 #error "Vehicle profile requires an explicit estimator-model revision"
 #endif
+#ifndef AMS_SOP_MODEL_REVISION
+#error "Vehicle profile requires an explicit SoP model revision"
+#endif
+#ifndef AMS_SOH_MODEL_REVISION
+#error "Vehicle profile requires an explicit SoH model revision"
+#endif
 #if AMS_HW_BRINGUP || AMS_HIL_REPLACE_ADBMS || AMS_ENABLE_HIL_CAN || \
     AMS_ENABLE_SERVICE_CLI
 #error "Vehicle profile forbids bring-up, HIL injection and service mutation"
 #endif
-#if !AMS_ENABLE_IMD || !AMS_ENABLE_IWDG
-#error "Vehicle profile requires IMD and IWDG"
+#if !AMS_ENABLE_IMD || !AMS_ENABLE_IWDG || !AMS_ENABLE_MISSION_CAN
+#error "Vehicle profile requires IMD, IWDG and supervised mission CAN"
 #endif
 
 #else
 #error "AMS_BUILD_PROFILE must be AMS_PROFILE_BENCH, AMS_PROFILE_HIL or AMS_PROFILE_VEHICLE"
 #endif
 
-/* The no-APM accumulator fixture is a deliberately restricted bench image.
- * Normal final-ring builds retain six physical devices and all existing
- * behavior. */
-#if AMS_ACCUMULATOR_5SMB_NO_APM
-#if AMS_BUILD_PROFILE != AMS_PROFILE_BENCH
-#error "Five-SMB/no-APM fixture requires AMS_PROFILE_BENCH"
-#endif
-#if !AMS_HW_BRINGUP
-#error "Five-SMB/no-APM fixture requires AMS_HW_BRINGUP=1"
-#endif
-#if AMS_HIL_REPLACE_ADBMS || AMS_ENABLE_HIL_CAN
-#error "Physical five-SMB/no-APM testing cannot use CAN-fed ADBMS HIL"
-#endif
-#if !AMS_ENABLE_SERVICE_CLI
-#error "Five-SMB/no-APM fixture requires the controlled service CLI"
-#endif
-
-#define AMS_ADBMS_PHYSICAL_CHAIN_COUNT        5
-#define AMS_ADBMS_BALANCE_ACTIVATION_ENABLED  0
-#define AMS_ADBMS_OPEN_WIRE_ENABLED           0
-#define AMS_ADBMS_RESTRICTED_BENCH_COMMANDS   1
-
-#ifndef AMS_ENABLE_APM_2950
-#define AMS_ENABLE_APM_2950 0
-#endif
-#if AMS_ENABLE_APM_2950
-#error "ADBMS2950/APM must remain disabled in the five-SMB/no-APM fixture"
-#endif
-
-#else
-
-#define AMS_ADBMS_PHYSICAL_CHAIN_COUNT        6
-#define AMS_ADBMS_BALANCE_ACTIVATION_ENABLED  1
-#define AMS_ADBMS_OPEN_WIRE_ENABLED           1
-#define AMS_ADBMS_RESTRICTED_BENCH_COMMANDS   0
-
-#endif
-
 #ifndef AMS_ESTIMATOR_DEFAULT_TOPOLOGY
+#if AMS_BUILD_PROFILE == AMS_PROFILE_VEHICLE
+#define AMS_ESTIMATOR_DEFAULT_TOPOLOGY AMS_ESTIMATOR_TOPOLOGY_SEGMENTS
+#else
 #define AMS_ESTIMATOR_DEFAULT_TOPOLOGY AMS_ESTIMATOR_TOPOLOGY_PACK
+#endif
 #endif
 
 #if (AMS_ESTIMATOR_DEFAULT_TOPOLOGY != AMS_ESTIMATOR_TOPOLOGY_PACK) && \
@@ -246,13 +247,19 @@
 #define AMS_CURRENT_CALIBRATION_REVISION "DHAB-unvalidated-v0"
 #endif
 #ifndef AMS_CAN_CONTRACT_REVISION
-#define AMS_CAN_CONTRACT_REVISION "ECU1-LOGGER1-PHASED1"
+#define AMS_CAN_CONTRACT_REVISION "ECU2-LOGGER2-POWER2-MISSION1-PHASED2"
 #endif
 #ifndef AMS_THRESHOLD_REVISION
-#define AMS_THRESHOLD_REVISION "DER26-prevehicle-v1"
+#define AMS_THRESHOLD_REVISION "DER26-SOP-system-v2"
 #endif
 #ifndef AMS_ESTIMATOR_MODEL_REVISION
 #define AMS_ESTIMATOR_MODEL_REVISION "P42A-HPPC-v1"
+#endif
+#ifndef AMS_SOP_MODEL_REVISION
+#define AMS_SOP_MODEL_REVISION "P42A-robust-FHPE-v3-strategy"
+#endif
+#ifndef AMS_SOH_MODEL_REVISION
+#define AMS_SOH_MODEL_REVISION "rest-anchor-capacity-R0-v3"
 #endif
 
 #endif /* INC_AMS_BUILD_PROFILE_H_ */

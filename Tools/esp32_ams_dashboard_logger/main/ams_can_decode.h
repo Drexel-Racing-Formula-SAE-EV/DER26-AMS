@@ -49,6 +49,24 @@
 #define AMS_LOGGER_CAN_ID_VOLTAGE_DIAG    0x6ABu
 #define AMS_LOGGER_CAN_ID_RTOS_DIAG       0x6ACu
 
+#define AMS_POWER_CAN_PROTOCOL_VERSION    2u
+#define AMS_POWER_CAN_ID_DCL               0x684u
+#define AMS_POWER_CAN_ID_CCL               0x685u
+#define AMS_POWER_CAN_ID_SOH               0x686u
+#define AMS_POWER_CAN_ID_ENVELOPE          0x687u
+#define AMS_POWER_CAN_ID_STRATEGY          0x689u
+#define AMS_POWER_CAN_FRAME_COUNT          5u
+#define AMS_POWER_CAN_REQUIRED_FRAME_COUNT 4u
+
+#define AMS_POWER_FLAG_VALID              (1u << 0u)
+#define AMS_POWER_FLAG_AUTHORITY_VALID    (1u << 1u)
+#define AMS_POWER_FLAG_CAPACITY_PRIOR     (1u << 2u)
+#define AMS_POWER_FLAG_RESISTANCE_PRIOR   (1u << 3u)
+#define AMS_POWER_FLAG_AMBIENT_PROXY      (1u << 4u)
+#define AMS_POWER_FLAG_SLEWED             (1u << 5u)
+#define AMS_POWER_FLAG_DIRECTION_INHIBIT  (1u << 6u)
+#define AMS_POWER_FLAG_FALLBACK           (1u << 7u)
+
 #define AMS_DASH_CAN_ID_ECU_AMS           0x069u
 #define AMS_DASH_CAN_ID_HIL_MEAS          0x200u
 #define AMS_DASH_CAN_ID_HIL_TRUTH         0x201u
@@ -213,6 +231,43 @@ typedef struct
     int16_t estimator_innovation_mV;
     uint16_t estimator_r0_0p01_mohm;
 
+    uint32_t power_last_rx_ms[AMS_POWER_CAN_FRAME_COUNT];
+    uint32_t power_crc_error_count;
+    uint32_t power_version_error_count;
+    uint32_t power_counter_error_count;
+    uint8_t power_counter_seen_mask;
+    uint8_t power_counter[AMS_POWER_CAN_FRAME_COUNT];
+    uint8_t dcl_flags;
+    uint8_t ccl_flags;
+    uint16_t dcl_current_dA;
+    uint16_t ccl_current_dA;
+    uint16_t dcl_power_10W;
+    uint16_t ccl_power_10W;
+    uint8_t dcl_binding;
+    uint8_t ccl_binding;
+    uint8_t dcl_limiting_segment;
+    uint8_t ccl_limiting_segment;
+    uint8_t capacity_soh_pct;
+    uint8_t capacity_soh_lower_pct;
+    uint8_t resistance_growth_upper_pct;
+    uint8_t combined_soh_pct;
+    uint8_t capacity_confidence_pct;
+    uint8_t resistance_confidence_pct;
+    uint8_t capacity_soh_valid;
+    uint8_t resistance_soh_valid;
+    uint8_t envelope_discharge_a[3];
+    uint8_t envelope_charge_a[3];
+    uint8_t mission_profile;
+    uint8_t mission_horizon_index;
+    uint8_t thermal_ready;
+    uint8_t fuse_authority_valid;
+    uint8_t limp_latched;
+    uint8_t mission_fallback;
+    uint8_t fuse_utilization_pct;
+    int8_t minimum_core_temp_c;
+    uint16_t thermal_energy_to_target_dWh;
+    uint8_t r0_bootstrap_progress_pct;
+
     uint32_t hil_last_rx_ms;
     uint16_t hil_pack_voltage_cV;
     int16_t hil_current_cA;
@@ -254,5 +309,9 @@ bool ams_dash_decode_frame(ams_dash_state_t *state,
 bool ams_dash_data_stale(const ams_dash_state_t *state,
                          uint32_t now_ms,
                          uint32_t timeout_ms);
+bool ams_dash_power_data_stale(const ams_dash_state_t *state,
+                               uint32_t now_ms,
+                               uint32_t timeout_ms);
+uint8_t ams_dash_power_crc8(uint16_t can_id, const uint8_t payload[7]);
 
 #endif /* AMS_CAN_DECODE_H_ */

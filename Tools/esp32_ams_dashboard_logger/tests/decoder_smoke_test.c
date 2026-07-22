@@ -44,6 +44,97 @@ static ams_can_frame_t frame(uint32_t id, const uint8_t data[8])
     return f;
 }
 
+static ams_can_frame_t power_frame(uint16_t id, uint8_t data[8])
+{
+    data[7] = ams_dash_power_crc8(id, data);
+    return frame(id, data);
+}
+
+static void test_power_limit_frames(void)
+{
+    ams_dash_state_t s;
+    ams_dash_state_init(&s);
+
+    uint8_t dcl[8] = { 0x23u, 0x33u, 0x03u, 0x20u,
+                       0x07u, 0xD0u, 0x12u, 0u };
+    ams_can_frame_t dclf = power_frame(AMS_POWER_CAN_ID_DCL, dcl);
+    CHECK(ams_dash_decode_frame(&s, &dclf, 100u));
+    CHECK(s.dcl_current_dA == 800u);
+    CHECK(s.dcl_power_10W == 2000u);
+    CHECK(s.dcl_binding == 1u);
+    CHECK(s.dcl_limiting_segment == 2u);
+    CHECK(s.dcl_flags == 0x33u);
+
+    uint8_t ccl[8] = { 0x23u, 0x13u, 0x00u, 0x64u,
+                       0x01u, 0x2Cu, 0x23u, 0u };
+    ams_can_frame_t cclf = power_frame(AMS_POWER_CAN_ID_CCL, ccl);
+    CHECK(ams_dash_decode_frame(&s, &cclf, 100u));
+    CHECK(s.ccl_current_dA == 100u);
+    CHECK(s.ccl_power_10W == 300u);
+    CHECK(s.ccl_binding == 2u);
+    CHECK(s.ccl_limiting_segment == 3u);
+
+    uint8_t soh[8] = { 0x23u, 94u, 90u, 125u, 80u,
+                       (uint8_t)(0x80u | 70u),
+                       (uint8_t)(0x80u | 85u), 0u };
+    ams_can_frame_t sohf = power_frame(AMS_POWER_CAN_ID_SOH, soh);
+    CHECK(ams_dash_decode_frame(&s, &sohf, 100u));
+    CHECK(s.capacity_soh_pct == 94u);
+    CHECK(s.capacity_soh_lower_pct == 90u);
+    CHECK(s.resistance_growth_upper_pct == 125u);
+    CHECK(s.combined_soh_pct == 80u);
+    CHECK(s.capacity_confidence_pct == 70u);
+    CHECK(s.resistance_confidence_pct == 85u);
+    CHECK(s.capacity_soh_valid == 1u);
+    CHECK(s.resistance_soh_valid == 1u);
+
+    uint8_t envelope[8] = { 0x23u, 118u, 70u, 65u,
+                            11u, 10u, 9u, 0u };
+    ams_can_frame_t envf = power_frame(AMS_POWER_CAN_ID_ENVELOPE, envelope);
+    CHECK(ams_dash_decode_frame(&s, &envf, 100u));
+    CHECK(s.envelope_discharge_a[0] == 118u);
+    CHECK(s.envelope_discharge_a[1] == 70u);
+    CHECK(s.envelope_discharge_a[2] == 65u);
+    CHECK(s.envelope_charge_a[0] == 11u);
+    CHECK(s.envelope_charge_a[2] == 9u);
+
+    uint8_t strategy[8] = { 0x23u, 0xEEu, 76u, 62u,
+                            0x01u, 0x08u, 65u, 0u };
+    ams_can_frame_t strategyf = power_frame(AMS_POWER_CAN_ID_STRATEGY,
+                                             strategy);
+    CHECK(ams_dash_decode_frame(&s, &strategyf, 100u));
+    CHECK(s.mission_profile == 2u);
+    CHECK(s.mission_horizon_index == 3u);
+    CHECK(s.fuse_authority_valid == 1u);
+    CHECK(s.limp_latched == 1u);
+    CHECK(s.mission_fallback == 1u);
+    CHECK(s.fuse_utilization_pct == 76u);
+    CHECK(s.minimum_core_temp_c == 22);
+    CHECK(s.thermal_energy_to_target_dWh == 264u);
+    CHECK(s.r0_bootstrap_progress_pct == 65u);
+    CHECK(!ams_dash_power_data_stale(&s, 350u, 250u));
+    CHECK(ams_dash_power_data_stale(&s, 351u, 250u));
+
+    dcl[0] = 0x24u;
+    dclf = power_frame(AMS_POWER_CAN_ID_DCL, dcl);
+    CHECK(ams_dash_decode_frame(&s, &dclf, 120u));
+    dcl[0] = 0x25u;
+    dclf = power_frame(AMS_POWER_CAN_ID_DCL, dcl);
+    dclf.data[3] ^= 0x01u;
+    CHECK(!ams_dash_decode_frame(&s, &dclf, 130u));
+    CHECK(s.power_crc_error_count == 1u);
+    CHECK(s.malformed_frames == 1u);
+    dcl[0] = 0x26u;
+    dclf = power_frame(AMS_POWER_CAN_ID_DCL, dcl);
+    CHECK(ams_dash_decode_frame(&s, &dclf, 140u));
+    CHECK(s.power_counter_error_count == 1u);
+
+    dcl[0] = 0x13u;
+    dclf = power_frame(AMS_POWER_CAN_ID_DCL, dcl);
+    CHECK(!ams_dash_decode_frame(&s, &dclf, 150u));
+    CHECK(s.power_version_error_count == 1u);
+}
+
 static void test_summary_frames(void)
 {
     ams_dash_state_t s;
@@ -366,6 +457,7 @@ static void test_rejects_non_contract_frames(void)
 
 int main(void)
 {
+    test_power_limit_frames();
     test_summary_frames();
     test_detail_and_masks();
     test_task_health_frame();

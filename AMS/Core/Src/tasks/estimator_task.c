@@ -2,9 +2,10 @@
  * estimator_task.c
  * Author: Mahad Faisal (2026)
  *
- * Runs the advisory P42A DAEKF estimator at 10 Hz. The estimator is deliberately
- * non-authoritative: it does not control BMS_OK, AIRs, charging, shutdown, or
- * balancing. It only publishes state into app.estimator for telemetry/debug.
+ * Runs the P42A DADEKF estimator and the SoH/finite-horizon SoP pipeline at
+ * 10 Hz. The estimator never directly drives BMS_OK, AIRs, charging, shutdown,
+ * or balancing. In a vehicle build its heartbeat and fail-zero power contract
+ * are nevertheless required before an external ECU may request torque.
  */
 
 #include "tasks/estimator_task.h"
@@ -259,6 +260,108 @@ static void estimator_record_unusable_soh_epoch(
                               false);
 }
 
+static void estimator_publish_power_snapshot(app_data_t *data)
+{
+    if(data == NULL)
+    {
+        return;
+    }
+
+    const ams_power_can_snapshot_t snapshot =
+        data->power_state.can_snapshot;
+    taskENTER_CRITICAL();
+    data->power_can_snapshot = snapshot;
+    data->power_limit_fault =
+        (snapshot.valid == 0u) || (snapshot.authority_valid == 0u);
+    taskEXIT_CRITICAL();
+}
+
+static void estimator_invalidate_power(app_data_t *data,
+                                       uint32_t now,
+                                       uint32_t reason_flags)
+{
+    if(data == NULL)
+    {
+        return;
+    }
+    ams_power_state_invalidate(&data->power_state, now, reason_flags);
+    estimator_publish_power_snapshot(data);
+}
+
+static bool estimator_update_power(app_data_t *data,
+                                   const ams_measurement_snapshot_t *measurement,
+                                   uint32_t now,
+                                   float elapsed_s)
+{
+    if((data == NULL) || (measurement == NULL))
+    {
+        return false;
+    }
+
+    if(!ams_sop_config_valid(&data->power_state.sop_config) ||
+       !ams_soh_config_valid(&data->power_state.soh_config))
+    {
+        ams_power_state_init(&data->power_state);
+    }
+
+    ams_power_policy_t policy;
+    memset(&policy, 0, sizeof(policy));
+    taskENTER_CRITICAL();
+    const state_t state = data->state;
+    const bool bms_permitted = data->bms_state &&
+                               !data->bms_output_inhibit &&
+                               !data->hard_fault;
+    const bool charger_healthy = !data->charger_fault;
+#if AMS_ENABLE_MISSION_CAN
+    const ams_mission_request_state_t mission_request =
+        data->mission_request;
+#endif
+    taskEXIT_CRITICAL();
+
+    if(state == STATE_DISCARGE)
+    {
+        policy.operating_mode = AMS_SOP_MODE_DRIVE;
+        policy.discharge_authorized = bms_permitted ? 1u : 0u;
+        policy.regen_authorized =
+            (bms_permitted && (AMS_REGEN_TARGET_VALIDATED != 0)) ? 1u : 0u;
+    }
+    else if(state == STATE_CHARGE)
+    {
+        policy.operating_mode = AMS_SOP_MODE_CHARGE;
+        policy.charger_authorized =
+            (bms_permitted && charger_healthy) ? 1u : 0u;
+    }
+    else
+    {
+        policy.operating_mode = AMS_SOP_MODE_IDLE;
+    }
+    policy.current_calibrated =
+        (AMS_CURRENT_CALIBRATION_VALIDATED != 0) ? 1u : 0u;
+    policy.current_polarity_validated =
+        (AMS_CURRENT_POLARITY_VALIDATED != 0) ? 1u : 0u;
+    policy.fuse_model_validated =
+        (AMS_FUSE_MODEL_VALIDATED != 0) ? 1u : 0u;
+#if AMS_ENABLE_MISSION_CAN
+    policy.requested_mission = mission_request.requested_profile;
+    policy.mission_request_valid =
+        ams_mission_request_fresh(&mission_request, now) ? 1u : 0u;
+    policy.stationary_confirmed = mission_request.stationary_confirmed;
+#else
+    policy.requested_mission = AMS_MISSION_ENDURANCE;
+    policy.mission_request_valid = 0u;
+    policy.stationary_confirmed = 0u;
+#endif
+
+    const bool valid = ams_power_state_update(&data->power_state,
+                                               measurement,
+                                               &data->estimator,
+                                               &policy,
+                                               now,
+                                               elapsed_s);
+    estimator_publish_power_snapshot(data);
+    return valid;
+}
+
 #if AMS_ENABLE_HIL_CAN
 static bool hil_meas_fresh(const ams_hil_meas_t *measurement, uint32_t now)
 {
@@ -329,6 +432,13 @@ bool estimator_task_update(app_data_t *data, uint32_t now, float cc_dt_s)
         {
             estimator_saturating_add(
                 &data->estimator.repeated_measurement_count, 1u);
+            if((uint32_t)(now - data->power_can_snapshot.measurement_timestamp_ms) >
+               (uint32_t)data->power_state.sop_config.max_measurement_age_ms)
+            {
+                estimator_invalidate_power(data, now,
+                    AMS_SOP_REASON_MEASUREMENT_STALE |
+                    AMS_SOP_REASON_INCOMPLETE_TOPOLOGY);
+            }
             return !data->estimator_fault;
         }
 
@@ -432,13 +542,17 @@ bool estimator_task_update(app_data_t *data, uint32_t now, float cc_dt_s)
                                       now);
         data->estimator_fault =
             (data->estimator.fault_flags != AMS_EKF_FAULT_NONE);
+        /* The current HIL contract has one pack estimator frame. Keep the
+         * authority output fail-zero until segment-state HIL frames exist. */
+        estimator_invalidate_power(data, now,
+            AMS_SOP_REASON_INCOMPLETE_TOPOLOGY);
         return !data->estimator_fault;
 #endif
     }
 
     /* The estimator task is the sole caller in production. Keep the large
      * immutable epoch copy in static task-owned RAM rather than consuming a
-     * substantial fraction of the 4 KiB estimator stack before entering the
+     * substantial fraction of the 6 KiB estimator stack before entering the
      * EKF call chain. */
     static ams_measurement_snapshot_t measurement;
     if(!ams_measurement_store_copy_latest(&data->measurement_store,
@@ -450,6 +564,8 @@ bool estimator_task_update(app_data_t *data, uint32_t now, float cc_dt_s)
                                       AMS_ESTIMATOR_INPUT_HARDWARE,
                                       now);
         data->estimator_fault = true;
+        estimator_invalidate_power(data, now,
+                                   AMS_SOP_REASON_MEASUREMENT_INVALID);
         return false;
     }
 
@@ -464,6 +580,8 @@ bool estimator_task_update(app_data_t *data, uint32_t now, float cc_dt_s)
                                       AMS_ESTIMATOR_INPUT_HARDWARE,
                                       now);
         data->estimator_fault = true;
+        estimator_invalidate_power(data, now,
+                                   AMS_SOP_REASON_MEASUREMENT_STALE);
         return false;
     }
 
@@ -472,6 +590,12 @@ bool estimator_task_update(app_data_t *data, uint32_t now, float cc_dt_s)
     {
         estimator_saturating_add(&data->estimator.repeated_measurement_count,
                                  1u);
+        if((uint32_t)(now - measurement.publication_tick) >
+           (uint32_t)data->power_state.sop_config.max_measurement_age_ms)
+        {
+            estimator_invalidate_power(data, now,
+                                       AMS_SOP_REASON_MEASUREMENT_STALE);
+        }
         return !data->estimator_fault;
     }
 
@@ -539,7 +663,6 @@ bool estimator_task_update(app_data_t *data, uint32_t now, float cc_dt_s)
     const bool current_calibration_confident =
         (AMS_CURRENT_POLARITY_VALIDATED != 0) &&
         (AMS_CURRENT_CALIBRATION_VALIDATED != 0) &&
-        ((measurement.validity_flags & AMS_MEAS_CURRENT_TIMING_VALID) != 0u) &&
         measurement.current.calibration_record_confident &&
         (measurement.current.calibration_id != 0u);
 
@@ -609,6 +732,7 @@ bool estimator_task_update(app_data_t *data, uint32_t now, float cc_dt_s)
                                   now);
     data->estimator_fault =
         (data->estimator.fault_flags != AMS_EKF_FAULT_NONE);
+    (void)estimator_update_power(data, &measurement, now, dt_s);
     return !data->estimator_fault;
 }
 
@@ -622,6 +746,8 @@ void estimator_task_fn(void *argument)
     }
 
     ams_estimator_init_default(&data->estimator);
+    ams_power_state_init(&data->power_state);
+    estimator_publish_power_snapshot(data);
 
     uint32_t last_entry = osKernelGetTickCount();
     uint32_t entry;
@@ -632,6 +758,8 @@ void estimator_task_fn(void *argument)
         last_entry = entry;
 
         (void)estimator_task_update(data, entry, cc_dt_s);
+        ams_heartbeat_kick(data, AMS_HEARTBEAT_ESTIMATOR,
+                           osKernelGetTickCount());
         osDelayUntil(entry + (1000U / ESTIMATOR_FREQ));
     }
 }

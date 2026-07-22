@@ -24,13 +24,14 @@
 #include "ext_drivers/air_monitor.h"
 #include "ext_drivers/ams_safety.h"
 #include "measurement/ams_measurement.h"
+#include "sop/ams_power_state.h"
 
 #define VER_MAJOR 0
-#define VER_MINOR 1
+#define VER_MINOR 3
 #define VER_BUG   0
 
 #define AMS_BUILD_MANIFEST_MAGIC 0x414D5342u /* 'AMSB' */
-#define AMS_BUILD_MANIFEST_SCHEMA 2u
+#define AMS_BUILD_MANIFEST_SCHEMA 4u
 
 #define AMS_BUILD_FEATURE_HIL_CAN      (1u << 0u)
 #define AMS_BUILD_FEATURE_HIL_ADBMS    (1u << 1u)
@@ -40,6 +41,8 @@
 #define AMS_BUILD_FEATURE_AIR_AUX      (1u << 5u)
 #define AMS_BUILD_FEATURE_APM_2950     (1u << 6u)
 #define AMS_BUILD_FEATURE_HW_BRINGUP   (1u << 7u)
+#define AMS_BUILD_FEATURE_MISSION_CAN  (1u << 8u)
+#define AMS_BUILD_FEATURE_FUSE_MODEL   (1u << 9u)
 
 #define AMS_BUILD_FEATURE_FLAGS_VALUE ( \
     (AMS_ENABLE_HIL_CAN ? AMS_BUILD_FEATURE_HIL_CAN : 0u) | \
@@ -49,7 +52,9 @@
     (AMS_ENABLE_IWDG ? AMS_BUILD_FEATURE_IWDG : 0u) | \
     (AMS_ENABLE_AIR_AUX_FEEDBACK ? AMS_BUILD_FEATURE_AIR_AUX : 0u) | \
     (AMS_ENABLE_APM_2950 ? AMS_BUILD_FEATURE_APM_2950 : 0u) | \
-    (AMS_HW_BRINGUP ? AMS_BUILD_FEATURE_HW_BRINGUP : 0u))
+    (AMS_HW_BRINGUP ? AMS_BUILD_FEATURE_HW_BRINGUP : 0u) | \
+    (AMS_ENABLE_MISSION_CAN ? AMS_BUILD_FEATURE_MISSION_CAN : 0u) | \
+    (AMS_FUSE_MODEL_VALIDATED ? AMS_BUILD_FEATURE_FUSE_MODEL : 0u))
 
 #ifndef AMS_HW_BRINGUP
 #define AMS_HW_BRINGUP 0
@@ -165,10 +170,6 @@
 #error "AMS_ADBMS_SCAN_HZ must be between 1 and 1000 Hz"
 #endif
 
-#if AMS_ACCUMULATOR_5SMB_NO_APM && (AMS_ADBMS_SCAN_HZ != 1u)
-#error "Five-SMB/no-APM fixture requires AMS_ADBMS_SCAN_HZ=1"
-#endif
-
 #define ADBMS_FREQ AMS_ADBMS_SCAN_HZ
 #define AMS_ADBMS_TASK_PERIOD_MS ((1000u + ADBMS_FREQ - 1u) / ADBMS_FREQ)
 
@@ -204,6 +205,7 @@
 #define AMS_HEARTBEAT_LOGGER_TIMEOUT_MS 2000u
 #define AMS_HEARTBEAT_IMD_TIMEOUT_MS 500u
 #define AMS_HEARTBEAT_FAN_TIMEOUT_MS 1000u
+#define AMS_HEARTBEAT_ESTIMATOR_TIMEOUT_MS 500u
 
 /* CMSIS-RTOS mutex timeouts are expressed in kernel ticks.  The generated
  * FreeRTOS configuration uses a 1 kHz kernel tick, so this is 500 ms on the
@@ -233,7 +235,7 @@
 #define AMS_STACK_CURRENT_WORDS     256u
 #define AMS_STACK_ADBMS_WORDS      1536u
 #define AMS_STACK_CAN_WORDS         512u
-#define AMS_STACK_ESTIMATOR_WORDS  1024u
+#define AMS_STACK_ESTIMATOR_WORDS  1536u
 #define AMS_STACK_FAN_WORDS         192u
 #define AMS_STACK_AIR_WORDS         192u
 #define AMS_STACK_IMD_WORDS         192u
@@ -252,6 +254,12 @@
 #define AMS_ECU_CAN_ID_ELECTRICAL  0x681u
 #define AMS_ECU_CAN_ID_THERMAL     0x682u
 #define AMS_ECU_CAN_ID_HEALTH      0x683u
+#define AMS_ECU_CAN_ID_SOP_DCL     0x684u
+#define AMS_ECU_CAN_ID_SOP_CCL     0x685u
+#define AMS_ECU_CAN_ID_SOH         0x686u
+#define AMS_ECU_CAN_ID_SOP_ENVELOPE 0x687u
+#define AMS_ECU_CAN_ID_MISSION_REQUEST 0x688u
+#define AMS_ECU_CAN_ID_STRATEGY_STATUS 0x689u
 #define AMS_CAN_ECU_FAST_FREQ_HZ   10u
 #define AMS_CAN_ECU_FAST_PERIOD_MS (1000u / AMS_CAN_ECU_FAST_FREQ_HZ)
 
@@ -278,11 +286,13 @@ typedef struct
     uint32_t magic;
     uint16_t schema;
     uint8_t profile;
-    uint8_t feature_flags;
+    uint16_t feature_flags;
     uint8_t estimator_topology;
     const char *profile_name;
     const char *git_commit;
-    const char *estimator_model_revision;
+	const char *estimator_model_revision;
+	const char *sop_model_revision;
+	const char *soh_model_revision;
     const char *current_calibration_revision;
     const char *can_contract_revision;
     const char *threshold_revision;
@@ -369,6 +379,7 @@ typedef enum
 	AMS_HEARTBEAT_LOGGER,
 	AMS_HEARTBEAT_IMD,
 	AMS_HEARTBEAT_FAN,
+	AMS_HEARTBEAT_ESTIMATOR,
 	AMS_HEARTBEAT_COUNT
 } ams_heartbeat_id_t;
 
@@ -409,6 +420,7 @@ typedef enum
                                    AMS_HEARTBEAT_BIT(AMS_HEARTBEAT_TEMP) | \
                                    AMS_HEARTBEAT_BIT(AMS_HEARTBEAT_CAN) | \
                                    AMS_HEARTBEAT_BIT(AMS_HEARTBEAT_FAN) | \
+                                   (AMS_SOP_AUTHORITY_REQUIRED ? AMS_HEARTBEAT_BIT(AMS_HEARTBEAT_ESTIMATOR) : 0u) | \
                                    (AMS_ENABLE_IMD ? AMS_HEARTBEAT_BIT(AMS_HEARTBEAT_IMD) : 0u))
 #define AMS_HEARTBEAT_LOGGER_MASK AMS_HEARTBEAT_BIT(AMS_HEARTBEAT_LOGGER)
 
@@ -434,12 +446,6 @@ struct app_data_t
 	bool current_valid;
 	uint32_t current_sample_tick;
 	uint32_t current_sample_sequence;
-	uint32_t current_acquisition_start_tick;
-	uint32_t current_acquisition_end_tick;
-	uint32_t current_acquisition_duration_ms;
-	uint32_t current_channel_skew_bound_ms;
-	uint32_t current_timing_fault_count;
-	uint32_t current_timing_fault_count_at_last_epoch;
 	current_sensor_range_t current_selected_range;
 	current_sensor_reason_t current_meas_reason;
 
@@ -568,6 +574,7 @@ struct app_data_t
 	uint8_t voltage_max_delta_seg;
 	uint8_t voltage_max_delta_cell;
 	bool estimator_fault;
+	bool power_limit_fault;
 
 	/* Legacy telemetry name: this is the conditioned AIR_CONTROL_MCU voltage
 	 * sense, not proof of AIR+, AIR- or precharge contact position. */
@@ -599,14 +606,6 @@ struct app_data_t
 	uint32_t adbms_status_diag_count;
 	uint32_t adbms_config_diag_count;
 	uint32_t adbms_open_wire_diag_count;
-	uint32_t adbms_status_diag_next_tick;
-	uint32_t adbms_config_diag_next_tick;
-	uint32_t adbms_open_wire_diag_next_tick;
-	uint32_t adbms_diag_last_duration_ms;
-	uint32_t adbms_diag_max_duration_ms;
-	uint32_t adbms_diag_last_lateness_ms;
-	uint32_t adbms_diag_max_lateness_ms;
-	bool adbms_diag_schedule_initialized;
 	uint32_t adbms_balance_write_fail_count;
 	uint32_t adbms_balance_recovery_count;
 	uint32_t adbms_scan_deadline_miss_count;
@@ -617,9 +616,6 @@ struct app_data_t
 	uint32_t adbms_last_balance_off_ms;
 	uint32_t adbms_balance_apply_tick;
 	HAL_StatusTypeDef adbms_last_diag_status;
-	uint32_t temp_policy_last_tick;
-	uint32_t temp_policy_last_elapsed_ms;
-	bool temp_policy_tick_valid;
 	bool task_heartbeat_fault;
 	bool logger_heartbeat_fault;
 	uint16_t heartbeat_stale_mask;
@@ -640,6 +636,9 @@ struct app_data_t
 	board_t board;
 	accumulator_t acc;
 	ams_estimator_t estimator;
+	ams_power_state_t power_state;
+	ams_power_can_snapshot_t power_can_snapshot;
+	ams_mission_request_state_t mission_request;
 	ams_current_window_accumulator_t current_window;
 	ams_measurement_store_t measurement_store;
 	ams_hil_input_t hil;

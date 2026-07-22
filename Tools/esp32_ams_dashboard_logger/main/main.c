@@ -23,6 +23,7 @@
 #define DASH_WIFI_CHANNEL       6
 #define DASH_WIFI_MAX_CONN      4
 #define DASH_STALE_TIMEOUT_MS   1500u
+#define DASH_POWER_STALE_MS      250u
 #define DASH_JSON_BUF_BYTES     16384u
 
 static const char *TAG = "AMS_DASH";
@@ -35,7 +36,11 @@ static bool flag_set(uint8_t flags, uint8_t bit)
     return (flags & (uint8_t)(1u << bit)) != 0u;
 }
 
-static void json_append(char *buf, size_t cap, size_t *off, const char *fmt, ...)
+#if defined(__GNUC__)
+__attribute__((format(printf, 4, 5)))
+#endif
+static void json_append(char *buf, size_t cap, size_t *off,
+                        const char *fmt, ...)
 {
     if((buf == NULL) || (off == NULL) || (*off >= cap))
     {
@@ -128,6 +133,8 @@ static void build_json_state(char *buf, size_t cap, const ams_dash_state_t *s)
     size_t off = 0u;
     uint32_t now_ms = (uint32_t)(esp_log_timestamp());
     bool stale = ams_dash_data_stale(s, now_ms, DASH_STALE_TIMEOUT_MS);
+    bool power_stale = ams_dash_power_data_stale(
+        s, now_ms, DASH_POWER_STALE_MS);
 
     json_append(buf, cap, &off, "{");
     json_append(buf, cap, &off,
@@ -361,6 +368,68 @@ static void build_json_state(char *buf, size_t cap, const ams_dash_state_t *s)
                 (double)s->estimator_r0_0p01_mohm / 100.0);
 
     json_append(buf, cap, &off,
+                "\"power\":{\"stale\":%s,\"dcl_A\":%.1f,\"dcl_W\":%lu,"
+                "\"dcl_flags\":%u,\"dcl_binding\":%u,\"dcl_segment\":%u,"
+                "\"ccl_A\":%.1f,\"ccl_W\":%lu,\"ccl_flags\":%u,"
+                "\"ccl_binding\":%u,\"ccl_segment\":%u,"
+                "\"discharge_0p1s_A\":%u,\"discharge_10s_A\":%u,"
+                "\"discharge_30s_A\":%u,\"charge_0p1s_A\":%u,"
+                "\"charge_10s_A\":%u,\"charge_30s_A\":%u,"
+                "\"capacity_soh_pct\":%u,\"capacity_lower_pct\":%u,"
+                "\"resistance_growth_upper_pct\":%u,\"combined_soh_pct\":%u,"
+                "\"capacity_confidence_pct\":%u,"
+                "\"resistance_confidence_pct\":%u,"
+                "\"capacity_valid\":%s,\"resistance_valid\":%s,"
+                "\"mission_profile\":%u,\"mission_horizon\":%u,"
+                "\"mission_fallback\":%s,\"limp_latched\":%s,"
+                "\"fuse_utilization_pct\":%u,"
+                "\"fuse_authority_valid\":%s,"
+                "\"minimum_core_temp_C\":%d,"
+                "\"thermal_energy_to_target_Wh\":%.1f,"
+                "\"thermal_ready\":%s,"
+                "\"r0_bootstrap_progress_pct\":%u,"
+                "\"crc_errors\":%lu,\"counter_errors\":%lu,"
+                "\"version_errors\":%lu},",
+                power_stale ? "true" : "false",
+                (double)s->dcl_current_dA / 10.0,
+                (unsigned long)s->dcl_power_10W * 10UL,
+                s->dcl_flags,
+                s->dcl_binding,
+                s->dcl_limiting_segment,
+                (double)s->ccl_current_dA / 10.0,
+                (unsigned long)s->ccl_power_10W * 10UL,
+                s->ccl_flags,
+                s->ccl_binding,
+                s->ccl_limiting_segment,
+                s->envelope_discharge_a[0],
+                s->envelope_discharge_a[1],
+                s->envelope_discharge_a[2],
+                s->envelope_charge_a[0],
+                s->envelope_charge_a[1],
+                s->envelope_charge_a[2],
+                s->capacity_soh_pct,
+                s->capacity_soh_lower_pct,
+                s->resistance_growth_upper_pct,
+                s->combined_soh_pct,
+                s->capacity_confidence_pct,
+                s->resistance_confidence_pct,
+                s->capacity_soh_valid ? "true" : "false",
+                s->resistance_soh_valid ? "true" : "false",
+                s->mission_profile,
+                s->mission_horizon_index,
+                s->mission_fallback ? "true" : "false",
+                s->limp_latched ? "true" : "false",
+                s->fuse_utilization_pct,
+                s->fuse_authority_valid ? "true" : "false",
+                (int)s->minimum_core_temp_c,
+                (double)s->thermal_energy_to_target_dWh / 10.0,
+                s->thermal_ready ? "true" : "false",
+                s->r0_bootstrap_progress_pct,
+                (unsigned long)s->power_crc_error_count,
+                (unsigned long)s->power_counter_error_count,
+                (unsigned long)s->power_version_error_count);
+
+    json_append(buf, cap, &off,
                 "\"hil\":{\"last_rx_ms\":%lu,\"flags\":%u,"
                 "\"pack_voltage_V\":%.2f,\"current_A\":%.2f,"
                 "\"surface_temp_C\":%.2f,\"soc_pct\":%.2f,"
@@ -438,11 +507,11 @@ static esp_err_t csv_handler(httpd_req_t *req)
     s = g_state;
     xSemaphoreGive(g_state_lock);
 
-    char line[1400];
+    char line[1800];
     int n = snprintf(line,
                      sizeof(line),
-                     "rx_frames,stale,bms_ok,state,pack_V,current_A,min_cell_mV,max_cell_mV,max_temp_C,min_temp_C,temp_filtered_max_C,temp_max_rate_C_s,fan_command_percent,fan_reason,temp_diag_flags,fan_diag_flags,temp_valid,voltage_valid,current_valid,smb_errors,smb_pec_fail_mask,heartbeat_stale_mask,heartbeat_safety_stale_mask,task_flags,can_error_code,can_busoff_count,can_recover_count,panic_reason,wdg_block_reason,estimator_soc_pct,hil_flags,current_adc_high,current_adc_low,current_adc_flags,current_zero_cal_count,charger_read_current_A,charger_disable_mask,charger_tx_fail_count,rtos_heap_free_B,rtos_heap_min_B,rtos_stack_warn_mask,rtos_flags\n"
-                     "%lu,%d,%d,%u,%.1f,%.1f,%u,%u,%.1f,%.1f,%.1f,%.1f,%u,%u,%u,%u,%d,%d,%d,%u,%u,%u,%u,%u,%lu,%u,%u,%u,%u,%.2f,%u,%u,%u,%u,%u,%.1f,%u,%u,%lu,%lu,%u,%u\n",
+                     "rx_frames,stale,bms_ok,state,pack_V,current_A,min_cell_mV,max_cell_mV,max_temp_C,min_temp_C,temp_filtered_max_C,temp_max_rate_C_s,fan_command_percent,fan_reason,temp_diag_flags,fan_diag_flags,temp_valid,voltage_valid,current_valid,smb_errors,smb_pec_fail_mask,heartbeat_stale_mask,heartbeat_safety_stale_mask,task_flags,can_error_code,can_busoff_count,can_recover_count,panic_reason,wdg_block_reason,estimator_soc_pct,hil_flags,current_adc_high,current_adc_low,current_adc_flags,current_zero_cal_count,charger_read_current_A,charger_disable_mask,charger_tx_fail_count,rtos_heap_free_B,rtos_heap_min_B,rtos_stack_warn_mask,rtos_flags,power_stale,dcl_A,dcl_W,dcl_flags,ccl_A,ccl_W,ccl_flags,capacity_soh_pct,capacity_lower_pct,resistance_growth_upper_pct,combined_soh_pct,capacity_confidence_pct,resistance_confidence_pct,power_crc_errors,power_counter_errors,power_version_errors\n"
+                     "%lu,%d,%d,%u,%.1f,%.1f,%u,%u,%.1f,%.1f,%.1f,%.1f,%u,%u,%u,%u,%d,%d,%d,%u,%u,%u,%u,%u,%lu,%u,%u,%u,%u,%.2f,%u,%u,%u,%u,%u,%.1f,%u,%u,%lu,%lu,%u,%u,%d,%.1f,%lu,%u,%.1f,%lu,%u,%u,%u,%u,%u,%u,%u,%lu,%lu,%lu\n",
                      (unsigned long)s.rx_frames,
                      ams_dash_data_stale(&s, (uint32_t)esp_log_timestamp(), DASH_STALE_TIMEOUT_MS) ? 1 : 0,
                      flag_set(s.status_flags, 0u) ? 1 : 0,
@@ -484,7 +553,25 @@ static esp_err_t csv_handler(httpd_req_t *req)
                      (unsigned long)s.rtos_heap_free_div16 * 16UL,
                      (unsigned long)s.rtos_heap_min_div16 * 16UL,
                      s.rtos_stack_warn_mask,
-                     s.rtos_flags);
+                     s.rtos_flags,
+                     ams_dash_power_data_stale(
+                         &s, (uint32_t)esp_log_timestamp(),
+                         DASH_POWER_STALE_MS) ? 1 : 0,
+                     (double)s.dcl_current_dA / 10.0,
+                     (unsigned long)s.dcl_power_10W * 10UL,
+                     s.dcl_flags,
+                     (double)s.ccl_current_dA / 10.0,
+                     (unsigned long)s.ccl_power_10W * 10UL,
+                     s.ccl_flags,
+                     s.capacity_soh_pct,
+                     s.capacity_soh_lower_pct,
+                     s.resistance_growth_upper_pct,
+                     s.combined_soh_pct,
+                     s.capacity_confidence_pct,
+                     s.resistance_confidence_pct,
+                     (unsigned long)s.power_crc_error_count,
+                     (unsigned long)s.power_counter_error_count,
+                     (unsigned long)s.power_version_error_count);
 
     if(n < 0)
     {
@@ -514,6 +601,9 @@ static const char INDEX_HTML[] =
 "<div class='card'><div class='label'>Cell Min / Max</div><div id='cells' class='val'>-</div></div>"
 "<div class='card'><div class='label'>Temp Min / Max</div><div id='temps' class='val'>-</div></div>"
 "<div class='card'><div class='label'>Fan</div><div id='fan' class='val'>-</div></div>"
+"<div class='card'><div class='label'>DCL (1 s)</div><div id='dcl' class='val'>-</div></div>"
+"<div class='card'><div class='label'>CCL (1 s)</div><div id='ccl' class='val'>-</div></div>"
+"<div class='card'><div class='label'>SoH lower bound</div><div id='soh' class='val'>-</div></div>"
 "</div><div class='grid'>"
 "<div class='card'><div class='label'>Fault Reasons</div><pre id='faults'></pre></div>"
 "<div class='card'><div class='label'>ADBMS Link</div><pre id='adbms'></pre></div>"
@@ -523,9 +613,10 @@ static const char INDEX_HTML[] =
 "<div class='card'><div class='label'>Tasks</div><pre id='tasks'></pre></div>"
 "<div class='card'><div class='label'>CAN</div><pre id='can'></pre></div>"
 "<div class='card'><div class='label'>Safety</div><pre id='safety'></pre></div>"
-"<div class='card'><div class='label'>Watchdog</div><pre id='watchdog'></pre></div>
-<div class='card'><div class='label'>RTOS</div><pre id='rtos'></pre></div>"
+"<div class='card'><div class='label'>Watchdog</div><pre id='watchdog'></pre></div>"
+"<div class='card'><div class='label'>RTOS</div><pre id='rtos'></pre></div>"
 "<div class='card'><div class='label'>Estimator</div><pre id='estimator'></pre></div>"
+"<div class='card'><div class='label'>Power / SoH</div><pre id='power'></pre></div>"
 "<div class='card'><div class='label'>HIL</div><pre id='hil'></pre></div>"
 "</div><div class='card'><div class='label'>Browser Log</div><div id='logcount'>0 samples</div>"
 "<button onclick='downloadLog()'>Download CSV log</button> <button onclick='rows=[];drawLogCount()'>Clear</button></div>"
@@ -534,8 +625,8 @@ static const char INDEX_HTML[] =
 "let rows=[];"
 "function drawLogCount(){document.getElementById('logcount').textContent=rows.length+' samples'}"
 "function csvCell(x){return String(x).replace(/\"/g,'\"\"')}"
-"function addRow(s){rows.push([Date.now(),s.stale,s.heartbeat.bms_ok,s.heartbeat.state,s.pack.voltage_V,s.pack.current_A,s.pack.min_cell_mV,s.pack.max_cell_mV,s.temp.min_C,s.temp.max_C,s.temp.fan_command_percent,s.health.voltage_usable,s.health.temp_usable,s.faults.voltage_latched,s.faults.temp_latched,s.faults.current_latched,s.can.busoff_count,s.can.recover_count,s.safety.last_panic_reason,s.watchdog.last_block_reason,s.rtos.heap_free_B,s.rtos.heap_min_B,s.rtos.stack_warn_mask,s.rtos.flags,s.estimator.soc_pct,s.hil.flags].map(csvCell));if(rows.length>7200)rows.shift();drawLogCount()}"
-"function downloadLog(){let h='epoch_ms,stale,bms_ok,state,pack_V,current_A,min_cell_mV,max_cell_mV,min_temp_C,max_temp_C,fan_percent,voltage_usable,temp_usable,voltage_latched,temp_latched,current_latched,can_busoff_count,can_recover_count,panic_reason,wdg_block_reason,rtos_heap_free_B,rtos_heap_min_B,rtos_stack_warn_mask,rtos_flags,estimator_soc_pct,hil_flags\\n';let blob=new Blob([h+rows.map(r=>r.join(',')).join('\\n')+'\\n'],{type:'text/csv'});let a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='der26_ams_dashboard_log.csv';a.click();URL.revokeObjectURL(a.href)}"
+"function addRow(s){rows.push([Date.now(),s.stale,s.heartbeat.bms_ok,s.heartbeat.state,s.pack.voltage_V,s.pack.current_A,s.pack.min_cell_mV,s.pack.max_cell_mV,s.temp.min_C,s.temp.max_C,s.temp.fan_command_percent,s.health.voltage_usable,s.health.temp_usable,s.faults.voltage_latched,s.faults.temp_latched,s.faults.current_latched,s.can.busoff_count,s.can.recover_count,s.safety.last_panic_reason,s.watchdog.last_block_reason,s.rtos.heap_free_B,s.rtos.heap_min_B,s.rtos.stack_warn_mask,s.rtos.flags,s.estimator.soc_pct,s.power.stale,s.power.dcl_A,s.power.ccl_A,s.power.capacity_lower_pct,s.power.resistance_growth_upper_pct,s.power.crc_errors,s.power.counter_errors,s.hil.flags].map(csvCell));if(rows.length>7200)rows.shift();drawLogCount()}"
+"function downloadLog(){let h='epoch_ms,stale,bms_ok,state,pack_V,current_A,min_cell_mV,max_cell_mV,min_temp_C,max_temp_C,fan_percent,voltage_usable,temp_usable,voltage_latched,temp_latched,current_latched,can_busoff_count,can_recover_count,panic_reason,wdg_block_reason,rtos_heap_free_B,rtos_heap_min_B,rtos_stack_warn_mask,rtos_flags,estimator_soc_pct,power_stale,dcl_A,ccl_A,capacity_lower_pct,resistance_growth_upper_pct,power_crc_errors,power_counter_errors,hil_flags\\n';let blob=new Blob([h+rows.map(r=>r.join(',')).join('\\n')+'\\n'],{type:'text/csv'});let a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='der26_ams_dashboard_log.csv';a.click();URL.revokeObjectURL(a.href)}"
 "function f(x,d=1){return Number(x).toFixed(d)}"
 "async function tick(){try{let r=await fetch('/api/state');let s=await r.json();"
 "let stale=document.getElementById('stale');stale.textContent=s.stale?'STALE':'LIVE';stale.className='pill '+(s.stale?'bad':'ok');"
@@ -545,6 +636,9 @@ static const char INDEX_HTML[] =
 "document.getElementById('cells').textContent=s.pack.min_cell_mV+' / '+s.pack.max_cell_mV+' mV';"
 "document.getElementById('temps').textContent=f(s.temp.min_C)+' / '+f(s.temp.max_C)+' C';"
 "document.getElementById('fan').textContent=s.temp.fan_command_percent+'% r'+s.temp.fan_reason;"
+"document.getElementById('dcl').textContent=s.power.stale?'STALE':f(s.power.dcl_A)+' A';"
+"document.getElementById('ccl').textContent=s.power.stale?'STALE':f(s.power.ccl_A)+' A';"
+"document.getElementById('soh').textContent=s.power.capacity_lower_pct+'%';"
 "document.getElementById('faults').textContent=JSON.stringify(s.faults,null,2);"
 "document.getElementById('adbms').textContent=JSON.stringify(s.adbms,null,2);"
 "document.getElementById('health').textContent=JSON.stringify(s.health,null,2);"
@@ -553,9 +647,10 @@ static const char INDEX_HTML[] =
 "document.getElementById('tasks').textContent=JSON.stringify(s.tasks,null,2);"
 "document.getElementById('can').textContent=JSON.stringify(s.can,null,2);"
 "document.getElementById('safety').textContent=JSON.stringify(s.safety,null,2);"
-"document.getElementById('watchdog').textContent=JSON.stringify(s.watchdog,null,2);
-document.getElementById('rtos').textContent=JSON.stringify(s.rtos,null,2);"
+"document.getElementById('watchdog').textContent=JSON.stringify(s.watchdog,null,2);"
+"document.getElementById('rtos').textContent=JSON.stringify(s.rtos,null,2);"
 "document.getElementById('estimator').textContent=JSON.stringify(s.estimator,null,2);"
+"document.getElementById('power').textContent=JSON.stringify(s.power,null,2);"
 "document.getElementById('hil').textContent=JSON.stringify(s.hil,null,2);"
 "addRow(s);"
 "}catch(e){document.getElementById('stale').textContent='offline';document.getElementById('stale').className='pill bad';}}"
