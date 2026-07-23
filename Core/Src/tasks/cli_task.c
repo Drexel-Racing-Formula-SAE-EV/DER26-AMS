@@ -14,7 +14,8 @@
 #include <string.h>
 #include <stdio.h>
 #include "ext_drivers/cli.h"
-
+#include <math.h>
+#include <stdlib.h>
 /**
 * @brief Actual CLI task function
 *
