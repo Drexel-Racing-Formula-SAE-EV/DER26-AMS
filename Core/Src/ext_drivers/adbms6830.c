@@ -6,6 +6,7 @@
  */
 
 #include <string.h>
+#include <math.h>
 
 #include "ext_drivers/adbms6830_functions.h"
 
