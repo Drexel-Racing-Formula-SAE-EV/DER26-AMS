@@ -40,6 +40,14 @@
 #define WAKEUP_US_DELAY                           1000u
 #define WAKEUP_BW_DELAY                           1000u
 
+/* Explicit local SPI chip-select timing for the STM32-to-ADBMS6822 side of
+ * the link.  These margins are intentionally enforced in software instead of
+ * relying on incidental HAL/GPIO call overhead.  The exact minimum shall be
+ * rechecked against the controlled ADBMS6822 datasheet revision and verified
+ * on the assembled AMS with a logic analyzer before vehicle release. */
+#define ADBMS_SPI_CS_SETUP_US                        1u
+#define ADBMS_SPI_CS_HOLD_US                         1u
+
 /* The five-SMB configuration keeps REFON asserted. The first checked wake,
  * this pre-conversion interval, and the checked wake inside ADCV together
  * exceed the 4.4 ms worst-case reference wake time. The documented redundant

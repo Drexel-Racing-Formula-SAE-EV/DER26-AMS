@@ -80,6 +80,12 @@ static GPIO_PinState unit_gpio_states[64];
 static HAL_StatusTypeDef unit_spi_tx_status = HAL_OK;
 static HAL_StatusTypeDef unit_spi_txrx_status = HAL_OK;
 
+/* Directly-included ADBMS6830 transport timing instrumentation.  A nonzero
+ * freeze call lets a test stop the fake 1 MHz timer on exactly the setup or
+ * hold delay without changing production code. */
+static uint32_t unit_delay_reset_calls = 0u;
+static uint32_t unit_delay_freeze_on_reset_call = 0u;
+
 static void unit_spi_reset(void)
 {
     memset(unit_spi_last_tx, 0, sizeof(unit_spi_last_tx));
@@ -97,6 +103,8 @@ static void unit_spi_reset(void)
     unit_gpio_write_calls = 0u;
     unit_spi_tx_status = HAL_OK;
     unit_spi_txrx_status = HAL_OK;
+    unit_delay_reset_calls = 0u;
+    unit_delay_freeze_on_reset_call = 0u;
 }
 
 HAL_StatusTypeDef HAL_SPI_Transmit(SPI_HandleTypeDef *hspi, uint8_t *pData, uint16_t Size, uint32_t Timeout)
@@ -164,11 +172,17 @@ static bool unit_delay_timer_advances = true;
 static void unit_delay_counter_set(uint32_t value)
 {
     unit_delay_counter = value;
+    unit_delay_reset_calls++;
 }
 
 static uint32_t unit_delay_counter_get(void)
 {
-    if(unit_delay_timer_advances && (unit_delay_counter != UINT32_MAX))
+    const bool frozen_for_this_delay =
+        (unit_delay_freeze_on_reset_call != 0u) &&
+        (unit_delay_reset_calls == unit_delay_freeze_on_reset_call);
+
+    if(unit_delay_timer_advances && !frozen_for_this_delay &&
+       (unit_delay_counter != UINT32_MAX))
     {
         unit_delay_counter++;
     }
@@ -1769,6 +1783,8 @@ static void test_adbms_topology_and_delay_guards(void)
     {
         dev.last_cell_updated_mask[ic] = UINT16_MAX;
         dev.last_cell_pec_mask[ic] = UINT16_MAX;
+        dev.last_temp_updated_mask[ic] =
+            (uint32_t)(0x00010000u << ic);
     }
     unit_spi_reset();
     unit_spi_txrx_status = HAL_TIMEOUT;
@@ -1778,6 +1794,10 @@ static void test_adbms_topology_and_delay_guards(void)
     EXPECT_TRUE(dev.last_cell_updated_mask[1] == 0u);
     EXPECT_TRUE(dev.last_cell_pec_mask[0] == 0u);
     EXPECT_TRUE(dev.last_cell_pec_mask[1] == 0u);
+    /* A cell-read epoch owns only cell freshness.  Failed or successful cell
+     * reads must not erase the preceding AUX/temperature epoch. */
+    EXPECT_TRUE(dev.last_temp_updated_mask[0] == 0x00010000u);
+    EXPECT_TRUE(dev.last_temp_updated_mask[1] == 0x00020000u);
     unit_spi_txrx_status = HAL_OK;
 
     dev.htim = NULL;
@@ -1812,7 +1832,30 @@ static void test_adbms_spi_debug_write_and_full_duplex_paths(void)
     EXPECT_TRUE(dev.spi_debug.last_rx_len == 0u);
     EXPECT_TRUE(dev.spi_debug.last_status == HAL_OK);
     EXPECT_TRUE(memcmp(dev.spi_debug.last_tx_preview, tx, sizeof(tx)) == 0);
+    EXPECT_TRUE(unit_delay_reset_calls == 2u);
 
+    /* Setup timing failure must deassert CS and must not clock SPI. */
+    unit_spi_reset();
+    adbms6830_spi_debug_clear(&dev);
+    unit_delay_timer_advances = false;
+    EXPECT_TRUE(adbms6830_spi_write(&dev, tx, sizeof(tx), 1u) == HAL_TIMEOUT);
+    EXPECT_TRUE(unit_spi_tx_calls == 0u);
+    EXPECT_TRUE(unit_gpio_states[3u] == GPIO_PIN_SET);
+    EXPECT_TRUE(unit_delay_reset_calls == 1u);
+    unit_delay_timer_advances = true;
+
+    /* Hold timing failure occurs after the wire transfer but still fails the
+     * checked operation and leaves CS inactive. */
+    unit_spi_reset();
+    adbms6830_spi_debug_clear(&dev);
+    unit_delay_freeze_on_reset_call = 2u;
+    EXPECT_TRUE(adbms6830_spi_write(&dev, tx, sizeof(tx), 1u) == HAL_TIMEOUT);
+    EXPECT_TRUE(unit_spi_tx_calls == 1u);
+    EXPECT_TRUE(unit_gpio_states[3u] == GPIO_PIN_SET);
+    EXPECT_TRUE(unit_delay_reset_calls == 2u);
+
+    unit_spi_reset();
+    adbms6830_spi_debug_clear(&dev);
     unit_spi_tx_status = HAL_TIMEOUT;
     EXPECT_TRUE(adbms6830_spi_write(&dev, tx, sizeof(tx), 1u) == HAL_TIMEOUT);
     EXPECT_TRUE(dev.spi_debug.error_count == 1u);
@@ -1839,6 +1882,7 @@ static void test_adbms_spi_debug_write_and_full_duplex_paths(void)
     EXPECT_TRUE(dev.spi_debug.rx_count == 1u);
     EXPECT_TRUE(dev.spi_debug.last_total_len == (sizeof(tx) + sizeof(rx)));
     EXPECT_TRUE(memcmp(dev.spi_debug.last_rx_preview, rx, sizeof(rx)) == 0);
+    EXPECT_TRUE(unit_delay_reset_calls == 2u);
 
     unit_spi_txrx_status = HAL_ERROR;
     memset(rx, 0xA5, sizeof(rx));
@@ -1888,7 +1932,7 @@ static void test_adbms_spi_debug_rd48_pec_masks_and_clear(void)
 
     unit_adbms_make_valid_read_packet(&unit_spi_txrx_response[CMDSZ + PEC15SZ], 0x10u, 3u, false);
     unit_adbms_make_valid_read_packet(&unit_spi_txrx_response[CMDSZ + PEC15SZ + RX_DATA], 0x20u, 4u, false);
-    adbms6830_rd48(&dev, RDCFGA, rx);
+    EXPECT_TRUE(adbms6830_rd48_checked(&dev, RDCFGA, rx) == HAL_OK);
 
     EXPECT_TRUE(unit_spi_txrx_calls == 1u);
     EXPECT_TRUE(dev.spi_debug.last_op == ADBMS6830_SPI_OP_RD48);
@@ -1899,16 +1943,53 @@ static void test_adbms_spi_debug_rd48_pec_masks_and_clear(void)
     EXPECT_TRUE(dev.spi_debug.last_cmd_counter[0] == 3u);
     EXPECT_TRUE(dev.spi_debug.last_cmd_counter[1] == 4u);
     EXPECT_TRUE(dev.spi_debug.error_count == 0u);
+    EXPECT_TRUE(dev.health.last_read_result == ADBMS6830_READ_RESULT_OK);
 
+    /* One corrupt packet must fail the checked API even when later ICs pass.
+     * Resync isolates PEC semantics from the independently-tested counter. */
     unit_spi_reset();
     adbms6830_spi_debug_clear(&dev);
+    adbms6830_resync_command_counter_tracking(&dev);
     unit_adbms_make_valid_read_packet(&unit_spi_txrx_response[CMDSZ + PEC15SZ], 0x30u, 1u, false);
     unit_adbms_make_valid_read_packet(&unit_spi_txrx_response[CMDSZ + PEC15SZ + RX_DATA], 0x40u, 2u, true);
-    adbms6830_rd48(&dev, RDCFGA, rx);
+    EXPECT_TRUE(adbms6830_rd48_checked(&dev, RDCFGA, rx) == HAL_ERROR);
 
     EXPECT_TRUE(dev.spi_debug.last_read_pec_pass_mask == 0x0001u);
     EXPECT_TRUE(dev.spi_debug.last_read_pec_fail_mask == 0x0002u);
-    EXPECT_TRUE(dev.spi_debug.error_count == 1u);
+    EXPECT_TRUE(dev.health.last_read_result == ADBMS6830_READ_RESULT_PEC_ERROR);
+    EXPECT_TRUE(dev.health.last_status == HAL_ERROR);
+
+    /* Establish a clean counter baseline, then prove a valid-PEC counter
+     * mismatch is a checked-read failure rather than diagnostic-only state. */
+    unit_spi_reset();
+    adbms6830_spi_debug_clear(&dev);
+    adbms6830_resync_command_counter_tracking(&dev);
+    unit_adbms_make_valid_read_packet(&unit_spi_txrx_response[CMDSZ + PEC15SZ], 0x50u, 7u, false);
+    unit_adbms_make_valid_read_packet(&unit_spi_txrx_response[CMDSZ + PEC15SZ + RX_DATA], 0x60u, 8u, false);
+    EXPECT_TRUE(adbms6830_rd48_checked(&dev, RDCFGA, rx) == HAL_OK);
+
+    unit_spi_reset();
+    unit_adbms_make_valid_read_packet(&unit_spi_txrx_response[CMDSZ + PEC15SZ], 0x70u, 9u, false);
+    unit_adbms_make_valid_read_packet(&unit_spi_txrx_response[CMDSZ + PEC15SZ + RX_DATA], 0x80u, 8u, false);
+    EXPECT_TRUE(adbms6830_rd48_checked(&dev, RDCFGA, rx) == HAL_ERROR);
+    EXPECT_TRUE(dev.health.last_cmd_counter_mismatch_mask == 0x0001u);
+    EXPECT_TRUE(dev.health.last_read_result == ADBMS6830_READ_RESULT_COUNTER_ERROR);
+
+    /* A mixed failure reports both causes and preserves all per-IC masks. */
+    adbms6830_resync_command_counter_tracking(&dev);
+    unit_spi_reset();
+    unit_adbms_make_valid_read_packet(&unit_spi_txrx_response[CMDSZ + PEC15SZ], 0x90u, 11u, false);
+    unit_adbms_make_valid_read_packet(&unit_spi_txrx_response[CMDSZ + PEC15SZ + RX_DATA], 0xA0u, 12u, false);
+    EXPECT_TRUE(adbms6830_rd48_checked(&dev, RDCFGA, rx) == HAL_OK);
+
+    unit_spi_reset();
+    unit_adbms_make_valid_read_packet(&unit_spi_txrx_response[CMDSZ + PEC15SZ], 0xB0u, 13u, false);
+    unit_adbms_make_valid_read_packet(&unit_spi_txrx_response[CMDSZ + PEC15SZ + RX_DATA], 0xC0u, 12u, true);
+    EXPECT_TRUE(adbms6830_rd48_checked(&dev, RDCFGA, rx) == HAL_ERROR);
+    EXPECT_TRUE(dev.health.last_cmd_counter_mismatch_mask == 0x0001u);
+    EXPECT_TRUE(dev.health.last_pec_fail_mask == 0x0002u);
+    EXPECT_TRUE(dev.health.last_read_result ==
+                ADBMS6830_READ_RESULT_PEC_AND_COUNTER_ERROR);
 
     adbms6830_spi_debug_enable(&dev, false);
     adbms6830_spi_debug_clear(&dev);
@@ -2938,6 +3019,19 @@ static void test_adbms2950_spi_debug_write_and_full_duplex_paths(void)
     EXPECT_TRUE(dev.spi_debug.last_status == HAL_OK);
     EXPECT_TRUE(memcmp(dev.spi_debug.last_tx_preview, tx, sizeof(tx)) == 0);
 
+    /* The ADBMS2950 path shares the local ADBMS6822-facing CS contract.
+     * Removing the timer proves setup failure performs no SPI and leaves CS
+     * inactive; the separately compiled host delay covers the success path. */
+    unit_spi_reset();
+    adbms2950_spi_debug_clear(&dev);
+    dev.htim = NULL;
+    EXPECT_TRUE(adbms2950_spi_write(&dev, tx, sizeof(tx), 1u) == HAL_ERROR);
+    EXPECT_TRUE(unit_spi_tx_calls == 0u);
+    EXPECT_TRUE(unit_gpio_states[5u] == GPIO_PIN_SET);
+    dev.htim = &unit_delay_timer;
+
+    unit_spi_reset();
+    adbms2950_spi_debug_clear(&dev);
     unit_spi_tx_status = HAL_BUSY;
     EXPECT_TRUE(adbms2950_spi_write(&dev, tx, sizeof(tx), 1u) == HAL_BUSY);
     EXPECT_TRUE(dev.spi_debug.error_count == 1u);
@@ -3420,7 +3514,7 @@ int main(void)
     run_test("voltage fault read failure/strings", test_voltage_fault_read_failure_precedence_and_strings);
     run_test("ADBMS topology/delay guards", test_adbms_topology_and_delay_guards);
     run_test("ADBMS SPI debug write/full-duplex", test_adbms_spi_debug_write_and_full_duplex_paths);
-    run_test("ADBMS SPI rd48 PEC masks", test_adbms_spi_debug_rd48_pec_masks_and_clear);
+    run_test("ADBMS SPI checked-read integrity", test_adbms_spi_debug_rd48_pec_masks_and_clear);
     run_test("ADBMS SPI scope activity", test_adbms_spi_scope_activity);
     run_test("ADBMS SPI SID/status/counter diagnostics", test_adbms_spi_sid_status_and_counter_mismatch);
     run_test("ADBMS startup/reference/full status safety policy", test_adbms_startup_reference_and_full_status_policy);

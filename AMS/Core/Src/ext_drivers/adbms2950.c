@@ -1755,6 +1755,7 @@ HAL_StatusTypeDef adbms2950_us_delay(adbms2950_driver_t* dev, uint16_t microseco
 HAL_StatusTypeDef adbms2950_spi_write(adbms2950_driver_t* dev, uint8_t* data, uint16_t len, uint8_t use_cs)
 {
 	HAL_StatusTypeDef status;
+	HAL_StatusTypeDef hold_status = HAL_OK;
 
 	if((dev == NULL) || (dev->hspi == NULL) || (data == NULL) || (len == 0u) ||
 	   (use_cs &&
@@ -1772,16 +1773,29 @@ HAL_StatusTypeDef adbms2950_spi_write(adbms2950_driver_t* dev, uint8_t* data, ui
 	if(use_cs)
 	{
 		adbms2950_set_cs(dev, 0);
+		status = adbms2950_us_delay(dev, ADBMS_SPI_CS_SETUP_US);
+		if(status != HAL_OK)
+		{
+			adbms2950_set_cs(dev, 1);
+			adbms_spi_unlock();
+			goto record_status;
+		}
 	}
 
 	status = HAL_SPI_Transmit(dev->hspi, data, len, SPI_TIMEOUT);
 
 	if(use_cs)
 	{
+		hold_status = adbms2950_us_delay(dev, ADBMS_SPI_CS_HOLD_US);
 		adbms2950_set_cs(dev, 1);
+		if((status == HAL_OK) && (hold_status != HAL_OK))
+		{
+			status = hold_status;
+		}
 	}
 	adbms_spi_unlock();
 
+record_status:
 	if(dev->spi_debug.enabled)
 	{
 		dev->spi_debug.tx_count++;
@@ -1804,6 +1818,7 @@ HAL_StatusTypeDef adbms2950_spi_write_read(adbms2950_driver_t *dev,
 										  uint8_t use_cs)
 {
 	HAL_StatusTypeDef status;
+	HAL_StatusTypeDef hold_status = HAL_OK;
 	uint16_t total_len;
 
 	if((dev == NULL) || (dev->hspi == NULL) || (tx_Data == NULL) ||
@@ -1834,6 +1849,14 @@ HAL_StatusTypeDef adbms2950_spi_write_read(adbms2950_driver_t *dev,
 	if(use_cs)
 	{
 		adbms2950_set_cs(dev, 0);
+		status = adbms2950_us_delay(dev, ADBMS_SPI_CS_SETUP_US);
+		if(status != HAL_OK)
+		{
+			adbms2950_set_cs(dev, 1);
+			adbms_spi_unlock();
+			memset(rx_data, 0, rx_len);
+			goto record_status;
+		}
 	}
 
 	status = HAL_SPI_TransmitReceive(dev->hspi,
@@ -1844,7 +1867,12 @@ HAL_StatusTypeDef adbms2950_spi_write_read(adbms2950_driver_t *dev,
 
 	if(use_cs)
 	{
+		hold_status = adbms2950_us_delay(dev, ADBMS_SPI_CS_HOLD_US);
 		adbms2950_set_cs(dev, 1);
+		if((status == HAL_OK) && (hold_status != HAL_OK))
+		{
+			status = hold_status;
+		}
 	}
 	adbms_spi_unlock();
 
@@ -1857,6 +1885,7 @@ HAL_StatusTypeDef adbms2950_spi_write_read(adbms2950_driver_t *dev,
 		memset(rx_data, 0, rx_len);
 	}
 
+record_status:
 	if(dev->spi_debug.enabled)
 	{
 		dev->spi_debug.tx_count++;

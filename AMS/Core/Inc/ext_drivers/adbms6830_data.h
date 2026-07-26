@@ -169,10 +169,27 @@ typedef struct
   uint16_t open_wire_baseline_mv[CELL];
 } adbms6830_ic_diag_t;
 
+/* End-to-end result of the most recent checked 48-bit register read.
+ * Keep this separate from HAL_StatusTypeDef so diagnostics can distinguish a
+ * local transport failure from a packet that arrived but failed PEC10 and/or
+ * command-counter validation.  Public checked APIs still fail closed through
+ * HAL_ERROR for any non-OK result. */
+typedef enum
+{
+  ADBMS6830_READ_RESULT_NONE = 0,
+  ADBMS6830_READ_RESULT_OK,
+  ADBMS6830_READ_RESULT_TOPOLOGY_ERROR,
+  ADBMS6830_READ_RESULT_TRANSPORT_ERROR,
+  ADBMS6830_READ_RESULT_PEC_ERROR,
+  ADBMS6830_READ_RESULT_COUNTER_ERROR,
+  ADBMS6830_READ_RESULT_PEC_AND_COUNTER_ERROR
+} adbms6830_read_result_t;
+
 typedef struct
 {
   adbms6830_spi_op_t last_op;
   HAL_StatusTypeDef last_status;
+  adbms6830_read_result_t last_read_result;
 
   uint16_t last_pec_pass_mask;
   uint16_t last_pec_fail_mask;

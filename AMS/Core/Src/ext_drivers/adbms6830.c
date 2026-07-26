@@ -176,7 +176,6 @@ static uint8_t SRST[2]          = { 0x00, 0x27 };
 static uint8_t RDSID[2]         = { 0x00, 0x2C };
 
 static uint16_t cmd_cntr = 0;
-static uint16_t rx_pec_error = 0;
 
 /* Mux address and ADAX channel lookup by mux index (0=U2, 1=U3, 2=U4) */
 static const uint8_t MUX_ADDRS[3]    = { ADG728_U2_ADDR, ADG728_U3_ADDR, ADG728_U4_ADDR };
@@ -3038,6 +3037,7 @@ HAL_StatusTypeDef adbms6830_spi_write(adbms6830_driver_t* dev,
                                          uint8_t use_cs)
 {
     HAL_StatusTypeDef status;
+    HAL_StatusTypeDef hold_status = HAL_OK;
 
     if((dev == NULL) || (dev->hspi == NULL) || (data == NULL) || (len == 0u) ||
        (use_cs && !adbms6830_active_cs_valid(dev)))
@@ -3051,16 +3051,31 @@ HAL_StatusTypeDef adbms6830_spi_write(adbms6830_driver_t* dev,
     if(use_cs)
     {
         adbms6830_set_cs(dev, 0);
+        status = adbms6830_us_delay(dev, ADBMS_SPI_CS_SETUP_US);
+        if(status != HAL_OK)
+        {
+            /* A failed setup delay means the first clock edge is not
+             * timing-qualified.  Deassert CS without starting SPI. */
+            adbms6830_set_cs(dev, 1);
+            adbms_spi_unlock();
+            goto record_status;
+        }
     }
 
     status = HAL_SPI_Transmit(dev->hspi, data, len, SPI_TIMEOUT);
 
     if(use_cs)
     {
+        hold_status = adbms6830_us_delay(dev, ADBMS_SPI_CS_HOLD_US);
         adbms6830_set_cs(dev, 1);
+        if((status == HAL_OK) && (hold_status != HAL_OK))
+        {
+            status = hold_status;
+        }
     }
     adbms_spi_unlock();
 
+record_status:
     if(dev->spi_debug.enabled)
     {
         dev->spi_debug.tx_count++;
@@ -3214,15 +3229,25 @@ static HAL_StatusTypeDef adbms6830_rd48_checked(adbms6830_driver_t* dev,
     uint16_t rx_sz;
     uint8_t wrcmd[CMDSZ + PEC15SZ] = {0};
     HAL_StatusTypeDef status;
+    bool any_pec_error = false;
+    bool any_counter_error = false;
 
     if(!adbms6830_topology_valid(dev) || (cmd == NULL) || (rx_data == NULL))
     {
+        if(dev != NULL)
+        {
+            dev->health.last_read_result =
+                ADBMS6830_READ_RESULT_TOPOLOGY_ERROR;
+            dev->health.last_status = HAL_ERROR;
+        }
         return HAL_ERROR;
     }
 
     rx_sz = RX_DATA * (uint16_t)dev->num_ics;
     if(rx_sz > BUFSZ)
     {
+        dev->health.last_read_result = ADBMS6830_READ_RESULT_TOPOLOGY_ERROR;
+        dev->health.last_status = HAL_ERROR;
         return HAL_ERROR;
     }
 
@@ -3236,12 +3261,23 @@ static HAL_StatusTypeDef adbms6830_rd48_checked(adbms6830_driver_t* dev,
     dev->health.last_pec_pass_mask = 0u;
     dev->health.last_pec_fail_mask = 0u;
     dev->health.last_cmd_counter_mismatch_mask = 0u;
+    dev->health.last_read_result = ADBMS6830_READ_RESULT_NONE;
 
     /* 2. Wakeup the isoSPI Daisy Chain. A stalled delay timer is a transport
-     * failure; do not clock a transaction with unverified wake timing. */
+     * failure; do not clock a transaction with unverified wake timing.
+     *
+     * FUTURE (10 Hz promotion): a complete SNAP/RDCVA..RDCVF/UNSNAP epoch
+     * currently reaches this wake path once per register group.  Do not
+     * shorten the conservative wake constants merely to meet the period.
+     * After full-ring target timing and cold/warm wake captures, introduce an
+     * internal _locked_no_wake read helper for commands issued while the chain
+     * is demonstrably awake.  Keep this public checked path self-contained for
+     * standalone CLI/diagnostic reads after an arbitrary idle interval. */
     status = adbms6830_wakeup_checked(dev);
     if(status != HAL_OK)
     {
+        dev->health.last_read_result = ADBMS6830_READ_RESULT_TRANSPORT_ERROR;
+        dev->health.last_status = status;
         return status;
     }
 
@@ -3254,6 +3290,8 @@ static HAL_StatusTypeDef adbms6830_rd48_checked(adbms6830_driver_t* dev,
     status = adbms6830_spi_write_read(dev, wrcmd, CMDSZ + PEC15SZ, rx_data, rx_sz, 1);
     if(status != HAL_OK)
     {
+        dev->health.last_read_result = ADBMS6830_READ_RESULT_TRANSPORT_ERROR;
+        dev->health.last_status = status;
         return status;
     }
 
@@ -3274,7 +3312,7 @@ static HAL_StatusTypeDef adbms6830_rd48_checked(adbms6830_driver_t* dev,
 
         if (received_pec != calculated_pec)
         {
-            rx_pec_error = 1u;
+            any_pec_error = true;
             adbms6830_note_pec_result(dev, current_ic, false);
             if(dev->spi_debug.enabled)
             {
@@ -3284,7 +3322,6 @@ static HAL_StatusTypeDef adbms6830_rd48_checked(adbms6830_driver_t* dev,
         }
         else
         {
-            rx_pec_error = 0u;
             adbms6830_note_pec_result(dev, current_ic, true);
             if(dev->spi_debug.enabled)
             {
@@ -3301,7 +3338,39 @@ static HAL_StatusTypeDef adbms6830_rd48_checked(adbms6830_driver_t* dev,
                                         received_pec == calculated_pec);
     }
 
-    return HAL_OK;
+    any_counter_error =
+        (dev->health.last_cmd_counter_mismatch_mask != 0u);
+
+    if(any_pec_error && any_counter_error)
+    {
+        dev->health.last_read_result =
+            ADBMS6830_READ_RESULT_PEC_AND_COUNTER_ERROR;
+    }
+    else if(any_pec_error)
+    {
+        dev->health.last_read_result = ADBMS6830_READ_RESULT_PEC_ERROR;
+    }
+    else if(any_counter_error)
+    {
+        dev->health.last_read_result = ADBMS6830_READ_RESULT_COUNTER_ERROR;
+    }
+    else
+    {
+        dev->health.last_read_result = ADBMS6830_READ_RESULT_OK;
+        dev->health.last_status = HAL_OK;
+        return HAL_OK;
+    }
+
+    /* Packet integrity is part of a checked register read, not merely a
+     * diagnostic side channel.  Preserve the per-IC masks for root-cause
+     * analysis, but fail the API so no future caller can mistake a completed
+     * SPI transfer for valid register data. */
+    dev->health.last_status = HAL_ERROR;
+    if(dev->spi_debug.enabled)
+    {
+        dev->spi_debug.last_status = HAL_ERROR;
+    }
+    return HAL_ERROR;
 }
 
 // SPI communication
@@ -3324,6 +3393,7 @@ HAL_StatusTypeDef adbms6830_spi_write_read(adbms6830_driver_t *dev,
                                            uint8_t use_cs)
 {
     HAL_StatusTypeDef status;
+    HAL_StatusTypeDef hold_status = HAL_OK;
     uint16_t total_len;
 
     if((dev == NULL) || (dev->hspi == NULL) || (tx_Data == NULL) ||
@@ -3350,6 +3420,14 @@ HAL_StatusTypeDef adbms6830_spi_write_read(adbms6830_driver_t *dev,
     if(use_cs)
     {
         adbms6830_set_cs(dev, 0);
+        status = adbms6830_us_delay(dev, ADBMS_SPI_CS_SETUP_US);
+        if(status != HAL_OK)
+        {
+            adbms6830_set_cs(dev, 1);
+            adbms_spi_unlock();
+            memset(rx_data, 0, rx_len);
+            goto record_status;
+        }
     }
 
     status = HAL_SPI_TransmitReceive(dev->hspi,
@@ -3360,7 +3438,12 @@ HAL_StatusTypeDef adbms6830_spi_write_read(adbms6830_driver_t *dev,
 
     if(use_cs)
     {
+        hold_status = adbms6830_us_delay(dev, ADBMS_SPI_CS_HOLD_US);
         adbms6830_set_cs(dev, 1);
+        if((status == HAL_OK) && (hold_status != HAL_OK))
+        {
+            status = hold_status;
+        }
     }
     adbms_spi_unlock();
 
@@ -3373,6 +3456,7 @@ HAL_StatusTypeDef adbms6830_spi_write_read(adbms6830_driver_t *dev,
         memset(rx_data, 0, rx_len);
     }
 
+record_status:
     if(dev->spi_debug.enabled)
     {
         dev->spi_debug.tx_count++;
@@ -3645,11 +3729,14 @@ HAL_StatusTypeDef adbms6830_read_cell_voltages(adbms6830_driver_t *dev)
         return HAL_ERROR;
     }
 
+    /* Cell and AUX/temperature acquisitions have independent freshness
+     * ownership. Reset only the cell epoch here; the previous temperature
+     * mask remains valid until the temperature path explicitly starts its
+     * next AUX epoch or declares it stale. */
     for(uint8_t ic = 0u; ic < ADBMS6830_MAX_TRACKED_ICS; ic++)
     {
         dev->last_cell_updated_mask[ic] = 0u;
         dev->last_cell_pec_mask[ic] = 0u;
-        dev->last_temp_updated_mask[ic] = 0u;
     }
 
     status = adbms6830_wakeup_checked(dev);
