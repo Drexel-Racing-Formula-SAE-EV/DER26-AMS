@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "baseline_file": "p42a_75s6p_codegen_oracle.csv",
+  "baseline_sha256": "8b2dc48720b1c2287e6f1027162bb126305497255f21ef2ce28610685e5d39d8",
+  "source_archive": "revert.zip",
+  "source_archive_sha256": "8b610bf1c4f5ab6b556e59a1cb56682c83b853712d930ae30ad6796af0854d99",
+  "generated_model": "drev_75s6p_p42a_accumulator_plant_v3_ams_outputs_validated",
+  "generated_model_version": "1.67",
+  "generated_model_source_sha256": "48b3aed9305a19c3495cd09fbbff9089dcc0407dc4b395f49a3019276c4696c3",
+  "constant_source_sha256": "9801ebe2b699a173960888b97e585d91e8343518bf1711b950abe98ea39eb5d8",
+  "parameter_configuration_hash": "77b74591f934f0f3b5f895beff102845bb517ef31d78d137ad5b61cb713b4f75",
+  "plant_configuration_hash": "01fadc41270e1b1a7a3a9fe705c4161c9347d40edbf5f773b722cbd7657afefa",
+  "sample_time_s": 0.1,
+  "scenarios": [
+    "zero_current",
+    "pulse_100A",
+    "synthetic_hppc",
+    "us06_25C",
+    "hot_init",
+    "cold_init"
+  ],
+  "purpose": "Frozen host-executed behavior of the qualified generated-C source before reusable-framework changes.",
+  "comparison_tool": "../../tools/compare_baseline.py"
+}

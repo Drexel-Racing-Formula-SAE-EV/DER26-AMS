@@ -1,86 +1,73 @@
-# DER AMS HIL Plant
+# DER accumulator HIL
 
-This folder contains the cleaned Simulink plant assets for the DER 75s6p P42A accumulator HIL work.
+This directory contains a reusable battery-plant framework plus the frozen,
+host-regressed P42A/75s6p generated-C snapshot used by the current ESP32 HIL
+node. The snapshot is not hardware-qualified.
 
-Scope of this folder:
+The refactor separates four concerns:
 
-- Simulink source models for the 75s6p P42A accumulator plant.
-- MATLAB scripts used to build, validate, and configure the plant model.
-- Minimal generated C code from Simulink Coder for firmware/ESP32 integration.
-- Small validation artifacts.
+- cell identity, limits, LUT axes, and fitting policy;
+- pack topology, segment mapping, thermistor mapping, and variation policy;
+- simulation profile, sample time, ambient conditions, and scaling;
+- raw-dataset location and adapter behavior.
 
-This folder intentionally does **not** include Simulink cache output, generated HTML reports, `slprj/`, `.slxc` files, duplicate backup models, or analyzer/build artifacts.
+No MATLAB source depends on a developer-specific absolute path. External data
+is located through `HIL_DATA_ROOT`; generated artifacts may be redirected with
+`HIL_OUTPUT_ROOT`.
 
-## Intended repo location
-
-Place this at the AMS repo root as:
-
-```text
-hil/
-```
-
-Recommended branch:
-
-```bash
-git checkout -b feature/ams-hil-ekf-estimator
-```
-
-Do not mix this with the AMS cleanup/test-harness PR. Keep this as a separate feature branch.
-
-## Directory layout
+## Layout
 
 ```text
-hil/
-  README.md
-  .gitignore
-  esp32_plant/
-    README.md
+HiL/
   simulink/
-    README.md
-    models/
-    scripts/
-    generated_code/
-      README.md
-      model/
-      sharedutils/
-    validation/
+    +hil/                  reusable MATLAB package
+    adapters/              raw-data adapters
+    configs/               cell, pack, simulation, and dataset configs
+    models/                clean source template and frozen legacy models
+    parameters/            reviewed source artifacts and manifests
+    profiles/              profile loaders and synthetic cases
+    scripts/               thin operator entry points
+    tools/                 migration and regression utilities
+    validation/            frozen baseline and review artifacts
+  esp32_plant/
+    components/plant_model stable adapter plus generated model
+    main/                   FreeRTOS/CAN plant node
+    tests/                  host-C adapter and baseline tests
+  common/                   shared ESP32/AMS CAN image protocol
+  SOURCE_MANIFEST.json      reviewed source/archive/tool-status provenance
 ```
 
-## Current model target
+## Current frozen configuration
 
-Primary model:
+- Cell: Molicel INR-21700-P42A.
+- Pack: 75 series groups, six cells in parallel.
+- Segments: five groups of 15 series groups.
+- Temperature image: 120 configured sensor locations.
+- Plant step: 0.1 s.
+- Current sign: positive means discharge.
+- Generated physics: one representative 2RC cell and two-node thermal state,
+  scaled to the pack and expanded to fixed-size AMS outputs.
 
-```text
-simulink/models/drev_75s6p_p42a_accumulator_plant_v3_ams_outputs_validated.slx
-```
+The checked-in generated model is still the behavior oracle. Its constants were
+reconstructed into a reviewed MAT artifact and its host-C behavior is frozen in
+`simulink/validation/baselines/`.
 
-This model represents a 75s6p Molicel P42A accumulator plant with AMS-style outputs:
+## Scope boundary
 
-- `V_pack`
-- `T_core`
-- `T_surf`
-- `SoC_true`
-- `V_group[75]`
-- `V_segment[5]`
-- `T_sensor[120]`
-- `SoC_group[75]`
-- `V_min`
-- `V_max`
-- `T_max`
-- `T_avg`
+The MATLAB reference engine can independently evolve all series-group
+electrical and thermal states in `parameter_distributed` mode. The generated
+Simulink/ESP32 path deliberately retains one representative state and uses a
+repeatable output-expansion proxy for supported output-spread modes. Code
+generation is blocked for `parameter_distributed`; an artifact cannot imply
+independent embedded group physics that it does not implement. A fully
+distributed generated plant is a separate future performance/code-size
+decision.
 
-## Generated code status
+Thermal results are comparative screening only. Pack geometry, inter-group
+conduction, busbar heat, enclosure convection, and fan airflow are not
+calibrated.
 
-The generated C code is included as a source snapshot under:
-
-```text
-simulink/generated_code/
-```
-
-This is meant to be integrated into the future ESP32 plant firmware. It is not yet wrapped as a complete ESP-IDF application in this cleanup package.
-
-## Important limitation
-
-Some MATLAB scripts reference local paths under the original developer machine, for example `Documents/BMS_P42A_Data/...`. Those scripts need path cleanup before another machine can regenerate the model from raw datasets.
-
-The generated C snapshot embeds the LUT constants and is more portable than the MATLAB regeneration path.
+See `HIL_REFACTOR_WORK_PLAN.md` for completion status and
+`HIL_REFACTOR_VALIDATION_REPORT.md` for executed evidence and tool-dependent
+checks. `ATOMIC_CAN_IMAGE_PROTOCOL.md` defines coherent publication, and
+`HARDWARE_QUALIFICATION_PLAN.md` is the remaining bench gate.

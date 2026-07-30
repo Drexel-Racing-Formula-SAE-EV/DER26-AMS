@@ -32,7 +32,11 @@ Source input contained an ESP-IDF project plus Eclipse workspace metadata and a 
 - made MCP2515 init return errors instead of using `ESP_ERROR_CHECK()` abort paths
 - aligned the MCP2515 timing with AMS CAN1 at 250 kbit/s for an 8 MHz crystal
 - documented that 75s pack voltage uses 10 mV/count on CAN ID `0x200`
-- added CAN `0x210`/`0x211` ADBMS replacement image frames for bench HIL firmware
+- added generation-tagged CAN `0x210`/`0x211` data plus `0x212`
+  START/COMMIT, received bitmaps, timeout, and CRC32 for atomic publication
+- isolated generated identifiers behind `plant_model_adapter.h`
+- moved topology dimensions and segment/image indexing into a generated manifest
+- added strict host-C reset/state/invariant tests and a frozen six-scenario oracle
 
 ## Validation performed in sandbox
 
@@ -41,13 +45,15 @@ ESP-IDF was not installed in the sandbox, so this was not a real `idf.py build`.
 Performed checks:
 
 - generated Simulink plant C compiled with host GCC
+- stable plant adapter compiled with `-Wall -Wextra -Werror`
+- all 306 frozen oracle rows reproduced exactly
 - `main/main.c` syntax checked with host stubs for ESP-IDF/FreeRTOS
 - `components/CAN/mcp2515_driver.c` syntax checked with host stubs for ESP-IDF/FreeRTOS
 
 Next validation:
 
 ```bash
-cd hil/esp32_plant
+cd HiL/esp32_plant
 idf.py set-target esp32
 idf.py build
 idf.py flash monitor

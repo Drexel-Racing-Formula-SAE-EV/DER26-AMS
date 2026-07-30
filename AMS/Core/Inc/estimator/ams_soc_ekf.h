@@ -20,6 +20,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "../../../../HiL/common/ams_hil_image_protocol.h"
+
 #include "ams_build_profile.h"
 
 #ifdef __cplusplus
@@ -37,12 +39,6 @@ extern "C" {
 #define AMS_EKF_DEFAULT_SOC_INIT    1.0f
 #define AMS_EKF_DEFAULT_R0_INIT_OHM 0.0147f
 
-#define AMS_HIL_CAN_ID_MEAS         0x200U
-#define AMS_HIL_CAN_ID_TRUTH        0x201U
-#define AMS_HIL_CAN_ID_SUMMARY      0x202U
-#define AMS_HIL_CAN_ID_CELL_SAMPLE  0x210U
-#define AMS_HIL_CAN_ID_TEMP_SAMPLE  0x211U
-#define AMS_HIL_CAN_ID_CTRL         0x300U
 #define AMS_ESTIMATOR_STATUS_CAN_ID 0x421U
 
 #define AMS_EKF_FAULT_NONE          0x00000000UL

@@ -28,6 +28,21 @@
 #define MCP_PIN_INT      4
 #define MCP_SPI_CLK_HZ  10000000   /* 10 MHz — MCP2515 max 10 MHz */
 
+typedef struct {
+    uint32_t successful_frames;
+    uint32_t arbitration_lost_events;
+    uint32_t transmit_error_events;
+    uint32_t controller_retry_events;
+    uint32_t aborted_frames;
+    uint32_t bus_off_failures;
+    uint32_t timeout_failures;
+    uint32_t spi_failures;
+    uint32_t transmit_warning_observations;
+    uint32_t transmit_passive_observations;
+    uint32_t receive_buffer_0_overflows;
+    uint32_t receive_buffer_1_overflows;
+} mcp2515_diagnostics_t;
+
 /*
  * mcp2515_init()
  * Resets MCP2515, configures for 250 kbit/s @ 8 MHz, enters Normal mode.
@@ -47,6 +62,8 @@ esp_err_t mcp2515_send_frame(uint16_t id, const uint8_t *data, uint8_t len);
 
 esp_err_t mcp2515_read_frame(uint16_t *id, uint8_t *data, uint8_t *len);
 
+void mcp2515_get_diagnostics(mcp2515_diagnostics_t *diagnostics);
+void mcp2515_reset_diagnostics(void);
 
 
 #endif /* COMPONENTS_CAN_MCP2515_DRIVER_H_ */

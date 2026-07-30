@@ -1,0 +1,2 @@
+../Core/Src/app.c:22:6:app_create	24	static
+../Core/Src/app.c:69:6:set_bms	16	static

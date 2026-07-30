@@ -1,0 +1,10 @@
+../Core/Src/tasks/cli_task.c:49:14:cli_task_start	1
+../Core/Src/tasks/cli_task.c:56:6:cli_task_fn	2
+../Core/Src/tasks/cli_task.c:89:5:cli_handle_cmd	4
+../Core/Src/tasks/cli_task.c:111:5:cmd_not_found	1
+../Core/Src/tasks/cli_task.c:120:5:help	2
+../Core/Src/tasks/cli_task.c:136:5:get_faults	1
+../Core/Src/tasks/cli_task.c:153:5:get_voltage	3
+../Core/Src/tasks/cli_task.c:176:5:get_temperature	3
+../Core/Src/tasks/cli_task.c:221:5:get_temperature_sensor	6
+../Core/Src/tasks/cli_task.c:272:5:get_version	1

@@ -1039,48 +1039,217 @@ static void host_mark_updated_temps(app_data_t *d, uint32_t mask)
     }
 }
 
-static void host_send_hil_cell_triplet(uint8_t seg,
+static void host_send_hil_frame(uint16_t id, const uint8_t data[8])
+{
+    memset(&fake_rx_hdr, 0, sizeof(fake_rx_hdr));
+    fake_rx_hdr.IDE = CAN_ID_STD;
+    fake_rx_hdr.StdId = id;
+    fake_rx_hdr.DLC = 8u;
+    memcpy(fake_rx_data, data, 8u);
+    app.board.canbus.hcan = &hil_fake_hcan;
+    (void)host_receive_can_frame(&hil_fake_hcan);
+}
+
+static void host_send_hil_image_start(uint8_t generation)
+{
+    uint8_t data[8] = {0u};
+    data[AMS_HIL_IMAGE_START_VERSION_OFFSET] =
+        AMS_HIL_IMAGE_PROTOCOL_VERSION;
+    data[AMS_HIL_IMAGE_START_OPCODE_OFFSET] = AMS_HIL_IMAGE_CTRL_START;
+    data[AMS_HIL_IMAGE_START_GENERATION_OFFSET] = generation;
+    data[AMS_HIL_IMAGE_START_SEGMENTS_OFFSET] = NSMBS;
+    data[AMS_HIL_IMAGE_START_CELLS_OFFSET] = (uint8_t)(NSMBS * NCELLS);
+    data[AMS_HIL_IMAGE_START_TEMPERATURES_OFFSET] =
+        (uint8_t)(NSMBS * NTEMPS);
+    data[AMS_HIL_IMAGE_START_CELL_FRAMES_OFFSET] =
+        (uint8_t)(NSMBS * ((NCELLS + 2u) / 3u));
+    data[AMS_HIL_IMAGE_START_TEMP_FRAMES_OFFSET] =
+        (uint8_t)(NSMBS * ((NTEMPS + 2u) / 3u));
+    host_send_hil_frame(AMS_HIL_CAN_ID_IMAGE_CONTROL, data);
+}
+
+static void host_send_hil_image_commit(uint8_t generation, uint32_t crc)
+{
+    uint8_t data[8] = {0u};
+    data[AMS_HIL_IMAGE_COMMIT_VERSION_OFFSET] =
+        AMS_HIL_IMAGE_PROTOCOL_VERSION;
+    data[AMS_HIL_IMAGE_COMMIT_OPCODE_OFFSET] = AMS_HIL_IMAGE_CTRL_COMMIT;
+    data[AMS_HIL_IMAGE_COMMIT_GENERATION_OFFSET] = generation;
+    ams_hil_image_write_u32_be(&data[AMS_HIL_IMAGE_COMMIT_CRC_OFFSET], crc);
+    host_send_hil_frame(AMS_HIL_CAN_ID_IMAGE_CONTROL, data);
+}
+
+static void host_send_hil_cell_triplet(uint8_t generation,
+                                       uint8_t seg,
                                        uint8_t first_cell,
                                        uint16_t mv0,
                                        uint16_t mv1,
                                        uint16_t mv2)
 {
-    memset(&fake_rx_hdr, 0, sizeof(fake_rx_hdr));
-    fake_rx_hdr.IDE = CAN_ID_STD;
-    fake_rx_hdr.StdId = AMS_HIL_CAN_ID_CELL_SAMPLE;
-    fake_rx_hdr.DLC = 8u;
-    fake_rx_data[0] = seg;
-    fake_rx_data[1] = first_cell;
-    fake_rx_data[2] = (uint8_t)(mv0 >> 8);
-    fake_rx_data[3] = (uint8_t)(mv0 & 0xFFu);
-    fake_rx_data[4] = (uint8_t)(mv1 >> 8);
-    fake_rx_data[5] = (uint8_t)(mv1 & 0xFFu);
-    fake_rx_data[6] = (uint8_t)(mv2 >> 8);
-    fake_rx_data[7] = (uint8_t)(mv2 & 0xFFu);
-    app.board.canbus.hcan = &hil_fake_hcan;
-    (void)host_receive_can_frame(&hil_fake_hcan);
+    uint8_t data[8] = {0u};
+    data[AMS_HIL_IMAGE_DATA_GENERATION_OFFSET] = generation;
+    data[AMS_HIL_IMAGE_DATA_ADDRESS_OFFSET] =
+        ams_hil_image_pack_address(seg, first_cell);
+    data[2] = (uint8_t)(mv0 >> 8);
+    data[3] = (uint8_t)(mv0 & 0xFFu);
+    data[4] = (uint8_t)(mv1 >> 8);
+    data[5] = (uint8_t)(mv1 & 0xFFu);
+    data[6] = (uint8_t)(mv2 >> 8);
+    data[7] = (uint8_t)(mv2 & 0xFFu);
+    host_send_hil_frame(AMS_HIL_CAN_ID_CELL_SAMPLE, data);
 }
 
-static void host_send_hil_temp_triplet(uint8_t seg,
+static void host_send_hil_temp_triplet(uint8_t generation,
+                                       uint8_t seg,
                                        uint8_t first_sensor,
                                        int16_t t0_deci_c,
                                        int16_t t1_deci_c,
                                        int16_t t2_deci_c)
 {
-    memset(&fake_rx_hdr, 0, sizeof(fake_rx_hdr));
-    fake_rx_hdr.IDE = CAN_ID_STD;
-    fake_rx_hdr.StdId = AMS_HIL_CAN_ID_TEMP_SAMPLE;
-    fake_rx_hdr.DLC = 8u;
-    fake_rx_data[0] = seg;
-    fake_rx_data[1] = first_sensor;
-    fake_rx_data[2] = (uint8_t)((uint16_t)t0_deci_c >> 8);
-    fake_rx_data[3] = (uint8_t)((uint16_t)t0_deci_c & 0xFFu);
-    fake_rx_data[4] = (uint8_t)((uint16_t)t1_deci_c >> 8);
-    fake_rx_data[5] = (uint8_t)((uint16_t)t1_deci_c & 0xFFu);
-    fake_rx_data[6] = (uint8_t)((uint16_t)t2_deci_c >> 8);
-    fake_rx_data[7] = (uint8_t)((uint16_t)t2_deci_c & 0xFFu);
-    app.board.canbus.hcan = &hil_fake_hcan;
-    (void)host_receive_can_frame(&hil_fake_hcan);
+    uint8_t data[8] = {0u};
+    data[AMS_HIL_IMAGE_DATA_GENERATION_OFFSET] = generation;
+    data[AMS_HIL_IMAGE_DATA_ADDRESS_OFFSET] =
+        ams_hil_image_pack_address(seg, first_sensor);
+    data[2] = (uint8_t)((uint16_t)t0_deci_c >> 8);
+    data[3] = (uint8_t)((uint16_t)t0_deci_c & 0xFFu);
+    data[4] = (uint8_t)((uint16_t)t1_deci_c >> 8);
+    data[5] = (uint8_t)((uint16_t)t1_deci_c & 0xFFu);
+    data[6] = (uint8_t)((uint16_t)t2_deci_c >> 8);
+    data[7] = (uint8_t)((uint16_t)t2_deci_c & 0xFFu);
+    host_send_hil_frame(AMS_HIL_CAN_ID_TEMP_SAMPLE, data);
+}
+
+typedef struct
+{
+    uint16_t cell_mv[NSMBS][NCELLS];
+    int16_t temp_deci_c[NSMBS][NTEMPS];
+} host_hil_image_t;
+
+static void host_fill_hil_image(host_hil_image_t *image,
+                                uint16_t cell_base_mv,
+                                int16_t temp_base_deci_c)
+{
+    CHECK(image != NULL);
+    for(uint8_t seg = 0u; seg < NSMBS; seg++)
+    {
+        for(uint8_t cell = 0u; cell < NCELLS; cell++)
+        {
+            image->cell_mv[seg][cell] =
+                (uint16_t)(cell_base_mv + ((uint16_t)seg * NCELLS) + cell);
+        }
+        for(uint8_t sensor = 0u; sensor < NTEMPS; sensor++)
+        {
+            image->temp_deci_c[seg][sensor] =
+                (int16_t)(temp_base_deci_c + (int16_t)seg + (int16_t)sensor);
+        }
+    }
+}
+
+static uint32_t host_hil_image_crc(const host_hil_image_t *image)
+{
+    uint32_t crc = ams_hil_image_crc32_init();
+    CHECK(image != NULL);
+
+    for(uint8_t seg = 0u; seg < NSMBS; seg++)
+    {
+        for(uint8_t cell = 0u; cell < NCELLS; cell++)
+        {
+            crc = ams_hil_image_crc32_update_u16_be(
+                crc,
+                image->cell_mv[seg][cell]);
+        }
+    }
+    for(uint8_t seg = 0u; seg < NSMBS; seg++)
+    {
+        for(uint8_t sensor = 0u; sensor < NTEMPS; sensor++)
+        {
+            crc = ams_hil_image_crc32_update_u16_be(
+                crc,
+                (uint16_t)image->temp_deci_c[seg][sensor]);
+        }
+    }
+
+    return ams_hil_image_crc32_finalize(crc);
+}
+
+static void host_send_hil_cells(uint8_t generation,
+                                const host_hil_image_t *image,
+                                int skip_seg,
+                                int skip_first,
+                                bool reverse)
+{
+    CHECK(image != NULL);
+    for(int seg_n = 0; seg_n < NSMBS; seg_n++)
+    {
+        const uint8_t seg =
+            reverse ? (uint8_t)(NSMBS - 1 - seg_n) : (uint8_t)seg_n;
+        for(int first_n = 0; first_n < ((NCELLS + 2) / 3); first_n++)
+        {
+            const uint8_t first = reverse ?
+                (uint8_t)(NCELLS - 3 - (first_n * 3)) :
+                (uint8_t)(first_n * 3);
+            if(((int)seg == skip_seg) && ((int)first == skip_first))
+            {
+                continue;
+            }
+            host_send_hil_cell_triplet(
+                generation,
+                seg,
+                first,
+                image->cell_mv[seg][first],
+                image->cell_mv[seg][first + 1u],
+                image->cell_mv[seg][first + 2u]);
+        }
+    }
+}
+
+static void host_send_hil_temps(uint8_t generation,
+                                const host_hil_image_t *image,
+                                int skip_seg,
+                                int skip_first,
+                                bool reverse)
+{
+    CHECK(image != NULL);
+    for(int seg_n = 0; seg_n < NSMBS; seg_n++)
+    {
+        const uint8_t seg =
+            reverse ? (uint8_t)(NSMBS - 1 - seg_n) : (uint8_t)seg_n;
+        for(int first_n = 0; first_n < ((NTEMPS + 2) / 3); first_n++)
+        {
+            const uint8_t first = reverse ?
+                (uint8_t)(NTEMPS - 3 - (first_n * 3)) :
+                (uint8_t)(first_n * 3);
+            if(((int)seg == skip_seg) && ((int)first == skip_first))
+            {
+                continue;
+            }
+            host_send_hil_temp_triplet(
+                generation,
+                seg,
+                first,
+                image->temp_deci_c[seg][first],
+                image->temp_deci_c[seg][first + 1u],
+                image->temp_deci_c[seg][first + 2u]);
+        }
+    }
+}
+
+static void host_send_complete_hil_image(uint8_t generation,
+                                         const host_hil_image_t *image,
+                                         bool reverse)
+{
+    host_send_hil_image_start(generation);
+    if(reverse)
+    {
+        host_send_hil_temps(generation, image, -1, -1, true);
+        host_send_hil_cells(generation, image, -1, -1, true);
+    }
+    else
+    {
+        host_send_hil_cells(generation, image, -1, -1, false);
+        host_send_hil_temps(generation, image, -1, -1, false);
+    }
+    host_send_hil_image_commit(generation, host_hil_image_crc(image));
 }
 
 static void test_accumulator_stats_and_balance(void){
@@ -7639,11 +7808,11 @@ static void test_can_rx_filter_matrix(void){
     CHECK(fake_can_filter_log[2].FilterIdHigh ==
           ((AMS_HIL_CAN_ID_TEMP_SAMPLE & 0x7FFu) << 5u));
     CHECK(fake_can_filter_log[2].FilterIdLow ==
-          fake_can_filter_log[2].FilterIdHigh);
+          ((AMS_HIL_CAN_ID_IMAGE_CONTROL & 0x7FFu) << 5u));
     CHECK(fake_can_filter_log[2].FilterMaskIdHigh ==
           fake_can_filter_log[2].FilterIdHigh);
     CHECK(fake_can_filter_log[2].FilterMaskIdLow ==
-          fake_can_filter_log[2].FilterIdHigh);
+          fake_can_filter_log[2].FilterIdLow);
 #endif
 #if AMS_ENABLE_MISSION_CAN
     const uint32_t mission_filter_index =
@@ -8633,55 +8802,25 @@ static void test_hil_parser_and_estimator_core(void){
 
 static void test_hil_adbms_image_replaces_raw_reads(void)
 {
+    host_hil_image_t image;
+
     init_fake_app();
     fake_tick = 1000u;
+    host_fill_hil_image(&image, 3600u, 240);
+    image.cell_mv[3][14] = 4123u;
+    image.cell_mv[1][0] = 3201u;
+    image.temp_deci_c[4][23] = 615;
+    image.temp_deci_c[0][0] = -55;
 
-    for(uint8_t seg = 0u; seg < NSMBS; seg++)
-    {
-        for(uint8_t first = 0u; first < NCELLS; first = (uint8_t)(first + 3u))
-        {
-            uint16_t mv[3] = {3700u, 3701u, 3702u};
-            for(uint8_t n = 0u; n < 3u; n++)
-            {
-                uint8_t cell = (uint8_t)(first + n);
-                if(cell < NCELLS)
-                {
-                    mv[n] = (uint16_t)(3600u + ((uint16_t)seg * 15u) + cell);
-                }
-            }
-            if((seg == 3u) && (first == 12u))
-            {
-                mv[2] = 4123u;
-            }
-            if((seg == 1u) && (first == 0u))
-            {
-                mv[0] = 3201u;
-            }
-            host_send_hil_cell_triplet(seg, first, mv[0], mv[1], mv[2]);
-        }
-
-        for(uint8_t first = 0u; first < NTEMPS; first = (uint8_t)(first + 3u))
-        {
-            int16_t t[3] = {250, 251, 252};
-            for(uint8_t n = 0u; n < 3u; n++)
-            {
-                uint8_t sensor = (uint8_t)(first + n);
-                if(sensor < NTEMPS)
-                {
-                    t[n] = (int16_t)(240 + (int16_t)seg + (int16_t)sensor);
-                }
-            }
-            if((seg == 4u) && (first == 21u))
-            {
-                t[2] = 615;
-            }
-            if((seg == 0u) && (first == 0u))
-            {
-                t[0] = -55;
-            }
-            host_send_hil_temp_triplet(seg, first, t[0], t[1], t[2]);
-        }
-    }
+    app.acc.smb_ics[0].cell.c_codes[0] = 12345;
+    host_send_hil_image_start(1u);
+    host_send_hil_cells(1u, &image, -1, -1, false);
+    host_send_hil_temps(1u, &image, -1, -1, false);
+    CHECK(app.acc.hil_image_accept_count == 0u);
+    CHECK(app.acc.smb_ics[0].cell.c_codes[0] == 12345);
+    host_send_hil_image_commit(1u, host_hil_image_crc(&image));
+    CHECK(app.acc.hil_image_accept_count == 1u);
+    CHECK(app.acc.hil_last_committed_generation == 1u);
 
     accumulator_hil_refresh_update_masks(&app.acc, fake_tick, AMS_HIL_ADBMS_IMAGE_TIMEOUT_MS);
     accumulator_update_voltage_stats_at(&app.acc, fake_tick);
@@ -8731,17 +8870,19 @@ static void test_hil_adbms_image_replaces_raw_reads(void)
     app.current_fault = false;
     app.task_heartbeat_fault = false;
 
+    host_fill_hil_image(&image, 3700u, 250);
     for(uint8_t seg = 0u; seg < NSMBS; seg++)
     {
-        for(uint8_t first = 0u; first < NCELLS; first = (uint8_t)(first + 3u))
+        for(uint8_t cell = 0u; cell < NCELLS; cell++)
         {
-            host_send_hil_cell_triplet(seg, first, 3700u, 3700u, 3700u);
+            image.cell_mv[seg][cell] = 3700u;
         }
-        for(uint8_t first = 0u; first < NTEMPS; first = (uint8_t)(first + 3u))
+        for(uint8_t sensor = 0u; sensor < NTEMPS; sensor++)
         {
-            host_send_hil_temp_triplet(seg, first, 250, 250, 250);
+            image.temp_deci_c[seg][sensor] = 250;
         }
     }
+    host_send_complete_hil_image(2u, &image, false);
 
     CHECK(fake_adbms_lock_depth == 0u);
     CHECK(fake_adbms_lock_max_depth >= 1u);
@@ -8774,37 +8915,191 @@ static void test_hil_adbms_image_replaces_raw_reads(void)
 #endif
 }
 
+static void test_hil_atomic_image_fault_injection(void)
+{
+    host_hil_image_t image_a;
+    host_hil_image_t image_b;
+
+    init_fake_app();
+    fake_tick = 5000u;
+    host_fill_hil_image(&image_a, 3600u, 200);
+    host_fill_hil_image(&image_b, 3800u, 300);
+    host_send_complete_hil_image(10u, &image_a, false);
+    CHECK(app.acc.hil_image_accept_count == 1u);
+
+    /* Arbitrary segment/frame order is allowed because commit is bitmap and
+     * CRC based, not arrival-order based. */
+    host_send_complete_hil_image(11u, &image_b, true);
+    CHECK(app.acc.hil_image_accept_count == 2u);
+    CHECK(app.acc.hil_last_committed_generation == 11u);
+    accumulator_hil_refresh_update_masks(
+        &app.acc, fake_tick, AMS_HIL_ADBMS_IMAGE_TIMEOUT_MS);
+    accumulator_update_voltage_stats_at(&app.acc, fake_tick);
+    CHECK(accumulator_cell_voltage_mv(&app.acc, 0u, 0u) == 3800u);
+
+    /* An identical duplicate is harmless and does not change completeness. */
+    host_send_hil_image_start(12u);
+    host_send_hil_cell_triplet(
+        12u, 0u, 0u,
+        image_a.cell_mv[0][0],
+        image_a.cell_mv[0][1],
+        image_a.cell_mv[0][2]);
+    host_send_hil_image_start(12u);
+    CHECK(app.acc.hil_image_duplicate_start_count == 1u);
+    CHECK(app.acc.hil_stage_unique_cell_count == 3u);
+    host_send_hil_cells(12u, &image_a, -1, -1, false);
+    host_send_hil_temps(12u, &image_a, -1, -1, false);
+    host_send_hil_cell_triplet(
+        12u, 0u, 0u,
+        image_a.cell_mv[0][0],
+        image_a.cell_mv[0][1],
+        image_a.cell_mv[0][2]);
+    host_send_hil_image_commit(12u, host_hil_image_crc(&image_a));
+    CHECK(app.acc.hil_image_accept_count == 3u);
+    CHECK(app.acc.hil_image_duplicate_count >= 3u);
+
+    /* One missing frame makes COMMIT fail and leaves generation 12 live. */
+    const int16_t committed_code = app.acc.smb_ics[0].cell.c_codes[0];
+    host_send_hil_image_start(13u);
+    host_send_hil_cells(13u, &image_b, 2, 6, false);
+    host_send_hil_temps(13u, &image_b, -1, -1, false);
+    host_send_hil_image_commit(13u, host_hil_image_crc(&image_b));
+    CHECK(app.acc.hil_image_accept_count == 3u);
+    CHECK(app.acc.hil_last_committed_generation == 12u);
+    CHECK(app.acc.smb_ics[0].cell.c_codes[0] == committed_code);
+    CHECK(app.acc.hil_image_incomplete_count >= 1u);
+
+    /* A duplicate carrying different data poisons only the staged image. */
+    host_send_hil_image_start(14u);
+    host_send_hil_cells(14u, &image_b, -1, -1, false);
+    host_send_hil_temps(14u, &image_b, -1, -1, false);
+    host_send_hil_cell_triplet(
+        14u, 0u, 0u,
+        (uint16_t)(image_b.cell_mv[0][0] + 1u),
+        image_b.cell_mv[0][1],
+        image_b.cell_mv[0][2]);
+    host_send_hil_image_commit(14u, host_hil_image_crc(&image_b));
+    CHECK(app.acc.hil_image_accept_count == 3u);
+    CHECK(app.acc.hil_image_conflicting_duplicate_count >= 1u);
+    CHECK(app.acc.smb_ics[0].cell.c_codes[0] == committed_code);
+
+    /* A complete image with a corrupted CRC is also never published. */
+    host_send_hil_image_start(15u);
+    host_send_hil_cells(15u, &image_b, -1, -1, false);
+    host_send_hil_temps(15u, &image_b, -1, -1, false);
+    host_send_hil_image_commit(
+        15u, host_hil_image_crc(&image_b) ^ UINT32_C(0x00000001));
+    CHECK(app.acc.hil_image_accept_count == 3u);
+    CHECK(app.acc.hil_image_crc_fail_count == 1u);
+    CHECK(app.acc.smb_ics[0].cell.c_codes[0] == committed_code);
+
+    /* A newer START abandons a partial generation. Delayed old data is
+     * rejected without poisoning the active generation. */
+    host_send_hil_image_start(16u);
+    host_send_hil_cell_triplet(
+        16u, 0u, 0u,
+        image_a.cell_mv[0][0],
+        image_a.cell_mv[0][1],
+        image_a.cell_mv[0][2]);
+    host_send_hil_image_start(17u);
+    host_send_hil_cells(17u, &image_b, -1, -1, false);
+    host_send_hil_cell_triplet(
+        16u, 0u, 3u,
+        image_a.cell_mv[0][3],
+        image_a.cell_mv[0][4],
+        image_a.cell_mv[0][5]);
+    host_send_hil_temps(17u, &image_b, -1, -1, false);
+    host_send_hil_image_commit(17u, host_hil_image_crc(&image_b));
+    CHECK(app.acc.hil_image_accept_count == 4u);
+    CHECK(app.acc.hil_last_committed_generation == 17u);
+
+    /* A fully replayed older generation is rejected while the committed
+     * image is fresh, even though that replay is internally coherent. */
+    host_send_complete_hil_image(16u, &image_a, false);
+    CHECK(app.acc.hil_image_accept_count == 4u);
+    CHECK(app.acc.hil_last_committed_generation == 17u);
+    CHECK(app.acc.hil_image_replay_reject_count >= 1u);
+
+    /* An assembly that outlives its timeout cannot be revived by delayed
+     * frames or a late COMMIT. */
+    host_send_hil_image_start(18u);
+    host_send_hil_cell_triplet(
+        18u, 0u, 0u,
+        image_a.cell_mv[0][0],
+        image_a.cell_mv[0][1],
+        image_a.cell_mv[0][2]);
+    fake_tick += AMS_HIL_ADBMS_ASSEMBLY_TIMEOUT_MS + 1u;
+    host_send_hil_temps(18u, &image_a, -1, -1, false);
+    host_send_hil_image_commit(18u, host_hil_image_crc(&image_a));
+    CHECK(app.acc.hil_image_timeout_count == 1u);
+    CHECK(app.acc.hil_image_accept_count == 4u);
+    CHECK(app.acc.hil_last_committed_generation == 17u);
+
+    /* An independently power-cycled plant may restart its uint8 generation.
+     * It cannot replace a fresh image, but can resynchronize after the prior
+     * publication has gone stale. */
+    host_send_complete_hil_image(1u, &image_a, false);
+    CHECK(app.acc.hil_image_accept_count == 4u);
+    fake_tick = app.acc.hil_image_commit_ms +
+                AMS_HIL_ADBMS_IMAGE_TIMEOUT_MS + 1u;
+    host_send_complete_hil_image(1u, &image_a, false);
+    CHECK(app.acc.hil_image_accept_count == 5u);
+    CHECK(app.acc.hil_last_committed_generation == 1u);
+    CHECK(app.acc.hil_image_resync_count == 1u);
+
+    sil_prepare_cli_capture();
+    char *hil_image_args[] = {"bringup", "hil-image", NULL};
+    CHECK(get_bringup(2, hil_image_args) == 0);
+    CHECK(strstr(cli_capture, "HIL_IMAGE committed:1 gen:1") != NULL);
+    CHECK(strstr(cli_capture, "image accept:5") != NULL);
+    CHECK(strstr(cli_capture, "can_rx queued:") != NULL);
+
+    /* AMS reset/init clears both an in-progress image and publication history. */
+    host_send_hil_image_start(2u);
+    CHECK(app.acc.hil_stage_active);
+    init_fake_app();
+    CHECK(!app.acc.hil_stage_active);
+    CHECK(!app.acc.hil_committed_valid);
+    CHECK(app.acc.hil_image_accept_count == 0u);
+}
+
 static void test_accumulator_tick_wrap_freshness(void)
 {
     const uint32_t before_wrap = UINT32_MAX - 100u;
     const uint32_t after_wrap = 50u;
-    const uint16_t cell_mv[3] = {3700u, 3701u, 3702u};
-    const int16_t temp_deci_c[3] = {250, 251, 252};
+    host_hil_image_t image;
 
     init_fake_app();
-    CHECK(accumulator_hil_ingest_cell_triplet(&app.acc,
-                                               0u,
-                                               0u,
-                                               cell_mv,
-                                               before_wrap) == 0);
-    CHECK(accumulator_hil_ingest_temp_triplet(&app.acc,
-                                               0u,
-                                               0u,
-                                               temp_deci_c,
-                                               before_wrap) == 0);
+    host_fill_hil_image(&image, 3700u, 250);
+    fake_tick = before_wrap;
+    host_send_complete_hil_image(20u, &image, false);
+    CHECK(app.acc.hil_image_accept_count == 1u);
 
     accumulator_hil_refresh_update_masks(&app.acc,
                                           after_wrap,
                                           AMS_HIL_ADBMS_IMAGE_TIMEOUT_MS);
-    CHECK((app.acc.smb.last_cell_updated_mask[0] & 0x0007u) == 0x0007u);
-    CHECK((app.acc.smb.last_temp_updated_mask[0] & 0x00000007u) == 0x00000007u);
+    CHECK(app.acc.smb.last_cell_updated_mask[0] == 0x7FFFu);
+    CHECK(app.acc.smb.last_temp_updated_mask[0] == 0x00FFFFFFu);
 
     accumulator_hil_refresh_update_masks(
         &app.acc,
         (uint32_t)(before_wrap + AMS_HIL_ADBMS_IMAGE_TIMEOUT_MS + 1u),
         AMS_HIL_ADBMS_IMAGE_TIMEOUT_MS);
-    CHECK((app.acc.smb.last_cell_updated_mask[0] & 0x0007u) == 0u);
-    CHECK((app.acc.smb.last_temp_updated_mask[0] & 0x00000007u) == 0u);
+    CHECK(app.acc.smb.last_cell_updated_mask[0] == 0u);
+    CHECK(app.acc.smb.last_temp_updated_mask[0] == 0u);
+
+    init_fake_app();
+    fake_tick = before_wrap;
+    host_send_hil_image_start(21u);
+    accumulator_hil_image_expire(
+        &app.acc, after_wrap, AMS_HIL_ADBMS_ASSEMBLY_TIMEOUT_MS);
+    CHECK(app.acc.hil_stage_active);
+    accumulator_hil_image_expire(
+        &app.acc,
+        (uint32_t)(before_wrap + AMS_HIL_ADBMS_ASSEMBLY_TIMEOUT_MS + 1u),
+        AMS_HIL_ADBMS_ASSEMBLY_TIMEOUT_MS);
+    CHECK(!app.acc.hil_stage_active);
+    CHECK(app.acc.hil_image_timeout_count == 1u);
 
     /* Exercise the independent cell/temperature stale timers across the same
      * wrap, not just the HIL image-age gate. */
@@ -9182,8 +9477,8 @@ static void test_production_safety_gates(void)
     app.hil.truth.fresh = 0u;
     app.hil.summary.fresh = 0u;
 
-    host_send_hil_cell_triplet(0u, 0u, 4100u, 4090u, 4080u);
-    host_send_hil_temp_triplet(0u, 0u, 550, 560, 570);
+    host_send_hil_cell_triplet(0u, 0u, 0u, 4100u, 4090u, 4080u);
+    host_send_hil_temp_triplet(0u, 0u, 0u, 550, 560, 570);
     CHECK(app.acc.smb_ics[0].cell.c_codes[0] == 12345);
     CHECK(app.acc.smb_ics[0].temp.raw[0] == 2345);
 
@@ -9400,6 +9695,7 @@ int main(void){
     return 0;
 #elif AMS_HOST_ONLY_HIL_ADBMS_TEST
     test_hil_adbms_image_replaces_raw_reads(); puts("PASS HIL ADBMS image replacement");
+    test_hil_atomic_image_fault_injection(); puts("PASS HIL atomic image fault injection");
     test_accumulator_tick_wrap_freshness(); puts("PASS accumulator tick-wrap freshness");
     puts("ALL HIL ADBMS REPLACEMENT TESTS PASSED");
     return 0;
@@ -9477,6 +9773,7 @@ int main(void){
     test_hil_parser_edge_cases(); puts("PASS HIL parser edge cases");
     test_hil_parser_and_estimator_core(); puts("PASS HIL parser and estimator core");
     test_hil_adbms_image_replaces_raw_reads(); puts("PASS HIL ADBMS image replacement");
+    test_hil_atomic_image_fault_injection(); puts("PASS HIL atomic image fault injection");
     test_accumulator_tick_wrap_freshness(); puts("PASS accumulator tick-wrap freshness");
     test_estimator_task_hil_and_hardware_paths(); puts("PASS estimator task HIL/hardware paths");
     test_estimator_rejects_invalid_hardware_inputs(); puts("PASS estimator rejects invalid hardware inputs");

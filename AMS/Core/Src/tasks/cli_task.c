@@ -122,7 +122,7 @@ command_t cmds[] =
 	{"uart", &get_uart_diag, "CLI UART diagnostics/recovery: uart [status|recover|clear]"},
 	{"spi", &get_spi_debug, "ADBMS6830 SPI debug: spi [status|pins|cspins|cs|preset|toggle|probe|probea|probeb|scope|sid|stat|staterr|cfgchk|cellst|owcheck|oweven|owodd|auxdiag|wake|coldwake|clrflag|clear|diagclear|enable|disable]"},
 	{"apm", &get_apm_debug, "ADBMS2950/APM: apm [status|health|probe|sid|config|sample|scope [1-100]|clear|enable|disable]"},
-	{"bringup", &get_bringup, "bench bring-up summaries: bringup [help|board|adbms6830|apm2950|charger-lv|charger-battery|ready|snapshot|evidence]"},
+	{"bringup", &get_bringup, "bench bring-up summaries: bringup [help|board|adbms6830|hil-image|apm2950|charger-lv|charger-battery|ready|snapshot|evidence]"},
 	{"bmsok", &bmsok_control, "BMS_OK control: bmsok [status|release|inhibit]"},
 	{"balance", &balance_control, "balancing control: balance [status|inhibit|release|clear]"},
 	{"state", &set_state, "gets or sets the AMS state [charge|discharge]"},
@@ -3337,6 +3337,7 @@ int get_bringup(int argc, char *argv[])
     {
         ret |= cli_printline(cli, "bringup board          - LV board-only checklist, no accumulator required");
         ret |= cli_printline(cli, "bringup adbms6830      - SMB chain SPI/CS/PEC/SID/status summary");
+        ret |= cli_printline(cli, "bringup hil-image      - atomic HIL generation/age/error counters");
 		ret |= cli_printline(cli, "bringup apm2950        - final-ring ADBMS2950/APM advisory summary");
         ret |= cli_printline(cli, "bringup charger-lv     - charger CAN low-voltage sniffer checklist");
         ret |= cli_printline(cli, "bringup charger-battery - stricter charger test once battery path is safe");
@@ -3514,6 +3515,86 @@ int get_bringup(int argc, char *argv[])
 
         ret |= cli_printline(cli, "next: spi pins -> spi cspins both 10 -> spi cs a pulse 10 -> spi preset normal -> spi scope a read 20");
 		ret |= cli_printline(cli, "then: spi probea -> spi sid -> spi stat; use apm sid for the String-B ADBMS2950");
+        return ret;
+    }
+
+    if(!strcmp(mode, "hil-image") || !strcmp(mode, "hil"))
+    {
+        uint32_t commit_ms;
+        uint32_t accepted;
+        uint32_t rejected;
+        uint32_t timed_out;
+        uint32_t crc_failed;
+        uint32_t incomplete;
+        uint32_t duplicates;
+        uint32_t duplicate_starts;
+        uint32_t conflicts;
+        uint32_t replays;
+        uint32_t resyncs;
+        uint16_t staged_cells;
+        uint16_t staged_temps;
+        uint8_t generation;
+        bool committed;
+        bool active;
+        bool invalid;
+
+        adbms_spi_lock();
+        commit_ms = data->acc.hil_image_commit_ms;
+        accepted = data->acc.hil_image_accept_count;
+        rejected = data->acc.hil_image_reject_count;
+        timed_out = data->acc.hil_image_timeout_count;
+        crc_failed = data->acc.hil_image_crc_fail_count;
+        incomplete = data->acc.hil_image_incomplete_count;
+        duplicates = data->acc.hil_image_duplicate_count;
+        duplicate_starts = data->acc.hil_image_duplicate_start_count;
+        conflicts = data->acc.hil_image_conflicting_duplicate_count;
+        replays = data->acc.hil_image_replay_reject_count;
+        resyncs = data->acc.hil_image_resync_count;
+        staged_cells = data->acc.hil_stage_unique_cell_count;
+        staged_temps = data->acc.hil_stage_unique_temp_count;
+        generation = data->acc.hil_last_committed_generation;
+        committed = data->acc.hil_committed_valid;
+        active = data->acc.hil_stage_active;
+        invalid = data->acc.hil_stage_invalid;
+        adbms_spi_unlock();
+
+        const uint32_t age_ms = committed ?
+            (uint32_t)(osKernelGetTickCount() - commit_ms) : UINT32_MAX;
+        snprintf(outline, CLI_LINESZ,
+                 "HIL_IMAGE committed:%d gen:%u age_ms:%lu active:%d invalid:%d staged:%u/%u",
+                 committed,
+                 generation,
+                 (unsigned long)age_ms,
+                 active,
+                 invalid,
+                 staged_cells,
+                 staged_temps);
+        ret |= cli_printline(cli, outline);
+        snprintf(outline, CLI_LINESZ,
+                 "image accept:%lu reject:%lu timeout:%lu incomplete:%lu crc:%lu",
+                 (unsigned long)accepted,
+                 (unsigned long)rejected,
+                 (unsigned long)timed_out,
+                 (unsigned long)incomplete,
+                 (unsigned long)crc_failed);
+        ret |= cli_printline(cli, outline);
+        snprintf(outline, CLI_LINESZ,
+                 "image dup:%lu startdup:%lu conflict:%lu replay:%lu resync:%lu",
+                 (unsigned long)duplicates,
+                 (unsigned long)duplicate_starts,
+                 (unsigned long)conflicts,
+                 (unsigned long)replays,
+                 (unsigned long)resyncs);
+        ret |= cli_printline(cli, outline);
+        snprintf(outline, CLI_LINESZ,
+                 "can_rx queued:%u high_water:%u drops:%lu processed:%lu busoff:%d recover:%d",
+                 canbus_rx_queue_count(&data->board.canbus),
+                 data->board.canbus.rx_queue_high_water,
+                 (unsigned long)data->board.canbus.rx_queue_drop_count,
+                 (unsigned long)data->board.canbus.rx_processed_count,
+                 data->can_busoff_fault,
+                 data->can_recover_pending);
+        ret |= cli_printline(cli, outline);
         return ret;
     }
 
@@ -3706,7 +3787,7 @@ int get_bringup(int argc, char *argv[])
         return ret;
     }
 
-    ret |= cli_printline(cli, "Usage: bringup [help|board|adbms6830|apm2950|charger-lv|charger-battery|ready|snapshot|evidence]");
+    ret |= cli_printline(cli, "Usage: bringup [help|board|adbms6830|hil-image|apm2950|charger-lv|charger-battery|ready|snapshot|evidence]");
     return ret;
 }
 

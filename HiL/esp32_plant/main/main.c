@@ -1,5 +1,5 @@
 /*
- * main.c — ESP32 75s6p P42A accumulator plant node
+ * main.c — ESP32 configurable accumulator plant node
  *
  * This keeps the existing working ESP32 architecture:
  *   - FreeRTOS plant task at 100 ms
@@ -7,9 +7,7 @@
  *   - reset command on CAN ID 0x300
  *   - shared plant struct protected by plant_mutex
  *
- * Only the plant source changed:
- *   old: frozen DFN-aged replay arrays
- *   new: generated Simulink electrothermal 75s6p P42A accumulator model
+ * Generated identifiers are isolated behind plant_model_adapter.h.
  *
  * CAN frame layout, Classic CAN 2.0:
  *
@@ -32,19 +30,26 @@
  *     [4:5]  T_max    int16   0.01 C
  *     [6:7]  T_avg    int16   0.01 C
  *
- *   0x210 — ADBMS replacement cell triplet
- *     [0]    segment  uint8   0..4
- *     [1]    first    uint8   first cell index in this triplet
+ *   0x210 — staged ADBMS replacement cell triplet
+ *     [0]    generation uint8
+ *     [1]    address    uint8   segment[7:5], first index[4:0]
  *     [2:3]  cell0    uint16  1 mV
  *     [4:5]  cell1    uint16  1 mV
  *     [6:7]  cell2    uint16  1 mV
  *
- *   0x211 — ADBMS replacement temperature triplet
- *     [0]    segment  uint8   0..4
- *     [1]    first    uint8   first thermistor index in this triplet
+ *   0x211 — staged ADBMS replacement temperature triplet
+ *     [0]    generation uint8
+ *     [1]    address    uint8   segment[7:5], first index[4:0]
  *     [2:3]  temp0    int16   0.1 C
  *     [4:5]  temp1    int16   0.1 C
  *     [6:7]  temp2    int16   0.1 C
+ *
+ *   0x212 — image control
+ *     START announces generation, topology, and frame counts.
+ *     COMMIT carries the CRC32 of all quantized cells then temperatures.
+ *
+ * The AMS publishes a replacement image only after START, every expected
+ * triplet, and a matching COMMIT CRC have arrived for one generation.
  *
  * IMPORTANT: 0x200 voltage scaling is now 10 mV/bit, not 1 mV/bit.
  * The old 1 mV scale would saturate above 65.535 V and cannot represent a
@@ -55,6 +60,7 @@
 #include "freertos/task.h"
 #include "freertos/semphr.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -65,17 +71,19 @@
 #include "mcp2515_driver.h"
 #include "plant_shared.h"
 #include "drive_profiles.h"
-#include "drev_75s6p_p42a_accumulator_plant_v3_ams_outputs_validated.h"
+#include "plant_model_adapter.h"
+#include "../../common/ams_hil_image_protocol.h"
 
-static const char *TAG = "P42A_PLANT";
+static const char *TAG = "HIL_PLANT";
 
 /* CAN frame IDs */
-#define CAN_ID_MEAS         0x200U
-#define CAN_ID_TRUTH        0x201U
-#define CAN_ID_AMS_SUMMARY  0x202U
-#define CAN_ID_CELL_SAMPLE  0x210U
-#define CAN_ID_TEMP_SAMPLE  0x211U
-#define CAN_ID_PLANT_CTRL   0x300U
+#define CAN_ID_MEAS          AMS_HIL_CAN_ID_MEAS
+#define CAN_ID_TRUTH         AMS_HIL_CAN_ID_TRUTH
+#define CAN_ID_AMS_SUMMARY   AMS_HIL_CAN_ID_SUMMARY
+#define CAN_ID_CELL_SAMPLE   AMS_HIL_CAN_ID_CELL_SAMPLE
+#define CAN_ID_TEMP_SAMPLE   AMS_HIL_CAN_ID_TEMP_SAMPLE
+#define CAN_ID_IMAGE_CONTROL AMS_HIL_CAN_ID_IMAGE_CONTROL
+#define CAN_ID_PLANT_CTRL    AMS_HIL_CAN_ID_CTRL
 
 #define PLANT_CMD_RESET0    0xA5U
 #define PLANT_CMD_RESET1    0x5AU
@@ -109,26 +117,18 @@ static const char *TAG = "P42A_PLANT";
 #define CURRENT_COUNTS_PER_A 100.0f
 #define SOC_COUNTS_PER_UNIT 10000.0f
 
-#define CELL_SAMPLE_STRIDE 3U
-#define TEMP_SAMPLE_STRIDE 3U
+#define CELL_SAMPLE_STRIDE AMS_HIL_IMAGE_SAMPLE_STRIDE
+#define TEMP_SAMPLE_STRIDE AMS_HIL_IMAGE_SAMPLE_STRIDE
 
-/* Generated Simulink model state. */
-static RT_MODEL_drev_75s6p_p42a_accu_T s_plant_M;
-static DW_drev_75s6p_p42a_accumulato_T s_plant_DW;
+_Static_assert(PLANT_NUM_SEGMENTS <= UINT8_MAX,
+               "CAN image segment count must fit uint8");
+_Static_assert(PLANT_NUM_GROUPS <= UINT8_MAX,
+               "CAN image cell count must fit uint8");
+_Static_assert(PLANT_NUM_THERMISTORS <= UINT8_MAX,
+               "CAN image temperature count must fit uint8");
 
-/* Generated model output buffers. Static to avoid large task stack usage. */
-static real32_T s_y_v_pack = 0.0F;
-static real32_T s_y_t_core = 25.0F;
-static real32_T s_y_t_surf = 25.0F;
-static real32_T s_y_soc_true = 1.0F;
-static real32_T s_y_v_group[PLANT_NUM_GROUPS];
-static real32_T s_y_v_segment[PLANT_NUM_SEGMENTS];
-static real32_T s_y_t_sensor[PLANT_NUM_THERMISTORS];
-static real32_T s_y_soc_group[PLANT_NUM_GROUPS];
-static real32_T s_y_v_min = 0.0F;
-static real32_T s_y_v_max = 0.0F;
-static real32_T s_y_t_max = 25.0F;
-static real32_T s_y_t_avg = 25.0F;
+/* Static to keep the generated output image off the FreeRTOS task stack. */
+static plant_output_t s_plant_output;
 
 SemaphoreHandle_t plant_mutex = NULL;
 plant_shared_t plant_shared = { 0 };
@@ -361,6 +361,139 @@ static void pack_ams_summary(const plant_can_snapshot_t *d, uint8_t *buf)
     buf[7] = (uint8_t)((uint16_t)tavg_cC & 0xFFU);
 }
 
+static uint16_t image_cell_mv(const plant_can_snapshot_t *d,
+                              uint8_t seg,
+                              uint8_t cell)
+{
+    if((d != NULL) && (seg < PLANT_NUM_SEGMENTS) &&
+       (cell < PLANT_SEGMENT_GROUP_COUNT[seg]))
+    {
+        const uint32_t flat_index =
+            (uint32_t)PLANT_SEGMENT_GROUP_OFFSET[seg] + cell;
+        const uint32_t group = PLANT_SEGMENT_GROUP_INDEX[flat_index];
+        if(group < PLANT_NUM_GROUPS)
+        {
+            return sat_u16(d->V_group[group] *
+                           GROUP_VOLTAGE_COUNTS_PER_V);
+        }
+    }
+
+    return 0U;
+}
+
+static int16_t image_temp_deci_c(const plant_can_snapshot_t *d,
+                                 uint8_t seg,
+                                 uint8_t sensor)
+{
+    if((d != NULL) && (seg < PLANT_NUM_SEGMENTS) &&
+       (sensor < PLANT_SEGMENT_SENSOR_COUNT[seg]))
+    {
+        const uint32_t flat_index =
+            (uint32_t)PLANT_SEGMENT_SENSOR_OFFSET[seg] + sensor;
+        const uint32_t therm = PLANT_SEGMENT_SENSOR_INDEX[flat_index];
+        if(therm < PLANT_NUM_THERMISTORS)
+        {
+            return sat_i16(d->T_sensor[therm] * 10.0f);
+        }
+    }
+
+    return 0;
+}
+
+static uint8_t image_cell_frame_count(void)
+{
+    uint16_t count = 0U;
+    for(uint8_t seg = 0U; seg < PLANT_NUM_SEGMENTS; seg++)
+    {
+        count += (uint16_t)((PLANT_SEGMENT_GROUP_COUNT[seg] +
+                             CELL_SAMPLE_STRIDE - 1U) /
+                            CELL_SAMPLE_STRIDE);
+    }
+    return (count <= UINT8_MAX) ? (uint8_t)count : UINT8_MAX;
+}
+
+static uint8_t image_temp_frame_count(void)
+{
+    uint16_t count = 0U;
+    for(uint8_t seg = 0U; seg < PLANT_NUM_SEGMENTS; seg++)
+    {
+        count += (uint16_t)((PLANT_SEGMENT_SENSOR_COUNT[seg] +
+                             TEMP_SAMPLE_STRIDE - 1U) /
+                            TEMP_SAMPLE_STRIDE);
+    }
+    return (count <= UINT8_MAX) ? (uint8_t)count : UINT8_MAX;
+}
+
+static uint32_t image_crc32(const plant_can_snapshot_t *d)
+{
+    uint32_t crc = ams_hil_image_crc32_init();
+
+    for(uint8_t seg = 0U; seg < PLANT_NUM_SEGMENTS; seg++)
+    {
+        for(uint8_t cell = 0U;
+            cell < PLANT_SEGMENT_GROUP_COUNT[seg];
+            cell++)
+        {
+            crc = ams_hil_image_crc32_update_u16_be(
+                crc,
+                image_cell_mv(d, seg, cell));
+        }
+    }
+    for(uint8_t seg = 0U; seg < PLANT_NUM_SEGMENTS; seg++)
+    {
+        for(uint8_t sensor = 0U;
+            sensor < PLANT_SEGMENT_SENSOR_COUNT[seg];
+            sensor++)
+        {
+            crc = ams_hil_image_crc32_update_u16_be(
+                crc,
+                (uint16_t)image_temp_deci_c(d, seg, sensor));
+        }
+    }
+
+    return ams_hil_image_crc32_finalize(crc);
+}
+
+static void pack_image_start(const plant_can_snapshot_t *d, uint8_t *buf)
+{
+    if((d == NULL) || (buf == NULL))
+    {
+        return;
+    }
+
+    buf[AMS_HIL_IMAGE_START_VERSION_OFFSET] =
+        AMS_HIL_IMAGE_PROTOCOL_VERSION;
+    buf[AMS_HIL_IMAGE_START_OPCODE_OFFSET] = AMS_HIL_IMAGE_CTRL_START;
+    buf[AMS_HIL_IMAGE_START_GENERATION_OFFSET] = d->counter;
+    buf[AMS_HIL_IMAGE_START_SEGMENTS_OFFSET] = PLANT_NUM_SEGMENTS;
+    buf[AMS_HIL_IMAGE_START_CELLS_OFFSET] = PLANT_NUM_GROUPS;
+    buf[AMS_HIL_IMAGE_START_TEMPERATURES_OFFSET] =
+        PLANT_NUM_THERMISTORS;
+    buf[AMS_HIL_IMAGE_START_CELL_FRAMES_OFFSET] =
+        image_cell_frame_count();
+    buf[AMS_HIL_IMAGE_START_TEMP_FRAMES_OFFSET] =
+        image_temp_frame_count();
+}
+
+static void pack_image_commit(const plant_can_snapshot_t *d,
+                              uint32_t crc,
+                              uint8_t *buf)
+{
+    if((d == NULL) || (buf == NULL))
+    {
+        return;
+    }
+
+    buf[AMS_HIL_IMAGE_COMMIT_VERSION_OFFSET] =
+        AMS_HIL_IMAGE_PROTOCOL_VERSION;
+    buf[AMS_HIL_IMAGE_COMMIT_OPCODE_OFFSET] = AMS_HIL_IMAGE_CTRL_COMMIT;
+    buf[AMS_HIL_IMAGE_COMMIT_GENERATION_OFFSET] = d->counter;
+    buf[AMS_HIL_IMAGE_COMMIT_RESERVED_OFFSET] = 0U;
+    ams_hil_image_write_u32_be(
+        &buf[AMS_HIL_IMAGE_COMMIT_CRC_OFFSET],
+        crc);
+}
+
 static void pack_cell_sample(const plant_can_snapshot_t *d,
                              uint8_t seg,
                              uint8_t first_cell,
@@ -370,22 +503,14 @@ static void pack_cell_sample(const plant_can_snapshot_t *d,
         return;
     }
 
-    buf[0] = seg;
-    buf[1] = first_cell;
+    buf[AMS_HIL_IMAGE_DATA_GENERATION_OFFSET] = d->counter;
+    buf[AMS_HIL_IMAGE_DATA_ADDRESS_OFFSET] =
+        ams_hil_image_pack_address(seg, first_cell);
 
     for (uint8_t n = 0U; n < CELL_SAMPLE_STRIDE; n++)
     {
         uint8_t cell = (uint8_t)(first_cell + n);
-        uint16_t mv = 0U;
-
-        if ((seg < PLANT_NUM_SEGMENTS) && (cell < 15U))
-        {
-            uint32_t group = ((uint32_t)seg * 15U) + cell;
-            if (group < PLANT_NUM_GROUPS)
-            {
-                mv = sat_u16(d->V_group[group] * GROUP_VOLTAGE_COUNTS_PER_V);
-            }
-        }
+        uint16_t mv = image_cell_mv(d, seg, cell);
 
         uint8_t off = (uint8_t)(2U + (2U * n));
         buf[off] = (uint8_t)(mv >> 8);
@@ -402,22 +527,14 @@ static void pack_temp_sample(const plant_can_snapshot_t *d,
         return;
     }
 
-    buf[0] = seg;
-    buf[1] = first_sensor;
+    buf[AMS_HIL_IMAGE_DATA_GENERATION_OFFSET] = d->counter;
+    buf[AMS_HIL_IMAGE_DATA_ADDRESS_OFFSET] =
+        ams_hil_image_pack_address(seg, first_sensor);
 
     for (uint8_t n = 0U; n < TEMP_SAMPLE_STRIDE; n++)
     {
         uint8_t sensor = (uint8_t)(first_sensor + n);
-        int16_t deci_c = 0;
-
-        if ((seg < PLANT_NUM_SEGMENTS) && (sensor < 24U))
-        {
-            uint32_t therm = ((uint32_t)seg * 24U) + sensor;
-            if (therm < PLANT_NUM_THERMISTORS)
-            {
-                deci_c = sat_i16(d->T_sensor[therm] * 10.0f);
-            }
-        }
+        int16_t deci_c = image_temp_deci_c(d, seg, sensor);
 
         uint8_t off = (uint8_t)(2U + (2U * n));
         buf[off] = (uint8_t)((uint16_t)deci_c >> 8);
@@ -425,53 +542,42 @@ static void pack_temp_sample(const plant_can_snapshot_t *d,
     }
 }
 
-static void plant_model_reset(void)
+static bool reset_plant_model(void)
 {
-    memset(&s_plant_DW, 0, sizeof(s_plant_DW));
-    s_plant_M.dwork = &s_plant_DW;
-
-    drev_75s6p_p42a_accumulator_plant_v3_ams_outputs_validated_initialize(&s_plant_M);
-
-    memset(s_y_v_group, 0, sizeof(s_y_v_group));
-    memset(s_y_v_segment, 0, sizeof(s_y_v_segment));
-    memset(s_y_t_sensor, 0, sizeof(s_y_t_sensor));
-    memset(s_y_soc_group, 0, sizeof(s_y_soc_group));
-
-    s_y_v_pack = 0.0F;
-    s_y_t_core = PROFILE_AMBIENT_C;
-    s_y_t_surf = PROFILE_AMBIENT_C;
-    s_y_soc_true = 1.0F;
-    s_y_v_min = 0.0F;
-    s_y_v_max = 0.0F;
-    s_y_t_max = PROFILE_AMBIENT_C;
-    s_y_t_avg = PROFILE_AMBIENT_C;
+    memset(&s_plant_output, 0, sizeof(s_plant_output));
+    return plant_reset(1.0f, PROFILE_AMBIENT_C) &&
+           plant_step(0.0f, PROFILE_AMBIENT_C) &&
+           plant_get_outputs(&s_plant_output);
 }
 
-static void publish_model_outputs(float I_pack, uint32_t step)
+static bool publish_model_outputs(float I_pack, uint32_t step)
 {
     if (xSemaphoreTake(plant_mutex, pdMS_TO_TICKS(5)) == pdTRUE)
     {
-        plant_shared.V_pack = (float)s_y_v_pack;
+        plant_shared.V_pack = s_plant_output.V_pack;
         plant_shared.I_pack = I_pack;
-        plant_shared.T_surf = (float)s_y_t_surf;
-        plant_shared.T_core = (float)s_y_t_core;
-        plant_shared.SoC_true = (float)s_y_soc_true;
+        plant_shared.T_surf = s_plant_output.T_surf;
+        plant_shared.T_core = s_plant_output.T_core;
+        plant_shared.SoC_true = s_plant_output.SoC_true;
 
-        memcpy(plant_shared.V_group, s_y_v_group, sizeof(plant_shared.V_group));
-        memcpy(plant_shared.V_segment, s_y_v_segment, sizeof(plant_shared.V_segment));
-        memcpy(plant_shared.T_sensor, s_y_t_sensor, sizeof(plant_shared.T_sensor));
-        memcpy(plant_shared.SoC_group, s_y_soc_group, sizeof(plant_shared.SoC_group));
+        memcpy(plant_shared.V_group, s_plant_output.V_group, sizeof(plant_shared.V_group));
+        memcpy(plant_shared.V_segment, s_plant_output.V_segment, sizeof(plant_shared.V_segment));
+        memcpy(plant_shared.T_sensor, s_plant_output.T_sensor, sizeof(plant_shared.T_sensor));
+        memcpy(plant_shared.SoC_group, s_plant_output.SoC_group, sizeof(plant_shared.SoC_group));
 
-        plant_shared.V_min = (float)s_y_v_min;
-        plant_shared.V_max = (float)s_y_v_max;
-        plant_shared.T_max = (float)s_y_t_max;
-        plant_shared.T_avg = (float)s_y_t_avg;
+        plant_shared.V_min = s_plant_output.V_min;
+        plant_shared.V_max = s_plant_output.V_max;
+        plant_shared.T_max = s_plant_output.T_max;
+        plant_shared.T_avg = s_plant_output.T_avg;
 
         plant_shared.counter++;
         plant_shared.step = step;
+        plant_shared.valid = true;
 
         xSemaphoreGive(plant_mutex);
+        return true;
     }
+    return false;
 }
 
 static bool read_can_snapshot(plant_can_snapshot_t *snap)
@@ -483,6 +589,12 @@ static bool read_can_snapshot(plant_can_snapshot_t *snap)
 
     if (xSemaphoreTake(plant_mutex, pdMS_TO_TICKS(5)) != pdTRUE)
     {
+        return false;
+    }
+
+    if (!plant_shared.valid)
+    {
+        xSemaphoreGive(plant_mutex);
         return false;
     }
 
@@ -508,13 +620,17 @@ static void plant_task(void *pvParameters)
 {
     (void)pvParameters;
 
-    plant_model_reset();
+    configASSERT(reset_plant_model());
+    configASSERT(publish_model_outputs(0.0f, 0U));
 
     const TickType_t period = pdMS_TO_TICKS(PLANT_PERIOD_MS);
     TickType_t xLastWake = xTaskGetTickCount();
     uint32_t step = 0U;
+    uint32_t max_step_execution_us = 0U;
+    uint32_t step_deadline_miss_count = 0U;
 
-    printf("75s6p P42A Simulink plant started, profile mode=%d, ambient=%.1f C\n",
+    printf("%s started, profile mode=%d, ambient=%.1f C\n",
+           PLANT_MODEL_NAME,
            PLANT_PROFILE_MODE,
            (double)PROFILE_AMBIENT_C);
 
@@ -523,20 +639,24 @@ static void plant_task(void *pvParameters)
         if (plant_reset_requested)
         {
             plant_reset_requested = false;
-            plant_model_reset();
+            if (!reset_plant_model())
+            {
+                ESP_LOGE(TAG, "plant reset or zero-current initialization failed");
+                vTaskDelayUntil(&xLastWake, period);
+                continue;
+            }
             step = 0U;
             xLastWake = xTaskGetTickCount();
 
-            if (xSemaphoreTake(plant_mutex, pdMS_TO_TICKS(5)) == pdTRUE)
+            /*
+             * Publish one fully calculated zero-current state immediately.
+             * publish_model_outputs advances the existing transport generation;
+             * a commanded model reset therefore never emits a zero image and
+             * never restarts the CAN epoch.
+             */
+            if (!publish_model_outputs(0.0f, 0U))
             {
-                memset(&plant_shared, 0, sizeof(plant_shared));
-                plant_shared.T_surf = PROFILE_AMBIENT_C;
-                plant_shared.T_core = PROFILE_AMBIENT_C;
-                plant_shared.T_max = PROFILE_AMBIENT_C;
-                plant_shared.T_avg = PROFILE_AMBIENT_C;
-                plant_shared.SoC_true = 1.0f;
-                plant_shared.step = 0U;
-                xSemaphoreGive(plant_mutex);
+                ESP_LOGW(TAG, "reset output publication mutex timeout");
             }
 
             printf("PLANT MODEL RESET DONE\n");
@@ -545,32 +665,39 @@ static void plant_task(void *pvParameters)
         }
 
         float I_pack = get_I_pack(step);
+        const int64_t step_start_us = esp_timer_get_time();
 
-        drev_75s6p_p42a_accumulator_plant_v3_ams_outputs_validated_step(
-            &s_plant_M,
-            (real32_T)I_pack,
-            (real32_T)PROFILE_AMBIENT_C,
-            &s_y_v_pack,
-            &s_y_t_core,
-            &s_y_t_surf,
-            &s_y_soc_true,
-            s_y_v_group,
-            s_y_v_segment,
-            s_y_t_sensor,
-            s_y_soc_group,
-            &s_y_v_min,
-            &s_y_v_max,
-            &s_y_t_max,
-            &s_y_t_avg);
+        if (!plant_step(I_pack, PROFILE_AMBIENT_C) ||
+            !plant_get_outputs(&s_plant_output))
+        {
+            ESP_LOGE(TAG, "plant_step rejected input or produced non-finite output");
+            vTaskDelayUntil(&xLastWake, period);
+            continue;
+        }
+        const uint32_t step_execution_us =
+            (uint32_t)(esp_timer_get_time() - step_start_us);
+        if(step_execution_us > max_step_execution_us)
+        {
+            max_step_execution_us = step_execution_us;
+        }
+        if(step_execution_us > (PLANT_PERIOD_MS * 1000U))
+        {
+            step_deadline_miss_count++;
+        }
 
-        publish_model_outputs(I_pack, step);
+        if (!publish_model_outputs(I_pack, step))
+        {
+            ESP_LOGW(TAG, "plant output publication mutex timeout");
+        }
 
         if ((step % 100U) == 0U)
         {
             plant_can_snapshot_t snap;
             if (read_can_snapshot(&snap))
             {
-                printf("PLANT step=%lu I=%.2f V=%.3f SoC=%.5f Vmin=%.4f Vmax=%.4f Ts=%.2f Tc=%.2f Tmax=%.2f\n",
+                printf("PLANT step=%lu I=%.2f V=%.3f SoC=%.5f "
+                       "Vmin=%.4f Vmax=%.4f Ts=%.2f Tc=%.2f Tmax=%.2f "
+                       "step_us=%lu max_step_us=%lu misses=%lu\n",
                        (unsigned long)snap.step,
                        (double)snap.I_pack,
                        (double)snap.V_pack,
@@ -579,7 +706,10 @@ static void plant_task(void *pvParameters)
                        (double)snap.V_max,
                        (double)snap.T_surf,
                        (double)snap.T_core,
-                       (double)snap.T_max);
+                       (double)snap.T_max,
+                       (unsigned long)step_execution_us,
+                       (unsigned long)max_step_execution_us,
+                       (unsigned long)step_deadline_miss_count);
             }
         }
 
@@ -602,10 +732,16 @@ static void can_tx_task(void *pvParameters)
     uint8_t meas_buf[8] = {0};
     uint8_t truth_buf[8] = {0};
     uint8_t ams_buf[8] = {0};
+    uint8_t image_start_buf[8] = {0};
+    uint8_t image_commit_buf[8] = {0};
     uint8_t cell_buf[8] = {0};
     uint8_t temp_buf[8] = {0};
 
     uint32_t tx_count = 0U;
+    uint32_t image_fail_count = 0U;
+    uint32_t deadline_miss_count = 0U;
+    uint32_t max_image_tx_us = 0U;
+    uint32_t max_burst_tx_us = 0U;
 
     printf("can_tx_task started\n");
 
@@ -620,15 +756,27 @@ static void can_tx_task(void *pvParameters)
             pack_meas(&snap, meas_buf);
             pack_truth(&snap, truth_buf);
             pack_ams_summary(&snap, ams_buf);
+            pack_image_start(&snap, image_start_buf);
+            const uint32_t image_crc = image_crc32(&snap);
+            pack_image_commit(&snap, image_crc, image_commit_buf);
 
+            const int64_t burst_tx_start_us = esp_timer_get_time();
             esp_err_t e1 = mcp2515_send_frame(CAN_ID_MEAS, meas_buf, 8);
             esp_err_t e2 = mcp2515_send_frame(CAN_ID_TRUTH, truth_buf, 8);
             esp_err_t e3 = mcp2515_send_frame(CAN_ID_AMS_SUMMARY, ams_buf, 8);
-            bool image_ok = true;
+            const int64_t image_tx_start_us = esp_timer_get_time();
+            bool image_ok =
+                (mcp2515_send_frame(CAN_ID_IMAGE_CONTROL,
+                                    image_start_buf,
+                                    8) == ESP_OK);
 
-            for (uint8_t seg = 0U; seg < PLANT_NUM_SEGMENTS; seg++)
+            for (uint8_t seg = 0U;
+                 image_ok && (seg < PLANT_NUM_SEGMENTS);
+                 seg++)
             {
-                for (uint8_t first = 0U; first < 15U; first = (uint8_t)(first + CELL_SAMPLE_STRIDE))
+                for (uint8_t first = 0U;
+                     first < PLANT_SEGMENT_GROUP_COUNT[seg];
+                     first = (uint8_t)(first + CELL_SAMPLE_STRIDE))
                 {
                     pack_cell_sample(&snap, seg, first, cell_buf);
                     if (mcp2515_send_frame(CAN_ID_CELL_SAMPLE, cell_buf, 8) != ESP_OK)
@@ -638,9 +786,13 @@ static void can_tx_task(void *pvParameters)
                 }
             }
 
-            for (uint8_t seg = 0U; seg < PLANT_NUM_SEGMENTS; seg++)
+            for (uint8_t seg = 0U;
+                 image_ok && (seg < PLANT_NUM_SEGMENTS);
+                 seg++)
             {
-                for (uint8_t first = 0U; first < 24U; first = (uint8_t)(first + TEMP_SAMPLE_STRIDE))
+                for (uint8_t first = 0U;
+                     first < PLANT_SEGMENT_SENSOR_COUNT[seg];
+                     first = (uint8_t)(first + TEMP_SAMPLE_STRIDE))
                 {
                     pack_temp_sample(&snap, seg, first, temp_buf);
                     if (mcp2515_send_frame(CAN_ID_TEMP_SAMPLE, temp_buf, 8) != ESP_OK)
@@ -650,27 +802,92 @@ static void can_tx_task(void *pvParameters)
                 }
             }
 
+            if(image_ok)
+            {
+                image_ok =
+                    (mcp2515_send_frame(CAN_ID_IMAGE_CONTROL,
+                                        image_commit_buf,
+                                        8) == ESP_OK);
+            }
+
+            const uint32_t image_tx_us =
+                (uint32_t)(esp_timer_get_time() - image_tx_start_us);
+            const uint32_t burst_tx_us =
+                (uint32_t)(esp_timer_get_time() - burst_tx_start_us);
+            if(image_tx_us > max_image_tx_us)
+            {
+                max_image_tx_us = image_tx_us;
+            }
+            if(burst_tx_us > max_burst_tx_us)
+            {
+                max_burst_tx_us = burst_tx_us;
+            }
+            if(burst_tx_us > (PLANT_PERIOD_MS * 1000U))
+            {
+                deadline_miss_count++;
+            }
+
             if ((e1 == ESP_OK) && (e2 == ESP_OK) && (e3 == ESP_OK) && image_ok)
             {
                 tx_count++;
 
                 if ((tx_count % 20U) == 0U)
                 {
+                    mcp2515_diagnostics_t can_diagnostics;
+                    mcp2515_get_diagnostics(&can_diagnostics);
                     uint32_t step24 =
                         ((uint32_t)truth_buf[5] << 16) |
                         ((uint32_t)truth_buf[6] << 8)  |
                         ((uint32_t)truth_buf[7]);
 
-                    printf("CAN TX alive count=%lu ctr=%u step=%lu Vraw10mV=%u\n",
+                    printf("CAN TX alive count=%lu ctr=%u step=%lu Vraw10mV=%u "
+                           "image_us=%lu max_image_us=%lu burst_us=%lu "
+                           "max_burst_us=%lu misses=%lu failures=%lu "
+                           "can_ok=%lu arb=%lu txerr=%lu retry=%lu abort=%lu "
+                           "busoff=%lu timeout=%lu crc=%08lx\n",
                            (unsigned long)tx_count,
                            (unsigned int)meas_buf[6],
                            (unsigned long)step24,
-                           (unsigned int)(((uint16_t)meas_buf[0] << 8) | meas_buf[1]));
+                           (unsigned int)(((uint16_t)meas_buf[0] << 8) |
+                                          meas_buf[1]),
+                           (unsigned long)image_tx_us,
+                           (unsigned long)max_image_tx_us,
+                           (unsigned long)burst_tx_us,
+                           (unsigned long)max_burst_tx_us,
+                           (unsigned long)deadline_miss_count,
+                           (unsigned long)image_fail_count,
+                           (unsigned long)can_diagnostics.successful_frames,
+                           (unsigned long)can_diagnostics.arbitration_lost_events,
+                           (unsigned long)can_diagnostics.transmit_error_events,
+                           (unsigned long)can_diagnostics.controller_retry_events,
+                           (unsigned long)can_diagnostics.aborted_frames,
+                           (unsigned long)can_diagnostics.bus_off_failures,
+                           (unsigned long)can_diagnostics.timeout_failures,
+                           (unsigned long)image_crc);
+                    printf("CAN CTRL spi=%lu txwar=%lu txpassive=%lu "
+                           "rx0ovr=%lu rx1ovr=%lu\n",
+                           (unsigned long)can_diagnostics.spi_failures,
+                           (unsigned long)
+                               can_diagnostics.transmit_warning_observations,
+                           (unsigned long)
+                               can_diagnostics.transmit_passive_observations,
+                           (unsigned long)
+                               can_diagnostics.receive_buffer_0_overflows,
+                           (unsigned long)
+                               can_diagnostics.receive_buffer_1_overflows);
                 }
             }
             else
             {
-                printf("TX FAIL e1=%d e2=%d e3=%d image_ok=%d\n", e1, e2, e3, image_ok ? 1 : 0);
+                image_fail_count++;
+                printf("TX FAIL e1=%d e2=%d e3=%d image_ok=%d "
+                       "image_us=%lu failures=%lu\n",
+                       e1,
+                       e2,
+                       e3,
+                       image_ok ? 1 : 0,
+                       (unsigned long)image_tx_us,
+                       (unsigned long)image_fail_count);
             }
         }
         else
@@ -709,7 +926,7 @@ void app_main(void)
     BaseType_t ok;
 
     ok = xTaskCreatePinnedToCore(plant_task,
-                                 "p42a_plant",
+                                 "hil_plant",
                                  6144,
                                  NULL,
                                  5,

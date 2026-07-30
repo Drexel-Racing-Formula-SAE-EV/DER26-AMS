@@ -20,15 +20,17 @@
 #define DATALEN 8
 
 /*
- * One complete HIL accumulator image is 65 CAN frames (25 cell frames and
- * 40 temperature frames).  Keep enough ISR-to-task buffering for that burst,
- * plus margin for charger and diagnostic traffic.  The single-producer,
+ * One atomic HIL accumulator image is 67 CAN frames (START, 25 cell frames,
+ * 40 temperature frames, COMMIT), plus three plant summary frames. Keep room
+ * for two back-to-back 70-frame generations and concurrent charger/diagnostic
+ * traffic. Hardware qualification must still measure the actual high-water
+ * mark and prove no drops at the configured bus load. The single-producer,
  * single-consumer ring intentionally leaves one entry empty. Its Cortex-M
  * barrier/ownership contract is documented in
  * Core/docs/CONCURRENCY_OWNERSHIP.md; adding another producer or consumer is
  * not supported.
  */
-#define CANBUS_RX_QUEUE_DEPTH 96u
+#define CANBUS_RX_QUEUE_DEPTH 160u
 
 #if CANBUS_RX_QUEUE_DEPTH < 2u
 #error "CANBUS_RX_QUEUE_DEPTH must be at least 2"

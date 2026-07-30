@@ -8,6 +8,7 @@
  */
 
 #include "mcp2515_driver.h"
+#include "mcp2515_tx_status.h"
 
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
@@ -21,6 +22,7 @@
 
 static const char *TAG = "MCP2515";
 static spi_device_handle_t s_spi = NULL;
+static mcp2515_diagnostics_t s_diagnostics;
 /* MCP2515 instruction codes. */
 #define MCP_RESET       0xC0U
 #define MCP_READ        0x03U
@@ -60,8 +62,68 @@ static spi_device_handle_t s_spi = NULL;
 
 #define CANINTF_RX0IF 0x01U
 #define CANINTF_RX1IF 0x02U
-#define TXB0CTRL_TXREQ 0x08U
-#define TXB0CTRL_TXERR 0x10U
+#define CANINTF_TX0IF 0x04U
+
+static esp_err_t spi_read_byte(uint8_t reg, uint8_t *val);
+
+static void increment_u32_saturated(uint32_t *value)
+{
+    if ((value != NULL) && (*value != UINT32_MAX))
+    {
+        (*value)++;
+    }
+}
+
+static void note_spi_failure(void)
+{
+    increment_u32_saturated(&s_diagnostics.spi_failures);
+}
+
+static esp_err_t read_tx_status(uint8_t *txbctrl, uint8_t *eflg)
+{
+    esp_err_t err = spi_read_byte(REG_TXB0CTRL, txbctrl);
+    if (err != ESP_OK)
+    {
+        note_spi_failure();
+        return err;
+    }
+    err = spi_read_byte(REG_EFLG, eflg);
+    if (err != ESP_OK)
+    {
+        note_spi_failure();
+    }
+    return err;
+}
+
+static void note_controller_flags(uint8_t eflg,
+                                  bool *rx0_overflow_seen,
+                                  bool *rx1_overflow_seen)
+{
+    if ((eflg & MCP2515_EFLG_TXWAR) != 0U)
+    {
+        increment_u32_saturated(
+            &s_diagnostics.transmit_warning_observations);
+    }
+    if ((eflg & MCP2515_EFLG_TXEP) != 0U)
+    {
+        increment_u32_saturated(
+            &s_diagnostics.transmit_passive_observations);
+    }
+    if (((eflg & MCP2515_EFLG_RX0OVR) != 0U) &&
+        (rx0_overflow_seen != NULL) && !*rx0_overflow_seen)
+    {
+        increment_u32_saturated(
+            &s_diagnostics.receive_buffer_0_overflows);
+        *rx0_overflow_seen = true;
+    }
+    if (((eflg & MCP2515_EFLG_RX1OVR) != 0U) &&
+        (rx1_overflow_seen != NULL) && !*rx1_overflow_seen)
+    {
+        increment_u32_saturated(
+            &s_diagnostics.receive_buffer_1_overflows);
+        *rx1_overflow_seen = true;
+    }
+}
 
 #define MCP_RETURN_ON_ERROR(expr, tag, msg)      \
     do {                                          \
@@ -128,6 +190,19 @@ static esp_err_t spi_bit_modify(uint8_t reg, uint8_t mask, uint8_t data)
     return spi_tx(tx, sizeof(tx));
 }
 
+static void clear_tx0_state(void)
+{
+    if (spi_bit_modify(
+            REG_TXB0CTRL, MCP2515_TXBCTRL_TXREQ, 0x00U) != ESP_OK)
+    {
+        note_spi_failure();
+    }
+    if (spi_bit_modify(REG_CANINTF, CANINTF_TX0IF, 0x00U) != ESP_OK)
+    {
+        note_spi_failure();
+    }
+}
+
 static esp_err_t spi_reset(void)
 {
     const uint8_t tx = MCP_RESET;
@@ -179,6 +254,7 @@ esp_err_t mcp2515_init(void)
     if (s_spi != NULL) {
         return ESP_OK;
     }
+    mcp2515_reset_diagnostics();
 
     spi_bus_config_t bus_cfg = {
         .mosi_io_num = MCP_PIN_MOSI,
@@ -228,7 +304,7 @@ esp_err_t mcp2515_init(void)
 
     /* Polling driver: no MCP2515 interrupt pin required. */
     MCP_RETURN_ON_ERROR(spi_write_byte(REG_CANINTE, 0x00U), TAG, "CANINTE write failed");
-    MCP_RETURN_ON_ERROR(spi_write_byte(REG_CANINTF, 0x00U), TAG, "CANINTF clear failed");
+    MCP_RETURN_ON_ERROR(spi_bit_modify(REG_CANINTF, 0xFFU, 0x00U), TAG, "CANINTF clear failed");
     MCP_RETURN_ON_ERROR(spi_write_byte(REG_EFLG, 0x00U), TAG, "EFLG clear failed");
 
     /* Accept all standard/extended frames into RXB0/RXB1. The application filters by ID. */
@@ -271,6 +347,14 @@ esp_err_t mcp2515_send_frame(uint16_t id, const uint8_t *data, uint8_t len)
         len = 8U;
     }
 
+    esp_err_t err = spi_bit_modify(
+        REG_CANINTF, CANINTF_TX0IF, 0x00U);
+    if (err != ESP_OK)
+    {
+        note_spi_failure();
+        return err;
+    }
+
     uint8_t tx_buf[14] = { 0U };
     tx_buf[0] = MCP_LOAD_TX0;
     tx_buf[1] = (uint8_t)(id >> 3);
@@ -280,35 +364,121 @@ esp_err_t mcp2515_send_frame(uint16_t id, const uint8_t *data, uint8_t len)
         memcpy(&tx_buf[6], data, len);
     }
 
-    esp_err_t err = spi_tx(tx_buf, 6U + len);
+    err = spi_tx(tx_buf, 6U + len);
     if (err != ESP_OK) {
+        note_spi_failure();
         return err;
     }
 
     const uint8_t rts = MCP_RTS_TX0;
     err = spi_tx(&rts, sizeof(rts));
     if (err != ESP_OK) {
+        note_spi_failure();
+        clear_tx0_state();
         return err;
     }
 
+    bool arbitration_seen = false;
+    bool transmit_error_seen = false;
+    bool rx0_overflow_seen = false;
+    bool rx1_overflow_seen = false;
+    uint8_t final_ctrl = MCP2515_TXBCTRL_TXREQ;
+    uint8_t final_eflg = 0U;
+
     for (uint32_t i = 0U; i < 20U; i++) {
         vTaskDelay(pdMS_TO_TICKS(1));
-        uint8_t ctrl = 0U;
-        err = spi_read_byte(REG_TXB0CTRL, &ctrl);
+        err = read_tx_status(&final_ctrl, &final_eflg);
         if (err != ESP_OK) {
+            clear_tx0_state();
             return err;
         }
-        if ((ctrl & TXB0CTRL_TXREQ) == 0U) {
-            return ESP_OK;
+        note_controller_flags(
+            final_eflg, &rx0_overflow_seen, &rx1_overflow_seen);
+
+        if (((final_ctrl & MCP2515_TXBCTRL_MLOA) != 0U) &&
+            !arbitration_seen)
+        {
+            increment_u32_saturated(
+                &s_diagnostics.arbitration_lost_events);
+            arbitration_seen = true;
         }
-        if ((ctrl & TXB0CTRL_TXERR) != 0U) {
-            (void)spi_write_byte(REG_CANINTF, 0x00U);
-            ESP_LOGW(TAG, "TX bus error, ctrl=0x%02X", ctrl);
+        if (((final_ctrl & MCP2515_TXBCTRL_TXERR) != 0U) &&
+            !transmit_error_seen)
+        {
+            increment_u32_saturated(
+                &s_diagnostics.transmit_error_events);
+            transmit_error_seen = true;
+        }
+
+        mcp2515_tx_status_t status =
+            mcp2515_classify_tx_status(final_ctrl, final_eflg);
+        if (status == MCP2515_TX_STATUS_PENDING)
+        {
+            continue;
+        }
+
+        if (status == MCP2515_TX_STATUS_BUS_OFF)
+        {
+            increment_u32_saturated(&s_diagnostics.bus_off_failures);
+            clear_tx0_state();
+            ESP_LOGW(
+                TAG,
+                "TX failed: controller bus-off, ctrl=0x%02X eflg=0x%02X",
+                final_ctrl,
+                final_eflg);
             return ESP_FAIL;
         }
+        if (status == MCP2515_TX_STATUS_ABORTED)
+        {
+            increment_u32_saturated(&s_diagnostics.aborted_frames);
+            clear_tx0_state();
+            ESP_LOGW(
+                TAG,
+                "TX aborted, ctrl=0x%02X eflg=0x%02X",
+                final_ctrl,
+                final_eflg);
+            return ESP_FAIL;
+        }
+        if (status == MCP2515_TX_STATUS_CONTROLLER_ERROR)
+        {
+            clear_tx0_state();
+            ESP_LOGW(
+                TAG,
+                "TX controller error, ctrl=0x%02X eflg=0x%02X",
+                final_ctrl,
+                final_eflg);
+            return ESP_FAIL;
+        }
+
+        clear_tx0_state();
+        if (arbitration_seen || transmit_error_seen)
+        {
+            increment_u32_saturated(
+                &s_diagnostics.controller_retry_events);
+        }
+        increment_u32_saturated(&s_diagnostics.successful_frames);
+        return ESP_OK;
     }
 
-    ESP_LOGW(TAG, "TX timeout");
+    if ((final_eflg & MCP2515_EFLG_TXBO) != 0U)
+    {
+        increment_u32_saturated(&s_diagnostics.bus_off_failures);
+    }
+    else
+    {
+        increment_u32_saturated(&s_diagnostics.timeout_failures);
+    }
+
+    /*
+     * Leave TXB0 in a known state. Clearing TXREQ requests an abort without
+     * touching unrelated interrupt flags.
+     */
+    clear_tx0_state();
+    ESP_LOGW(
+        TAG,
+        "TX timeout/failure, ctrl=0x%02X eflg=0x%02X",
+        final_ctrl,
+        final_eflg);
     return ESP_ERR_TIMEOUT;
 }
 
@@ -348,5 +518,18 @@ esp_err_t mcp2515_read_frame(uint16_t *id, uint8_t *data, uint8_t *len)
     memcpy(data, &buf[5], *len);
 
     const uint8_t clear_mask = rx0 ? CANINTF_RX0IF : CANINTF_RX1IF;
-    return spi_write_byte(REG_CANINTF, (uint8_t)(canintf & (uint8_t)~clear_mask));
+    return spi_bit_modify(REG_CANINTF, clear_mask, 0x00U);
+}
+
+void mcp2515_get_diagnostics(mcp2515_diagnostics_t *diagnostics)
+{
+    if (diagnostics != NULL)
+    {
+        *diagnostics = s_diagnostics;
+    }
+}
+
+void mcp2515_reset_diagnostics(void)
+{
+    memset(&s_diagnostics, 0, sizeof(s_diagnostics));
 }

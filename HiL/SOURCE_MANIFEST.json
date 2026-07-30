@@ -1,0 +1,225 @@
+{
+  "base_repository_commit": "82c8607798b7d17726b52dcd96e6bdacd402559a",
+  "file_records": [
+    {
+      "path": "AMS/Core/Inc/ext_drivers/accumulator.h",
+      "sha256": "f68dc709c0bd6cfdecb668a192398e85feb7290aace7e9790330e5dced88f3b7"
+    },
+    {
+      "path": "AMS/Core/Src/ext_drivers/accumulator.c",
+      "sha256": "f62e5b464e5a759fda012ac8456981892157a169cb1ac3a9a519617c0c4fadb7"
+    },
+    {
+      "path": "AMS/Core/Src/tasks/cli_task.c",
+      "sha256": "cb3b3c2334b182b92eb3b0b5b5a838572b7571a41231bf68d5fec7dbbb720d0f"
+    },
+    {
+      "path": "AMS/host_tests/src/ams_host_test_runner.c",
+      "sha256": "2a41a115b71d65d8a43b8aaa058ce74c9a3b0c6e555a97e4d4e69877743d4354"
+    },
+    {
+      "path": "HiL/ATOMIC_CAN_IMAGE_PROTOCOL.md",
+      "sha256": "c4aca04b4e86feb6540a8a56ae004cf4d33e349dba9322a888be6df2d5f35e9f"
+    },
+    {
+      "path": "HiL/HARDWARE_QUALIFICATION_PLAN.md",
+      "sha256": "d7181176fbc12016abb760390f8649baead03834c797b442eed9c02f0679cae0"
+    },
+    {
+      "path": "HiL/HIL_REFACTOR_VALIDATION_REPORT.md",
+      "sha256": "e725b99987f7528a9c9c31f958109635d0178e30b1214be8ce6d7a64ff9cd67d"
+    },
+    {
+      "path": "HiL/README.md",
+      "sha256": "f9066762e7a2ee52636e77c65f5cc9c0d58a4cc061d274b15a268d50c30b62eb"
+    },
+    {
+      "path": "HiL/esp32_plant/components/CAN/mcp2515_driver.c",
+      "sha256": "4836117c794c7af98cf46dcea777e21b5172232371b4cd2d822c36d61b458e62"
+    },
+    {
+      "path": "HiL/esp32_plant/components/CAN/mcp2515_driver.h",
+      "sha256": "4e582357b0d6facc30bb488503358d511d87b2b2902e7720e0443323e3171373"
+    },
+    {
+      "path": "HiL/esp32_plant/components/CAN/mcp2515_tx_status.h",
+      "sha256": "785140fb342a1b4962f7900224c86108a851be50d3a0deb384a07e8f4fdf56e4"
+    },
+    {
+      "path": "HiL/esp32_plant/main/main.c",
+      "sha256": "b7a4dfac80607e103ded616a9d38c060f29e7cd88fcd7d7b447dd7a1110fb42a"
+    },
+    {
+      "path": "HiL/esp32_plant/main/plant_shared.h",
+      "sha256": "199a06fd288644236e852d721449233df034af49f2f8c4afc96f40e89c3c1564"
+    },
+    {
+      "path": "HiL/esp32_plant/README.md",
+      "sha256": "8198059158e5dae9d7f8e52c1121a58203d1294f88a804494a751e5cad88cdf6"
+    },
+    {
+      "path": "HiL/esp32_plant/tests/Makefile",
+      "sha256": "ca6cf3043c00f76d1c9a490a453a3e9ce1b6b5c72dab7d1bd4c8ad552901783b"
+    },
+    {
+      "path": "HiL/esp32_plant/tests/mcp2515_driver_host_test.c",
+      "sha256": "e778437d545e99f6b7e3a0e94dc7c0ce845d29500ffc87cc84c56f8f2ec80242"
+    },
+    {
+      "path": "HiL/esp32_plant/tests/mcp2515_tx_status_test.c",
+      "sha256": "1372aedd1a3161faf1ca888d4a8ba52cbd7b77855661aea177acd49f78c1dcd4"
+    },
+    {
+      "path": "HiL/simulink/+hil/dataset_normalization_options.m",
+      "sha256": "d4996a6292be99ef250087a8feffbe416aa376e69e948033944ec6e12753ea55"
+    },
+    {
+      "path": "HiL/simulink/+hil/configure_model.m",
+      "sha256": "b5d9983c47922806e88a5f24913f127b0a95bdd19e91b37488305114fe9a9907"
+    },
+    {
+      "path": "HiL/simulink/+hil/codegen_chart_script.m",
+      "sha256": "b053bab1af3d0a7284555f020b6e96524787de811d55efe72e5b8def415176fb"
+    },
+    {
+      "path": "HiL/simulink/+hil/export_codegen_parity_case.m",
+      "sha256": "c1c5632230901ddd2fbdaf6d668bdda6e6ea2bf6625c8fbc734f728caa827bf3"
+    },
+    {
+      "path": "HiL/simulink/+hil/export_validation_report.m",
+      "sha256": "bd9971ea0f9c77a20b2c86f718733bd5347e5681f607d58852a1942135c1f300"
+    },
+    {
+      "path": "HiL/simulink/+hil/fit_r1c1.m",
+      "sha256": "812debedcdaf922461294a1a0667f8787199a2add7e4bec24c421acf0818fbc0"
+    },
+    {
+      "path": "HiL/simulink/+hil/fit_r2c2.m",
+      "sha256": "59350ab275282cb28526881735b44bdee9a82a6fee490f2dcc4189879b373a98"
+    },
+    {
+      "path": "HiL/simulink/+hil/generate_code.m",
+      "sha256": "fa1ad05e0ac19be8b01e4fe0394ee9e914d59efbdaeb2fe96c30ffb0612c6387"
+    },
+    {
+      "path": "HiL/simulink/+hil/normalize_dataset.m",
+      "sha256": "2ff248b9b2e89d0bcc3f16a8ac9f17d32f4df963cbd9585b2cc9347f848b33d2"
+    },
+    {
+      "path": "HiL/simulink/+hil/package_codegen_for_esp32.m",
+      "sha256": "aef188c4fb359f928975e4a2c911a516988d2dfe394708b274f861525f07d824"
+    },
+    {
+      "path": "HiL/simulink/+hil/validate_all.m",
+      "sha256": "de6c00fce9d415671f5023d37cdd6618f718574f441a333dc8f6284ae3a9e9f6"
+    },
+    {
+      "path": "HiL/simulink/+hil/validate_configuration.m",
+      "sha256": "8fa6fbe32847b225d5c24d5e466ba882f1412080f61c9606d0d4a2e3f521338d"
+    },
+    {
+      "path": "HiL/simulink/+hil/validate_dataset.m",
+      "sha256": "672eaacb72922005d6daaddd48d5a169923b04251a5806c9f7a3e29b68abedd3"
+    },
+    {
+      "path": "HiL/simulink/+hil/validate_dynamic_profile.m",
+      "sha256": "1317b342827c8c417bbef8fc43633d3754e3bfe47ebbbe48439df63a00eb77fe"
+    },
+    {
+      "path": "HiL/simulink/+hil/validate_hppc.m",
+      "sha256": "f4e56696770b7aa69c89e602296389654c761c16ccf398f70510029669c0d479"
+    },
+    {
+      "path": "HiL/simulink/+hil/write_esp32_interface_files.m",
+      "sha256": "d0efb00fb3792c1054a28822b59bb49be600a4d45b62ce529ddf4b73be33b302"
+    },
+    {
+      "path": "HiL/simulink/adapters/load_p42a_hcgt.m",
+      "sha256": "310a0ddd1a08b42dadacff927a890ec15061ddfbadfabcb678dd9ee03d129934"
+    },
+    {
+      "path": "HiL/simulink/configs/acceptances/p42a.m",
+      "sha256": "453ce72b9cc530a2c8c1ad17f340aceb2265e8befd089fe7acdf0925008ee7ed"
+    },
+    {
+      "path": "HiL/simulink/configs/cells/p42a.m",
+      "sha256": "e2db17ba377dd90a9de3827518b127caa783ec416b2ea7d2b8735df6e1b9c296"
+    },
+    {
+      "path": "HiL/simulink/configs/datasets/p42a_published_hcgt.m",
+      "sha256": "8f73982fc00f020f2613ab0026eea70f8d10bf78ed58634bd3518340b71a173c"
+    },
+    {
+      "path": "HiL/simulink/scripts/run_all_tests.m",
+      "sha256": "a48c40261fa5fb5694c0a85fc83f1b925b608f8892e32dadd9d8eac8e67bce16"
+    },
+    {
+      "path": "HiL/simulink/scripts/generate_esp32_plant.m",
+      "sha256": "37c739b4134c214e25c3f4aba6e83ade547ba4df514d29d922134b0908e500e2"
+    },
+    {
+      "path": "HiL/simulink/scripts/validate_p42a_75s6p.m",
+      "sha256": "383864ae92d1c1195e2a434e56a497819c88ed818f507dcad4b4d15a39362c7b"
+    },
+    {
+      "path": "HiL/simulink/README.md",
+      "sha256": "b5f1ab783e7bae37d341fc3885d3e26855dce98b5499c4abb796b16df62b5ac9"
+    },
+    {
+      "path": "HiL/simulink/tests/run_static_checks.py",
+      "sha256": "3be081aa6a662ccb26ccf349696e9d87cd8201afd866aa4bddf6fd9d1444a763"
+    },
+    {
+      "path": "HiL/simulink/tools/qualify_generated_plant.py",
+      "sha256": "a7bf4be23c3eb503384ba2a409cdb3dc6d838661d906339524b2ca491734f63e"
+    },
+    {
+      "path": "HiL/tools/run_toolchain_qualification.py",
+      "sha256": "547ec2b79496365d16b3f99677fe8608fd314956cc1c02f0fbdf9cae5ee38741"
+    },
+    {
+      "path": "HiL/tools/write_source_manifest.py",
+      "sha256": "8c882261c3ee9c1a10ceb7abd9acd33e78e7526bf61f4d4d8249f81c968759c3"
+    }
+  ],
+  "generated_utc": "2026-07-29T23:22:10.835777+00:00",
+  "manifest_scope": "HIL qualification-readiness source snapshot",
+  "patch_review_revision": "hil-qualification-readiness-v3-2026-07-29",
+  "reviewed_input_archive": "DER26-AMS-HIL-Completion-2026-07-29.zip",
+  "reviewed_input_archive_sha256": "670167b4963d845f4dd812008fa9d0074a4d2d1943e45fa6c55e54fc54be883a",
+  "schema_version": 1,
+  "toolchain_status": {
+    "esp_idf": {
+      "status": "NOT_RUN",
+      "version": "unavailable"
+    },
+    "hardware": {
+      "status": "NOT_RUN",
+      "version": "ESP32/MCP2515/AMS bench unavailable"
+    },
+    "host_c_compiler": {
+      "status": "PASS",
+      "version": "cc (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0"
+    },
+    "host_platform": {
+      "status": "INFORMATIONAL",
+      "version": "Linux-6.12.13-x86_64-with-glibc2.39"
+    },
+    "host_python": {
+      "status": "PASS",
+      "version": "3.12.13 (main, Mar  3 2026, 14:59:34) [Clang 21.1.4 ]"
+    },
+    "matlab": {
+      "status": "NOT_RUN",
+      "version": "unavailable in managed review environment"
+    },
+    "simulink": {
+      "status": "NOT_RUN",
+      "version": "unavailable in managed review environment"
+    },
+    "simulink_coder": {
+      "status": "NOT_RUN",
+      "version": "unavailable in managed review environment"
+    }
+  }
+}

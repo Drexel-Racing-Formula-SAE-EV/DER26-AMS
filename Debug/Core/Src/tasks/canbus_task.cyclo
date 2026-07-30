@@ -1,0 +1,2 @@
+../Core/Src/tasks/canbus_task.c:22:14:canbus_task_start	1
+../Core/Src/tasks/canbus_task.c:29:6:canbus_task_fn	1

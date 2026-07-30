@@ -25,12 +25,15 @@ Original content had hundreds of generated/cache/report files, mostly from Simul
 - `empty.csv`, which appears to be a large PuTTY UART log, not a source CSV
 - old NN/Monte Carlo scripts that are not part of the DER non-NN HIL estimator path
 
-## Not fixed yet
+## Reusable-framework follow-up completed
 
-The MATLAB scripts still need a path cleanup pass. Several scripts reference local absolute paths such as `Documents/BMS_P42A_Data/...`.
+- `+hil/project_paths.m` resolves the repository and supports
+  `HIL_DATA_ROOT`/`HIL_OUTPUT_ROOT`.
+- The legacy scripts are thin wrappers around reusable functions.
+- Cell, pack, simulation, and dataset assumptions are separate configurations.
+- The exact generated constants and behavior have hashed source artifacts.
+- Generic topology, validation/reporting, and a stable ESP32 adapter are in
+  place.
 
-Recommended next cleanup PR after adding this folder:
-
-- introduce `hil/simulink/scripts/hil_paths.m`
-- replace hardcoded absolute paths with repo-relative paths or environment variables
-- add a short regeneration guide once the raw P42A dataset location is finalized
+See `HIL_REFACTOR_WORK_PLAN.md` and `HIL_REFACTOR_VALIDATION_REPORT.md` for the
+current status and remaining external tool/hardware checks.

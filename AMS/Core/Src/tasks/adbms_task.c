@@ -435,6 +435,9 @@ void adbms_task_fn(void *argument)
 #endif
 
 #if AMS_HIL_REPLACE_ADBMS
+        accumulator_hil_image_expire(acc,
+                                     osKernelGetTickCount(),
+                                     AMS_HIL_ADBMS_ASSEMBLY_TIMEOUT_MS);
         accumulator_hil_refresh_update_masks(acc,
                                              osKernelGetTickCount(),
                                              AMS_HIL_ADBMS_IMAGE_TIMEOUT_MS);
@@ -485,6 +488,9 @@ void adbms_task_fn(void *argument)
         ams_heartbeat_kick(data, AMS_HEARTBEAT_ADBMS, osKernelGetTickCount());
 
 #if AMS_HIL_REPLACE_ADBMS
+        accumulator_hil_image_expire(acc,
+                                     osKernelGetTickCount(),
+                                     AMS_HIL_ADBMS_ASSEMBLY_TIMEOUT_MS);
         accumulator_hil_refresh_update_masks(acc,
                                              osKernelGetTickCount(),
                                              AMS_HIL_ADBMS_IMAGE_TIMEOUT_MS);

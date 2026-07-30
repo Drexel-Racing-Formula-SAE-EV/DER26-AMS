@@ -7,6 +7,7 @@
  */
 
 #include "ext_drivers/accumulator.h"
+#include "../../../../HiL/common/ams_hil_image_protocol.h"
 #include "ext_drivers/thermistor_model.h"
 #include <math.h>
 #include <string.h>
@@ -303,6 +304,29 @@ void accumulator_init(accumulator_t *dev,
 	memset(dev->hil_temp_last_update_ms, 0, sizeof(dev->hil_temp_last_update_ms));
 	memset(dev->hil_cell_seen_mask, 0, sizeof(dev->hil_cell_seen_mask));
 	memset(dev->hil_temp_seen_mask, 0, sizeof(dev->hil_temp_seen_mask));
+	memset(dev->hil_stage_cell_mv, 0, sizeof(dev->hil_stage_cell_mv));
+	memset(dev->hil_stage_temp_deci_c, 0, sizeof(dev->hil_stage_temp_deci_c));
+	memset(dev->hil_stage_cell_mask, 0, sizeof(dev->hil_stage_cell_mask));
+	memset(dev->hil_stage_temp_mask, 0, sizeof(dev->hil_stage_temp_mask));
+	dev->hil_image_start_ms = 0u;
+	dev->hil_image_commit_ms = 0u;
+	dev->hil_image_accept_count = 0u;
+	dev->hil_image_reject_count = 0u;
+	dev->hil_image_timeout_count = 0u;
+	dev->hil_image_crc_fail_count = 0u;
+	dev->hil_image_incomplete_count = 0u;
+	dev->hil_image_duplicate_count = 0u;
+	dev->hil_image_duplicate_start_count = 0u;
+	dev->hil_image_conflicting_duplicate_count = 0u;
+	dev->hil_image_replay_reject_count = 0u;
+	dev->hil_image_resync_count = 0u;
+	dev->hil_stage_unique_cell_count = 0u;
+	dev->hil_stage_unique_temp_count = 0u;
+	dev->hil_stage_generation = 0u;
+	dev->hil_last_committed_generation = 0u;
+	dev->hil_stage_active = false;
+	dev->hil_stage_invalid = false;
+	dev->hil_committed_valid = false;
 	memset(dev->updated_voltage_mask, 0, sizeof(dev->updated_voltage_mask));
 	memset(dev->usable_voltage_mask, 0, sizeof(dev->usable_voltage_mask));
 	memset(dev->pec_fail_voltage_mask, 0, sizeof(dev->pec_fail_voltage_mask));
@@ -738,67 +762,341 @@ static int16_t accumulator_temp_deci_c_to_raw(int16_t deci_c)
     return raw;
 }
 
-int accumulator_hil_ingest_cell_triplet(accumulator_t *dev,
-                                        uint8_t seg,
-                                        uint8_t first_cell,
-                                        const uint16_t cell_mv[3],
-                                        uint32_t now_ms)
+static void accumulator_hil_increment_u32_sat(uint32_t *value)
 {
-    if((dev == NULL) || (cell_mv == NULL) || (seg >= NSMBS) || (first_cell >= NCELLS))
+    if((value != NULL) && (*value != UINT32_MAX))
     {
-        return -1;
+        (*value)++;
+    }
+}
+
+static void accumulator_hil_clear_stage(accumulator_t *dev)
+{
+    memset(dev->hil_stage_cell_mask, 0, sizeof(dev->hil_stage_cell_mask));
+    memset(dev->hil_stage_temp_mask, 0, sizeof(dev->hil_stage_temp_mask));
+    dev->hil_stage_unique_cell_count = 0u;
+    dev->hil_stage_unique_temp_count = 0u;
+    dev->hil_stage_invalid = false;
+}
+
+static uint32_t accumulator_hil_stage_crc(const accumulator_t *dev)
+{
+    uint32_t crc = ams_hil_image_crc32_init();
+
+    for(uint8_t seg = 0u; seg < NSMBS; seg++)
+    {
+        for(uint8_t cell = 0u; cell < NCELLS; cell++)
+        {
+            crc = ams_hil_image_crc32_update_u16_be(
+                crc,
+                dev->hil_stage_cell_mv[seg][cell]);
+        }
+    }
+    for(uint8_t seg = 0u; seg < NSMBS; seg++)
+    {
+        for(uint8_t sensor = 0u; sensor < NTEMPS; sensor++)
+        {
+            crc = ams_hil_image_crc32_update_u16_be(
+                crc,
+                (uint16_t)dev->hil_stage_temp_deci_c[seg][sensor]);
+        }
     }
 
-    adbms6830_asic *smb_ics = (dev->smb.ics != NULL) ? dev->smb.ics : dev->smb_ics;
+    return ams_hil_image_crc32_finalize(crc);
+}
 
-    for(uint8_t n = 0u; n < 3u; n++)
+accumulator_hil_image_result_t accumulator_hil_image_begin(
+    accumulator_t *dev,
+    uint8_t generation,
+    uint8_t segment_count,
+    uint8_t total_cell_count,
+    uint8_t total_temp_count,
+    uint8_t expected_cell_frames,
+    uint8_t expected_temp_frames,
+    uint32_t now_ms,
+    uint32_t resync_timeout_ms)
+{
+    const uint8_t required_cell_frames =
+        (uint8_t)(NSMBS * ((NCELLS + AMS_HIL_IMAGE_SAMPLE_STRIDE - 1u) /
+                           AMS_HIL_IMAGE_SAMPLE_STRIDE));
+    const uint8_t required_temp_frames =
+        (uint8_t)(NSMBS * ((NTEMPS + AMS_HIL_IMAGE_SAMPLE_STRIDE - 1u) /
+                           AMS_HIL_IMAGE_SAMPLE_STRIDE));
+
+    if(dev == NULL)
     {
-        uint8_t cell = (uint8_t)(first_cell + n);
+        return ACCUMULATOR_HIL_IMAGE_REJECTED;
+    }
+
+    if((segment_count != NSMBS) ||
+       (total_cell_count != (uint8_t)(NSMBS * NCELLS)) ||
+       (total_temp_count != (uint8_t)(NSMBS * NTEMPS)) ||
+       (expected_cell_frames != required_cell_frames) ||
+       (expected_temp_frames != required_temp_frames))
+    {
+        accumulator_hil_increment_u32_sat(&dev->hil_image_reject_count);
+        return ACCUMULATOR_HIL_IMAGE_REJECTED;
+    }
+
+    /*
+     * A sender may retry START after losing its acknowledgement context.
+     * An identical START for the active generation is idempotent: retain all
+     * staged data and the original assembly deadline. A poisoned generation
+     * still requires a new generation number to recover.
+     */
+    if(dev->hil_stage_active &&
+       (generation == dev->hil_stage_generation))
+    {
+        accumulator_hil_increment_u32_sat(
+            &dev->hil_image_duplicate_start_count);
+        if(dev->hil_stage_invalid)
+        {
+            accumulator_hil_increment_u32_sat(
+                &dev->hil_image_reject_count);
+            return ACCUMULATOR_HIL_IMAGE_REJECTED;
+        }
+        return ACCUMULATOR_HIL_IMAGE_STAGED;
+    }
+
+    if(dev->hil_committed_valid)
+    {
+        const uint8_t forward_delta =
+            (uint8_t)(generation - dev->hil_last_committed_generation);
+        const bool forward_generation =
+            (forward_delta != 0u) && (forward_delta < 128u);
+        const uint32_t committed_age_ms =
+            (uint32_t)(now_ms - dev->hil_image_commit_ms);
+        if(!forward_generation && (committed_age_ms <= resync_timeout_ms))
+        {
+            accumulator_hil_increment_u32_sat(
+                &dev->hil_image_replay_reject_count);
+            accumulator_hil_increment_u32_sat(&dev->hil_image_reject_count);
+            return ACCUMULATOR_HIL_IMAGE_REJECTED;
+        }
+        if(!forward_generation)
+        {
+            accumulator_hil_increment_u32_sat(&dev->hil_image_resync_count);
+        }
+    }
+
+    if(dev->hil_stage_active)
+    {
+        accumulator_hil_increment_u32_sat(&dev->hil_image_incomplete_count);
+        accumulator_hil_increment_u32_sat(&dev->hil_image_reject_count);
+    }
+
+    accumulator_hil_clear_stage(dev);
+    dev->hil_stage_generation = generation;
+    dev->hil_image_start_ms = now_ms;
+    dev->hil_stage_active = true;
+    return ACCUMULATOR_HIL_IMAGE_STAGED;
+}
+
+accumulator_hil_image_result_t accumulator_hil_image_stage_cell_triplet(
+    accumulator_t *dev,
+    uint8_t generation,
+    uint8_t seg,
+    uint8_t first_cell,
+    const uint16_t cell_mv[3])
+{
+    if((dev == NULL) || (cell_mv == NULL) || !dev->hil_stage_active ||
+       (generation != dev->hil_stage_generation) || (seg >= NSMBS) ||
+       (first_cell >= NCELLS) ||
+       ((first_cell % AMS_HIL_IMAGE_SAMPLE_STRIDE) != 0u))
+    {
+        if(dev != NULL)
+        {
+            accumulator_hil_increment_u32_sat(&dev->hil_image_reject_count);
+        }
+        return ACCUMULATOR_HIL_IMAGE_REJECTED;
+    }
+
+    for(uint8_t n = 0u; n < AMS_HIL_IMAGE_SAMPLE_STRIDE; n++)
+    {
+        const uint8_t cell = (uint8_t)(first_cell + n);
         if(cell >= NCELLS)
         {
             break;
         }
 
-        uint16_t bit = (uint16_t)(1u << cell);
-        smb_ics[seg].cell.c_codes[cell] = accumulator_mv_to_code(cell_mv[n]);
-        dev->hil_cell_last_update_ms[seg][cell] = now_ms;
-        dev->hil_cell_seen_mask[seg] |= bit;
-        dev->smb.last_cell_updated_mask[seg] |= bit;
-        dev->smb.last_cell_pec_mask[seg] &= (uint16_t)~bit;
+        const uint16_t bit = (uint16_t)(1u << cell);
+        if((dev->hil_stage_cell_mask[seg] & bit) != 0u)
+        {
+            accumulator_hil_increment_u32_sat(&dev->hil_image_duplicate_count);
+            if(dev->hil_stage_cell_mv[seg][cell] != cell_mv[n])
+            {
+                dev->hil_stage_invalid = true;
+                accumulator_hil_increment_u32_sat(
+                    &dev->hil_image_conflicting_duplicate_count);
+            }
+        }
+        else
+        {
+            dev->hil_stage_cell_mv[seg][cell] = cell_mv[n];
+            dev->hil_stage_cell_mask[seg] |= bit;
+            dev->hil_stage_unique_cell_count++;
+        }
     }
 
-    return 0;
+    return dev->hil_stage_invalid ? ACCUMULATOR_HIL_IMAGE_REJECTED :
+                                    ACCUMULATOR_HIL_IMAGE_STAGED;
 }
 
-int accumulator_hil_ingest_temp_triplet(accumulator_t *dev,
-                                        uint8_t seg,
-                                        uint8_t first_sensor,
-                                        const int16_t temp_deci_c[3],
-                                        uint32_t now_ms)
+accumulator_hil_image_result_t accumulator_hil_image_stage_temp_triplet(
+    accumulator_t *dev,
+    uint8_t generation,
+    uint8_t seg,
+    uint8_t first_sensor,
+    const int16_t temp_deci_c[3])
 {
-    if((dev == NULL) || (temp_deci_c == NULL) || (seg >= NSMBS) || (first_sensor >= NTEMPS))
+    if((dev == NULL) || (temp_deci_c == NULL) || !dev->hil_stage_active ||
+       (generation != dev->hil_stage_generation) || (seg >= NSMBS) ||
+       (first_sensor >= NTEMPS) ||
+       ((first_sensor % AMS_HIL_IMAGE_SAMPLE_STRIDE) != 0u))
     {
-        return -1;
+        if(dev != NULL)
+        {
+            accumulator_hil_increment_u32_sat(&dev->hil_image_reject_count);
+        }
+        return ACCUMULATOR_HIL_IMAGE_REJECTED;
     }
 
-    adbms6830_asic *smb_ics = (dev->smb.ics != NULL) ? dev->smb.ics : dev->smb_ics;
-
-    for(uint8_t n = 0u; n < 3u; n++)
+    for(uint8_t n = 0u; n < AMS_HIL_IMAGE_SAMPLE_STRIDE; n++)
     {
-        uint8_t sensor = (uint8_t)(first_sensor + n);
+        const uint8_t sensor = (uint8_t)(first_sensor + n);
         if(sensor >= NTEMPS)
         {
             break;
         }
 
-        uint32_t bit = (uint32_t)(1UL << sensor);
-        smb_ics[seg].temp.raw[sensor] = accumulator_temp_deci_c_to_raw(temp_deci_c[n]);
-        dev->hil_temp_last_update_ms[seg][sensor] = now_ms;
-        dev->hil_temp_seen_mask[seg] |= bit;
-        dev->smb.last_temp_updated_mask[seg] |= bit;
+        const uint32_t bit = (uint32_t)(1UL << sensor);
+        if((dev->hil_stage_temp_mask[seg] & bit) != 0u)
+        {
+            accumulator_hil_increment_u32_sat(&dev->hil_image_duplicate_count);
+            if(dev->hil_stage_temp_deci_c[seg][sensor] != temp_deci_c[n])
+            {
+                dev->hil_stage_invalid = true;
+                accumulator_hil_increment_u32_sat(
+                    &dev->hil_image_conflicting_duplicate_count);
+            }
+        }
+        else
+        {
+            dev->hil_stage_temp_deci_c[seg][sensor] = temp_deci_c[n];
+            dev->hil_stage_temp_mask[seg] |= bit;
+            dev->hil_stage_unique_temp_count++;
+        }
     }
 
-    return 0;
+    return dev->hil_stage_invalid ? ACCUMULATOR_HIL_IMAGE_REJECTED :
+                                    ACCUMULATOR_HIL_IMAGE_STAGED;
+}
+
+void accumulator_hil_image_expire(accumulator_t *dev,
+                                  uint32_t now_ms,
+                                  uint32_t assembly_timeout_ms)
+{
+    if((dev == NULL) || !dev->hil_stage_active)
+    {
+        return;
+    }
+
+    if((uint32_t)(now_ms - dev->hil_image_start_ms) > assembly_timeout_ms)
+    {
+        dev->hil_stage_active = false;
+        dev->hil_stage_invalid = true;
+        accumulator_hil_increment_u32_sat(&dev->hil_image_timeout_count);
+        accumulator_hil_increment_u32_sat(&dev->hil_image_incomplete_count);
+        accumulator_hil_increment_u32_sat(&dev->hil_image_reject_count);
+    }
+}
+
+accumulator_hil_image_result_t accumulator_hil_image_commit(
+    accumulator_t *dev,
+    uint8_t generation,
+    uint32_t expected_crc,
+    uint32_t now_ms,
+    uint32_t assembly_timeout_ms)
+{
+    const uint16_t full_cell_mask =
+        (uint16_t)(UINT16_MAX >> (16u - NCELLS));
+    const uint32_t full_temp_mask =
+        (uint32_t)(UINT32_MAX >> (32u - NTEMPS));
+    bool complete = true;
+
+    if(dev == NULL)
+    {
+        return ACCUMULATOR_HIL_IMAGE_REJECTED;
+    }
+
+    accumulator_hil_image_expire(dev, now_ms, assembly_timeout_ms);
+    if(!dev->hil_stage_active || (generation != dev->hil_stage_generation))
+    {
+        accumulator_hil_increment_u32_sat(&dev->hil_image_reject_count);
+        return ACCUMULATOR_HIL_IMAGE_REJECTED;
+    }
+
+    for(uint8_t seg = 0u; seg < NSMBS; seg++)
+    {
+        complete = complete &&
+                   (dev->hil_stage_cell_mask[seg] == full_cell_mask) &&
+                   (dev->hil_stage_temp_mask[seg] == full_temp_mask);
+    }
+    complete = complete &&
+               (dev->hil_stage_unique_cell_count == (uint16_t)(NSMBS * NCELLS)) &&
+               (dev->hil_stage_unique_temp_count == (uint16_t)(NSMBS * NTEMPS));
+
+    if(dev->hil_stage_invalid || !complete)
+    {
+        if(!complete)
+        {
+            accumulator_hil_increment_u32_sat(&dev->hil_image_incomplete_count);
+        }
+        dev->hil_stage_active = false;
+        accumulator_hil_increment_u32_sat(&dev->hil_image_reject_count);
+        return ACCUMULATOR_HIL_IMAGE_REJECTED;
+    }
+
+    if(accumulator_hil_stage_crc(dev) != expected_crc)
+    {
+        dev->hil_stage_active = false;
+        accumulator_hil_increment_u32_sat(&dev->hil_image_crc_fail_count);
+        accumulator_hil_increment_u32_sat(&dev->hil_image_reject_count);
+        return ACCUMULATOR_HIL_IMAGE_REJECTED;
+    }
+
+    adbms6830_asic *smb_ics =
+        (dev->smb.ics != NULL) ? dev->smb.ics : dev->smb_ics;
+
+    for(uint8_t seg = 0u; seg < NSMBS; seg++)
+    {
+        for(uint8_t cell = 0u; cell < NCELLS; cell++)
+        {
+            smb_ics[seg].cell.c_codes[cell] =
+                accumulator_mv_to_code(dev->hil_stage_cell_mv[seg][cell]);
+            dev->hil_cell_last_update_ms[seg][cell] = now_ms;
+        }
+        for(uint8_t sensor = 0u; sensor < NTEMPS; sensor++)
+        {
+            smb_ics[seg].temp.raw[sensor] =
+                accumulator_temp_deci_c_to_raw(
+                    dev->hil_stage_temp_deci_c[seg][sensor]);
+            dev->hil_temp_last_update_ms[seg][sensor] = now_ms;
+        }
+
+        dev->hil_cell_seen_mask[seg] = full_cell_mask;
+        dev->hil_temp_seen_mask[seg] = full_temp_mask;
+        dev->smb.last_cell_updated_mask[seg] = full_cell_mask;
+        dev->smb.last_cell_pec_mask[seg] = 0u;
+        dev->smb.last_temp_updated_mask[seg] = full_temp_mask;
+    }
+
+    dev->hil_image_commit_ms = now_ms;
+    dev->hil_last_committed_generation = generation;
+    dev->hil_committed_valid = true;
+    dev->hil_stage_active = false;
+    accumulator_hil_increment_u32_sat(&dev->hil_image_accept_count);
+    return ACCUMULATOR_HIL_IMAGE_COMMITTED;
 }
 
 void accumulator_hil_refresh_update_masks(accumulator_t *dev,

@@ -146,7 +146,15 @@
 #error "AMS_HIL_REPLACE_ADBMS requires AMS_ENABLE_HIL_CAN=1"
 #endif
 
+#define AMS_HIL_ADBMS_ASSEMBLY_TIMEOUT_MS 250u
 #define AMS_HIL_ADBMS_IMAGE_TIMEOUT_MS 500u
+
+#if AMS_HIL_ADBMS_ASSEMBLY_TIMEOUT_MS > 0x7FFFFFFFu
+#error "HIL ADBMS assembly timeout must be tick-wrap safe"
+#endif
+#if AMS_HIL_ADBMS_IMAGE_TIMEOUT_MS > 0x7FFFFFFFu
+#error "HIL ADBMS image timeout must be tick-wrap safe"
+#endif
 
 #define ERR_FREQ 20
 #define CLI_FREQ 20

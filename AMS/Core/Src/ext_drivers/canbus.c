@@ -15,6 +15,7 @@
 #include "ext_drivers/canbus.h"
 #include "ext_drivers/charger.h"
 #include "app.h"
+#include "../../../../HiL/common/ams_hil_image_protocol.h"
 
 extern app_data_t app;
 
@@ -68,8 +69,8 @@ HAL_StatusTypeDef canbus_configure_rx_filters(CAN_HandleTypeDef *hcan)
 
 #if AMS_ENABLE_HIL_CAN
     /* HIL is an explicit non-production profile. Four standard identifiers fit
-     * in the first 16-bit list bank; the fifth is repeated in the unused slots
-     * of a second bank so no unrelated standard frames are admitted. */
+     * in the first 16-bit list bank. The cell-temperature image and its
+     * START/COMMIT control identifier share the second list bank. */
     memset(&filter, 0, sizeof(filter));
     filter.FilterBank = CANBUS_FILTER_BANK_HIL_0;
     filter.FilterMode = CAN_FILTERMODE_IDLIST;
@@ -91,9 +92,9 @@ HAL_StatusTypeDef canbus_configure_rx_filters(CAN_HandleTypeDef *hcan)
     filter.FilterMode = CAN_FILTERMODE_IDLIST;
     filter.FilterFIFOAssignment = CAN_RX_FIFO0;
     filter.FilterIdHigh = canbus_filter_std16(AMS_HIL_CAN_ID_TEMP_SAMPLE);
-    filter.FilterIdLow = canbus_filter_std16(AMS_HIL_CAN_ID_TEMP_SAMPLE);
+    filter.FilterIdLow = canbus_filter_std16(AMS_HIL_CAN_ID_IMAGE_CONTROL);
     filter.FilterMaskIdHigh = canbus_filter_std16(AMS_HIL_CAN_ID_TEMP_SAMPLE);
-    filter.FilterMaskIdLow = canbus_filter_std16(AMS_HIL_CAN_ID_TEMP_SAMPLE);
+    filter.FilterMaskIdLow = canbus_filter_std16(AMS_HIL_CAN_ID_IMAGE_CONTROL);
     filter.FilterScale = CAN_FILTERSCALE_16BIT;
     filter.FilterActivation = ENABLE;
     filter.SlaveStartFilterBank = CANBUS_SLAVE_FILTER_START;
@@ -180,6 +181,7 @@ static bool canbus_rx_header_allowed(const CAN_RxHeaderTypeDef *header)
         case AMS_HIL_CAN_ID_SUMMARY:
         case AMS_HIL_CAN_ID_CELL_SAMPLE:
         case AMS_HIL_CAN_ID_TEMP_SAMPLE:
+        case AMS_HIL_CAN_ID_IMAGE_CONTROL:
             return header->DLC >= 8u;
         default:
             break;
@@ -381,6 +383,8 @@ static void canbus_parse_hil_frame(app_data_t *data, const canbus_rx_frame_t *fr
         case AMS_HIL_CAN_ID_CELL_SAMPLE:
             if(frame->dlc >= 8U)
             {
+                const uint8_t address =
+                    rx_data[AMS_HIL_IMAGE_DATA_ADDRESS_OFFSET];
                 uint16_t cell_mv[3] = {
                     be_u16(&rx_data[2]),
                     be_u16(&rx_data[4]),
@@ -388,11 +392,16 @@ static void canbus_parse_hil_frame(app_data_t *data, const canbus_rx_frame_t *fr
                 };
 
                 adbms_spi_lock();
-                (void)accumulator_hil_ingest_cell_triplet(&data->acc,
-                                                          rx_data[0],
-                                                          rx_data[1],
-                                                          cell_mv,
-                                                          now);
+                accumulator_hil_image_expire(
+                    &data->acc,
+                    now,
+                    AMS_HIL_ADBMS_ASSEMBLY_TIMEOUT_MS);
+                (void)accumulator_hil_image_stage_cell_triplet(
+                    &data->acc,
+                    rx_data[AMS_HIL_IMAGE_DATA_GENERATION_OFFSET],
+                    ams_hil_image_address_segment(address),
+                    ams_hil_image_address_index(address),
+                    cell_mv);
                 adbms_spi_unlock();
             }
             break;
@@ -400,6 +409,8 @@ static void canbus_parse_hil_frame(app_data_t *data, const canbus_rx_frame_t *fr
         case AMS_HIL_CAN_ID_TEMP_SAMPLE:
             if(frame->dlc >= 8U)
             {
+                const uint8_t address =
+                    rx_data[AMS_HIL_IMAGE_DATA_ADDRESS_OFFSET];
                 int16_t temp_deci_c[3] = {
                     be_i16(&rx_data[2]),
                     be_i16(&rx_data[4]),
@@ -407,11 +418,48 @@ static void canbus_parse_hil_frame(app_data_t *data, const canbus_rx_frame_t *fr
                 };
 
                 adbms_spi_lock();
-                (void)accumulator_hil_ingest_temp_triplet(&data->acc,
-                                                          rx_data[0],
-                                                          rx_data[1],
-                                                          temp_deci_c,
-                                                          now);
+                accumulator_hil_image_expire(
+                    &data->acc,
+                    now,
+                    AMS_HIL_ADBMS_ASSEMBLY_TIMEOUT_MS);
+                (void)accumulator_hil_image_stage_temp_triplet(
+                    &data->acc,
+                    rx_data[AMS_HIL_IMAGE_DATA_GENERATION_OFFSET],
+                    ams_hil_image_address_segment(address),
+                    ams_hil_image_address_index(address),
+                    temp_deci_c);
+                adbms_spi_unlock();
+            }
+            break;
+
+        case AMS_HIL_CAN_ID_IMAGE_CONTROL:
+            if((frame->dlc >= 8U) &&
+               (rx_data[0] == AMS_HIL_IMAGE_PROTOCOL_VERSION))
+            {
+                adbms_spi_lock();
+                if(rx_data[1] == AMS_HIL_IMAGE_CTRL_START)
+                {
+                    (void)accumulator_hil_image_begin(
+                        &data->acc,
+                        rx_data[AMS_HIL_IMAGE_START_GENERATION_OFFSET],
+                        rx_data[AMS_HIL_IMAGE_START_SEGMENTS_OFFSET],
+                        rx_data[AMS_HIL_IMAGE_START_CELLS_OFFSET],
+                        rx_data[AMS_HIL_IMAGE_START_TEMPERATURES_OFFSET],
+                        rx_data[AMS_HIL_IMAGE_START_CELL_FRAMES_OFFSET],
+                        rx_data[AMS_HIL_IMAGE_START_TEMP_FRAMES_OFFSET],
+                        now,
+                        AMS_HIL_ADBMS_IMAGE_TIMEOUT_MS);
+                }
+                else if(rx_data[1] == AMS_HIL_IMAGE_CTRL_COMMIT)
+                {
+                    (void)accumulator_hil_image_commit(
+                        &data->acc,
+                        rx_data[AMS_HIL_IMAGE_COMMIT_GENERATION_OFFSET],
+                        ams_hil_image_read_u32_be(
+                            &rx_data[AMS_HIL_IMAGE_COMMIT_CRC_OFFSET]),
+                        now,
+                        AMS_HIL_ADBMS_ASSEMBLY_TIMEOUT_MS);
+                }
                 adbms_spi_unlock();
             }
             break;

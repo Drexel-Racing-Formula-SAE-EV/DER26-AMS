@@ -1,9 +1,0 @@
-temperature_c,published_derating_factor,credited_model_factor,source_page,status,note
--40,1.15,1.00,4,approximate digitization,cold uplift intentionally not credited
-0,1.06,1.00,4,approximate digitization,cold uplift intentionally not credited
-25,1.00,1.00,4,approximate digitization,nominal anchor
-40,0.97,0.97,4,approximate digitization,linear interpolation between points
-60,0.93,0.93,4,approximate digitization,linear interpolation between points
-80,0.89,0.89,4,approximate digitization,linear interpolation between points
-100,0.85,0.85,4,approximate digitization,linear interpolation between points
-125,0.80,0.80,4,approximate digitization,upper published operating temperature

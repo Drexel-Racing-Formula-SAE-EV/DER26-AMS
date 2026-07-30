@@ -71,6 +71,16 @@
 
 #define NSMBS 5
 
+#if NSMBS > 8
+#error "Atomic HIL image address supports at most eight segments"
+#endif
+#if NCELLS > 16 || NTEMPS > 32
+#error "Atomic HIL image masks support at most 16 cells/32 temperatures per segment"
+#endif
+#if (NSMBS * NCELLS) > 255 || (NSMBS * NTEMPS) > 255
+#error "Atomic HIL START topology counts must fit uint8"
+#endif
+
 typedef struct
 {
 	float total_volt;
@@ -131,6 +141,32 @@ typedef struct
 	uint32_t hil_temp_last_update_ms[NSMBS][NTEMPS];
 	uint16_t hil_cell_seen_mask[NSMBS];
 	uint32_t hil_temp_seen_mask[NSMBS];
+	/* HIL CAN images are staged here and copied into the ADBMS replacement
+	 * image only after a complete generation passes its CRC.  The public
+	 * smb_ics image therefore never contains a mixture of plant steps. */
+	uint16_t hil_stage_cell_mv[NSMBS][NCELLS];
+	int16_t hil_stage_temp_deci_c[NSMBS][NTEMPS];
+	uint16_t hil_stage_cell_mask[NSMBS];
+	uint32_t hil_stage_temp_mask[NSMBS];
+	uint32_t hil_image_start_ms;
+	uint32_t hil_image_commit_ms;
+	uint32_t hil_image_accept_count;
+	uint32_t hil_image_reject_count;
+	uint32_t hil_image_timeout_count;
+	uint32_t hil_image_crc_fail_count;
+	uint32_t hil_image_incomplete_count;
+	uint32_t hil_image_duplicate_count;
+	uint32_t hil_image_duplicate_start_count;
+	uint32_t hil_image_conflicting_duplicate_count;
+	uint32_t hil_image_replay_reject_count;
+	uint32_t hil_image_resync_count;
+	uint16_t hil_stage_unique_cell_count;
+	uint16_t hil_stage_unique_temp_count;
+	uint8_t hil_stage_generation;
+	uint8_t hil_last_committed_generation;
+	bool hil_stage_active;
+	bool hil_stage_invalid;
+	bool hil_committed_valid;
 
 	uint16_t updated_voltage_mask[NSMBS];
 	uint16_t usable_voltage_mask[NSMBS];
@@ -218,16 +254,44 @@ bool accumulator_balance_shadow_active(const accumulator_t *dev);
 uint16_t accumulator_balance_shadow_mask(const accumulator_t *dev, uint8_t seg);
 int accumulator_set_balance(accumulator_t *dev);
 int accumulator_clear_balance(accumulator_t *dev);
-int accumulator_hil_ingest_cell_triplet(accumulator_t *dev,
-                                        uint8_t seg,
-                                        uint8_t first_cell,
-                                        const uint16_t cell_mv[3],
-                                        uint32_t now_ms);
-int accumulator_hil_ingest_temp_triplet(accumulator_t *dev,
-                                        uint8_t seg,
-                                        uint8_t first_sensor,
-                                        const int16_t temp_deci_c[3],
-                                        uint32_t now_ms);
+typedef enum
+{
+	ACCUMULATOR_HIL_IMAGE_REJECTED = -1,
+	ACCUMULATOR_HIL_IMAGE_STAGED = 0,
+	ACCUMULATOR_HIL_IMAGE_COMMITTED = 1
+} accumulator_hil_image_result_t;
+
+accumulator_hil_image_result_t accumulator_hil_image_begin(
+	accumulator_t *dev,
+	uint8_t generation,
+	uint8_t segment_count,
+	uint8_t total_cell_count,
+	uint8_t total_temp_count,
+	uint8_t expected_cell_frames,
+	uint8_t expected_temp_frames,
+	uint32_t now_ms,
+	uint32_t resync_timeout_ms);
+accumulator_hil_image_result_t accumulator_hil_image_stage_cell_triplet(
+	accumulator_t *dev,
+	uint8_t generation,
+	uint8_t seg,
+	uint8_t first_cell,
+	const uint16_t cell_mv[3]);
+accumulator_hil_image_result_t accumulator_hil_image_stage_temp_triplet(
+	accumulator_t *dev,
+	uint8_t generation,
+	uint8_t seg,
+	uint8_t first_sensor,
+	const int16_t temp_deci_c[3]);
+accumulator_hil_image_result_t accumulator_hil_image_commit(
+	accumulator_t *dev,
+	uint8_t generation,
+	uint32_t expected_crc,
+	uint32_t now_ms,
+	uint32_t assembly_timeout_ms);
+void accumulator_hil_image_expire(accumulator_t *dev,
+	                              uint32_t now_ms,
+	                              uint32_t assembly_timeout_ms);
 void accumulator_hil_refresh_update_masks(accumulator_t *dev,
                                           uint32_t now_ms,
                                           uint32_t timeout_ms);

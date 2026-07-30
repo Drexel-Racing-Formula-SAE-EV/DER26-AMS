@@ -5,7 +5,7 @@
  * Protected by plant_mutex — always take before read or write.
  *
  * Plant convention:
- *   - 75s6p Molicel P42A accumulator model
+ *   - topology and array dimensions come from plant_model_manifest.h
  *   - positive I_pack = discharge
  *   - model step period = 100 ms
  *
@@ -18,25 +18,24 @@
 #ifndef MAIN_PLANT_SHARED_H_
 #define MAIN_PLANT_SHARED_H_
 
+#include <stdbool.h>
 #include <stdint.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
-
-#define PLANT_NUM_GROUPS       75U
-#define PLANT_NUM_SEGMENTS     5U
-#define PLANT_NUM_THERMISTORS  120U
+#include "plant_model_manifest.h"
 
 typedef struct {
-    float    V_pack;    /* V  — 75s pack terminal voltage             */
+    bool     valid;     /* true only after one complete model step          */
+    float    V_pack;    /* V  — pack terminal voltage                 */
     float    I_pack;    /* A  — pack current, positive = discharge    */
     float    T_surf;    /* degC — representative surface temperature  */
     float    T_core;    /* degC — representative core temperature     */
     float    SoC_true;  /* 0–1 — true representative-cell SoC         */
 
-    float    V_group[PLANT_NUM_GROUPS];          /* V — 75 synthetic series group voltages */
-    float    V_segment[PLANT_NUM_SEGMENTS];      /* V — 5 segment voltages, 15 groups each */
-    float    T_sensor[PLANT_NUM_THERMISTORS];    /* degC — synthetic AMS thermistor map    */
-    float    SoC_group[PLANT_NUM_GROUPS];        /* 0–1 — synthetic group SoC spread       */
+    float    V_group[PLANT_NUM_GROUPS];          /* V — series-group voltages               */
+    float    V_segment[PLANT_NUM_SEGMENTS];      /* V — mapped segment voltages             */
+    float    T_sensor[PLANT_NUM_THERMISTORS];    /* degC — mapped AMS thermistor image      */
+    float    SoC_group[PLANT_NUM_GROUPS];        /* 0–1 — group SoC image                   */
 
     float    V_min;     /* V — min group voltage                      */
     float    V_max;     /* V — max group voltage                      */
