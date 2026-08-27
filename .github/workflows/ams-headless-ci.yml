@@ -1,0 +1,126 @@
+name: AMS CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - develop
+      - "feature/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ams-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  repo-checks:
+    name: Repository checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository (organization-policy compatible)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git fetch --no-tags --prune --depth=1 origin "${GITHUB_REF}"
+          git checkout --detach FETCH_HEAD
+          git remote set-url origin "https://github.com/${GITHUB_REPOSITORY}.git"
+
+      - name: Check project structure
+        run: bash ci/scripts/check_project_structure.sh
+
+      - name: Check repository hygiene
+        run: bash ci/scripts/check_repo_hygiene.sh
+
+  host-validation:
+    name: Host firmware CI
+    runs-on: ubuntu-latest
+    needs: repo-checks
+    steps:
+      - name: Checkout repository (organization-policy compatible)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git fetch --no-tags --prune --depth=1 origin "${GITHUB_REF}"
+          git checkout --detach FETCH_HEAD
+          git remote set-url origin "https://github.com/${GITHUB_REPOSITORY}.git"
+
+      - name: Install host toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential gcc make python3
+
+      - name: Run self-contained AMS firmware CI
+        working-directory: AMS/host_tests
+        run: |
+          make clean
+          make CC=gcc firmware-ci
+
+      - name: Run sanitizer qualification
+        working-directory: AMS/host_tests
+        run: |
+          make CC=gcc firmware-asan
+          make CC=gcc ubsan
+
+  stm32-headless-build:
+    name: STM32 ARM-GCC build
+    runs-on: ubuntu-latest
+    needs: host-validation
+    steps:
+      - name: Checkout repository (organization-policy compatible)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git fetch --no-tags --prune --depth=1 origin "${GITHUB_REF}"
+          git checkout --detach FETCH_HEAD
+          git remote set-url origin "https://github.com/${GITHUB_REPOSITORY}.git"
+
+      - name: Install ARM GCC toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc-arm-none-eabi \
+            binutils-arm-none-eabi \
+            libnewlib-arm-none-eabi \
+            make \
+            python3
+
+      - name: Build AMS firmware headlessly
+        run: bash ci/stm32/build_ams_headless_gcc.sh
+
+      - name: Generate firmware size report
+        run: |
+          mkdir -p ci_artifacts
+          python3 ci/scripts/firmware_size_report.py \
+            --elf AMS/build/DER26-AMS.elf \
+            --out ci_artifacts/firmware_size_report.md
+
+      - name: Check firmware size limits
+        run: |
+          python3 ci/scripts/check_firmware_size.py \
+            --elf AMS/build/DER26-AMS.elf \
+            --max-text 786432 \
+            --max-data 32768 \
+            --max-bss 262144
+
+      - name: Add size report to workflow summary
+        if: always()
+        run: |
+          if [ -f ci_artifacts/firmware_size_report.md ]; then
+            cat ci_artifacts/firmware_size_report.md >> "$GITHUB_STEP_SUMMARY"
+          fi

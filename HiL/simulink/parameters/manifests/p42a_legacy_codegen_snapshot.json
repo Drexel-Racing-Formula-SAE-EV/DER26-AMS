@@ -1,0 +1,80 @@
+{
+  "artifact": "p42a_legacy_codegen_snapshot.mat",
+  "configuration_hash": "77b74591f934f0f3b5f895beff102845bb517ef31d78d137ad5b61cb713b4f75",
+  "dimensions": {
+    "C1": [
+      12,
+      3
+    ],
+    "OCV": [
+      101,
+      3
+    ],
+    "R0": [
+      12,
+      3
+    ],
+    "R1": [
+      12,
+      3
+    ]
+  },
+  "scalars": {
+    "C2_F": 12000.0,
+    "Cc_J_per_K": 55.0,
+    "Cs_J_per_K": 15.0,
+    "Q_nom_Ah": 4.2,
+    "R2_ohm": 0.004,
+    "Rcs_K_per_W": 1.5,
+    "Rsa_K_per_W": 8.0
+  },
+  "schema_version": 1,
+  "source_manifest": {
+    "cell_ids": [
+      "A2",
+      "A4",
+      "A6",
+      "A8",
+      "A9",
+      "A11",
+      "A12",
+      "A13",
+      "A15",
+      "A19",
+      "A21",
+      "A37"
+    ],
+    "cell_manufacturer": "Molicel",
+    "cell_model": "INR-21700-P42A",
+    "current_sign_convention": "positive current = discharge",
+    "dataset_source": "Legacy generated-C migration snapshot",
+    "dataset_version": "model-1.67-generated-2026-06-27",
+    "known_limitations": [
+      "This artifact preserves generated constants but is not the raw fitting evidence.",
+      "External CDT/HCGT data is still required for a defensible refit.",
+      "Thermal values are first-pass cell priors, not calibrated pack boundaries."
+    ],
+    "schema_version": 1,
+    "soc_coverage": [
+      0.0,
+      1.0
+    ],
+    "source_files": [
+      {
+        "bytes": 8832,
+        "path": "HiL/esp32_plant/components/plant_model/const_params.c",
+        "sha256": "9801ebe2b699a173960888b97e585d91e8343518bf1711b950abe98ea39eb5d8"
+      },
+      {
+        "bytes": 13893,
+        "path": "HiL/simulink/generated_code/model/drev_75s6p_p42a_accumulator_plant_v3_ams_outputs_validated.c",
+        "sha256": "48b3aed9305a19c3495cd09fbbff9089dcc0407dc4b395f49a3019276c4696c3"
+      }
+    ],
+    "temperatures_C": [
+      5.0,
+      25.0,
+      40.0
+    ]
+  }
+}

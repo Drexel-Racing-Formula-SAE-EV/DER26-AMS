@@ -1,9 +1,68 @@
-Debug/*
-Release/*
-
-.settings/*
-.vscode/*
+# OS / editor / workspace state
+.DS_Store
+Thumbs.db
+.vscode/
+.metadata/
+**/.settings/
 *.launch
+*~
+*.swp
+*.swo
 
-*.cfg
+# Temporary / patch files
+*.tmp
+*.bak
+*.orig
+*.rej
+*.log
 
+# STM32 / compiler outputs
+AMS/Debug/
+AMS/Release/
+AMS/RelWithDebInfo/
+AMS/MinSizeRel/
+AMS/build/
+**/*.elf
+**/*.hex
+**/*.bin
+**/*.map
+**/*.list
+**/*.lst
+**/*.su
+**/*.cyclo
+**/*.o
+**/*.obj
+**/*.d
+**/*.dep
+
+# Host-test / analyzer outputs
+AMS/host_tests/build/
+AMS/host_tests/build-*/
+AMS/host_tests/*.exe
+AMS/host_tests/*.out
+AMS/host_tests/*.plist
+AMS/host_tests/scan-build*/
+AMS/host_tests/analyzer*/
+
+# HIL / ESP32 / Simulink outputs
+HiL/**/build/
+HiL/**/managed_components/
+HiL/**/sdkconfig.old
+HiL/**/slprj/
+HiL/**/*_ert_rtw/
+HiL/**/*.slxc
+HiL/**/*.asv
+HiL/**/*.autosave
+HiL/**/codegen/
+
+# Generic CMake / Python outputs
+**/cmake-build-*/
+**/CMakeFiles/
+**/CMakeCache.txt
+**/compile_commands.json
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
+
+# CI-generated artifacts
+ci_artifacts/

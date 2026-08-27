@@ -1,0 +1,16 @@
+% Table 1 — ECM Parameters reconstructed from generated model 1.67.
+\begin{table}[t]
+\caption{Representative P42A ECM parameters at SoC $\approx 0.80$, reconstructed from the checked-in generated-C model 1.67. The fast-branch parameters are interpolated from its temperature- and SoC-dependent LUTs; the slow branch uses fixed $R_2$ and $C_2$.}
+\label{tab:ecm_parameters}
+\centering
+\begin{tabular}{c c c c c c c c}
+\hline
+$T$ & $R_0$ & $R_1$ & $C_1$ & $R_2$ & $C_2$ & $\tau_1$ & $\tau_2$ \\
+($^\circ$C) & ($\Omega$) & ($\Omega$) & (F) & ($\Omega$) & (F) & (s) & (s) \\
+\hline
+5 & 0.01946 & 0.00724 & 1398.7 & 0.00400 & 12000.0 & 10.13 & 48.00 \\
+25 & 0.01358 & 0.00465 & 2126.2 & 0.00400 & 12000.0 & 9.88 & 48.00 \\
+40 & 0.01137 & 0.00309 & 3289.5 & 0.00400 & 12000.0 & 10.16 & 48.00 \\
+\hline
+\end{tabular}
+\end{table}
