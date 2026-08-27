@@ -1,6 +1,7 @@
 # DER26 Accumulator Management System Firmware
 
-Detailed docs on notion [https://verdant-newt-bdb.notion.site/4870013cb18983eeae808152ffa32e9d?v=0330013cb189835c97e5881a239e0dac]([[link](https://verdant-newt-bdb.notion.site/4870013cb18983eeae808152ffa32e9d?v=0330013cb189835c97e5881a239e0dac)](https://verdant-newt-bdb.notion.site/4870013cb18983eeae808152ffa32e9d?v=0330013cb189835c97e5881a239e0dac))
+Detailed docs on [Notion Link](https://verdant-newt-bdb.notion.site/4870013cb18983eeae808152ffa32e9d?v=0330013cb189835c97e5881a239e0dac)
+
 Firmware, validation infrastructure, HIL support, and engineering tools for the DER26 Accumulator Management System (AMS).
 
 The target application runs on an STM32F767 with FreeRTOS and interfaces with the accumulator monitoring chain, pack-current sensing, charger/IMD/AIR-related inputs, and the vehicle CAN network. The repository also contains host-side verification, HIL assets, and reference tools used to develop and qualify the firmware.
