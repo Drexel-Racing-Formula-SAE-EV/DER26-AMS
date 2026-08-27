@@ -21,7 +21,17 @@ jobs:
     name: Repository checks
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository (organization-policy compatible)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git fetch --no-tags --prune --depth=1 origin "${GITHUB_REF}"
+          git checkout --detach FETCH_HEAD
+          git remote set-url origin "https://github.com/${GITHUB_REPOSITORY}.git"
       - name: Check project structure
         run: bash ci/scripts/check_project_structure.sh
       - name: Check repository hygiene
@@ -32,7 +42,17 @@ jobs:
     runs-on: ubuntu-latest
     needs: repo-checks
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository (organization-policy compatible)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git fetch --no-tags --prune --depth=1 origin "${GITHUB_REF}"
+          git checkout --detach FETCH_HEAD
+          git remote set-url origin "https://github.com/${GITHUB_REPOSITORY}.git"
       - name: Install host toolchain
         run: |
           sudo apt-get update
@@ -53,7 +73,17 @@ jobs:
     runs-on: ubuntu-latest
     needs: host-validation
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository (organization-policy compatible)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git fetch --no-tags --prune --depth=1 origin "${GITHUB_REF}"
+          git checkout --detach FETCH_HEAD
+          git remote set-url origin "https://github.com/${GITHUB_REPOSITORY}.git"
       - name: Install ARM GCC toolchain
         run: |
           sudo apt-get update
