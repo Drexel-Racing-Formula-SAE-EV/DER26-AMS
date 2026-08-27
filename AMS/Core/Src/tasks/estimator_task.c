@@ -30,10 +30,12 @@ static StaticTask_t estimator_task_tcb;
 static StackType_t estimator_task_stack[ESTIMATOR_STACK_WORDS];
 static TaskHandle_t estimator_task_handle = NULL;
 
-static bool collect_group_voltage(const ams_measurement_snapshot_t *measurement,
-                                  const ams_ekf_config_t *cfg,
-                                  float *v_meas_V,
-                                  uint16_t *valid_count)
+static bool collect_group_voltage_source(
+    const ams_measurement_snapshot_t *measurement,
+    const ams_ekf_config_t *cfg,
+    uint8_t source,
+    float *v_meas_V,
+    uint16_t *valid_count)
 {
     if ((measurement == NULL) || (cfg == NULL) ||
         (v_meas_V == NULL) || (valid_count == NULL))
@@ -49,13 +51,36 @@ static bool collect_group_voltage(const ams_measurement_snapshot_t *measurement,
         uint8_t seg = (uint8_t)(group / NCELLS);
         uint8_t cell = (uint8_t)(group % NCELLS);
 
-        if ((seg >= NSMBS) || (cell >= NCELLS) ||
-            ((measurement->cell_usable_mask[seg] & (uint16_t)(1u << cell)) == 0u))
+        if ((seg >= NSMBS) || (cell >= NCELLS))
         {
             continue;
         }
 
-        float v = (float)measurement->cell_mv[seg][cell] / 1000.0f;
+        const uint16_t bit = (uint16_t)(1u << cell);
+        uint16_t source_mv = 0u;
+        bool source_valid = false;
+        if(source == AMS_ESTIMATOR_VOLTAGE_SOURCE_AVG8)
+        {
+            source_valid = ((measurement->cell_avg8_usable_mask[seg] & bit) != 0u);
+            source_mv = measurement->cell_avg8_mv[seg][cell];
+        }
+        else if(source == AMS_ESTIMATOR_VOLTAGE_SOURCE_IIR)
+        {
+            source_valid = ((measurement->cell_iir_usable_mask[seg] & bit) != 0u);
+            source_mv = measurement->cell_iir_mv[seg][cell];
+        }
+        else
+        {
+            source_valid = ((measurement->cell_usable_mask[seg] & bit) != 0u);
+            source_mv = measurement->cell_mv[seg][cell];
+        }
+
+        if(!source_valid)
+        {
+            continue;
+        }
+
+        float v = (float)source_mv / 1000.0f;
         if(isfinite(v) && (v >= 0.5f) && (v <= 5.0f))
         {
             sum_v += v;
@@ -66,6 +91,88 @@ static bool collect_group_voltage(const ams_measurement_snapshot_t *measurement,
     *v_meas_V = sum_v;
     *valid_count = count;
     return (count == cfg->series_group_count);
+}
+
+static void estimator_capture_voltage_products(
+    ams_estimator_t *est,
+    const ams_measurement_snapshot_t *measurement,
+    uint8_t instance_index)
+{
+    if((est == NULL) || (measurement == NULL) ||
+       (instance_index >= est->instance_count) ||
+       (instance_index >= AMS_EKF_MAX_INSTANCES))
+    {
+        return;
+    }
+
+    const ams_ekf_config_t *cfg = &est->inst[instance_index].cfg;
+    const uint16_t bit = (uint16_t)(1u << instance_index);
+    float voltage = 0.0f;
+    uint16_t count = 0u;
+
+    est->voltage_raw_valid_mask &= (uint16_t)~bit;
+    est->voltage_avg8_valid_mask &= (uint16_t)~bit;
+    est->voltage_iir_valid_mask &= (uint16_t)~bit;
+
+    if(collect_group_voltage_source(measurement, cfg,
+                                    AMS_ESTIMATOR_VOLTAGE_SOURCE_RAW,
+                                    &voltage, &count))
+    {
+        est->voltage_raw_valid_mask |= bit;
+    }
+    est->voltage_raw_V[instance_index] = voltage;
+    est->voltage_raw_valid_count[instance_index] = count;
+
+    voltage = 0.0f;
+    count = 0u;
+    if(collect_group_voltage_source(measurement, cfg,
+                                    AMS_ESTIMATOR_VOLTAGE_SOURCE_AVG8,
+                                    &voltage, &count))
+    {
+        est->voltage_avg8_valid_mask |= bit;
+    }
+    est->voltage_avg8_V[instance_index] = voltage;
+    est->voltage_avg8_valid_count[instance_index] = count;
+
+    voltage = 0.0f;
+    count = 0u;
+    if(collect_group_voltage_source(measurement, cfg,
+                                    AMS_ESTIMATOR_VOLTAGE_SOURCE_IIR,
+                                    &voltage, &count))
+    {
+        est->voltage_iir_valid_mask |= bit;
+    }
+    est->voltage_iir_V[instance_index] = voltage;
+    est->voltage_iir_valid_count[instance_index] = count;
+}
+
+static bool estimator_selected_voltage(
+    const ams_estimator_t *est,
+    uint8_t instance_index,
+    float *voltage_V,
+    uint16_t *valid_count)
+{
+    if((est == NULL) || (voltage_V == NULL) || (valid_count == NULL) ||
+       (instance_index >= est->instance_count) ||
+       (instance_index >= AMS_EKF_MAX_INSTANCES))
+    {
+        return false;
+    }
+
+    const uint16_t bit = (uint16_t)(1u << instance_index);
+#if AMS_ESTIMATOR_VOLTAGE_SOURCE == AMS_ESTIMATOR_VOLTAGE_SOURCE_AVG8
+    *voltage_V = est->voltage_avg8_V[instance_index];
+    *valid_count = est->voltage_avg8_valid_count[instance_index];
+    return ((est->voltage_avg8_valid_mask & bit) != 0u);
+#elif AMS_ESTIMATOR_VOLTAGE_SOURCE == AMS_ESTIMATOR_VOLTAGE_SOURCE_IIR
+    *voltage_V = est->voltage_iir_V[instance_index];
+    *valid_count = est->voltage_iir_valid_count[instance_index];
+    return ((est->voltage_iir_valid_mask & bit) != 0u);
+#else
+    *voltage_V = est->voltage_raw_V[instance_index];
+    *valid_count = est->voltage_raw_valid_count[instance_index];
+    return ((est->voltage_raw_valid_mask & bit) != 0u);
+#endif
 }
 
 static bool collect_group_temp(const ams_measurement_snapshot_t *measurement,
@@ -276,6 +383,182 @@ static void estimator_publish_power_snapshot(app_data_t *data)
     taskEXIT_CRITICAL();
 }
 
+static uint16_t estimator_count_bits32(uint32_t value)
+{
+    uint16_t count = 0u;
+    while(value != 0u)
+    {
+        count = (uint16_t)(count + (uint16_t)(value & 1u));
+        value >>= 1u;
+    }
+    return count;
+}
+
+/* The estimator task is the sole writer. The CAN task pins one published
+ * buffer while copying, so construction is lock-free and publication needs
+ * only a short pointer/index swap. A busy inactive buffer drops diagnostics. */
+static void estimator_publish_tuning_snapshot(
+    app_data_t *data,
+    const ams_measurement_snapshot_t *measurement,
+    uint32_t now)
+{
+#if AMS_ENABLE_TUNING_CAN
+    if((data == NULL) || (measurement == NULL))
+    {
+        return;
+    }
+
+    ams_tuning_store_t *store = &data->tuning_store;
+    uint8_t write_index;
+    taskENTER_CRITICAL();
+    write_index = store->published ?
+        (uint8_t)(store->published_index ^ 1u) : 0u;
+    if(store->reader_count[write_index] != 0u)
+    {
+        if(store->publication_drop_count != UINT32_MAX)
+        {
+            store->publication_drop_count++;
+        }
+        taskEXIT_CRITICAL();
+        return;
+    }
+    taskEXIT_CRITICAL();
+
+    ams_tuning_snapshot_t *out = &store->buffer[write_index];
+    memset(out, 0, sizeof(*out));
+    out->snapshot_sequence = store->next_sequence;
+    out->measurement_sequence = measurement->sequence;
+    out->estimator_step = data->estimator.step_count;
+    out->source_tick_ms = now;
+    out->instance_count = data->estimator.instance_count;
+    if(out->instance_count > AMS_EKF_MAX_INSTANCES)
+    {
+        out->instance_count = AMS_EKF_MAX_INSTANCES;
+    }
+
+    for(uint8_t i = 0u; i < out->instance_count; i++)
+    {
+        const ams_ekf_instance_t *ekf = &data->estimator.inst[i];
+        const ams_resistance_soh_t *soh =
+            &data->estimator.resistance_soh[i];
+        ams_tuning_segment_t *seg = &out->segment[i];
+        seg->soc = ekf->soc;
+        seg->vp1_v = ekf->vp1_V;
+        seg->vp2_v = ekf->vp2_V;
+        seg->r0_ohm = ekf->r0_ohm;
+        seg->t_core_c = ekf->t_core_C;
+        seg->p_soc = ekf->p_soc;
+        seg->p_vp1 = ekf->p_vp1;
+        seg->p_vp2 = ekf->p_vp2;
+        seg->p_r0 = ekf->p_r0;
+        seg->r_meas_v2 = ekf->r_meas_V2;
+        seg->v_pred_v = ekf->v_pred_V;
+        seg->innovation_v = ekf->innovation_V;
+        seg->measured_v = ekf->last_v_meas_V;
+        seg->current_a = ekf->last_i_pack_A;
+        seg->surface_temp_c = ekf->last_t_surf_C;
+        seg->step_count = ekf->step_count;
+        seg->innovation_reject_count = ekf->innovation_reject_count;
+        seg->dt_clamp_count = ekf->dt_clamp_count;
+        seg->fault_flags = ekf->fault_flags;
+        seg->measurement_sequence = ekf->last_measurement_sequence;
+        seg->current_sequence = measurement->current.sequence;
+        seg->measurement_age_ms = now - measurement->publication_tick;
+        seg->current_age_ms = now - measurement->current.latest_sample_tick;
+        seg->model_domain_flags = ekf->model_domain_flags;
+        seg->valid = ekf->valid;
+
+        const uint16_t bit = (uint16_t)(1u << i);
+        if((data->estimator.voltage_raw_valid_mask & bit) != 0u)
+        {
+            seg->voltage_valid_flags |= 0x01u;
+            seg->voltage_raw_v = data->estimator.voltage_raw_V[i];
+        }
+        if((data->estimator.voltage_avg8_valid_mask & bit) != 0u)
+        {
+            seg->voltage_valid_flags |= 0x02u;
+            seg->voltage_avg8_v = data->estimator.voltage_avg8_V[i];
+        }
+        if((data->estimator.voltage_iir_valid_mask & bit) != 0u)
+        {
+            seg->voltage_valid_flags |= 0x04u;
+            seg->voltage_iir_v = data->estimator.voltage_iir_V[i];
+        }
+        if(i < NSMBS)
+        {
+            seg->fresh_temp_count =
+                estimator_count_bits32(measurement->temp_usable_mask[i]);
+        }
+
+        seg->reference_r0_ohm = soh->reference_cell_r0_ohm;
+        seg->resistance_growth_ratio = soh->resistance_growth_ratio;
+        seg->r0_variance_ohm2 = soh->r0_variance_ohm2;
+        seg->soh_reject_flags = soh->last_reject_flags;
+        seg->soh_confidence_pct = soh->observation_confidence_pct;
+        seg->soh_status_flags = soh->status_flags;
+        seg->soh_accepted_count = (soh->accepted_count > 255u) ?
+                                  255u : (uint8_t)soh->accepted_count;
+        seg->soh_rejected_count = (soh->rejected_count > 255u) ?
+                                  255u : (uint8_t)soh->rejected_count;
+    }
+
+    const ams_power_state_t *power = &data->power_state;
+    out->reason_flags = power->published_result.reason_flags;
+    out->power_valid = power->published_result.valid;
+    out->power_authority_valid = power->published_result.authority_valid;
+    for(uint8_t h = 0u; h < AMS_SOP_HORIZONS; h++)
+    {
+        ams_tuning_sop_horizon_t *dst = &out->horizon[h];
+        dst->raw_model_discharge_a =
+            power->raw_result.model_discharge_current_a[h];
+        dst->raw_model_charge_a = power->raw_result.model_charge_current_a[h];
+        dst->strategy_discharge_a =
+            power->strategy_limited_result.discharge_current_a[h];
+        dst->strategy_charge_a =
+            power->strategy_limited_result.charge_current_a[h];
+        dst->final_discharge_a = power->published_result.discharge_current_a[h];
+        dst->final_charge_a = power->published_result.charge_current_a[h];
+        dst->discharge_power_w = power->published_result.discharge_power_w[h];
+        dst->charge_power_w = power->published_result.charge_power_w[h];
+        dst->discharge_min_cell_v =
+            power->published_result.discharge_extrema[h].minimum_cell_voltage_v;
+        dst->charge_max_cell_v =
+            power->published_result.charge_extrema[h].maximum_cell_voltage_v;
+        dst->discharge_binding = power->published_result.discharge_binding[h];
+        dst->charge_binding = power->published_result.charge_binding[h];
+        dst->discharge_segment =
+            power->published_result.discharge_limiting_segment[h];
+        dst->discharge_cell = power->published_result.discharge_limiting_cell[h];
+        dst->charge_segment = power->published_result.charge_limiting_segment[h];
+        dst->charge_cell = power->published_result.charge_limiting_cell[h];
+        out->fuse_cap_a[h] = power->fuse_result.discharge_current_cap_a[h];
+        out->hardware_discharge_cap_a[h] =
+            power->sop_config.discharge_current_max_a[h];
+    }
+    out->fuse_utilization = power->fuse_result.utilization;
+    out->fuse_temperature_c = power->fuse_result.estimated_fuse_temperature_c;
+    out->fuse_derating = power->fuse_result.temperature_derating;
+    out->fuse_effective_current_a = power->fuse_result.effective_current_a;
+    out->fuse_equivalent_current_a = power->fuse_result.equivalent_25c_current_a;
+    out->fuse_typical_melt_time_s = power->fuse_result.typical_melt_time_s;
+    out->fuse_usable_melt_time_s = power->fuse_result.usable_melt_time_s;
+    out->fuse_reason_flags = power->fuse_result.reason_flags;
+    out->fuse_valid = power->fuse_result.valid;
+    out->fuse_authority_valid = power->fuse_result.authority_valid;
+    out->fuse_budget_exhausted = power->fuse_result.budget_exhausted;
+
+    taskENTER_CRITICAL();
+    store->published_index = write_index;
+    store->published = true;
+    store->next_sequence++;
+    taskEXIT_CRITICAL();
+#else
+    (void)data;
+    (void)measurement;
+    (void)now;
+#endif
+}
+
 static void estimator_invalidate_power(app_data_t *data,
                                        uint32_t now,
                                        uint32_t reason_flags)
@@ -423,6 +706,10 @@ bool estimator_task_update(app_data_t *data, uint32_t now, float cc_dt_s)
     if(use_hil)
     {
 #if AMS_ENABLE_HIL_CAN
+        data->estimator.voltage_compare_sequence = 0u;
+        data->estimator.voltage_raw_valid_mask = 0u;
+        data->estimator.voltage_avg8_valid_mask = 0u;
+        data->estimator.voltage_iir_valid_mask = 0u;
         bool new_hil_epoch = (data->estimator.hil_counter_seen == 0u) ||
                              (hil_measurement.counter !=
                               data->estimator.last_hil_counter) ||
@@ -671,6 +958,11 @@ bool estimator_task_update(app_data_t *data, uint32_t now, float cc_dt_s)
         estimator_saturating_add(&data->estimator.epoch_timing_fault_count, 1u);
     }
 
+    data->estimator.voltage_compare_sequence = measurement.sequence;
+    data->estimator.voltage_raw_valid_mask = 0u;
+    data->estimator.voltage_avg8_valid_mask = 0u;
+    data->estimator.voltage_iir_valid_mask = 0u;
+
     for(uint8_t i = 0u;
         (i < data->estimator.instance_count) && (i < AMS_EKF_MAX_INSTANCES);
         i++)
@@ -684,10 +976,10 @@ bool estimator_task_update(app_data_t *data, uint32_t now, float cc_dt_s)
         float v_meas_V = 0.0f;
         float t_surf_C = 25.0f;
         uint16_t valid_voltage_count = 0u;
-        bool voltage_ok = collect_group_voltage(&measurement,
-                                                &inst->cfg,
-                                                &v_meas_V,
-                                                &valid_voltage_count);
+        estimator_capture_voltage_products(&data->estimator, &measurement, i);
+        bool voltage_ok = estimator_selected_voltage(&data->estimator, i,
+                                                     &v_meas_V,
+                                                     &valid_voltage_count);
         bool temp_ok = collect_group_temp(&measurement,
                                           &inst->cfg,
                                           &t_surf_C);
@@ -733,6 +1025,7 @@ bool estimator_task_update(app_data_t *data, uint32_t now, float cc_dt_s)
     data->estimator_fault =
         (data->estimator.fault_flags != AMS_EKF_FAULT_NONE);
     (void)estimator_update_power(data, &measurement, now, dt_s);
+    estimator_publish_tuning_snapshot(data, &measurement, now);
     return !data->estimator_fault;
 }
 

@@ -28,6 +28,114 @@
  * not safe. */
 #define ADBMS2950_SHARED_COUNTER_INCREMENTS_PER_SAMPLE 3u
 
+
+typedef enum
+{
+  ADBMS2950_STAGE_IDLE = 0,
+  ADBMS2950_STAGE_VALIDATE,
+  ADBMS2950_STAGE_RESET,
+  ADBMS2950_STAGE_SID,
+  ADBMS2950_STAGE_REFUP,
+  ADBMS2950_STAGE_CFGA_WRITE,
+  ADBMS2950_STAGE_CFGB_WRITE,
+  ADBMS2950_STAGE_CONFIG_READBACK,
+  ADBMS2950_STAGE_I1_INITIALIZE,
+  ADBMS2950_STAGE_I1_CONTINUOUS,
+  ADBMS2950_STAGE_STATUS,
+  ADBMS2950_STAGE_FLAG,
+  ADBMS2950_STAGE_CORE_SNAPSHOT,
+  ADBMS2950_STAGE_SNAPSHOT_RECOVER,
+  ADBMS2950_STAGE_SNAPSHOT,
+  ADBMS2950_STAGE_SAMPLE,
+  ADBMS2950_STAGE_UNSNAP,
+  ADBMS2950_STAGE_REDUNDANT_START,
+  ADBMS2950_STAGE_REDUNDANT_SAMPLE,
+  ADBMS2950_STAGE_RESTORE,
+  ADBMS2950_STAGE_EEPROM,
+  ADBMS2950_STAGE_RECOVERY
+} adbms2950_stage_t;
+
+typedef enum
+{
+  ADBMS2950_REASON_NONE = 0,
+  ADBMS2950_REASON_ARGUMENT,
+  ADBMS2950_REASON_TOPOLOGY,
+  ADBMS2950_REASON_TRANSPORT,
+  ADBMS2950_REASON_PEC,
+  ADBMS2950_REASON_IDENTITY,
+  ADBMS2950_REASON_REFUP_TIMEOUT,
+  ADBMS2950_REASON_CONFIG_MISMATCH,
+  ADBMS2950_REASON_NOT_INITIALIZED,
+  ADBMS2950_REASON_CALIBRATION,
+  ADBMS2950_REASON_COMMAND_COUNTER,
+  ADBMS2950_REASON_CONVERSION_STALL,
+  ADBMS2950_REASON_SENTINEL,
+  ADBMS2950_REASON_PERIPHERAL_NACK,
+  ADBMS2950_REASON_RESTORE
+} adbms2950_reason_t;
+
+typedef struct
+{
+  bool valid;
+  HAL_StatusTypeDef last_status;
+  uint8_t cfga[TX_DATA];
+  uint8_t cfgb[TX_DATA];
+  uint8_t status[TX_DATA];
+  uint8_t flag[TX_DATA];
+  uint8_t sid[TX_DATA];
+  uint8_t cfga_ccnt;
+  uint8_t cfgb_ccnt;
+  uint8_t status_ccnt;
+  uint8_t flag_ccnt;
+  uint8_t sid_ccnt;
+} adbms2950_core_snapshot_t;
+
+typedef enum
+{
+  ADBMS2950_CAL_PROFILE_DER_APM = 0,
+  ADBMS2950_CAL_PROFILE_EVAL_BASIC,
+  ADBMS2950_CAL_PROFILE_CUSTOM
+} adbms2950_calibration_profile_t;
+
+typedef struct
+{
+  adbms2950_calibration_profile_t profile;
+  float shunt_resistance_ohm;
+  float current_gain;
+  float current_offset_uv;
+  int8_t current_polarity;
+  float vb1_divider_ratio;
+  float vb2_divider_ratio;
+} adbms2950_calibration_t;
+
+typedef struct
+{
+  bool valid;
+  HAL_StatusTypeDef last_status;
+  uint32_t last_update_ms;
+  int32_t i1_raw;
+  int32_t i2_raw;
+  int16_t vb1_raw;
+  int16_t vb2_raw;
+  float current1_a;
+  float current2_a;
+  float current_disagreement_a;
+  float pack_voltage1_v;
+  float pack_voltage2_v;
+  float pack_voltage_disagreement_v;
+} adbms2950_redundant_sample_t;
+
+typedef struct
+{
+  HAL_StatusTypeDef transport_status;
+  bool address_ack;
+  bool data_ack;
+  uint8_t address_7bit;
+  uint8_t write_data;
+  uint8_t pre_rdcomm[TX_DATA];
+  uint8_t post_rdcomm[TX_DATA];
+} adbms2950_i2c_probe_result_t;
+
 typedef enum
 {
   ADBMS2950_SPI_OP_NONE = 0,
@@ -55,6 +163,14 @@ typedef struct
   uint16_t last_total_len;
   uint16_t last_read_pec_pass_mask;
   uint16_t last_read_pec_fail_mask;
+  uint16_t cmd_counter_seen_mask;
+  uint16_t cmd_counter_expected_mask;
+  uint16_t cmd_counter_mismatch_mask;
+  uint16_t sticky_cmd_counter_mismatch_mask;
+  uint16_t unexpected_counter_reset_mask;
+  uint16_t sticky_unexpected_counter_reset_mask;
+  uint32_t cmd_counter_error_count;
+  uint8_t expected_cmd_counter[ADBMS2950_MAX_TRACKED_ICS];
   uint8_t last_cmd_counter[ADBMS2950_MAX_TRACKED_ICS];
   uint8_t last_tx_preview[ADBMS2950_SPI_DEBUG_PREVIEW_BYTES];
   uint8_t last_rx_preview[ADBMS2950_SPI_DEBUG_PREVIEW_BYTES];
@@ -74,25 +190,46 @@ typedef struct
   bool pack_voltage_valid;
   bool i1_calibrated;
   bool i1_continuous_ready;
+  bool i2_calibrated;
+  bool i2_continuous_ready;
   bool hv_dividers_enabled;
+  bool refup_valid;
+  bool refup;
+  bool status_valid;
+  bool flag_valid;
+  bool snapshot_active;
   /* counter_seen/counter_advanced refer to the documented 13-bit
    * I1CNTPHA conversion counter, not the SPI command counter. */
   bool counter_seen;
   bool counter_advanced;
   HAL_StatusTypeDef last_status;
+  adbms2950_stage_t last_stage;
+  adbms2950_reason_t last_reason;
   uint8_t device_id;
+  uint8_t derivative;
   uint8_t revision;
   uint8_t sid[RSID];
   uint8_t last_cmd_counter;
   uint16_t i1_conversion_count;
+  uint8_t i2_conversion_count;
   uint8_t i1_conversion_phase;
   uint16_t last_i1cntpha;
+  uint16_t last_i1_conversion_count;
+  uint16_t configa_mismatch_ic_mask;
+  uint16_t configb_mismatch_ic_mask;
   uint32_t sample_count;
   uint32_t sample_error_count;
   uint32_t pec_error_count;
   uint32_t counter_mismatch_count;
   uint32_t counter_stall_count;
+  uint32_t unexpected_counter_reset_count;
+  uint32_t refup_failure_count;
+  uint32_t recovery_count;
+  uint32_t recovery_failure_count;
   uint32_t last_update_ms;
+  uint32_t fault_mask;
+  uint8_t raw_status[TX_DATA];
+  uint8_t raw_flag[TX_DATA];
   int32_t i1_raw;
   int16_t vb1_raw;
   float current_a;
@@ -187,6 +324,9 @@ typedef struct
 	uint32_t delay_timeout_count;
 	adbms2950_spi_debug_t spi_debug;
 	adbms2950_health_t health;
+	adbms2950_calibration_t calibration;
+	adbms2950_redundant_sample_t redundant_sample;
+	adbms2950_core_snapshot_t core_snapshot;
 } adbms2950_driver_t;
 
 /* Legacy standalone initializer retained for source compatibility.  New AMS
@@ -216,14 +356,38 @@ HAL_StatusTypeDef adbms2950_init_mixed_chain(adbms2950_driver_t *dev,
                                              bool issue_chain_reset,
                                              bool enable_hv_dividers);
 
+/* Board calibration is explicit because the DER APM and EVAL-ADBMS2950B
+ * use different shunts and voltage dividers.  The mixed-chain initializer
+ * defaults to the DER APM profile; bench code must select EVAL_BASIC before
+ * interpreting current or pack voltage from the evaluation board. */
+HAL_StatusTypeDef adbms2950_set_calibration_profile(
+    adbms2950_driver_t *dev, adbms2950_calibration_profile_t profile);
+HAL_StatusTypeDef adbms2950_set_calibration(
+    adbms2950_driver_t *dev, const adbms2950_calibration_t *calibration);
+const adbms2950_calibration_t *adbms2950_calibration_get(
+    const adbms2950_driver_t *dev);
+const char *adbms2950_calibration_profile_str(
+    adbms2950_calibration_profile_t profile);
+
 // Configuration
 void adbms2950_reset_cfg_regs(adbms2950_driver_t* dev);
 void adbms2950_wrcfga(adbms2950_driver_t* dev);
 void adbms2950_wrcfgb(adbms2950_driver_t* dev);
 void adbms2950_rdcfga(adbms2950_driver_t* dev);
 void adbms2950_rdcfgb(adbms2950_driver_t* dev);
+void adbms2950_pack_cfga(adbms2950_driver_t* dev);
+void adbms2950_pack_cfgb(adbms2950_driver_t* dev);
 
 // Operational Commands
+HAL_StatusTypeDef adbms2950_cmd_status(adbms2950_driver_t *dev,
+                                       const uint8_t cmd[CMDSZ]);
+HAL_StatusTypeDef adbms2950_adi1_checked(adbms2950_driver_t *dev,
+                                         const adi1_ *arg);
+HAL_StatusTypeDef adbms2950_adi2_checked(adbms2950_driver_t *dev,
+                                         const adi2_ *arg);
+HAL_StatusTypeDef adbms2950_adv_checked(adbms2950_driver_t *dev,
+                                        const adv_ *arg);
+HAL_StatusTypeDef adbms2950_plv_checked(adbms2950_driver_t *dev);
 void adbms2950_srst(adbms2950_driver_t* dev);
 void adbms2950_adi1(adbms2950_driver_t* dev, adi1_* arg); //cmd, starts i1adc, vb1adc
 void adbms2950_adi2(adbms2950_driver_t* dev, adi2_* arg); //cmd, starts i2adc, vb2adc
@@ -237,8 +401,31 @@ void adbms2950_rdv1d(adbms2950_driver_t* dev); //rd48, reads v1adc for v7a, v2ad
 
 HAL_StatusTypeDef adbms2950_read_sid(adbms2950_driver_t *dev);
 HAL_StatusTypeDef adbms2950_read_status(adbms2950_driver_t *dev);
+HAL_StatusTypeDef adbms2950_read_flag(adbms2950_driver_t *dev);
+HAL_StatusTypeDef adbms2950_verify_refup(adbms2950_driver_t *dev);
+HAL_StatusTypeDef adbms2950_read_core_snapshot(adbms2950_driver_t *dev,
+                                                adbms2950_core_snapshot_t *snapshot);
+HAL_StatusTypeDef adbms2950_recover(adbms2950_driver_t *dev,
+                                    bool allow_chain_reset);
+const char *adbms2950_stage_str(adbms2950_stage_t stage);
+const char *adbms2950_reason_str(adbms2950_reason_t reason);
 HAL_StatusTypeDef adbms2950_read_primary_sample(adbms2950_driver_t *dev,
                                                 uint32_t now_ms);
+HAL_StatusTypeDef adbms2950_read_redundant_sample(adbms2950_driver_t *dev,
+                                                  uint32_t now_ms);
+const adbms2950_redundant_sample_t *adbms2950_redundant_sample_get(
+    const adbms2950_driver_t *dev);
+
+/* Safe write-only I2C probe for the EVAL board EEPROM.  It sends the 24LC02B
+ * control byte followed by a word-address byte and STOP; no EEPROM data byte
+ * is transmitted.  The function exists primarily to validate the ADBMS2950B
+ * GPIO3/SDA + GPIO4/SCL COMM path and its ACK decoding. */
+HAL_StatusTypeDef adbms2950_i2c_write_probe(adbms2950_driver_t *dev,
+                                            uint8_t address_7bit,
+                                            uint8_t data_byte,
+                                            adbms2950_i2c_probe_result_t *result);
+HAL_StatusTypeDef adbms2950_stcomm_checked(adbms2950_driver_t *dev,
+                                           uint8_t comm_byte_count);
 /* Call after the chain owner successfully issues a compatible ADI1/ADCV.
  * That command resets I1CNT/I1PHA, so the next nonzero counter value belongs
  * to a new conversion epoch even if its numeric value matches the prior scan. */
@@ -246,6 +433,7 @@ void adbms2950_note_compatible_adi1(adbms2950_driver_t *dev);
 HAL_StatusTypeDef adbms2950_verify_config_readback(adbms2950_driver_t *dev);
 const adbms2950_health_t *adbms2950_health_get(const adbms2950_driver_t *dev);
 void adbms2950_health_clear_counters(adbms2950_driver_t *dev);
+void adbms2950_resync_command_counter_tracking(adbms2950_driver_t *dev);
 
 void adbms2950_gpo_set(adbms2950_driver_t* dev, GPO gpo, CFGA_GPO state);
 

@@ -331,7 +331,8 @@ After basic SID/status reads are stable, use the extra diagnostic hooks:
 ```text
 spi cfgchk
 spi cellst
-spi owcheck
+spi owc
+spi ows
 spi oweven
 spi owodd
 spi auxdiag
@@ -344,17 +345,20 @@ Interpretation:
 |---|---|---|
 | `spi cfgchk` | Read CFGA/CFGB and compare against packed TX config | status OK, cfgA/cfgB/cfg masks are 0 |
 | `spi cellst` | Exercise cell ADC diagnostic conversion/poll/status path | status OK and no new PEC/counter errors |
-| `spi owcheck` | Run the complete even/odd S-cell open-wire sequence, wait for each conversion, read all five groups, validate PEC/counters, and publish per-cell masks | status OK, both valid-IC masks cover every SMB, incomplete/fault masks are zero |
-| `spi oweven` | Run and capture the even-channel diagnostic phase only | command/read status OK and even valid-IC mask covers every SMB |
-| `spi owodd` | Run and capture the odd-channel diagnostic phase only | command/read status OK and odd valid-IC mask covers every SMB |
+| `spi csdump` | Capture fresh C-ADC and redundant S-ADC values plus CSxFLT | complete C/S valid masks; inspect per-cell delta and fault bits |
+| `spi owc` (`spi owcheck` alias) | Run the complete C-path baseline/even/odd electrical sense-path diagnostic, validate PEC/counters/codes/attenuation, map per-cell faults, and then require a normal C/S restore | diagnostic complete, no populated sense-path bits, and restore OK |
+| `spi ows` | Run the complete S-path sequence for development | not release evidence on Rev5 until Cell1->S2N through Cell14->S15N are repaired |
+| `spi oweven` | Run the S-path even-channel phase only | development-only transaction/result check |
+| `spi owodd` | Run the S-path odd-channel phase only | development-only transaction/result check |
 | `spi auxdiag` | Exercise AUX/GPIO ADC read/status path | status OK and temp/AUX path still reports plausible data |
 | `spi diagclear` | Clear accumulated diagnostic health counters | sticky masks and counts reset to 0 |
 
-Normal firmware also runs the full open-wire diagnostic every 30 seconds in
-charge, discharge, and balance states. A transport, PEC, counter, incomplete
-phase, or detected-cell result latches the ADBMS diagnostic fault and keeps
-`BMS_OK` low. The implementation monitors 15 populated cells per SMB; it does
-not interpret the unused sixteenth through eighteenth channels as pack leads.
+Bench and HIL builds do not run automatic open-wire diagnostics. A separately
+evidenced vehicle build may schedule the complete C-path diagnostic only in
+START/CHARGE, near zero current, with valid measurements and balancing off. A
+transport, PEC, counter, incomplete phase, detected path, or failed normal-C
+restore latches the ADBMS diagnostic fault and keeps `BMS_OK` low. The current
+15-cell topology masks the unused sixteenth channel.
 
 These hooks prove firmware command flow and the implemented 2.0 V diagnostic
 threshold. They do not by themselves prove the threshold against the assembled
@@ -381,39 +385,45 @@ ADBMS6830 procedure and actual SMB wiring.
 
 ## ADBMS2950 / APM Test Order
 
-Only after SMB/ADBMS6830 communication is understood, keep the final build at:
+For the dedicated v0.3.6 evaluation image, keep:
 
 ```text
 AMS_HW_BRINGUP=1
+AMS_APM_STANDALONE_EVAL_BENCH=1
 AMS_ENABLE_APM_2950=1
 AMS_APM_ENABLE_HV_DIVIDERS=0
 ```
 
-Then run:
+The SMB is intentionally disconnected. Run:
 
 ```text
 apm clear
-apm enable
-apm sid
-apm config
-apm sample
-apm scope 20
 apm status
+apm sid
+apm refup
+apm config
+apm flags
+apm raw
+apm sample
+apm scope sample 20
+apm redundant
+apm eeprom
 bringup apm2950
 ```
 
 Expected:
 
 ```text
-APM SID identifies the expected device
-CFGA/CFGB read back byte-for-byte
-RDSTAT/RDIVB1 PEC and command-counter checks pass
-APM SPI/health counters update
-APM TX/RX previews are visible
-bringup apm2950 says FINAL_RING and ADVISORY_NON_GATING
+APM SID identifies device ID 0x06
+REFUP is valid and asserted
+CFGA/CFGB masked readback mismatch masks are zero
+STAT/FLAG are valid and raw bytes are visible
+RDSTAT/RDIVB1/RDFLAG PEC and predicted CCNT checks pass
+I1 conversion count advances between accepted samples
+APM SPI/health counters and TX/RX previews are visible
+bringup apm2950 says STANDALONE_EVAL and ADVISORY_NON_GATING
 divider controls remain OFF
 APM failures do not change BMS_OK
-the production DHAB path remains the authoritative current input
 ```
 
 Do not use ADBMS2950/APM for safety gating until command behavior, scaling,
@@ -468,3 +478,63 @@ ST-Link/debugger reliability
 
 Any hardware-discovered bug should become a new host regression test once the
 root cause is understood.
+
+
+## C-path open-wire and OV/UV bench validation (2026-08-04)
+
+Use only an approved isolated low-voltage simulator or dedicated sacrificial fixture. Do not disconnect, fuse-open, or jumper an energized real segment tap. Keep BMS_OK inhibited and balancing off.
+
+Initial non-destructive check:
+
+```text
+ver
+status
+volt
+fault fuse
+spi snapshot
+spi owc
+spi faults
+spi rawdump
+```
+
+Accept only when the diagnostic is complete, every physical channel expected intact has a zero sense-path-open mask, and the mandatory normal C restore passes. After `spi owc`, `volt` must again show a fresh complete normal C image; open-wire conversion values must never appear as operating cell voltages.
+
+For an injected-open fixture test, open exactly one known sense path and verify the reported bit maps to that electrical cell-tap path. The firmware cannot distinguish whether the physical cause is the 1 A fuse, harness, connector, tab, trace, input resistor, or solder joint. Restore the fixture and power-cycle/service-clear according to the approved test procedure; the safety history is intentionally sticky.
+
+OV/UV validation must separately verify:
+
+```text
+software C thresholds and debounce/latch behavior
+populated Status-D OV/UV masks
+unused C16 masking
+20 mV non-atomic comparison margin
+hardware/software disagreement reporting
+```
+
+The C values remain safety-authoritative. Status-D is an independent cross-check and warning source.
+
+### Temperature hardware prerequisite
+
+Rev5 R15/R16 are 100 ohm pull-ups to approximately 5 V and must be replaced with reviewed values around 4.7 kohm before temperature communication is qualified. Firmware ACK checks and longer settling do not make the 100 ohm hardware acceptable. After rework, validate in this order:
+
+```text
+tempbus idle
+tempsns 0 0
+tempsns 0 8
+tempsns 0 16
+```
+
+Then progress from one sensor/one SMB to all three muxes on one SMB and finally the full chain. Do not run AUX open-wire current-source diagnostics concurrently with GPIO4/GPIO5 serial-controller transactions.
+
+### S-path prerequisite
+
+Rev5 S open-wire/redundancy is blocked by missing direct lower-node routes:
+
+```text
+Cell1  -> S2N
+Cell2  -> S3N
+...
+Cell14 -> S15N
+```
+
+Do not use S-path results as evidence until that PCB rework/ECO is electrically verified.

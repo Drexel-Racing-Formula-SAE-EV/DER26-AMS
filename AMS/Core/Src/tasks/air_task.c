@@ -46,7 +46,7 @@ __weak bool ams_air_board_read_inputs(ams_air_monitor_inputs_t *inputs,
  * producer and publishes one coherent snapshot; the weak board hooks keep it
  * fail-closed until the reviewed hardware adapter replaces them.
  * The safety supervisor remains the authoritative evaluator and sole normal
- * owner of BMS_OK assertion.  See Core/docs/AIR_CONTACTOR_MONITORING.md.
+ * owner of BMS_OK assertion.  See docs/AIR_CONTACTOR_MONITORING.md.
  */
 
 TaskHandle_t air_task_start(app_data_t *data)
@@ -138,6 +138,7 @@ void air_task_fn(void *argument)
 
         taskENTER_CRITICAL();
         data->air_monitor = next;
+        data->air_monitor_inputs = inputs;
         taskEXIT_CRITICAL();
 
         if((next.latched_fault_mask & ~previous_latched_mask) != 0u)

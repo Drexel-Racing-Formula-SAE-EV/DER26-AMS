@@ -1,11 +1,11 @@
 /*
- * Conservative main-fuse thermal observer for the DER26 accumulator.
+ * Preliminary main-fuse thermal observer for the DER26 accumulator.
  *
- * This observer is deliberately subtractive: it may reduce the static SoP
- * current envelope, but it can never raise a configured current limit.  The
- * Eaton EAC14-80 published I2t value is a typical manufacturing value, not a
- * guaranteed clearing boundary, so authority remains gated by vehicle
- * calibration and a known thermal initialization state.
+ * The model is based on a digitized EAC14-80 typical time-current/I2t curve,
+ * not on the single 8020 A^2s value.  The published curve is typical rather
+ * than guaranteed-minimum data, so this observer remains subtractive and its
+ * authority must stay evidence-gated until Eaton/vehicle characterization is
+ * available.
  */
 
 #ifndef INC_SOP_AMS_FUSE_OBSERVER_H_
@@ -20,30 +20,49 @@
 extern "C" {
 #endif
 
-#define AMS_FUSE_REASON_NONE                 0x0000u
-#define AMS_FUSE_REASON_INPUT_INVALID        0x0001u
-#define AMS_FUSE_REASON_TEMPERATURE_PROXY    0x0002u
-#define AMS_FUSE_REASON_MODEL_UNVALIDATED    0x0004u
-#define AMS_FUSE_REASON_INITIAL_STATE_UNKNOWN 0x0008u
-#define AMS_FUSE_REASON_BUDGET_DERATED       0x0010u
-#define AMS_FUSE_REASON_BUDGET_EXHAUSTED     0x0020u
+#define AMS_FUSE_EAC14_80_RATED_CURRENT_A       80.0f
+
+#define AMS_FUSE_REASON_NONE                   0x0000u
+#define AMS_FUSE_REASON_INPUT_INVALID          0x0001u
+#define AMS_FUSE_REASON_TEMPERATURE_PROXY      0x0002u
+#define AMS_FUSE_REASON_MODEL_UNVALIDATED      0x0004u
+#define AMS_FUSE_REASON_INITIAL_STATE_UNKNOWN  0x0008u
+#define AMS_FUSE_REASON_CURVE_DERATED          0x0010u
+#define AMS_FUSE_REASON_BUDGET_EXHAUSTED       0x0020u
+#define AMS_FUSE_REASON_CURVE_EXTRAPOLATED     0x0040u
+
+/* Backward-compatible name used by older diagnostics. */
+#define AMS_FUSE_REASON_BUDGET_DERATED AMS_FUSE_REASON_CURVE_DERATED
 
 typedef struct
 {
     float rated_current_a;
-    float typical_melting_i2t_a2s;
-    float usable_i2t_fraction;
+
+    /* Fraction of the digitized typical melt time made available to the
+     * preliminary software model.  This is a commissioning margin, not a
+     * substitute for guaranteed-minimum manufacturer data. */
+    float curve_time_fraction;
+
     float cooling_time_constant_s;
     float initialization_soak_s;
     float quiescent_current_a;
     float fuse_temperature_margin_c;
     float minimum_temperature_derating;
     float maximum_state_multiple;
+
+    /* Low-current asymptote used below the lowest digitized point:
+     * t = scale * (I/In - 1)^(-exponent). */
+    float low_current_fit_scale_s;
+    float low_current_fit_exponent;
+    float maximum_curve_time_s;
+    float minimum_curve_time_s;
 } ams_fuse_observer_config_t;
 
 typedef struct
 {
-    float excess_i2t_a2s;
+    /* Dimensionless normalized thermal/damage state.  1.0 is the preliminary
+     * curve-derived exhaustion boundary. */
+    float thermal_utilization;
     float quiescent_time_s;
     uint32_t update_count;
     uint32_t invalid_count;
@@ -67,16 +86,20 @@ typedef struct
 typedef struct
 {
     float utilization;
-    float usable_i2t_a2s;
-    float remaining_i2t_a2s;
+    float remaining_utilization;
     float estimated_fuse_temperature_c;
     float temperature_derating;
     float continuous_current_a;
+    float effective_current_a;
+    float equivalent_25c_current_a;
+    float typical_melt_time_s;
+    float usable_melt_time_s;
     float discharge_current_cap_a[AMS_SOP_HORIZONS];
     uint16_t reason_flags;
     uint8_t valid;
     uint8_t authority_valid;
     uint8_t budget_exhausted;
+    uint8_t curve_extrapolated;
 } ams_fuse_observer_result_t;
 
 void ams_fuse_observer_default_config(ams_fuse_observer_config_t *cfg);
@@ -84,6 +107,15 @@ bool ams_fuse_observer_config_valid(const ams_fuse_observer_config_t *cfg);
 void ams_fuse_observer_init(ams_fuse_observer_t *observer);
 float ams_fuse_temperature_derating(float fuse_temperature_c,
                                      float minimum_derating);
+
+/* Typical EAC14-80 melting time at 25 C from the digitized January-2026
+ * datasheet curve.  Returns INFINITY at/below rated current.  `extrapolated`
+ * is set when the result comes from the low/high-current extension rather than
+ * a digitized interval. */
+float ams_fuse_typical_melt_time_s(const ams_fuse_observer_config_t *cfg,
+                                   float equivalent_25c_current_a,
+                                   uint8_t *extrapolated);
+
 bool ams_fuse_observer_update(ams_fuse_observer_t *observer,
                               const ams_fuse_observer_config_t *cfg,
                               const ams_sop_config_t *sop_cfg,

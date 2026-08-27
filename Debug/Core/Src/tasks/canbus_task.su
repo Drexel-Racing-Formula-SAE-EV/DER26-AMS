@@ -1,2 +1,0 @@
-../Core/Src/tasks/canbus_task.c:22:14:canbus_task_start	32	static
-../Core/Src/tasks/canbus_task.c:29:6:canbus_task_fn	48	static

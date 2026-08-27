@@ -85,6 +85,13 @@ typedef struct
     uint32_t cell_age_ms[NSMBS][NCELLS];
     uint16_t cell_usable_mask[NSMBS];
 
+    /* Observational/estimator candidates captured from the same coherent
+     * ADBMS epoch. They never replace cell_mv as safety authority. */
+    uint16_t cell_avg8_mv[NSMBS][NCELLS];
+    uint16_t cell_iir_mv[NSMBS][NCELLS];
+    uint16_t cell_avg8_usable_mask[NSMBS];
+    uint16_t cell_iir_usable_mask[NSMBS];
+
     int16_t temp_deci_c[NSMBS][NTEMPS];
     uint32_t temp_age_ms[NSMBS][NTEMPS];
     uint32_t temp_usable_mask[NSMBS];

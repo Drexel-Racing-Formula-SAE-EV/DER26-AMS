@@ -36,6 +36,17 @@
 /* ADBMS UV at 3.0 V is intentionally treated as early warning/telemetry. */
 #define ADBMS_UV_WARN_MV                 CELL_UV_WARN_MV
 #define FW_UV_HARD_MV                    CELL_UV_HARD_MV
+/* Status-D and the software C image are not captured atomically.  Around the
+ * programmed comparator threshold, a legitimate crossing between those two
+ * reads can otherwise look like a hardware/software disagreement.  Compare
+ * only when the fresh C value is this far outside the threshold boundary. */
+#define ADBMS_OVUV_COMPARE_MARGIN_MV      20u
+
+/* Availability policy for transport/read faults only. A fresh electrical
+ * SEVERE/HARD OV/UV remains immediate. After at least one clean scan, one or
+ * two failed full scans revoke measurement/torque authority but keep BMS_OK
+ * eligible; the third consecutive failed scan confirms a shutdown fault. */
+#define VOLTAGE_READ_FAULT_CONFIRM_SCANS   3u
 
 typedef enum
 {
@@ -55,13 +66,17 @@ typedef enum
     VOLTAGE_FAULT_REASON_UV_WARNING,
     VOLTAGE_FAULT_REASON_UV_SOFT,
     VOLTAGE_FAULT_REASON_UV_HARD,
-    VOLTAGE_FAULT_REASON_UV_SEVERE
+    VOLTAGE_FAULT_REASON_UV_SEVERE,
+    VOLTAGE_FAULT_REASON_HW_STATUS_DISAGREEMENT,
+    VOLTAGE_FAULT_REASON_HW_STATUS_WARNING
 } voltage_fault_reason_t;
 
 typedef struct
 {
     bool voltage_valid;
     bool read_fault;
+    bool read_fault_pending;
+    uint8_t read_fault_streak;
     bool warning;
     bool charge_stop;
     bool overvoltage_fault;
@@ -76,6 +91,19 @@ typedef struct
     uint16_t updated_cell_count;
     uint16_t stale_cell_count;
     uint16_t pec_fail_cell_count;
+
+    /* Software threshold masks use fresh C values. Hardware masks are the
+     * ADBMS6830 Status-D OV/UV comparator result with unused channels masked.
+     * A disagreement is diagnostic evidence; software C values remain the
+     * safety source of truth. */
+    uint16_t software_ov_mask[NSMBS];
+    uint16_t software_uv_mask[NSMBS];
+    uint16_t hardware_ov_mask[NSMBS];
+    uint16_t hardware_uv_mask[NSMBS];
+    uint16_t hardware_disagreement_mask[NSMBS];
+    uint16_t hardware_status_valid_ic_mask;
+    bool hardware_warning;
+    bool hardware_disagreement;
 
     uint16_t max_cell_mv;
     uint16_t min_cell_mv;

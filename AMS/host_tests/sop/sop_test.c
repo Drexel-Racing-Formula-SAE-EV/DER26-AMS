@@ -477,16 +477,25 @@ static bool test_fuse_observer(void)
                     sop_cfg.discharge_current_max_a[h]);
     }
 
+    /* The curve model no longer treats 118 A as consuming a fixed 8020 A^2s
+     * bucket in seconds.  It accumulates slowly according to the time-current
+     * curve and remains below exhaustion for this short pulse train. */
     input.pack_current_a = 118.0f;
     input.elapsed_s = 0.1f;
-    TEST_ASSERT(ams_fuse_observer_update(&observer, &cfg, &sop_cfg,
-                                         &input, &result));
-    TEST_ASSERT(result.utilization > 0.0f);
-    for(uint16_t i = 0u; i < 100u && !result.budget_exhausted; i++)
+    for(uint16_t i = 0u; i < 100u; i++)
     {
         TEST_ASSERT(ams_fuse_observer_update(&observer, &cfg, &sop_cfg,
                                              &input, &result));
     }
+    TEST_ASSERT(result.utilization > 0.0f);
+    TEST_ASSERT(!result.budget_exhausted);
+
+    /* A severe 10 In pulse crosses the preliminary curve boundary quickly and
+     * exercises the exhaustion latch. */
+    input.pack_current_a = 800.0f;
+    input.elapsed_s = 0.01f;
+    TEST_ASSERT(ams_fuse_observer_update(&observer, &cfg, &sop_cfg,
+                                         &input, &result));
     TEST_ASSERT(result.budget_exhausted);
     TEST_ASSERT(result.discharge_current_cap_a[0] == 0.0f);
 
@@ -636,7 +645,7 @@ static bool test_strategy_fuse_randomized_invariants(void)
                                              &fuse_result));
         TEST_ASSERT(isfinite(fuse_result.utilization));
         TEST_ASSERT(fuse_result.utilization >= 0.0f);
-        TEST_ASSERT(isfinite(fuse_result.remaining_i2t_a2s));
+        TEST_ASSERT(isfinite(fuse_result.remaining_utilization));
         for(uint8_t h = 0u; h < AMS_SOP_HORIZONS; h++)
         {
             TEST_ASSERT(isfinite(fuse_result.discharge_current_cap_a[h]));
@@ -903,7 +912,13 @@ static bool test_capacity_soh_rejections_and_persistence(void)
     TEST_ASSERT(selected.generation == 8u);
 
     record.capacity_mean_ah += 1.0;
+    /* Invalid persistence must be safe even when the destination has never
+     * been initialized.  This catches accidental read/modify/write of the
+     * prior reason flags on a rejection path. */
+    memset(&restored, 0xA5, sizeof(restored));
     TEST_ASSERT(!ams_soh_import_record(&restored, &cfg, &record));
+    TEST_ASSERT(restored.result.last_reason_flags ==
+                AMS_SOH_REASON_PERSISTENCE);
     TEST_ASSERT(ams_soh_select_newest_record(&cfg, &record, &newer,
                                              &selected));
     TEST_ASSERT(selected.generation == 8u);

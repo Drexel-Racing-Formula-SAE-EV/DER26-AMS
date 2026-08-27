@@ -95,11 +95,22 @@ int main(void)
     CHECK(fake_bms_pin == GPIO_PIN_RESET);
     CHECK(app.bms_output_block_count == 1u);
 
-    /* The registered safety supervisor may assert it when no other gate blocks. */
+    /* The registered safety supervisor may assert only in an authority-capable
+     * profile. TESTDAY is compile-locked at the final hardware writer even if
+     * the mutable runtime inhibit is corrupted clear. */
     fake_current_task = app.error_task;
+    app.bms_output_inhibit = false;
+    app.adbms_urgent_mute_requested = false;
     set_bms(true);
+#if AMS_PROFILE_BMS_RUNTIME_AUTHORITY_ALLOWED
     CHECK(app.bms_state == true);
     CHECK(fake_bms_pin == GPIO_PIN_SET);
+#else
+    CHECK(app.bms_state == false);
+    CHECK(fake_bms_pin == GPIO_PIN_RESET);
+    CHECK(app.bms_output_inhibit == true);
+    CHECK(app.adbms_urgent_mute_requested == true);
+#endif
 
     /* Any context remains allowed to force the output low immediately. */
     fake_current_task = (TaskHandle_t)(uintptr_t)0x9999u;
@@ -107,19 +118,29 @@ int main(void)
     CHECK(app.bms_state == false);
     CHECK(fake_bms_pin == GPIO_PIN_RESET);
 
-    /* Output inhibit and panic remain higher-authority gates. */
+    /* Output inhibit and panic remain higher-authority gates in profiles that
+     * can otherwise assert. TESTDAY has already accumulated one additional
+     * compile-lock block above, so use relative counters here. */
     fake_current_task = app.error_task;
+    uint32_t block_before = app.bms_output_block_count;
     app.bms_output_inhibit = true;
     set_bms(true);
     CHECK(app.bms_state == false);
-    CHECK(app.bms_output_block_count == 2u);
+    CHECK(app.bms_output_block_count > block_before);
 
+    block_before = app.bms_output_block_count;
     app.bms_output_inhibit = false;
     fake_panic_active = true;
     set_bms(true);
     CHECK(app.bms_state == false);
-    CHECK(app.bms_output_block_count == 3u);
-    CHECK(fake_log_count >= 2u);
+    CHECK(app.bms_output_block_count > block_before);
+#if AMS_PROFILE_BMS_RUNTIME_AUTHORITY_ALLOWED
+    CHECK(fake_log_count >= 1u);
+#else
+    /* TESTDAY never physically asserted BMS_OK, so no asserted->dropped edge
+     * exists to log. The fail-low pin/state checks above are authoritative. */
+    CHECK(fake_log_count == 0u);
+#endif
 
     /* Exercise the production heartbeat implementation, not the broad SIL
      * harness copy.  Every shared monitor mutation must be bracketed by a
@@ -151,6 +172,10 @@ int main(void)
     CHECK(fake_critical_enter_count == 4u);
     CHECK(fake_critical_exit_count == 4u);
 
+    #if AMS_BUILD_PROFILE == AMS_PROFILE_TESTDAY
+    puts("PASS TESTDAY compile-locked BMS_OK writer and heartbeat critical-section enforcement");
+#else
     puts("PASS BMS_OK ownership and heartbeat critical-section enforcement");
+#endif
     return 0;
 }

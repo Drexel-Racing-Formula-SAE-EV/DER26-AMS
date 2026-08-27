@@ -558,6 +558,23 @@ bool ams_power_state_update(ams_power_state_t *state,
     state->update_count = saturating_increment(state->update_count);
     state->last_update_tick = now_ms;
 
+#if NSMBS < AMS_SOP_SEGMENTS
+    /* The SoP/SoH state is explicitly a five-physical-segment model, while
+     * BENCH/HIL may intentionally compile a one-SMB measurement store.  Never
+     * index a smaller measurement snapshot as five segments merely to discover
+     * later that the estimator topology is incomplete.  Fail closed before
+     * touching any segment arrays. */
+    ams_power_state_invalidate(state, now_ms,
+                               AMS_SOP_REASON_INCOMPLETE_TOPOLOGY);
+    return false;
+#else
+    if(!estimator_has_segment_topology(estimator))
+    {
+        ams_power_state_invalidate(state, now_ms,
+                                   AMS_SOP_REASON_INCOMPLETE_TOPOLOGY);
+        return false;
+    }
+
     float minimum_cell_v;
     float maximum_cell_v;
     float average_temp_c;
@@ -646,4 +663,5 @@ bool ams_power_state_update(ams_power_state_t *state,
     }
     refresh_can_snapshot(state);
     return false;
+#endif
 }

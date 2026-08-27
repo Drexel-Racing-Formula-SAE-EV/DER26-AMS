@@ -14,7 +14,7 @@
 
 #include <stdint.h>
 
-#define AMS_LOGGER_PROTOCOL_VERSION       1u
+#define AMS_LOGGER_PROTOCOL_VERSION       3u
 
 #define AMS_LOGGER_CAN_ID_HEARTBEAT       0x690u
 #define AMS_LOGGER_CAN_ID_FAULT_REASONS   0x691u
@@ -47,8 +47,73 @@
 #define AMS_LOGGER_CAN_ID_VOLTAGE_DIAG    0x6ABu
 #define AMS_LOGGER_CAN_ID_RTOS_DIAG       0x6ACu
 #define AMS_LOGGER_CAN_ID_SNAPSHOT_META   0x6ADu
+#define AMS_LOGGER_CAN_ID_APM_SAMPLE      0x6AEu
+#define AMS_LOGGER_CAN_ID_APM_HEALTH      0x6AFu
+#define AMS_LOGGER_CAN_ID_APM_RAW         0x6B0u
+#define AMS_LOGGER_CAN_ID_ESTIMATOR       0x6B2u
+#define AMS_LOGGER_CAN_ID_TX_SCHED_DIAG    0x6B3u
+#define AMS_LOGGER_CAN_ID_ESTIMATOR_VOLTAGE_COMPARE 0x6B4u
+#define AMS_LOGGER_CAN_ID_EKF_STATE       0x6B5u
+#define AMS_LOGGER_CAN_ID_EKF_MODEL       0x6B6u
+#define AMS_LOGGER_CAN_ID_EKF_COVARIANCE  0x6B7u
+#define AMS_LOGGER_CAN_ID_EKF_SOH         0x6B8u
+#define AMS_LOGGER_CAN_ID_EKF_CONTEXT     0x6B9u
+#define AMS_LOGGER_CAN_ID_SOP_DISCHARGE   0x6BAu
+#define AMS_LOGGER_CAN_ID_SOP_CHARGE      0x6BBu
+#define AMS_LOGGER_CAN_ID_SOP_BINDING     0x6BCu
+#define AMS_LOGGER_CAN_ID_FUSE_STATE      0x6BDu
+#define AMS_LOGGER_CAN_ID_FUSE_LIMIT      0x6BEu
+#define AMS_LOGGER_CAN_ID_TUNING_META     0x6BFu
+#define AMS_LOGGER_CAN_ID_SOP_META        0x6C0u
+#define AMS_LOGGER_CAN_ID_LAST            AMS_LOGGER_CAN_ID_SOP_META
 
-#define AMS_LOGGER_SNAPSHOT_VERSION       1u
+/* Test/tuning telemetry is observational and is intentionally absent from a
+ * 250-kbit/s image. It is always scheduled as disposable DETAIL traffic. */
+#ifndef AMS_ENABLE_TUNING_CAN
+#define AMS_ENABLE_TUNING_CAN (DER26_CAN_BITRATE_KBPS == 500u)
+#endif
+
+#if (AMS_ENABLE_TUNING_CAN != 0) && (AMS_ENABLE_TUNING_CAN != 1)
+#error "AMS_ENABLE_TUNING_CAN must be 0 or 1"
+#endif
+#if (DER26_CAN_BITRATE_KBPS == 250u) && AMS_ENABLE_TUNING_CAN
+#error "AMS tuning CAN is prohibited at 250 kbit/s"
+#endif
+
+#define AMS_TUNING_CAN_FAST_PERIOD_MS 100u
+#define AMS_TUNING_CAN_SOP_PERIOD_MS  200u
+
+#define AMS_TUNING_SUPPRESS_PROTECTED_DEADLINE (1u << 0u)
+#define AMS_TUNING_SUPPRESS_PROTECTED_LATENCY  (1u << 1u)
+#define AMS_TUNING_SUPPRESS_PROTECTED_HAL      (1u << 2u)
+#define AMS_TUNING_SUPPRESS_CAN_TASK_DEADLINE  (1u << 3u)
+#define AMS_TUNING_SUPPRESS_BUS_HEALTH         (1u << 4u)
+#define AMS_TUNING_SUPPRESS_BUILD_INTEGRITY    (1u << 5u)
+
+#define AMS_LOGGER_SNAPSHOT_VERSION       2u
+#define AMS_LOGGER_PHASE_BITS              3u
+#define AMS_LOGGER_PHASE_MASK              0x07u
+#define AMS_LOGGER_FRAGMENT_SEQ_MASK       0x1Fu
+
+/* V4 detail fragments carry the low five snapshot-sequence bits in the upper
+ * bits of byte 0 and the SMB/phase in the lower three bits. This allows the
+ * ECU to associate out-of-order detail fragments with their snapshot without
+ * sacrificing any voltage/temperature payload bytes. */
+static inline uint8_t ams_logger_phase_tag(uint8_t sequence, uint8_t phase)
+{
+    return (uint8_t)(((sequence & AMS_LOGGER_FRAGMENT_SEQ_MASK) <<
+                      AMS_LOGGER_PHASE_BITS) |
+                     (phase & AMS_LOGGER_PHASE_MASK));
+}
+static inline uint8_t ams_logger_phase_from_tag(uint8_t tag)
+{
+    return (uint8_t)(tag & AMS_LOGGER_PHASE_MASK);
+}
+static inline uint8_t ams_logger_seq5_from_tag(uint8_t tag)
+{
+    return (uint8_t)((tag >> AMS_LOGGER_PHASE_BITS) &
+                     AMS_LOGGER_FRAGMENT_SEQ_MASK);
+}
 
 #define AMS_LOGGER_TEMP_INVALID_DECI_C    ((uint16_t)0x8000u)
 
@@ -115,7 +180,8 @@ typedef enum
     AMS_LOGGER_ADBMS_DIAG_FLAG_OPEN_WIRE_FAULT,
     AMS_LOGGER_ADBMS_DIAG_FLAG_SCAN_ACTIVE,
     AMS_LOGGER_ADBMS_DIAG_FLAG_HIL_REPLACE,
-    AMS_LOGGER_ADBMS_DIAG_FLAG_BALANCE_WRITE_FAULT
+    AMS_LOGGER_ADBMS_DIAG_FLAG_BALANCE_WRITE_FAULT,
+    AMS_LOGGER_ADBMS_DIAG_FLAG_VOLTAGE_DEGRADED
 } ams_logger_adbms_diag_flag_t;
 
 
@@ -150,14 +216,22 @@ typedef enum
     AMS_LOGGER_RTOS_FLAG_HEAP_WARN,
     AMS_LOGGER_RTOS_FLAG_STACK_OVERFLOW,
     AMS_LOGGER_RTOS_FLAG_MALLOC_FAILED,
-    AMS_LOGGER_RTOS_FLAG_ASSERT_FAILED
+    AMS_LOGGER_RTOS_FLAG_ASSERT_FAILED,
+    AMS_LOGGER_RTOS_FLAG_STACK_CRITICAL
 } ams_logger_rtos_diag_flag_t;
 
 typedef enum
 {
     AMS_LOGGER_HIL_FLAG_MEAS_FRESH = 0,
     AMS_LOGGER_HIL_FLAG_TRUTH_FRESH,
-    AMS_LOGGER_HIL_FLAG_SUMMARY_FRESH
+    AMS_LOGGER_HIL_FLAG_SUMMARY_FRESH,
+    /* The upper five bits of ADBMS_DIAG byte 7 remain useful in physical-SPI
+     * builds and make degraded measurement authority unambiguous. */
+    AMS_LOGGER_ADBMS_STATE_FLAG_TEMP_UNAVAILABLE,
+    AMS_LOGGER_ADBMS_STATE_FLAG_SMB_READY,
+    AMS_LOGGER_ADBMS_STATE_FLAG_LAST_VOLTAGE_SCAN_OK,
+    AMS_LOGGER_ADBMS_STATE_FLAG_C_ONLY_MODE,
+    AMS_LOGGER_ADBMS_STATE_FLAG_S_REDUNDANCY_FAULT
 } ams_logger_hil_flag_t;
 
 

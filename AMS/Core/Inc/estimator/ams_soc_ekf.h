@@ -20,8 +20,6 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "../../../../HiL/common/ams_hil_image_protocol.h"
-
 #include "ams_build_profile.h"
 
 #ifdef __cplusplus
@@ -39,7 +37,13 @@ extern "C" {
 #define AMS_EKF_DEFAULT_SOC_INIT    1.0f
 #define AMS_EKF_DEFAULT_R0_INIT_OHM 0.0147f
 
-#define AMS_ESTIMATOR_STATUS_CAN_ID 0x421U
+#define AMS_HIL_CAN_ID_MEAS         0x200U
+#define AMS_HIL_CAN_ID_TRUTH        0x201U
+#define AMS_HIL_CAN_ID_SUMMARY      0x202U
+#define AMS_HIL_CAN_ID_CELL_SAMPLE  0x210U
+#define AMS_HIL_CAN_ID_TEMP_SAMPLE  0x211U
+#define AMS_HIL_CAN_ID_CTRL         0x300U
+#define AMS_ESTIMATOR_STATUS_CAN_ID 0x6B2U
 
 #define AMS_EKF_FAULT_NONE          0x00000000UL
 #define AMS_EKF_FAULT_DISABLED      0x00000001UL
@@ -51,6 +55,8 @@ extern "C" {
 #define AMS_EKF_FAULT_STALE_INPUT   0x00000040UL
 #define AMS_EKF_FAULT_CLAMPED       0x00000080UL
 #define AMS_EKF_FAULT_EPOCH_TIMING  0x00000100UL
+#define AMS_EKF_FAULT_INNOVATION_REJECT 0x00000200UL
+#define AMS_EKF_FAULT_DT_CLAMPED     0x00000400UL
 
 #define AMS_EKF_MODEL_DOMAIN_NONE       0x00U
 #define AMS_EKF_MODEL_DOMAIN_TEMP_LOW   0x01U
@@ -67,6 +73,8 @@ extern "C" {
 #define AMS_SOH_MIN_MODEL_TEMP_C                5.0f
 #define AMS_SOH_MAX_MODEL_TEMP_C               40.0f
 #define AMS_SOH_MAX_INNOVATION_PER_CELL_V       0.10f
+#define AMS_EKF_BOOTSTRAP_MAX_INNOVATION_PER_CELL_V 0.75f
+#define AMS_EKF_ACQUISITION_STEPS                  8u
 #define AMS_SOH_MIN_ACCEPTED_OBSERVATIONS       50u
 #define AMS_SOH_MAX_R0_VARIANCE_OHM2            5.0e-5f
 #define AMS_SOH_MAX_ACCEPT_AGE_MS             300000u
@@ -180,6 +188,8 @@ typedef struct
     float last_v_meas_V;
     float last_t_surf_C;
     uint32_t step_count;
+    uint32_t innovation_reject_count;
+    uint32_t dt_clamp_count;
     uint32_t fault_flags;
     uint32_t last_measurement_sequence;
     uint32_t last_voltage_tick;
@@ -209,6 +219,21 @@ typedef struct
     uint32_t last_current_total_invalid_sample_count;
     uint8_t current_total_initialized;
 
+    /* Simultaneous observational voltage-product capture for the RAW vs
+     * AVG8 vs IIR estimator experiment. These fields never affect raw-cell
+     * safety authority. Only AMS_ESTIMATOR_VOLTAGE_SOURCE selects the live
+     * EKF input; all available products are retained for offline comparison. */
+    uint32_t voltage_compare_sequence;
+    uint16_t voltage_raw_valid_mask;
+    uint16_t voltage_avg8_valid_mask;
+    uint16_t voltage_iir_valid_mask;
+    float voltage_raw_V[AMS_EKF_MAX_INSTANCES];
+    float voltage_avg8_V[AMS_EKF_MAX_INSTANCES];
+    float voltage_iir_V[AMS_EKF_MAX_INSTANCES];
+    uint16_t voltage_raw_valid_count[AMS_EKF_MAX_INSTANCES];
+    uint16_t voltage_avg8_valid_count[AMS_EKF_MAX_INSTANCES];
+    uint16_t voltage_iir_valid_count[AMS_EKF_MAX_INSTANCES];
+
     float pack_soc;
     float representative_cell_r0_ohm;
     float estimated_pack_r0_ohm;
@@ -220,7 +245,9 @@ typedef struct
     float pack_t_core_C;
     float cc_soc;
     uint8_t cc_valid;
+    uint8_t cc_last_dt_clamped;
     uint32_t cc_step_count;
+    uint32_t cc_dt_clamp_count;
 
     ams_ekf_instance_t inst[AMS_EKF_MAX_INSTANCES];
     ams_resistance_soh_t resistance_soh[AMS_EKF_MAX_INSTANCES];

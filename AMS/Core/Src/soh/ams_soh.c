@@ -120,6 +120,10 @@ static void refresh_capacity_result(ams_soh_estimator_t *estimator,
         }
     }
 
+    /* Capacity identification is deliberately advisory: its confidence-bounded
+     * result may tighten SoP, but it does not retune the EKF/CC nominal
+     * capacity. Closing that loop would reintroduce estimator/capacity
+     * circularity and requires separate pack validation. */
     result->capacity_ah = (count > 0u) ?
         (float)estimator->capacity_mean_ah : cfg->nominal_pack_capacity_ah;
     result->capacity_sigma_ah = sigma_ah;
@@ -640,7 +644,12 @@ bool ams_soh_import_record(ams_soh_estimator_t *estimator,
     {
         if(estimator != NULL)
         {
-            estimator->result.last_reason_flags |=
+            /* Import accepts an uninitialized destination for a valid
+             * record (the success path initializes it below).  A rejected
+             * record must therefore not read/OR an indeterminate prior
+             * reason field.  Persistence rejection is the complete reason
+             * for this operation, so assign it directly. */
+            estimator->result.last_reason_flags =
                 AMS_SOH_REASON_PERSISTENCE;
         }
         return false;
@@ -653,7 +662,12 @@ bool ams_soh_import_record(ams_soh_estimator_t *estimator,
            (record->segment_resistance_growth_upper[segment] > 3.0f) ||
            (record->segment_resistance_confidence_pct[segment] > 100u))
         {
-            estimator->result.last_reason_flags |=
+            /* Import accepts an uninitialized destination for a valid
+             * record (the success path initializes it below).  A rejected
+             * record must therefore not read/OR an indeterminate prior
+             * reason field.  Persistence rejection is the complete reason
+             * for this operation, so assign it directly. */
+            estimator->result.last_reason_flags =
                 AMS_SOH_REASON_PERSISTENCE;
             return false;
         }
@@ -666,7 +680,7 @@ bool ams_soh_import_record(ams_soh_estimator_t *estimator,
     if((record->capacity_mean_ah < (double)minimum_ah) ||
        (record->capacity_mean_ah > (double)maximum_ah))
     {
-        estimator->result.last_reason_flags |= AMS_SOH_REASON_PERSISTENCE;
+        estimator->result.last_reason_flags = AMS_SOH_REASON_PERSISTENCE;
         return false;
     }
 

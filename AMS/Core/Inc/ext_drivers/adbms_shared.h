@@ -40,14 +40,6 @@
 #define WAKEUP_US_DELAY                           1000u
 #define WAKEUP_BW_DELAY                           1000u
 
-/* Explicit local SPI chip-select timing for the STM32-to-ADBMS6822 side of
- * the link.  These margins are intentionally enforced in software instead of
- * relying on incidental HAL/GPIO call overhead.  The exact minimum shall be
- * rechecked against the controlled ADBMS6822 datasheet revision and verified
- * on the assembled AMS with a logic analyzer before vehicle release. */
-#define ADBMS_SPI_CS_SETUP_US                        1u
-#define ADBMS_SPI_CS_HOLD_US                         1u
-
 /* The five-SMB configuration keeps REFON asserted. The first checked wake,
  * this pre-conversion interval, and the checked wake inside ADCV together
  * exceed the 4.4 ms worst-case reference wake time. The documented redundant
@@ -70,13 +62,6 @@
 #define DPECSZ 2
 #define TX_DATA 6               /* Bms tx data byte                   */
 #define RX_DATA 8               /* Bms rx data byte                   */
-#define RDCVALL_SIZE    34      /* RDCVALL data byte size             */
-#define RDSALL_SIZE     34      /* RDSALL data byte size              */
-#define RDACALL_SIZE    34      /* RDACALL data byte size             */
-#define RDFCALL_SIZE    34      /* RDFCALL data byte size             */
-#define RDCSALL_SIZE    66      /* RDCSALL data byte size             */
-#define RDASALL_SIZE    70      /* RDASALL data byte size             */
-#define RDACSALL_SIZE   66      /* RDACSALL data byte size */
 
 uint16_t Pec15_Calc(uint8_t len, uint8_t *data);
 uint16_t pec10_calc(uint8_t rx_cmd, int len, uint8_t *data);

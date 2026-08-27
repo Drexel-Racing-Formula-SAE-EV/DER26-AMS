@@ -1,3 +1,0 @@
-../Core/Src/ext_drivers/stm32f767z.c:25:6:stm32f767z_init	16	static
-../Core/Src/ext_drivers/stm32f767z.c:43:10:stm32f767z_adc_read	24	static
-../Core/Src/ext_drivers/stm32f767z.c:54:19:stm32f767z_adc_switch_channel	32	static

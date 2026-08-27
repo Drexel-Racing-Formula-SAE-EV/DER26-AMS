@@ -7,7 +7,7 @@
  */
 
 #include "ext_drivers/accumulator.h"
-#include "../../../../HiL/common/ams_hil_image_protocol.h"
+#include "ams_build_profile.h"
 #include "ext_drivers/thermistor_model.h"
 #include <math.h>
 #include <string.h>
@@ -33,11 +33,11 @@ bool accumulator_final_ring_topology_valid(const accumulator_t *dev)
 {
     if((dev == NULL) ||
        (dev->smb.num_ics != NSMBS) ||
-       (dev->smb.physical_chain_count != (uint8_t)(NSMBS + NAPMS)) ||
+       (dev->smb.physical_chain_count != (uint8_t)ACCUMULATOR_PHYSICAL_CHAIN_COUNT) ||
        (dev->smb.ics_capacity != NSMBS) ||
        (dev->smb.ics != dev->smb_ics) ||
-       (dev->smb.string != STRING_A) ||
-       (dev->smb.write_string != STRING_A) ||
+       (dev->smb.string != ACCUMULATOR_SMB_STRING) ||
+       (dev->smb.write_string != ACCUMULATOR_SMB_STRING) ||
        (dev->smb.hspi == NULL) ||
        (dev->smb.htim == NULL) ||
        (dev->smb.cs_port[STRING_A] == NULL) ||
@@ -88,6 +88,49 @@ static void accumulator_invalidate_apm_sample(accumulator_t *dev)
 	dev->apm.health.counter_advanced = false;
 }
 
+static void accumulator_invalidate_cell_voltage_authority(accumulator_t *dev)
+{
+    if(dev == NULL)
+    {
+        return;
+    }
+
+    /* A C-path open-wire conversion overwrites the authoritative C result
+     * registers.  If the mandatory restoring conversion fails, no previously
+     * cached sample may remain advertised as current merely until its normal
+     * freshness timeout expires.  Preserve numeric values/timestamps for
+     * service forensics, but invalidate every publication and driver mask
+     * immediately. */
+    memset(dev->cell_voltage_valid, 0, sizeof(dev->cell_voltage_valid));
+    memset(dev->updated_voltage_mask, 0, sizeof(dev->updated_voltage_mask));
+    memset(dev->usable_voltage_mask, 0, sizeof(dev->usable_voltage_mask));
+    memset(dev->pec_fail_voltage_mask, 0, sizeof(dev->pec_fail_voltage_mask));
+    memset(dev->stale_voltage_mask, 0, sizeof(dev->stale_voltage_mask));
+    for(uint8_t seg = 0u;
+        seg < (uint8_t)(((dev->smb.num_ics > 0) &&
+                         (dev->smb.num_ics <= NSMBS)) ?
+                            dev->smb.num_ics : 0);
+        seg++)
+    {
+        dev->stale_voltage_mask[seg] =
+            (NCELLS >= 16u) ? UINT16_MAX :
+            (uint16_t)((1u << NCELLS) - 1u);
+    }
+    memset(dev->smb.last_cell_updated_mask, 0,
+           sizeof(dev->smb.last_cell_updated_mask));
+    memset(dev->smb.last_cell_pec_mask, 0,
+           sizeof(dev->smb.last_cell_pec_mask));
+    dev->updated_voltage_count = 0u;
+    dev->usable_voltage_count = 0u;
+    dev->stale_voltage_count = (uint16_t)(NCELLS *
+        (uint16_t)(((dev->smb.num_ics > 0) &&
+                    (dev->smb.num_ics <= NSMBS)) ?
+                       dev->smb.num_ics : 0));
+    dev->pec_fail_cell_count = 0u;
+    dev->voltage_full_updated = false;
+    dev->voltage_full_usable = false;
+}
+
 static void accumulator_clear_balance_shadow(adbms6830_asic *ic)
 {
     if(ic == NULL)
@@ -95,9 +138,9 @@ static void accumulator_clear_balance_shadow(adbms6830_asic *ic)
         return;
     }
 
-    ic->tx_cfgb.dtmen = 1u;
-    ic->tx_cfgb.dtrng = RANG_0_TO_63_MIN;
-    ic->tx_cfgb.dcto = TIME_1MIN_OR_0_26HR;
+    /* Balancing policy owns only DCC/PWM.  The ADBMS6830 discharge timer is a
+     * separate feature and must never be armed implicitly by a clear/apply
+     * helper. */
     ic->tx_cfgb.dcc = 0u;
     memset(ic->PwmA.pwma, 0, sizeof(ic->PwmA.pwma));
     memset(ic->PwmB.pwmb, 0, sizeof(ic->PwmB.pwmb));
@@ -206,7 +249,9 @@ static void accumulator_best_effort_clear_balance_locked(adbms6830_driver_t *smb
         accumulator_clear_balance_shadow(&smb_ics[ic]);
     }
 
-    (void)adbms6830_wrcfgb_checked(smb);
+    adbms6830_disable_discharge_timer_shadow(smb);
+    (void)adbms6830_wrcfgb_checked_reason(
+        smb, ADBMS6830_CFGB_WRITE_BALANCE_RECOVERY);
     (void)adbms6830_write_pwm_checked(smb);
 }
 
@@ -290,12 +335,21 @@ void accumulator_init(accumulator_t *dev,
 	dev->voltage_startup_scan_complete = false;
 	dev->delay_timer_ready = false;
 	dev->delay_timer_status = HAL_ERROR;
+	dev->smb_transport_ready = false;
 	dev->smb_ready = false;
 	dev->smb_init_status = HAL_ERROR;
 	dev->apm_ready = false;
 	dev->apm_init_status = HAL_ERROR;
 	dev->apm_full_ring_awake_token = false;
+    dev->last_balance_mute_ok = false;
+    dev->last_balance_durable_zero_verified = false;
+    dev->last_balance_unmute_ok = false;
+    dev->last_balance_inhibit_reason = (uint8_t)ACCUMULATOR_BALANCE_INHIBIT_NONE;
 	memset(dev->cell_voltage_mv, 0, sizeof(dev->cell_voltage_mv));
+    memset(dev->cell_voltage_avg8_mv, 0, sizeof(dev->cell_voltage_avg8_mv));
+    memset(dev->cell_voltage_iir_mv, 0, sizeof(dev->cell_voltage_iir_mv));
+    memset(dev->avg8_usable_voltage_mask, 0, sizeof(dev->avg8_usable_voltage_mask));
+    memset(dev->iir_usable_voltage_mask, 0, sizeof(dev->iir_usable_voltage_mask));
 	memset(dev->cell_voltage_valid, 0, sizeof(dev->cell_voltage_valid));
 	memset(dev->cell_voltage_last_update_ms, 0, sizeof(dev->cell_voltage_last_update_ms));
 	memset(dev->cell_voltage_consecutive_misses, 0, sizeof(dev->cell_voltage_consecutive_misses));
@@ -304,29 +358,6 @@ void accumulator_init(accumulator_t *dev,
 	memset(dev->hil_temp_last_update_ms, 0, sizeof(dev->hil_temp_last_update_ms));
 	memset(dev->hil_cell_seen_mask, 0, sizeof(dev->hil_cell_seen_mask));
 	memset(dev->hil_temp_seen_mask, 0, sizeof(dev->hil_temp_seen_mask));
-	memset(dev->hil_stage_cell_mv, 0, sizeof(dev->hil_stage_cell_mv));
-	memset(dev->hil_stage_temp_deci_c, 0, sizeof(dev->hil_stage_temp_deci_c));
-	memset(dev->hil_stage_cell_mask, 0, sizeof(dev->hil_stage_cell_mask));
-	memset(dev->hil_stage_temp_mask, 0, sizeof(dev->hil_stage_temp_mask));
-	dev->hil_image_start_ms = 0u;
-	dev->hil_image_commit_ms = 0u;
-	dev->hil_image_accept_count = 0u;
-	dev->hil_image_reject_count = 0u;
-	dev->hil_image_timeout_count = 0u;
-	dev->hil_image_crc_fail_count = 0u;
-	dev->hil_image_incomplete_count = 0u;
-	dev->hil_image_duplicate_count = 0u;
-	dev->hil_image_duplicate_start_count = 0u;
-	dev->hil_image_conflicting_duplicate_count = 0u;
-	dev->hil_image_replay_reject_count = 0u;
-	dev->hil_image_resync_count = 0u;
-	dev->hil_stage_unique_cell_count = 0u;
-	dev->hil_stage_unique_temp_count = 0u;
-	dev->hil_stage_generation = 0u;
-	dev->hil_last_committed_generation = 0u;
-	dev->hil_stage_active = false;
-	dev->hil_stage_invalid = false;
-	dev->hil_committed_valid = false;
 	memset(dev->updated_voltage_mask, 0, sizeof(dev->updated_voltage_mask));
 	memset(dev->usable_voltage_mask, 0, sizeof(dev->usable_voltage_mask));
 	memset(dev->pec_fail_voltage_mask, 0, sizeof(dev->pec_fail_voltage_mask));
@@ -344,13 +375,22 @@ void accumulator_init(accumulator_t *dev,
 		}
     }
 
-	/* String A owns the one global chain reset.  The five SMB monitors are the
-	 * leading devices from that end, so their five-packet transactions stop at
-	 * the SMB/APM boundary. */
+#if AMS_APM_STANDALONE_EVAL_BENCH
+	/* Standalone APM evaluation image: no SMB is connected to the isoSPI
+	 * chain.  Keep all SMB readiness false instead of spending startup time on
+	 * a device that is deliberately absent. */
+	memset(&dev->smb, 0, sizeof(dev->smb));
+	memset(dev->smb_ics, 0, sizeof(dev->smb_ics));
+	dev->smb_init_status = HAL_ERROR;
+	dev->smb_transport_ready = false;
+	dev->smb_ready = false;
+#else
+	/* Temporary low-voltage chain: one SMB reached through the ADBMS6822
+	 * evaluation board on String B / CS_B.  No APM is present. */
 	memset(dev->smb_ics, 0, sizeof(dev->smb_ics));
 	dev->smb_init_status = adBms6830_init(&dev->smb,
 	                                      NSMBS,
-	                                      (uint8_t)(NSMBS + NAPMS),
+	                                      (uint8_t)ACCUMULATOR_PHYSICAL_CHAIN_COUNT,
 	                                      dev->smb_ics,
 	                                      NSMBS,
 	                                      hspi,
@@ -358,6 +398,7 @@ void accumulator_init(accumulator_t *dev,
 	                                      cs_port_b,
 	                                      cs_pin_a,
 	                                      cs_pin_b,
+                                              ACCUMULATOR_SMB_STRING,
 	                                      ready_timer);
 	if((dev->smb_init_status == HAL_OK) &&
 	   !adbms6830_set_monitored_cell_count(&dev->smb, NCELLS))
@@ -367,6 +408,7 @@ void accumulator_init(accumulator_t *dev,
 	if(dev->smb_init_status == HAL_OK)
 	{
 		const adbms6830_diag_health_t *health;
+		HAL_StatusTypeDef baseline_status;
 
 		/* A successful write only proves that the MCU completed the SPI
 		 * transfer. Read both configuration groups back, clear power-on flags,
@@ -382,19 +424,68 @@ void accumulator_init(accumulator_t *dev,
 		}
 		if(dev->smb_init_status == HAL_OK)
 		{
-			dev->smb_init_status =
-				adbms6830_establish_diagnostic_baseline(&dev->smb);
+			baseline_status = adbms6830_establish_diagnostic_baseline(&dev->smb);
+#if AMS_ENABLE_ADBMS_STARTUP_POST
+            if(baseline_status == HAL_OK)
+            {
+                baseline_status = adbms6830_run_startup_post(&dev->smb);
+            }
+#endif
+			health = adbms6830_diag_health_get(&dev->smb);
+
+			/* Keep the legacy safety-ready result strict, but preserve a separate
+			 * read-only transport capability when the only blocking class is the
+			 * reported C-vs-S comparison.  Identity/configuration integrity and all
+			 * non-CS status/reference classes must still be clean. */
+			dev->smb_transport_ready = dev->delay_timer_ready &&
+#if AMS_ENABLE_ADBMS_STARTUP_POST
+                dev->smb.post.passed &&
+#endif
+				adbms6830_diagnostic_transport_ok(&dev->smb) &&
+				adbms6830_non_cs_diagnostics_ok(&dev->smb) &&
+				(health != NULL) &&
+				(health->config_mismatch_mask == 0u);
+			dev->smb_init_status = baseline_status;
 		}
 		adbms_spi_unlock();
 	}
 	dev->smb_ready = (dev->smb_init_status == HAL_OK);
+	if(dev->smb_ready)
+	{
+		dev->smb_transport_ready = true;
+	}
 
-	/* The APM is the leading device from String B.  Never issue a second soft
-	 * reset here: doing so would erase the SMB configuration just verified
-	 * above.  APM failure remains observable but advisory/non-gating. */
+
+#endif
+
+	/* APM initialization supports both the final mixed ring and this dedicated
+	 * single-device evaluation image.  The standalone path may reset the chain
+	 * because no SMB is present; the mixed-ring path must not reset the SMBs
+	 * whose configuration was already verified above. */
 	memset(&dev->apm, 0, sizeof(dev->apm));
 	memset(dev->apm_ics, 0, sizeof(dev->apm_ics));
 #if AMS_ENABLE_APM_2950 && !AMS_HIL_REPLACE_ADBMS
+#if AMS_APM_STANDALONE_EVAL_BENCH
+	dev->apm_init_status = adbms2950_init_mixed_chain(&dev->apm,
+	                                                   NAPMS,
+	                                                   dev->apm_ics,
+	                                                   NAPMS,
+	                                                   hspi,
+	                                                   cs_port_a,
+	                                                   cs_port_b,
+	                                                   cs_pin_a,
+	                                                   cs_pin_b,
+	                                                   ready_timer,
+	                                                   STRING_B,
+	                                                   true,
+	                                                   false);
+	if(dev->apm_init_status == HAL_OK)
+	{
+		/* The ADI evaluation board uses a 50 uohm shunt. */
+		dev->apm_init_status = adbms2950_set_calibration_profile(
+			&dev->apm, ADBMS2950_CAL_PROFILE_EVAL_BASIC);
+	}
+#else
 	if(dev->smb_ready)
 	{
 		dev->apm_init_status = adbms2950_init_mixed_chain(&dev->apm,
@@ -410,15 +501,27 @@ void accumulator_init(accumulator_t *dev,
 		                                                   STRING_B,
 		                                                   false,
 		                                                   AMS_APM_ENABLE_HV_DIVIDERS != 0);
-		/* APM initialization uses a mandatory OPT=0000 ADI1 followed by
-		 * OPT=1100.  The first is compatible with ADCV while the second is
-		 * intentionally invalid on the 6830s.  A failure also cannot establish
-		 * how many devices accepted each command.  In either case, seed each SMB
-		 * prediction from its next valid packet instead of guessing. */
+		/* The mixed commands can affect the shared ADBMS6830 command counters.
+		 * Seed each SMB prediction from its next valid packet. */
 		adbms6830_resync_command_counter_tracking(&dev->smb);
 	}
 #endif
+#endif
+
 	dev->apm_ready = (dev->apm_init_status == HAL_OK);
+
+    /* Startup is not balance-safe merely because the configuration baseline
+     * read clean.  Perform this after mixed-ring binding so the final topology
+     * invariant is valid even when an ADBMS2950 is physically present. */
+    if(dev->smb_transport_ready && accumulator_final_ring_topology_valid(dev))
+    {
+        if(accumulator_emergency_balance_inhibit(
+               dev, ACCUMULATOR_BALANCE_INHIBIT_CONFIG) != 0)
+        {
+            dev->smb_ready = false;
+            dev->smb_init_status = HAL_ERROR;
+        }
+    }
 }
 
 int accumulator_read_volt(accumulator_t *dev)
@@ -426,7 +529,7 @@ int accumulator_read_volt(accumulator_t *dev)
 	bool compatible_adi1_sent = false;
 	int status;
 
-	if((dev == NULL) || !dev->smb_ready ||
+	if((dev == NULL) || !dev->smb_transport_ready ||
 	   !accumulator_final_ring_topology_valid(dev))
 	{
 		if(dev != NULL)
@@ -466,6 +569,28 @@ int accumulator_read_apm(accumulator_t *dev, uint32_t now_ms)
 {
 	HAL_StatusTypeDef status;
 
+#if AMS_APM_STANDALONE_EVAL_BENCH
+	/* Dedicated one-device evaluation chain.  No SMB wake token or external
+	 * command-counter bookkeeping exists in this topology; serialize the
+	 * complete coherent sample against CLI traffic and read the APM directly. */
+	if((dev == NULL) || !dev->apm_ready ||
+	   !dev->apm.health.initialized ||
+	   (dev->apm.hspi == NULL) ||
+	   (dev->apm.htim == NULL) ||
+	   (dev->apm.string != STRING_B) ||
+	   (dev->apm.write_string != STRING_B))
+	{
+		if(dev != NULL)
+		{
+			accumulator_invalidate_apm_sample(dev);
+		}
+		return -1;
+	}
+
+	adbms_spi_lock();
+	status = adbms2950_read_primary_sample(&dev->apm, now_ms);
+	adbms_spi_unlock();
+#else
 	if((dev == NULL) || !dev->smb_ready || !dev->apm_ready ||
 	   !accumulator_final_ring_topology_valid(dev))
 	{
@@ -497,6 +622,7 @@ int accumulator_read_apm(accumulator_t *dev, uint32_t now_ms)
 		adbms6830_resync_command_counter_tracking(&dev->smb);
 	}
 	adbms_spi_unlock();
+#endif
 	return (status == HAL_OK) ? 0 : -1;
 }
 
@@ -508,6 +634,9 @@ int smb_read_voltage(adbms6830_driver_t* dev)
 static int smb_read_voltage_checked(adbms6830_driver_t *dev,
                                     bool *compatible_adi1_sent)
 {
+#if AMS_ENABLE_PERIODIC_S_DIAGNOSTIC && AMS_S_PATH_ECO_VALIDATED
+    bool continuous_c_was_running = false;
+#endif
     if(compatible_adi1_sent != NULL)
     {
         *compatible_adi1_sent = false;
@@ -528,20 +657,27 @@ static int smb_read_voltage_checked(adbms6830_driver_t *dev,
         return -1;
     }
 
-	if(adbms6830_wakeup_checked(dev) != HAL_OK)
-	{
-		return -1;
-	}
-//	adbms6830_wrcfga(dev);
-//	adbms6830_wrcfgb(dev);
+#if AMS_ENABLE_PERIODIC_S_DIAGNOSTIC && AMS_S_PATH_ECO_VALIDATED
+    continuous_c_was_running = dev->continuous_c_running;
+    if(!continuous_c_was_running)
+#endif
+    {
+		if(adbms6830_wakeup_checked(dev) != HAL_OK)
+		{
+			return -1;
+		}
 
-	/* REFON is asserted in the verified production configuration. Together
-	 * with the checked wake inside the ADCV wrapper, this interval leaves
-	 * more than the 4.4 ms worst-case reference wake time before ADCV. */
-	if(adbms6830_us_delay(dev, ADBMS6830_REFERENCE_PRECONVERSION_WAIT_US) != HAL_OK)
-	{
-		return -1;
-	}
+		/* REFON is asserted in the verified production configuration. Together
+		 * with the checked wake inside the ADCV wrapper, this interval leaves
+		 * margin for a cold/reference transition before the first production
+		 * ADCV. The post-ECO continuous-C path pays it only when C has to be
+		 * (re)established, not on every 10 Hz readout. */
+		if(adbms6830_wait_cooperative(
+		       dev, ADBMS6830_REFERENCE_PRECONVERSION_WAIT_US) != HAL_OK)
+		{
+			return -1;
+		}
+    }
 
 	// 2. START ADC CONVERSION
 	if(adbms6830_start_adc_cell_voltage_measurement(dev) != HAL_OK)
@@ -550,28 +686,199 @@ static int smb_read_voltage_checked(adbms6830_driver_t *dev,
 	}
 	if(compatible_adi1_sent != NULL)
 	{
+#if AMS_ENABLE_PERIODIC_S_DIAGNOSTIC && AMS_S_PATH_ECO_VALIDATED
+		/* Only the first/recovery ADCV is physically emitted once continuous C
+		 * is established. This also stops resetting an already-continuous
+		 * ADBMS2950 current-conversion epoch on every cell read. */
+		*compatible_adi1_sent = !continuous_c_was_running;
+#else
 		*compatible_adi1_sent = true;
+#endif
 	}
 
-	/* RD_ON starts redundant C-ADC/S-ADC conversion. Depending on C-ADC
+#if AMS_ENABLE_PERIODIC_S_DIAGNOSTIC && AMS_S_PATH_ECO_VALIDATED
+	if(!continuous_c_was_running)
+	{
+		/* C provides 1 ms results and AVG8 needs one complete 8 ms window. */
+		if(adbms6830_wait_cooperative(dev, 9000u) != HAL_OK)
+		{
+			return -1;
+		}
+	}
+#else
+	/* Current Rev5 uses the redundant C/S command. Depending on C-ADC
 	 * synchronization the documented result time is 8 ms to 16 ms. */
-	if(adbms6830_us_delay(dev, ADBMS6830_REDUNDANT_CONVERSION_WAIT_US) != HAL_OK)
+	if(adbms6830_wait_cooperative(dev,
+	                               ADBMS6830_REDUNDANT_CONVERSION_WAIT_US) != HAL_OK)
 	{
 		return -1;
 	}
+#endif
 
 	// 4. SNAP, READ, AND PARSE
-	if(adbms6830_read_cell_voltages(dev) != HAL_OK)
+	if(adbms6830_read_cell_voltage_products(
+           dev,
+           (AMS_ENABLE_ADBMS_AVG8_VOLTAGE != 0),
+           (AMS_ENABLE_ADBMS_FILTERED_VOLTAGE != 0)) != HAL_OK)
 	{
 		return -1;
 	}
-//	adbms6830_us_delay(dev, 2000);
 //	adbms6830_wakeup(dev);
 	return 0;
 }
 
+int accumulator_run_c_open_wire_diagnostic(
+    accumulator_t *dev,
+    adbms6830_open_wire_result_t *result)
+{
+    adbms6830_open_wire_result_t local = {0};
+    const adbms6830_diag_health_t *health;
+    bool compatible_adi1_sent = false;
+    int restore_result;
+
+    local.path = ADBMS6830_OPEN_WIRE_PATH_C;
+    local.diagnostic_status = HAL_ERROR;
+    local.restore_status = HAL_ERROR;
+
+    if((dev == NULL) || !dev->smb_transport_ready ||
+       !accumulator_final_ring_topology_valid(dev) ||
+       accumulator_balance_shadow_active(dev))
+    {
+        if(result != NULL)
+        {
+            *result = local;
+        }
+        return -1;
+    }
+
+    adbms_spi_lock();
+    dev->apm_full_ring_awake_token = false;
+    local.diagnostic_status = adbms6830_run_open_wire_diagnostic_path(
+        &dev->smb,
+        ADBMS6830_OPEN_WIRE_PATH_C);
+
+    health = adbms6830_diag_health_get(&dev->smb);
+    if(health != NULL)
+    {
+        local.incomplete_ic_mask = health->open_wire_incomplete_ic_mask;
+        local.fault_ic_mask = health->open_wire_fault_ic_mask;
+        for(uint8_t ic = 0u; ic < (uint8_t)dev->smb.num_ics; ic++)
+        {
+            local.cell_fault_mask[ic] = health->open_wire_cell_fault_mask[ic];
+        }
+    }
+    local.complete = (local.incomplete_ic_mask == 0u);
+
+    /* The diagnostic C conversions are never allowed to become the published
+     * voltage image. Restore a normal checked conversion even after a detected
+     * open or a failed diagnostic transaction. */
+    restore_result = smb_read_voltage_checked(&dev->smb,
+                                               &compatible_adi1_sent);
+    local.restore_status = (restore_result == 0) ? HAL_OK : HAL_ERROR;
+    local.restored_normal_c_image = (restore_result == 0);
+    dev->smb.health.open_wire_last_restore_status = local.restore_status;
+    if(dev->smb.health.open_wire_restore_count != UINT32_MAX)
+    {
+        dev->smb.health.open_wire_restore_count++;
+    }
+    if(restore_result != 0)
+    {
+        if(dev->smb.health.open_wire_restore_fail_count != UINT32_MAX)
+        {
+            dev->smb.health.open_wire_restore_fail_count++;
+        }
+        accumulator_invalidate_cell_voltage_authority(dev);
+    }
+
+    if(compatible_adi1_sent && dev->apm_ready)
+    {
+        adbms2950_note_compatible_adi1(&dev->apm);
+    }
+    else if((restore_result != 0) && dev->apm_ready)
+    {
+        accumulator_invalidate_apm_sample(dev);
+    }
+    dev->apm_full_ring_awake_token = (restore_result == 0) && dev->apm_ready;
+    adbms_spi_unlock();
+
+    accumulator_update_voltage_stats_at(dev, HAL_GetTick());
+    if(result != NULL)
+    {
+        *result = local;
+    }
+
+    return ((local.diagnostic_status == HAL_OK) &&
+            local.complete &&
+            (local.fault_ic_mask == 0u) &&
+            local.restored_normal_c_image) ? 0 : -1;
+}
+
+#define ACCUMULATOR_TEMP_MUX_SETTLE_US 3000u
+#define ACCUMULATOR_TEMP_AUX_GUARD_US  1000u
+#if AMS_TEMP_PULLUPS_TARGET_VALIDATED
+#define ACCUMULATOR_TEMP_TRANSACTION_ATTEMPTS 2u
+#else
+/* Rev5 100-ohm pull-ups are not electrically validated. Explicit bench
+ * commands make one bounded attempt only; automatic scanning is build-gated. */
+#define ACCUMULATOR_TEMP_TRANSACTION_ATTEMPTS 1u
+#endif
+
+static int accumulator_temp_select_checked(adbms6830_driver_t *dev,
+                                           uint8_t sensor)
+{
+    for(uint8_t attempt = 0u;
+        attempt < ACCUMULATOR_TEMP_TRANSACTION_ATTEMPTS;
+        attempt++)
+    {
+        if(mux_set_channel(dev, sensor) == 0)
+        {
+            return (adbms6830_wait_cooperative(dev,
+                                       ACCUMULATOR_TEMP_MUX_SETTLE_US) == HAL_OK)
+                       ? 0 : -1;
+        }
+        if((attempt + 1u) < ACCUMULATOR_TEMP_TRANSACTION_ATTEMPTS)
+        {
+            if((adbms6830_wakeup_checked(dev) != HAL_OK) ||
+               (adbms6830_wait_cooperative(dev,
+                                   ACCUMULATOR_TEMP_MUX_SETTLE_US) != HAL_OK))
+            {
+                return -1;
+            }
+        }
+    }
+    return -1;
+}
+
+static int accumulator_temp_capture_checked(adbms6830_driver_t *dev,
+                                            uint8_t sensor)
+{
+    for(uint8_t attempt = 0u;
+        attempt < ACCUMULATOR_TEMP_TRANSACTION_ATTEMPTS;
+        attempt++)
+    {
+        if(mux_read_gpio_voltage(dev, sensor) == 0)
+        {
+            return (adbms6830_wait_cooperative(dev,
+                                       ACCUMULATOR_TEMP_AUX_GUARD_US) == HAL_OK)
+                       ? 0 : -1;
+        }
+        if((attempt + 1u) < ACCUMULATOR_TEMP_TRANSACTION_ATTEMPTS)
+        {
+            if((adbms6830_wakeup_checked(dev) != HAL_OK) ||
+               (adbms6830_wait_cooperative(dev,
+                                   ACCUMULATOR_TEMP_MUX_SETTLE_US) != HAL_OK))
+            {
+                return -1;
+            }
+        }
+    }
+    return -1;
+}
+
 int smb_read_temp(adbms6830_driver_t* dev)
 {
+    uint8_t selected[ADBMS6830_MUX_COUNT];
+
     if(dev == NULL)
     {
         return -1;
@@ -589,59 +896,41 @@ int smb_read_temp(adbms6830_driver_t* dev)
         return -1;
     }
 
-//	adbms6830_wakeup(dev);
-//	adbms6830_wrcfga(dev);
-//	adbms6830_wrcfgb(dev);
-
-//	sensor_num = ((sensor_num) % (NTEMPS / 3)) + 1u;
-//	sensor_num = ((sensor_num) % (NTEMPS)) + 1u;
-//	adbms6830_us_delay(dev, 3000);
-//	mux_read_gpio_voltage(dev, sensor_num - 1u);
-//	adbms6830_us_delay(dev, 3000);
-//	adbms6830_wakeup(dev);
-//	adbms6830_us_delay(dev, 3000);
-
     if(adbms6830_wakeup_checked(dev) != HAL_OK)
     {
         return -1;
     }
-//    sensor_num = ((sensor_num) % (NTEMPS)) + 1u;
-    sensor_num = (sensor_num % (NTEMPS / 3)) + 1u;
 
-    if((mux_set_channel(dev, sensor_num - 1u) != 0) ||
-       (adbms6830_us_delay(dev, 2000u) != HAL_OK) ||
-       (mux_set_channel(dev, sensor_num + 7u) != 0) ||
-       (adbms6830_us_delay(dev, 2000u) != HAL_OK) ||
-       (mux_set_channel(dev, sensor_num + 15u) != 0) ||
-       (adbms6830_us_delay(dev, 2000u) != HAL_OK))
+    /* All three muxes select the same local channel first, settle, and are
+     * then captured one at a time. This avoids publishing a sample whose mux
+     * address/ACK did not belong to that exact sensor. */
+    sensor_num = (sensor_num % (NTEMPS / ADBMS6830_MUX_COUNT)) + 1u;
+    selected[0] = (uint8_t)(sensor_num - 1u);
+    selected[1] = (uint8_t)(sensor_num + 7u);
+    selected[2] = (uint8_t)(sensor_num + 15u);
+
+    for(uint8_t mux = 0u; mux < ADBMS6830_MUX_COUNT; mux++)
     {
-        return -1;
+        if(accumulator_temp_select_checked(dev, selected[mux]) != 0)
+        {
+            return -1;
+        }
     }
 
-    if(adbms6830_wakeup_checked(dev) != HAL_OK)
+    for(uint8_t mux = 0u; mux < ADBMS6830_MUX_COUNT; mux++)
     {
-        return -1;
-    }
-    if((mux_read_gpio_voltage(dev, sensor_num - 1u) != 0) ||
-       (adbms6830_us_delay(dev, 2000u) != HAL_OK) ||
-       (mux_read_gpio_voltage(dev, sensor_num + 7u) != 0) ||
-       (adbms6830_us_delay(dev, 2000u) != HAL_OK) ||
-       (mux_read_gpio_voltage(dev, sensor_num + 15u) != 0) ||
-       (adbms6830_us_delay(dev, 2000u) != HAL_OK))
-    {
-        return -1;
+        if(accumulator_temp_capture_checked(dev, selected[mux]) != 0)
+        {
+            return -1;
+        }
     }
 
-//	adbms6830_us_delay(dev, 3000);
-//	mux_read_gpio_voltage(dev, sensor_num + 7u);
-//	adbms6830_us_delay(dev, 3000);
-//	mux_read_gpio_voltage(dev, sensor_num + 15u);
-	return 0;
+    return 0;
 }
 
 int accumulator_read_temp(accumulator_t *dev)
 {
-	if((dev == NULL) || !dev->smb_ready ||
+	if((dev == NULL) || !dev->smb_transport_ready ||
 	   !accumulator_final_ring_topology_valid(dev))
 	{
 		return -1;
@@ -681,7 +970,7 @@ int accumulator_set_mux_ch(accumulator_t *dev, uint8_t channel, uint8_t addr7)
 
 	(void)addr7;
 
-	if((dev == NULL) || !dev->smb_ready ||
+	if((dev == NULL) || !dev->smb_transport_ready ||
 	   !accumulator_final_ring_topology_valid(dev) ||
 	   (channel >= NTEMPS))
 	{
@@ -762,341 +1051,67 @@ static int16_t accumulator_temp_deci_c_to_raw(int16_t deci_c)
     return raw;
 }
 
-static void accumulator_hil_increment_u32_sat(uint32_t *value)
+int accumulator_hil_ingest_cell_triplet(accumulator_t *dev,
+                                        uint8_t seg,
+                                        uint8_t first_cell,
+                                        const uint16_t cell_mv[3],
+                                        uint32_t now_ms)
 {
-    if((value != NULL) && (*value != UINT32_MAX))
+    if((dev == NULL) || (cell_mv == NULL) || (seg >= NSMBS) || (first_cell >= NCELLS))
     {
-        (*value)++;
-    }
-}
-
-static void accumulator_hil_clear_stage(accumulator_t *dev)
-{
-    memset(dev->hil_stage_cell_mask, 0, sizeof(dev->hil_stage_cell_mask));
-    memset(dev->hil_stage_temp_mask, 0, sizeof(dev->hil_stage_temp_mask));
-    dev->hil_stage_unique_cell_count = 0u;
-    dev->hil_stage_unique_temp_count = 0u;
-    dev->hil_stage_invalid = false;
-}
-
-static uint32_t accumulator_hil_stage_crc(const accumulator_t *dev)
-{
-    uint32_t crc = ams_hil_image_crc32_init();
-
-    for(uint8_t seg = 0u; seg < NSMBS; seg++)
-    {
-        for(uint8_t cell = 0u; cell < NCELLS; cell++)
-        {
-            crc = ams_hil_image_crc32_update_u16_be(
-                crc,
-                dev->hil_stage_cell_mv[seg][cell]);
-        }
-    }
-    for(uint8_t seg = 0u; seg < NSMBS; seg++)
-    {
-        for(uint8_t sensor = 0u; sensor < NTEMPS; sensor++)
-        {
-            crc = ams_hil_image_crc32_update_u16_be(
-                crc,
-                (uint16_t)dev->hil_stage_temp_deci_c[seg][sensor]);
-        }
+        return -1;
     }
 
-    return ams_hil_image_crc32_finalize(crc);
-}
+    adbms6830_asic *smb_ics = (dev->smb.ics != NULL) ? dev->smb.ics : dev->smb_ics;
 
-accumulator_hil_image_result_t accumulator_hil_image_begin(
-    accumulator_t *dev,
-    uint8_t generation,
-    uint8_t segment_count,
-    uint8_t total_cell_count,
-    uint8_t total_temp_count,
-    uint8_t expected_cell_frames,
-    uint8_t expected_temp_frames,
-    uint32_t now_ms,
-    uint32_t resync_timeout_ms)
-{
-    const uint8_t required_cell_frames =
-        (uint8_t)(NSMBS * ((NCELLS + AMS_HIL_IMAGE_SAMPLE_STRIDE - 1u) /
-                           AMS_HIL_IMAGE_SAMPLE_STRIDE));
-    const uint8_t required_temp_frames =
-        (uint8_t)(NSMBS * ((NTEMPS + AMS_HIL_IMAGE_SAMPLE_STRIDE - 1u) /
-                           AMS_HIL_IMAGE_SAMPLE_STRIDE));
-
-    if(dev == NULL)
+    for(uint8_t n = 0u; n < 3u; n++)
     {
-        return ACCUMULATOR_HIL_IMAGE_REJECTED;
-    }
-
-    if((segment_count != NSMBS) ||
-       (total_cell_count != (uint8_t)(NSMBS * NCELLS)) ||
-       (total_temp_count != (uint8_t)(NSMBS * NTEMPS)) ||
-       (expected_cell_frames != required_cell_frames) ||
-       (expected_temp_frames != required_temp_frames))
-    {
-        accumulator_hil_increment_u32_sat(&dev->hil_image_reject_count);
-        return ACCUMULATOR_HIL_IMAGE_REJECTED;
-    }
-
-    /*
-     * A sender may retry START after losing its acknowledgement context.
-     * An identical START for the active generation is idempotent: retain all
-     * staged data and the original assembly deadline. A poisoned generation
-     * still requires a new generation number to recover.
-     */
-    if(dev->hil_stage_active &&
-       (generation == dev->hil_stage_generation))
-    {
-        accumulator_hil_increment_u32_sat(
-            &dev->hil_image_duplicate_start_count);
-        if(dev->hil_stage_invalid)
-        {
-            accumulator_hil_increment_u32_sat(
-                &dev->hil_image_reject_count);
-            return ACCUMULATOR_HIL_IMAGE_REJECTED;
-        }
-        return ACCUMULATOR_HIL_IMAGE_STAGED;
-    }
-
-    if(dev->hil_committed_valid)
-    {
-        const uint8_t forward_delta =
-            (uint8_t)(generation - dev->hil_last_committed_generation);
-        const bool forward_generation =
-            (forward_delta != 0u) && (forward_delta < 128u);
-        const uint32_t committed_age_ms =
-            (uint32_t)(now_ms - dev->hil_image_commit_ms);
-        if(!forward_generation && (committed_age_ms <= resync_timeout_ms))
-        {
-            accumulator_hil_increment_u32_sat(
-                &dev->hil_image_replay_reject_count);
-            accumulator_hil_increment_u32_sat(&dev->hil_image_reject_count);
-            return ACCUMULATOR_HIL_IMAGE_REJECTED;
-        }
-        if(!forward_generation)
-        {
-            accumulator_hil_increment_u32_sat(&dev->hil_image_resync_count);
-        }
-    }
-
-    if(dev->hil_stage_active)
-    {
-        accumulator_hil_increment_u32_sat(&dev->hil_image_incomplete_count);
-        accumulator_hil_increment_u32_sat(&dev->hil_image_reject_count);
-    }
-
-    accumulator_hil_clear_stage(dev);
-    dev->hil_stage_generation = generation;
-    dev->hil_image_start_ms = now_ms;
-    dev->hil_stage_active = true;
-    return ACCUMULATOR_HIL_IMAGE_STAGED;
-}
-
-accumulator_hil_image_result_t accumulator_hil_image_stage_cell_triplet(
-    accumulator_t *dev,
-    uint8_t generation,
-    uint8_t seg,
-    uint8_t first_cell,
-    const uint16_t cell_mv[3])
-{
-    if((dev == NULL) || (cell_mv == NULL) || !dev->hil_stage_active ||
-       (generation != dev->hil_stage_generation) || (seg >= NSMBS) ||
-       (first_cell >= NCELLS) ||
-       ((first_cell % AMS_HIL_IMAGE_SAMPLE_STRIDE) != 0u))
-    {
-        if(dev != NULL)
-        {
-            accumulator_hil_increment_u32_sat(&dev->hil_image_reject_count);
-        }
-        return ACCUMULATOR_HIL_IMAGE_REJECTED;
-    }
-
-    for(uint8_t n = 0u; n < AMS_HIL_IMAGE_SAMPLE_STRIDE; n++)
-    {
-        const uint8_t cell = (uint8_t)(first_cell + n);
+        uint8_t cell = (uint8_t)(first_cell + n);
         if(cell >= NCELLS)
         {
             break;
         }
 
-        const uint16_t bit = (uint16_t)(1u << cell);
-        if((dev->hil_stage_cell_mask[seg] & bit) != 0u)
-        {
-            accumulator_hil_increment_u32_sat(&dev->hil_image_duplicate_count);
-            if(dev->hil_stage_cell_mv[seg][cell] != cell_mv[n])
-            {
-                dev->hil_stage_invalid = true;
-                accumulator_hil_increment_u32_sat(
-                    &dev->hil_image_conflicting_duplicate_count);
-            }
-        }
-        else
-        {
-            dev->hil_stage_cell_mv[seg][cell] = cell_mv[n];
-            dev->hil_stage_cell_mask[seg] |= bit;
-            dev->hil_stage_unique_cell_count++;
-        }
+        uint16_t bit = (uint16_t)(1u << cell);
+        smb_ics[seg].cell.c_codes[cell] = accumulator_mv_to_code(cell_mv[n]);
+        dev->hil_cell_last_update_ms[seg][cell] = now_ms;
+        dev->hil_cell_seen_mask[seg] |= bit;
+        dev->smb.last_cell_updated_mask[seg] |= bit;
+        dev->smb.last_cell_pec_mask[seg] &= (uint16_t)~bit;
     }
 
-    return dev->hil_stage_invalid ? ACCUMULATOR_HIL_IMAGE_REJECTED :
-                                    ACCUMULATOR_HIL_IMAGE_STAGED;
+    return 0;
 }
 
-accumulator_hil_image_result_t accumulator_hil_image_stage_temp_triplet(
-    accumulator_t *dev,
-    uint8_t generation,
-    uint8_t seg,
-    uint8_t first_sensor,
-    const int16_t temp_deci_c[3])
+int accumulator_hil_ingest_temp_triplet(accumulator_t *dev,
+                                        uint8_t seg,
+                                        uint8_t first_sensor,
+                                        const int16_t temp_deci_c[3],
+                                        uint32_t now_ms)
 {
-    if((dev == NULL) || (temp_deci_c == NULL) || !dev->hil_stage_active ||
-       (generation != dev->hil_stage_generation) || (seg >= NSMBS) ||
-       (first_sensor >= NTEMPS) ||
-       ((first_sensor % AMS_HIL_IMAGE_SAMPLE_STRIDE) != 0u))
+    if((dev == NULL) || (temp_deci_c == NULL) || (seg >= NSMBS) || (first_sensor >= NTEMPS))
     {
-        if(dev != NULL)
-        {
-            accumulator_hil_increment_u32_sat(&dev->hil_image_reject_count);
-        }
-        return ACCUMULATOR_HIL_IMAGE_REJECTED;
+        return -1;
     }
 
-    for(uint8_t n = 0u; n < AMS_HIL_IMAGE_SAMPLE_STRIDE; n++)
+    adbms6830_asic *smb_ics = (dev->smb.ics != NULL) ? dev->smb.ics : dev->smb_ics;
+
+    for(uint8_t n = 0u; n < 3u; n++)
     {
-        const uint8_t sensor = (uint8_t)(first_sensor + n);
+        uint8_t sensor = (uint8_t)(first_sensor + n);
         if(sensor >= NTEMPS)
         {
             break;
         }
 
-        const uint32_t bit = (uint32_t)(1UL << sensor);
-        if((dev->hil_stage_temp_mask[seg] & bit) != 0u)
-        {
-            accumulator_hil_increment_u32_sat(&dev->hil_image_duplicate_count);
-            if(dev->hil_stage_temp_deci_c[seg][sensor] != temp_deci_c[n])
-            {
-                dev->hil_stage_invalid = true;
-                accumulator_hil_increment_u32_sat(
-                    &dev->hil_image_conflicting_duplicate_count);
-            }
-        }
-        else
-        {
-            dev->hil_stage_temp_deci_c[seg][sensor] = temp_deci_c[n];
-            dev->hil_stage_temp_mask[seg] |= bit;
-            dev->hil_stage_unique_temp_count++;
-        }
+        uint32_t bit = (uint32_t)(1UL << sensor);
+        smb_ics[seg].temp.raw[sensor] = accumulator_temp_deci_c_to_raw(temp_deci_c[n]);
+        dev->hil_temp_last_update_ms[seg][sensor] = now_ms;
+        dev->hil_temp_seen_mask[seg] |= bit;
+        dev->smb.last_temp_updated_mask[seg] |= bit;
     }
 
-    return dev->hil_stage_invalid ? ACCUMULATOR_HIL_IMAGE_REJECTED :
-                                    ACCUMULATOR_HIL_IMAGE_STAGED;
-}
-
-void accumulator_hil_image_expire(accumulator_t *dev,
-                                  uint32_t now_ms,
-                                  uint32_t assembly_timeout_ms)
-{
-    if((dev == NULL) || !dev->hil_stage_active)
-    {
-        return;
-    }
-
-    if((uint32_t)(now_ms - dev->hil_image_start_ms) > assembly_timeout_ms)
-    {
-        dev->hil_stage_active = false;
-        dev->hil_stage_invalid = true;
-        accumulator_hil_increment_u32_sat(&dev->hil_image_timeout_count);
-        accumulator_hil_increment_u32_sat(&dev->hil_image_incomplete_count);
-        accumulator_hil_increment_u32_sat(&dev->hil_image_reject_count);
-    }
-}
-
-accumulator_hil_image_result_t accumulator_hil_image_commit(
-    accumulator_t *dev,
-    uint8_t generation,
-    uint32_t expected_crc,
-    uint32_t now_ms,
-    uint32_t assembly_timeout_ms)
-{
-    const uint16_t full_cell_mask =
-        (uint16_t)(UINT16_MAX >> (16u - NCELLS));
-    const uint32_t full_temp_mask =
-        (uint32_t)(UINT32_MAX >> (32u - NTEMPS));
-    bool complete = true;
-
-    if(dev == NULL)
-    {
-        return ACCUMULATOR_HIL_IMAGE_REJECTED;
-    }
-
-    accumulator_hil_image_expire(dev, now_ms, assembly_timeout_ms);
-    if(!dev->hil_stage_active || (generation != dev->hil_stage_generation))
-    {
-        accumulator_hil_increment_u32_sat(&dev->hil_image_reject_count);
-        return ACCUMULATOR_HIL_IMAGE_REJECTED;
-    }
-
-    for(uint8_t seg = 0u; seg < NSMBS; seg++)
-    {
-        complete = complete &&
-                   (dev->hil_stage_cell_mask[seg] == full_cell_mask) &&
-                   (dev->hil_stage_temp_mask[seg] == full_temp_mask);
-    }
-    complete = complete &&
-               (dev->hil_stage_unique_cell_count == (uint16_t)(NSMBS * NCELLS)) &&
-               (dev->hil_stage_unique_temp_count == (uint16_t)(NSMBS * NTEMPS));
-
-    if(dev->hil_stage_invalid || !complete)
-    {
-        if(!complete)
-        {
-            accumulator_hil_increment_u32_sat(&dev->hil_image_incomplete_count);
-        }
-        dev->hil_stage_active = false;
-        accumulator_hil_increment_u32_sat(&dev->hil_image_reject_count);
-        return ACCUMULATOR_HIL_IMAGE_REJECTED;
-    }
-
-    if(accumulator_hil_stage_crc(dev) != expected_crc)
-    {
-        dev->hil_stage_active = false;
-        accumulator_hil_increment_u32_sat(&dev->hil_image_crc_fail_count);
-        accumulator_hil_increment_u32_sat(&dev->hil_image_reject_count);
-        return ACCUMULATOR_HIL_IMAGE_REJECTED;
-    }
-
-    adbms6830_asic *smb_ics =
-        (dev->smb.ics != NULL) ? dev->smb.ics : dev->smb_ics;
-
-    for(uint8_t seg = 0u; seg < NSMBS; seg++)
-    {
-        for(uint8_t cell = 0u; cell < NCELLS; cell++)
-        {
-            smb_ics[seg].cell.c_codes[cell] =
-                accumulator_mv_to_code(dev->hil_stage_cell_mv[seg][cell]);
-            dev->hil_cell_last_update_ms[seg][cell] = now_ms;
-        }
-        for(uint8_t sensor = 0u; sensor < NTEMPS; sensor++)
-        {
-            smb_ics[seg].temp.raw[sensor] =
-                accumulator_temp_deci_c_to_raw(
-                    dev->hil_stage_temp_deci_c[seg][sensor]);
-            dev->hil_temp_last_update_ms[seg][sensor] = now_ms;
-        }
-
-        dev->hil_cell_seen_mask[seg] = full_cell_mask;
-        dev->hil_temp_seen_mask[seg] = full_temp_mask;
-        dev->smb.last_cell_updated_mask[seg] = full_cell_mask;
-        dev->smb.last_cell_pec_mask[seg] = 0u;
-        dev->smb.last_temp_updated_mask[seg] = full_temp_mask;
-    }
-
-    dev->hil_image_commit_ms = now_ms;
-    dev->hil_last_committed_generation = generation;
-    dev->hil_committed_valid = true;
-    dev->hil_stage_active = false;
-    accumulator_hil_increment_u32_sat(&dev->hil_image_accept_count);
-    return ACCUMULATOR_HIL_IMAGE_COMMITTED;
+    return 0;
 }
 
 void accumulator_hil_refresh_update_masks(accumulator_t *dev,
@@ -1246,6 +1261,8 @@ void accumulator_update_voltage_stats_at(accumulator_t *dev, uint32_t now_ms)
         dev->stale_voltage_mask[ic] = 0u;
         dev->voltage_jump_mask[ic] = 0u;
         dev->voltage_stuck_mask[ic] = 0u;
+        dev->avg8_usable_voltage_mask[ic] = 0u;
+        dev->iir_usable_voltage_mask[ic] = 0u;
     }
 
     for(uint8_t ic = 0u; ic < ic_count; ic++)
@@ -1374,6 +1391,43 @@ void accumulator_update_voltage_stats_at(accumulator_t *dev, uint32_t now_ms)
             {
                 dev->stale_voltage_mask[ic] |= bit;
                 stale_count++;
+            }
+        }
+    }
+
+    /* Normalize the two non-authoritative voltage products separately.  They
+     * never change raw safety usability: AVG8 and IIR are estimator/diagnostic
+     * products and may disappear independently without masking a raw fault. */
+    for(uint8_t ic = 0u; ic < ic_count; ic++)
+    {
+        uint16_t avg_updated = dev->smb.last_acell_updated_mask[ic];
+        uint16_t avg_pec = dev->smb.last_acell_pec_mask[ic];
+        uint16_t iir_updated = dev->smb.last_fcell_updated_mask[ic];
+        uint16_t iir_pec = dev->smb.last_fcell_pec_mask[ic];
+
+        for(uint8_t cell = 0u; cell < NCELLS; cell++)
+        {
+            uint16_t bit = (uint16_t)(1u << cell);
+            if(((avg_updated & bit) != 0u) && ((avg_pec & bit) == 0u))
+            {
+                uint16_t mv = accumulator_code_to_mv(smb_ics[ic].acell.ac_codes[cell]);
+                if((mv >= ACCUMULATOR_CELL_VALID_MIN_MV) &&
+                   (mv <= ACCUMULATOR_CELL_VALID_MAX_MV))
+                {
+                    dev->cell_voltage_avg8_mv[ic][cell] = mv;
+                    dev->avg8_usable_voltage_mask[ic] |= bit;
+                }
+            }
+            if(dev->smb.filtered_voltage_ready &&
+               ((iir_updated & bit) != 0u) && ((iir_pec & bit) == 0u))
+            {
+                uint16_t mv = accumulator_code_to_mv(smb_ics[ic].fcell.fc_codes[cell]);
+                if((mv >= ACCUMULATOR_CELL_VALID_MIN_MV) &&
+                   (mv <= ACCUMULATOR_CELL_VALID_MAX_MV))
+                {
+                    dev->cell_voltage_iir_mv[ic][cell] = mv;
+                    dev->iir_usable_voltage_mask[ic] |= bit;
+                }
             }
         }
     }
@@ -1759,27 +1813,29 @@ void accumulator_update_temp_stats_at(accumulator_t *dev, uint32_t now_ms)
     }
 }
 
-int accumulator_set_balance(accumulator_t *dev)
+bool accumulator_plan_balance(const accumulator_t *dev,
+                              uint16_t planned_mask[NSMBS])
 {
+    if(planned_mask == NULL)
+    {
+        return false;
+    }
+
+    memset(planned_mask, 0, sizeof(uint16_t) * NSMBS);
+
     if((dev == NULL) || !dev->smb_ready ||
        !accumulator_final_ring_topology_valid(dev) ||
        !dev->voltage_full_usable || (dev->min_voltage_mv == 0u))
     {
-        return -1;
+        return false;
     }
 
-    adbms6830_driver_t *smb = &dev->smb;
-    adbms6830_asic *smb_ics = (smb->ics != NULL) ? smb->ics : dev->smb_ics;
     uint8_t ic_count = accumulator_configured_smb_count(dev);
-    int result = -1;
-
-    adbms_spi_lock();
 
     for(uint8_t ic = 0; ic < ic_count; ic++)
     {
         uint16_t cohort_min_mv = UINT16_MAX;
         uint8_t balance_count = 0u;
-        accumulator_clear_balance_shadow(&smb_ics[ic]);
 
         for(uint8_t cell = 0; cell < NCELLS; cell++)
         {
@@ -1813,33 +1869,139 @@ int accumulator_set_balance(accumulator_t *dev)
 			   ((uint16_t)(cell_mv - cohort_min_mv) > BALANCE_ON_DELTA_MV) &&
                (balance_count < BALANCE_MAX_CELLS_PER_SEG))
             {
-                accumulator_set_balance_pwm_cell(&smb_ics[ic], cell, BALANCE_PWM_DUTY);
+                planned_mask[ic] |= (uint16_t)(1u << cell);
                 balance_count++;
             }
         }
     }
 
-    if(adbms6830_wrcfgb_checked(smb) == HAL_OK)
+    return true;
+}
+
+int accumulator_set_balance(accumulator_t *dev)
+{
+    uint16_t planned_mask[NSMBS] = {0u};
+
+    if((dev == NULL) || !dev->smb_transport_ready ||
+       !accumulator_final_ring_topology_valid(dev) ||
+       !accumulator_plan_balance(dev, planned_mask))
     {
-        if((adbms6830_write_pwm_checked(smb) == HAL_OK) &&
-           (adbms6830_verify_balance_readback(smb) == HAL_OK))
+        return -1;
+    }
+
+    bool any_balance_requested = false;
+    for(uint8_t ic = 0u; ic < NSMBS; ic++)
+    {
+        if(planned_mask[ic] != 0u)
         {
-            result = 0;
+            any_balance_requested = true;
+            break;
+        }
+    }
+
+    /* A zero-cell plan is not a reason to expose the Sx switches. Keep the
+     * verified durable-zero state if it is already established; otherwise
+     * establish it once with MUTE + DCC/PWM zero/readback. This also prevents
+     * a charge scan with no balancing demand from clearing the BMS_OK
+     * durable-zero qualification merely because UNMUTE succeeded. */
+    if(!any_balance_requested)
+    {
+        if(dev->last_balance_mute_ok &&
+           dev->last_balance_durable_zero_verified)
+        {
+            dev->last_balance_unmute_ok = false;
+            dev->last_balance_inhibit_reason =
+                (uint8_t)ACCUMULATOR_BALANCE_INHIBIT_NONE;
+            return 0;
+        }
+        return accumulator_emergency_balance_inhibit(
+            dev, ACCUMULATOR_BALANCE_INHIBIT_NONE);
+    }
+
+    adbms6830_driver_t *smb = &dev->smb;
+    adbms6830_asic *smb_ics = (smb->ics != NULL) ? smb->ics : dev->smb_ics;
+    uint8_t ic_count = accumulator_configured_smb_count(dev);
+    HAL_StatusTypeDef mute_status = HAL_ERROR;
+    HAL_StatusTypeDef cfg_status = HAL_ERROR;
+    HAL_StatusTypeDef pwm_status = HAL_ERROR;
+    HAL_StatusTypeDef verify_status = HAL_ERROR;
+    HAL_StatusTypeDef unmute_status = HAL_ERROR;
+    int result = -1;
+
+    dev->last_balance_mute_ok = false;
+    dev->last_balance_durable_zero_verified = false;
+    dev->last_balance_unmute_ok = false;
+    dev->last_balance_inhibit_reason = (uint8_t)ACCUMULATOR_BALANCE_INHIBIT_NONE;
+
+    adbms_spi_lock();
+
+    /* Program a new balance plan only while discharge is muted.  This avoids
+     * exposing a partially written CFGB/PWM image on the physical switches. */
+    mute_status = adbms6830_mute_checked(smb);
+    dev->last_balance_mute_ok = (mute_status == HAL_OK);
+    if(mute_status == HAL_OK)
+    {
+        /* Applying balance owns only DCC/PWM.  It must not silently rewrite
+         * the separate discharge-timer policy. */
+        for(uint8_t ic = 0u; ic < ic_count; ic++)
+        {
+            accumulator_clear_balance_shadow(&smb_ics[ic]);
+            for(uint8_t cell = 0u; cell < NCELLS; cell++)
+            {
+                if((planned_mask[ic] & (uint16_t)(1u << cell)) != 0u)
+                {
+                    accumulator_set_balance_pwm_cell(&smb_ics[ic],
+                                                      cell,
+                                                      BALANCE_PWM_DUTY);
+                }
+            }
+        }
+
+        cfg_status = adbms6830_wrcfgb_checked_reason(
+            smb, ADBMS6830_CFGB_WRITE_BALANCE_APPLY);
+        if(cfg_status == HAL_OK)
+        {
+            pwm_status = adbms6830_write_pwm_checked(smb);
+        }
+        if((cfg_status == HAL_OK) && (pwm_status == HAL_OK))
+        {
+            verify_status = adbms6830_verify_balance_readback(smb);
+        }
+
+        if((cfg_status == HAL_OK) && (pwm_status == HAL_OK) &&
+           (verify_status == HAL_OK))
+        {
+            /* Only a completely written/read-back plan is eligible to become
+             * physically active.  UNMUTE is deliberately the final bus action. */
+            unmute_status = adbms6830_unmute_checked(smb);
+            dev->last_balance_unmute_ok = (unmute_status == HAL_OK);
+            if(unmute_status == HAL_OK)
+            {
+                result = 0;
+            }
         }
     }
 
     if(result != 0)
     {
+        /* Keep or re-establish the fast inhibit, then force the durable state
+         * back to DCC/PWM zero.  Do not leave a latent nonzero plan underneath
+         * MUTE after any failed apply/unmute transaction. */
+        (void)adbms6830_mute_checked(smb);
         accumulator_best_effort_clear_balance_locked(smb, smb_ics, ic_count);
+        dev->last_balance_inhibit_reason =
+            (uint8_t)ACCUMULATOR_BALANCE_INHIBIT_WRITE_FAILURE;
     }
 
     adbms_spi_unlock();
     return result;
 }
 
-int accumulator_clear_balance(accumulator_t *dev)
+int accumulator_emergency_balance_inhibit(
+    accumulator_t *dev,
+    accumulator_balance_inhibit_reason_t reason)
 {
-    if((dev == NULL) || !dev->smb_ready ||
+    if((dev == NULL) || !dev->smb_transport_ready ||
        !accumulator_final_ring_topology_valid(dev))
     {
         return -1;
@@ -1848,28 +2010,89 @@ int accumulator_clear_balance(accumulator_t *dev)
     adbms6830_driver_t *smb = &dev->smb;
     adbms6830_asic *smb_ics = (smb->ics != NULL) ? smb->ics : dev->smb_ics;
     uint8_t ic_count = accumulator_configured_smb_count(dev);
+    HAL_StatusTypeDef mute_status;
+    HAL_StatusTypeDef cfg_status;
+    HAL_StatusTypeDef pwm_status;
+    HAL_StatusTypeDef verify_status = HAL_ERROR;
+
+    dev->last_balance_mute_ok = false;
+    dev->last_balance_durable_zero_verified = false;
+    dev->last_balance_unmute_ok = false;
+    dev->last_balance_inhibit_reason = (uint8_t)reason;
 
     adbms_spi_lock();
 
-    for(uint8_t ic = 0; ic < ic_count; ic++)
+    /* Stage 1: fastest ASIC-native discharge inhibit. */
+    mute_status = adbms6830_mute_checked(smb);
+    dev->last_balance_mute_ok = (mute_status == HAL_OK);
+
+    /* Stage 2: make the safe state durable even if the ADBMS watchdog later
+     * clears MUTE.  Clear every static/PWM request and disable the discharge
+     * timer, then require physical-register readback. */
+    adbms6830_disable_discharge_timer_shadow(smb);
+    for(uint8_t ic = 0u; ic < ic_count; ic++)
     {
         accumulator_clear_balance_shadow(&smb_ics[ic]);
     }
-    HAL_StatusTypeDef cfg_status = adbms6830_wrcfgb_checked(smb);
-    HAL_StatusTypeDef pwm_status = adbms6830_write_pwm_checked(smb);
-    HAL_StatusTypeDef verify_status = HAL_ERROR;
+
+    cfg_status = adbms6830_wrcfgb_checked_reason(
+        smb, ADBMS6830_CFGB_WRITE_BALANCE_CLEAR);
+    pwm_status = adbms6830_write_pwm_checked(smb);
     if((cfg_status == HAL_OK) && (pwm_status == HAL_OK))
     {
         verify_status = adbms6830_verify_balance_readback(smb);
     }
 
-    int result = ((cfg_status == HAL_OK) &&
-                  (pwm_status == HAL_OK) &&
-                  (verify_status == HAL_OK)) ? 0 : -1;
-    if(result != 0)
+    dev->last_balance_durable_zero_verified =
+        (cfg_status == HAL_OK) && (pwm_status == HAL_OK) &&
+        (verify_status == HAL_OK);
+
+    if(!dev->last_balance_durable_zero_verified)
     {
         accumulator_best_effort_clear_balance_locked(smb, smb_ics, ic_count);
     }
+
+    adbms_spi_unlock();
+
+    /* MUTE failure is still a failed emergency transition even when the slower
+     * durable zero ultimately succeeds.  Callers retain both result bits. */
+    return (dev->last_balance_mute_ok &&
+            dev->last_balance_durable_zero_verified) ? 0 : -1;
+}
+
+int accumulator_balance_requalify_and_unmute(accumulator_t *dev)
+{
+    if((dev == NULL) || !dev->smb_transport_ready ||
+       !accumulator_final_ring_topology_valid(dev))
+    {
+        return -1;
+    }
+
+    adbms6830_driver_t *smb = &dev->smb;
+    int result = -1;
+
+    dev->last_balance_unmute_ok = false;
+    adbms_spi_lock();
+
+    /* The caller owns policy qualification; this function owns the final
+     * hardware proof.  Never UNMUTE until the exact programmed DCC/PWM image
+     * has been read back successfully. */
+    if(adbms6830_verify_balance_readback(smb) == HAL_OK)
+    {
+        if(adbms6830_unmute_checked(smb) == HAL_OK)
+        {
+            dev->last_balance_unmute_ok = true;
+            result = 0;
+        }
+    }
+
     adbms_spi_unlock();
     return result;
 }
+
+int accumulator_clear_balance(accumulator_t *dev)
+{
+    return accumulator_emergency_balance_inhibit(
+        dev, ACCUMULATOR_BALANCE_INHIBIT_USER);
+}
+

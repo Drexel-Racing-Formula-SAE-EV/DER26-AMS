@@ -17,6 +17,8 @@
 #include "ext_drivers/adbms6830_functions.h"
 #include "ext_drivers/adbms2950.h"
 #include "ext_drivers/voltage_fault.h"
+#include "ext_drivers/main_fuse_monitor.h"
+#include "ext_drivers/parallel_connection_observer.h"
 
 #include <math.h>
 #include <stdbool.h>
@@ -80,12 +82,6 @@ static GPIO_PinState unit_gpio_states[64];
 static HAL_StatusTypeDef unit_spi_tx_status = HAL_OK;
 static HAL_StatusTypeDef unit_spi_txrx_status = HAL_OK;
 
-/* Directly-included ADBMS6830 transport timing instrumentation.  A nonzero
- * freeze call lets a test stop the fake 1 MHz timer on exactly the setup or
- * hold delay without changing production code. */
-static uint32_t unit_delay_reset_calls = 0u;
-static uint32_t unit_delay_freeze_on_reset_call = 0u;
-
 static void unit_spi_reset(void)
 {
     memset(unit_spi_last_tx, 0, sizeof(unit_spi_last_tx));
@@ -103,8 +99,6 @@ static void unit_spi_reset(void)
     unit_gpio_write_calls = 0u;
     unit_spi_tx_status = HAL_OK;
     unit_spi_txrx_status = HAL_OK;
-    unit_delay_reset_calls = 0u;
-    unit_delay_freeze_on_reset_call = 0u;
 }
 
 HAL_StatusTypeDef HAL_SPI_Transmit(SPI_HandleTypeDef *hspi, uint8_t *pData, uint16_t Size, uint32_t Timeout)
@@ -172,17 +166,11 @@ static bool unit_delay_timer_advances = true;
 static void unit_delay_counter_set(uint32_t value)
 {
     unit_delay_counter = value;
-    unit_delay_reset_calls++;
 }
 
 static uint32_t unit_delay_counter_get(void)
 {
-    const bool frozen_for_this_delay =
-        (unit_delay_freeze_on_reset_call != 0u) &&
-        (unit_delay_reset_calls == unit_delay_freeze_on_reset_call);
-
-    if(unit_delay_timer_advances && !frozen_for_this_delay &&
-       (unit_delay_counter != UINT32_MAX))
+    if(unit_delay_timer_advances && (unit_delay_counter != UINT32_MAX))
     {
         unit_delay_counter++;
     }
@@ -213,6 +201,13 @@ static uint32_t unit_delay_counter_get(void)
 
 #define TEST_EPS_SMALL 1.0e-5f
 #define TEST_EPS_MED   1.0e-3f
+
+static uint32_t unit_adbms_fake_time_us = 0u;
+static uint32_t unit_adbms_time_us(void *ctx)
+{
+    (void)ctx;
+    return unit_adbms_fake_time_us;
+}
 
 static int g_failures = 0;
 
@@ -422,7 +417,7 @@ static void test_r0_observability_and_accounting(void)
                                               true);
     EXPECT_TRUE((reject & AMS_SOH_REJECT_LOW_CURRENT_STEP) != 0u);
 
-    ekf.step_count = 1u;
+    ekf.step_count = AMS_EKF_ACQUISITION_STEPS;
     ekf.last_i_pack_A = 0.0f;
     reject = ams_resistance_soh_gate(&ekf,
                                      30.0f,
@@ -447,7 +442,7 @@ static void test_r0_observability_and_accounting(void)
     EXPECT_NEAR(ekf.r0_ohm, r0_before, TEST_EPS_SMALL);
 
     ams_ekf_init(&ekf, &cfg);
-    ekf.step_count = 1u;
+    ekf.step_count = AMS_EKF_ACQUISITION_STEPS;
     ekf.last_i_pack_A = 0.0f;
     i_cell_A = 30.0f / cfg.parallel_cell_count;
     v_meas_V = (float)cfg.series_group_count *
@@ -491,7 +486,7 @@ static void test_r0_observability_and_accounting(void)
     EXPECT_TRUE(soh.observation_confidence_pct == 0u);
 
     ams_ekf_init(&ekf, &cfg);
-    ekf.step_count = 1u;
+    ekf.step_count = AMS_EKF_ACQUISITION_STEPS;
     ekf.last_i_pack_A = 0.0f;
     i_cell_A = 30.0f / cfg.parallel_cell_count;
     v_meas_V = (float)cfg.series_group_count *
@@ -576,6 +571,70 @@ static void test_single_step_nominal_pack(void)
     EXPECT_FINITE(ekf.v_pred_V);
     EXPECT_FINITE(ekf.innovation_V);
     EXPECT_TRUE(ekf.step_count == 1U);
+}
+
+static void test_ekf_innovation_gate_and_dt_observability(void)
+{
+    ams_ekf_config_t cfg;
+    ams_ekf_make_pack_config(&cfg);
+    cfg.soc_init = 0.50f;
+
+    ams_ekf_instance_t ekf;
+    ams_ekf_init(&ekf, &cfg);
+    const float nominal_v = (float)cfg.series_group_count *
+        ams_p42a_ocv_v(cfg.soc_init, 25.0f);
+
+    /* Bootstrap is intentionally looser than the steady-state statistical
+     * gate so a reasonable configured-SoC mismatch can acquire. It must still
+     * reject a gross bad-but-range-valid first sample. */
+    {
+        ams_ekf_instance_t fresh;
+        ams_ekf_init(&fresh, &cfg);
+        const float collapsed_v =
+            (float)cfg.series_group_count * 2.10f;
+        EXPECT_TRUE(ams_ekf_step(&fresh, 0.0f, collapsed_v, 25.0f, 0.1f));
+        EXPECT_TRUE((fresh.fault_flags &
+                     AMS_EKF_FAULT_INNOVATION_REJECT) != 0u);
+        EXPECT_TRUE(fresh.innovation_reject_count == 1u);
+        EXPECT_TRUE(fresh.step_count == 1u);
+    }
+
+    for(uint8_t i = 0u; i < 20u; i++)
+    {
+        EXPECT_TRUE(ams_ekf_step(&ekf, 0.0f, nominal_v, 25.0f, 0.1f));
+        EXPECT_TRUE((ekf.fault_flags & AMS_EKF_FAULT_INNOVATION_REJECT) == 0u);
+    }
+
+    const float soc_before = ekf.soc;
+    const float r_before = ekf.r_meas_V2;
+    ams_ekf_r0_update_result_t r0_result = AMS_EKF_R0_UPDATE_APPLIED;
+    /* 90 mV/cell is inside the broad 2.0-4.5 V input sanity window and below
+     * the 100 mV/cell absolute SoH gate, but it is a gross statistical
+     * innovation after the estimator has a valid prior. */
+    const float bad_v = nominal_v -
+        ((float)cfg.series_group_count * 0.090f);
+    EXPECT_TRUE(ams_ekf_step_gated(&ekf,
+                                   0.0f,
+                                   bad_v,
+                                   25.0f,
+                                   0.1f,
+                                   true,
+                                   &r0_result));
+    EXPECT_TRUE((ekf.fault_flags & AMS_EKF_FAULT_INNOVATION_REJECT) != 0u);
+    EXPECT_TRUE(ekf.innovation_reject_count == 1u);
+    EXPECT_TRUE(r0_result == AMS_EKF_R0_UPDATE_REJECT_INNOVATION);
+    EXPECT_NEAR(ekf.r_meas_V2, r_before, TEST_EPS_SMALL);
+    EXPECT_NEAR(ekf.soc, soc_before, 1.0e-4f);
+
+    /* A valid sample clears the one-step rejection flag. */
+    EXPECT_TRUE(ams_ekf_step(&ekf, 0.0f, ekf.v_pred_V, 25.0f, 0.1f));
+    EXPECT_TRUE((ekf.fault_flags & AMS_EKF_FAULT_INNOVATION_REJECT) == 0u);
+    EXPECT_TRUE(ekf.innovation_reject_count == 1u);
+
+    ams_ekf_init(&ekf, &cfg);
+    EXPECT_TRUE(ams_ekf_step(&ekf, 0.0f, nominal_v, 25.0f, 5.0f));
+    EXPECT_TRUE((ekf.fault_flags & AMS_EKF_FAULT_DT_CLAMPED) != 0u);
+    EXPECT_TRUE(ekf.dt_clamp_count == 1u);
 }
 
 static void test_invalid_step_inputs(void)
@@ -711,10 +770,14 @@ static void test_coulomb_count_baseline(void)
     EXPECT_NEAR(est.cc_soc, 1.0f, TEST_EPS_SMALL);
 
     EXPECT_TRUE(ams_estimator_cc_step(&est, 60.0f, 60.0f));
+    EXPECT_TRUE(est.cc_last_dt_clamped == 1U);
+    EXPECT_TRUE(est.cc_dt_clamp_count == 1u);
     EXPECT_TRUE(est.cc_soc < 1.0f);
     float after_discharge = est.cc_soc;
 
     EXPECT_TRUE(ams_estimator_cc_step(&est, -30.0f, 60.0f));
+    EXPECT_TRUE(est.cc_last_dt_clamped == 1U);
+    EXPECT_TRUE(est.cc_dt_clamp_count == 2u);
     EXPECT_TRUE(est.cc_soc > after_discharge);
     EXPECT_TRUE(est.cc_soc <= 1.0f);
 
@@ -728,10 +791,12 @@ static void test_coulomb_count_baseline(void)
     EXPECT_NEAR(est.cc_soc, before_bad_sample, TEST_EPS_SMALL);
 
     EXPECT_TRUE(ams_estimator_cc_step(&est, 20.0f, 0.1f));
+    EXPECT_TRUE(est.cc_last_dt_clamped == 0U);
     EXPECT_TRUE(est.cc_soc < before_bad_sample);
 
     ams_estimator_cc_reset(&est, 0.50f);
     EXPECT_TRUE(est.cc_valid == 1U);
+    EXPECT_TRUE(est.cc_dt_clamp_count == 0u);
     EXPECT_NEAR(est.cc_soc, 0.50f, TEST_EPS_SMALL);
 
     est.inst[0].valid = 0U;
@@ -1327,6 +1392,10 @@ static void unit_fill_voltage_acc(accumulator_t *acc,
     }
 
     memset(acc, 0, sizeof(*acc));
+    acc->smb.num_ics = NSMBS;
+    acc->smb.ics_capacity = NSMBS;
+    acc->smb.ics = acc->smb_ics;
+    acc->smb.monitored_cell_count = NCELLS;
     acc->voltage_startup_scan_complete = startup_done;
     acc->voltage_full_usable = full_usable;
     acc->voltage_full_updated = full_updated;
@@ -1443,6 +1512,336 @@ static void test_voltage_fault_read_failure_precedence_and_strings(void)
     EXPECT_TRUE(strcmp(voltage_fault_reason_str(VOLTAGE_FAULT_REASON_OPEN_WIRE_RESERVED), "open_wire_reserved") == 0);
 }
 
+static void unit_fill_single_smb_voltage_image(accumulator_t *acc,
+                                                uint16_t nominal_mv,
+                                                uint32_t now_ms)
+{
+    if(acc == NULL)
+    {
+        return;
+    }
+
+    memset(acc, 0, sizeof(*acc));
+    acc->smb.num_ics = 1;
+    acc->smb.ics_capacity = NSMBS;
+    acc->smb.ics = acc->smb_ics;
+    acc->smb.monitored_cell_count = NCELLS;
+    acc->voltage_startup_scan_complete = true;
+    acc->voltage_full_updated = true;
+    acc->voltage_full_usable = true;
+    acc->updated_voltage_mask[0] = 0x7FFFu;
+    acc->usable_voltage_mask[0] = 0x7FFFu;
+    acc->updated_voltage_count = NCELLS;
+    acc->usable_voltage_count = NCELLS;
+    acc->min_voltage_mv = nominal_mv;
+    acc->max_voltage_mv = nominal_mv;
+    for(uint8_t cell = 0u; cell < NCELLS; cell++)
+    {
+        acc->cell_voltage_mv[0][cell] = nominal_mv;
+        acc->cell_voltage_valid[0][cell] = true;
+        acc->cell_voltage_last_update_ms[0][cell] = now_ms;
+    }
+}
+
+static void test_voltage_fault_hardware_status_crosscheck(void)
+{
+    accumulator_t acc;
+    voltage_fault_state_t vf;
+
+    voltage_fault_init(&vf);
+    unit_fill_single_smb_voltage_image(&acc, 3500u, 1000u);
+    acc.smb.diag[0].statd_valid = true;
+
+    /* Corrupted topology metadata must fail before any cell/status array walk. */
+    acc.smb.monitored_cell_count = (uint8_t)(NCELLS + 1u);
+    voltage_fault_update(&vf, &acc);
+    EXPECT_TRUE(vf.read_fault);
+    EXPECT_TRUE(vf.confirmed);
+    EXPECT_TRUE(vf.reason == VOLTAGE_FAULT_REASON_NOT_READY);
+    unit_fill_single_smb_voltage_image(&acc, 3500u, 1000u);
+    acc.smb.diag[0].statd_valid = true;
+
+    /* The unused C16 comparator must never produce a 15-cell warning. */
+    acc.smb.diag[0].cell_ov_mask = 0x8000u;
+    acc.smb.diag[0].cell_uv_mask = 0x8000u;
+    voltage_fault_update(&vf, &acc);
+    EXPECT_TRUE(vf.voltage_valid);
+    EXPECT_FALSE(vf.hardware_warning);
+    EXPECT_FALSE(vf.hardware_disagreement);
+    EXPECT_TRUE(vf.hardware_ov_mask[0] == 0u);
+    EXPECT_TRUE(vf.hardware_uv_mask[0] == 0u);
+
+    /* A hardware-only monitored-cell OV flag is diagnostic evidence, but the
+     * fresh software C value remains the hard-fault source of truth. */
+    acc.smb.diag[0].cell_ov_mask = 0x0001u;
+    acc.smb.diag[0].cell_uv_mask = 0u;
+    voltage_fault_update(&vf, &acc);
+    EXPECT_TRUE(vf.hardware_warning);
+    EXPECT_TRUE(vf.hardware_disagreement);
+    EXPECT_TRUE(vf.hardware_disagreement_mask[0] == 0x0001u);
+    EXPECT_FALSE(vf.confirmed);
+    EXPECT_TRUE(vf.reason == VOLTAGE_FAULT_REASON_HW_STATUS_DISAGREEMENT);
+
+    /* A Status-D flag inside the non-atomic comparison margin remains a
+     * visible warning even though it is not classified as a disagreement. */
+    voltage_fault_init(&vf);
+    unit_fill_single_smb_voltage_image(&acc,
+                                       (uint16_t)(ADBMS_UV_WARN_MV + 5u),
+                                       1000u);
+    acc.smb.diag[0].statd_valid = true;
+    acc.smb.diag[0].cell_ov_mask = 0u;
+    acc.smb.diag[0].cell_uv_mask = 0x0001u;
+    voltage_fault_update(&vf, &acc);
+    EXPECT_TRUE(vf.hardware_warning);
+    EXPECT_FALSE(vf.hardware_disagreement);
+    EXPECT_TRUE(vf.warning);
+    EXPECT_TRUE(vf.reason == VOLTAGE_FAULT_REASON_HW_STATUS_WARNING);
+
+    /* A threshold crossing inside the non-atomic comparison margin must not
+     * create a spurious disagreement simply because Status-D was older. */
+    voltage_fault_init(&vf);
+    acc.cell_voltage_mv[0][0] = (uint16_t)(CELL_OV_HARD_MV + 5u);
+    acc.max_voltage_mv = acc.cell_voltage_mv[0][0];
+    acc.smb.diag[0].cell_ov_mask = 0u;
+    acc.smb.diag[0].cell_uv_mask = 0u;
+    voltage_fault_update(&vf, &acc);
+    EXPECT_TRUE(vf.confirmed);
+    EXPECT_FALSE(vf.hardware_disagreement);
+
+    /* Well outside the margin, matching software and hardware masks agree. */
+    voltage_fault_init(&vf);
+    acc.cell_voltage_mv[0][0] =
+        (uint16_t)(CELL_OV_HARD_MV + ADBMS_OVUV_COMPARE_MARGIN_MV);
+    acc.max_voltage_mv = acc.cell_voltage_mv[0][0];
+    acc.smb.diag[0].cell_ov_mask = 0x0001u;
+    acc.smb.diag[0].cell_uv_mask = 0u;
+    voltage_fault_update(&vf, &acc);
+    EXPECT_TRUE(vf.software_ov_mask[0] == 0x0001u);
+    EXPECT_TRUE(vf.hardware_ov_mask[0] == 0x0001u);
+    EXPECT_FALSE(vf.hardware_disagreement);
+}
+
+static void test_parallel_connection_observer_advisory(void)
+{
+    accumulator_t acc;
+    ams_parallel_connection_observer_t observer;
+    uint32_t now = 1000u;
+
+    unit_fill_single_smb_voltage_image(&acc, 3500u, now);
+    ams_parallel_connection_observer_init(&observer);
+    EXPECT_FALSE(observer.target_validated);
+
+    /* A partially initialized or corrupted topology must never allow an
+     * advisory comparison against implicit zero-filled segments. */
+    acc.smb.num_ics = 0;
+    ams_parallel_connection_observer_step(&observer,
+                                          &acc,
+                                          0.0f,
+                                          true,
+                                          false,
+                                          now);
+    EXPECT_FALSE(observer.input_valid);
+    EXPECT_FALSE(observer.initialized);
+    EXPECT_TRUE(observer.reason == AMS_PARALLEL_OBSERVER_INPUT_INVALID);
+    acc.smb.num_ics = 1;
+
+    ams_parallel_connection_observer_step(&observer,
+                                          &acc,
+                                          0.0f,
+                                          true,
+                                          false,
+                                          now);
+    EXPECT_TRUE(observer.initialized);
+    EXPECT_TRUE(observer.reason == AMS_PARALLEL_OBSERVER_WAITING);
+
+    /* Five repeatable 20 A steps: ordinary groups move 2 mV (0.1 mOhm)
+     * while cell 4 moves 30 mV (1.5 mOhm).  This can only become an advisory
+     * possible-connection-degradation result, never a hard/fuse identity. */
+    for(uint8_t event = 0u; event < AMS_PARALLEL_OBSERVER_CONFIRM_EVENTS; event++)
+    {
+        bool loaded = ((event & 1u) == 0u);
+        uint16_t ordinary_mv = loaded ? 3498u : 3500u;
+        uint16_t outlier_mv = loaded ? 3470u : 3500u;
+        float current_a = loaded ? 20.0f : 0.0f;
+
+        now += 100u;
+        for(uint8_t cell = 0u; cell < NCELLS; cell++)
+        {
+            acc.cell_voltage_mv[0][cell] = ordinary_mv;
+            acc.cell_voltage_last_update_ms[0][cell] = now;
+        }
+        acc.cell_voltage_mv[0][3] = outlier_mv;
+        ams_parallel_connection_observer_step(&observer,
+                                              &acc,
+                                              current_a,
+                                              true,
+                                              false,
+                                              now);
+    }
+
+    EXPECT_TRUE(observer.accepted_step_count ==
+                AMS_PARALLEL_OBSERVER_CONFIRM_EVENTS);
+    EXPECT_TRUE((observer.candidate_mask[0] & (1u << 3u)) != 0u);
+    EXPECT_TRUE((observer.suspect_mask[0] & (1u << 3u)) != 0u);
+    EXPECT_TRUE(observer.suspect);
+    EXPECT_TRUE(observer.advisory_valid);
+    EXPECT_TRUE(observer.reason == AMS_PARALLEL_OBSERVER_SUSPECT);
+
+    /* Invalid or balancing-contaminated samples break the step pair rather
+     * than comparing a future value against a stale baseline. */
+    ams_parallel_connection_observer_step(&observer,
+                                          &acc,
+                                          0.0f,
+                                          false,
+                                          false,
+                                          now + 10u);
+    EXPECT_FALSE(observer.initialized);
+    EXPECT_FALSE(observer.advisory_valid);
+    EXPECT_TRUE(observer.reason == AMS_PARALLEL_OBSERVER_INPUT_INVALID);
+
+    for(uint8_t cell = 0u; cell < NCELLS; cell++)
+    {
+        acc.cell_voltage_last_update_ms[0][cell] = now + 20u;
+    }
+    ams_parallel_connection_observer_step(&observer,
+                                          &acc,
+                                          0.0f,
+                                          true,
+                                          true,
+                                          now + 20u);
+    EXPECT_FALSE(observer.initialized);
+    EXPECT_TRUE(observer.reason == AMS_PARALLEL_OBSERVER_BALANCING_ACTIVE);
+    EXPECT_TRUE(strcmp(ams_parallel_observer_reason_str(
+        AMS_PARALLEL_OBSERVER_SUSPECT),
+        "possible_parallel_connection_degradation") == 0);
+}
+
+static void unit_set_main_fuse_inputs_fresh(ams_air_monitor_t *air,
+                                             ams_air_monitor_inputs_t *inputs,
+                                             uint32_t now_ms)
+{
+    memset(air, 0, sizeof(*air));
+    memset(inputs, 0, sizeof(*inputs));
+    air->feature_enabled = true;
+    air->configuration_valid = true;
+    air->command_valid = true;
+    air->feedback_valid = true;
+    air->voltage_valid = true;
+    air->boot_open_verified = true;
+    air->transition_authorized = true;
+    air->last_update_tick = now_ms;
+    air->phase = AMS_AIR_PHASE_RUN;
+    air->steady_state_valid = true;
+    air->permit = true;
+    air->precharge_complete = true;
+    inputs->now_tick = now_ms;
+    inputs->command.valid = true;
+    inputs->command.phase = AMS_AIR_PHASE_RUN;
+    inputs->command.update_tick = now_ms;
+    inputs->pos_aux.valid = true;
+    inputs->pos_aux.state = AMS_AIR_CONTACT_CLOSED;
+    inputs->pos_aux.update_tick = now_ms;
+    inputs->neg_aux.valid = true;
+    inputs->neg_aux.state = AMS_AIR_CONTACT_CLOSED;
+    inputs->neg_aux.update_tick = now_ms;
+    inputs->pack_voltage.valid = true;
+    inputs->pack_voltage.millivolts = 300000u;
+    inputs->pack_voltage.update_tick = now_ms;
+    inputs->load_voltage.valid = true;
+    inputs->load_voltage.millivolts = 295000u;
+    inputs->load_voltage.update_tick = now_ms;
+}
+
+static void test_main_fuse_monitor_plausibility_and_clear(void)
+{
+    ams_main_fuse_monitor_t monitor;
+    ams_air_monitor_t air;
+    ams_air_monitor_inputs_t inputs;
+
+    ams_main_fuse_monitor_init(&monitor);
+    EXPECT_TRUE(monitor.reason == AMS_MAIN_FUSE_MONITOR_UNAVAILABLE);
+
+    unit_set_main_fuse_inputs_fresh(&air, &inputs, 1000u);
+    ams_main_fuse_monitor_step(&monitor, &air, &inputs,
+                               5.0f, true, 1000u);
+#if AMS_MAIN_FUSE_PLAUSIBILITY_VALIDATED && \
+    AMS_ENABLE_AIR_AUX_FEEDBACK && \
+    AMS_CURRENT_CALIBRATION_VALIDATED && \
+    AMS_MAIN_FUSE_LOAD_VOLTAGE_TARGET_VALIDATED
+    EXPECT_TRUE(monitor.reason == AMS_MAIN_FUSE_MONITOR_HEALTHY);
+    EXPECT_TRUE(monitor.authority_valid);
+
+    inputs.load_voltage.millivolts = 20000u;
+    inputs.load_voltage.update_tick = 1100u;
+    inputs.pack_voltage.update_tick = 1100u;
+    inputs.command.update_tick = 1100u;
+    inputs.pos_aux.update_tick = 1100u;
+    inputs.neg_aux.update_tick = 1100u;
+    air.last_update_tick = 1100u;
+    ams_main_fuse_monitor_step(&monitor, &air, &inputs,
+                               0.0f, true, 1100u);
+    EXPECT_TRUE(monitor.suspect_open);
+    EXPECT_TRUE(monitor.reason == AMS_MAIN_FUSE_MONITOR_SUSPECT_OPEN);
+
+    inputs.load_voltage.update_tick = 1700u;
+    inputs.pack_voltage.update_tick = 1700u;
+    inputs.command.update_tick = 1700u;
+    inputs.pos_aux.update_tick = 1700u;
+    inputs.neg_aux.update_tick = 1700u;
+    air.last_update_tick = 1700u;
+    ams_main_fuse_monitor_step(&monitor, &air, &inputs,
+                               0.0f, true, 1700u);
+    EXPECT_TRUE(monitor.confirmed_open);
+    EXPECT_TRUE(monitor.latched);
+    EXPECT_TRUE(monitor.reason == AMS_MAIN_FUSE_MONITOR_CONFIRMED_OPEN);
+
+    EXPECT_FALSE(ams_main_fuse_monitor_request_clear(&monitor,
+                                                      &inputs,
+                                                      0.0f,
+                                                      true,
+                                                      1700u));
+
+    inputs.command.phase = AMS_AIR_PHASE_OFF;
+    inputs.command.update_tick = 1800u;
+    inputs.pack_voltage.update_tick = 1800u;
+    inputs.load_voltage.millivolts = 0u;
+    inputs.load_voltage.update_tick = 1800u;
+    EXPECT_TRUE(ams_main_fuse_monitor_request_clear(&monitor,
+                                                     &inputs,
+                                                     0.0f,
+                                                     true,
+                                                     1800u));
+    EXPECT_FALSE(monitor.confirmed_open);
+    EXPECT_FALSE(monitor.latched);
+    EXPECT_TRUE(monitor.reason == AMS_MAIN_FUSE_MONITOR_IDLE);
+#else
+    /* Bench/unvalidated builds retain raw telemetry but must never create a
+     * suspect or confirmed fuse claim. */
+    EXPECT_FALSE(monitor.authority_valid);
+    EXPECT_FALSE(monitor.suspect_open);
+    EXPECT_FALSE(monitor.confirmed_open);
+    EXPECT_TRUE(monitor.reason == AMS_MAIN_FUSE_MONITOR_UNAVAILABLE);
+
+    inputs.load_voltage.millivolts = 20000u;
+    inputs.load_voltage.update_tick = 1700u;
+    inputs.pack_voltage.update_tick = 1700u;
+    inputs.command.update_tick = 1700u;
+    inputs.pos_aux.update_tick = 1700u;
+    inputs.neg_aux.update_tick = 1700u;
+    air.last_update_tick = 1700u;
+    ams_main_fuse_monitor_step(&monitor, &air, &inputs,
+                               0.0f, true, 1700u);
+    EXPECT_FALSE(monitor.suspect_open);
+    EXPECT_FALSE(monitor.confirmed_open);
+    EXPECT_FALSE(monitor.latched);
+    EXPECT_TRUE(monitor.reason == AMS_MAIN_FUSE_MONITOR_UNAVAILABLE);
+#endif
+
+    EXPECT_TRUE(strcmp(ams_main_fuse_monitor_reason_str(
+        AMS_MAIN_FUSE_MONITOR_CONFIRMED_OPEN),
+        "confirmed_open_hv_path") == 0);
+}
+
 static void unit_adbms_make_valid_read_packet(uint8_t *dst, uint8_t seed, uint8_t cmd_counter, bool corrupt_pec)
 {
     for(uint8_t i = 0u; i < (RX_DATA - 2u); i++)
@@ -1477,6 +1876,24 @@ static void unit_adbms_make_read_packet_from_data(uint8_t *dst, const uint8_t pa
     {
         dst[RX_DATA - 1u] ^= 0xA5u;
     }
+}
+
+static void unit_adbms_make_statc_ccts_payload(uint8_t payload[TX_DATA], uint16_t ccts)
+{
+    uint16_t ct;
+
+    memset(payload, 0, TX_DATA);
+    ccts &= 0x1FFFu;
+    ct = (uint16_t)(ccts >> 2u);
+    payload[2] = (uint8_t)((ct >> 6u) & 0x1Fu);
+    payload[3] = (uint8_t)(((ct & 0x3Fu) << 2u) | (ccts & 0x03u));
+}
+
+static void unit_adbms_make_cfga_mute_packet(uint8_t *dst, bool muted, uint8_t cmd_counter)
+{
+    uint8_t payload[TX_DATA] = {0u};
+    payload[5] = muted ? 0x10u : 0x00u;
+    unit_adbms_make_read_packet_from_data(dst, payload, cmd_counter, false);
 }
 
 static void unit_adbms2950_make_flag_payload(uint8_t payload[TX_DATA],
@@ -1528,7 +1945,7 @@ static void unit_adbms_make_comm_result(uint8_t *dst,
     {
         (uint8_t)((ICOMM_START_ << 4u) | (address_ack ? 0x07u : 0x0Fu)),
         0u,
-        (uint8_t)((ICOMM_BLANK_ << 4u) | (data_ack ? 0x07u : 0x0Fu)),
+        (uint8_t)((0x07u << 4u) | (data_ack ? 0x07u : 0x0Fu)),
         0u,
         (uint8_t)((ICOMM_STOP_ << 4u) | FCOMM_NACK_STOP_),
         0u
@@ -1606,10 +2023,15 @@ static void unit_adbms_init_driver(adbms6830_driver_t *dev,
                         gpio_b,
                         3u,
                         4u,
+                        STRING_B,
                         &unit_delay_timer) == HAL_OK);
     (void)adbms6830_set_monitored_cell_count(dev, 15u);
     unit_spi_reset();
-    dev->string = STRING_A;
+    /* Production writes are deliberately constrained to the configured
+     * write-owner path (String B).  Keep the unit fixture on that owner by
+     * default; individual read-direction tests can still select String A
+     * explicitly when that behavior is under test. */
+    dev->string = dev->write_string;
     adbms6830_spi_debug_clear(dev);
 }
 
@@ -1654,6 +2076,7 @@ static void test_adbms_topology_and_delay_guards(void)
                          &gpio_b,
                          3u,
                          4u,
+                         STRING_B,
                          &unit_delay_timer) == HAL_ERROR);
     EXPECT_TRUE(adBms6830_init(&dev,
                          2u,
@@ -1665,6 +2088,7 @@ static void test_adbms_topology_and_delay_guards(void)
                          &gpio_b,
                          3u,
                          4u,
+                         STRING_B,
                          &unit_delay_timer) == HAL_ERROR);
     EXPECT_TRUE(dev.num_ics == 0);
     EXPECT_TRUE(unit_gpio_write_calls == 0u);
@@ -1679,6 +2103,7 @@ static void test_adbms_topology_and_delay_guards(void)
                               &gpio_b,
                               3u,
                               4u,
+                              STRING_B,
                               &unit_delay_timer) == HAL_ERROR);
     EXPECT_TRUE(dev.num_ics == 0);
     EXPECT_TRUE(dev.physical_chain_count == 0u);
@@ -1696,6 +2121,7 @@ static void test_adbms_topology_and_delay_guards(void)
                               &gpio_b,
                               3u,
                               4u,
+                              STRING_B,
                               &unit_delay_timer) == HAL_TIMEOUT);
     EXPECT_TRUE(unit_spi_tx_calls == 1u);
     EXPECT_TRUE(ics[0].tx_cfgb.dcc == 0u);
@@ -1729,6 +2155,7 @@ static void test_adbms_topology_and_delay_guards(void)
                                   &gpio_b,
                                   3u,
                                   4u,
+                                  STRING_B,
                                   &unit_delay_timer) == HAL_ERROR);
         EXPECT_TRUE(unit_spi_tx_calls == 1u);
         EXPECT_TRUE(unit_spi_txrx_calls == 1u);
@@ -1783,25 +2210,289 @@ static void test_adbms_topology_and_delay_guards(void)
     {
         dev.last_cell_updated_mask[ic] = UINT16_MAX;
         dev.last_cell_pec_mask[ic] = UINT16_MAX;
-        dev.last_temp_updated_mask[ic] =
-            (uint32_t)(0x00010000u << ic);
     }
     unit_spi_reset();
     unit_spi_txrx_status = HAL_TIMEOUT;
     EXPECT_TRUE(adbms6830_read_cell_voltages(&dev) == HAL_TIMEOUT);
-    EXPECT_TRUE(unit_spi_txrx_calls == 6u);
+    /* A critical raw transport failure stops the epoch immediately and the
+     * coherent reader retries exactly once. */
+    EXPECT_TRUE(unit_spi_txrx_calls == 2u);
     EXPECT_TRUE(dev.last_cell_updated_mask[0] == 0u);
     EXPECT_TRUE(dev.last_cell_updated_mask[1] == 0u);
     EXPECT_TRUE(dev.last_cell_pec_mask[0] == 0u);
     EXPECT_TRUE(dev.last_cell_pec_mask[1] == 0u);
-    /* A cell-read epoch owns only cell freshness.  Failed or successful cell
-     * reads must not erase the preceding AUX/temperature epoch. */
-    EXPECT_TRUE(dev.last_temp_updated_mask[0] == 0x00010000u);
-    EXPECT_TRUE(dev.last_temp_updated_mask[1] == 0x00020000u);
     unit_spi_txrx_status = HAL_OK;
 
     dev.htim = NULL;
     EXPECT_TRUE(adbms6830_us_delay(&dev, 10u) == HAL_ERROR);
+}
+
+
+static void test_adbms_v05_session_filter_and_mute_contract(void)
+{
+    adbms6830_driver_t dev;
+    adbms6830_asic ics[1];
+    SPI_HandleTypeDef spi;
+    GPIO_TypeDef gpio_a;
+    GPIO_TypeDef gpio_b;
+    uint32_t wakes_before;
+
+    memset(&dev, 0, sizeof(dev));
+    memset(ics, 0, sizeof(ics));
+    memset(&spi, 0, sizeof(spi));
+    memset(&gpio_a, 0, sizeof(gpio_a));
+    memset(&gpio_b, 0, sizeof(gpio_b));
+    unit_adbms_init_driver(&dev, ics, &spi, &gpio_a, &gpio_b, 1u);
+
+    EXPECT_TRUE(dev.ics[0].tx_cfga.fc == (AMS_ADBMS_IIR_FC & 0x07u));
+    EXPECT_FALSE(dev.filtered_voltage_ready);
+
+    adbms6830_bind_runtime_hooks(&dev, NULL, unit_adbms_time_us, NULL);
+    unit_adbms_fake_time_us = 1000u;
+    adbms6830_session_open(&dev);
+    dev.session.last_activity_us = unit_adbms_fake_time_us;
+    wakes_before = dev.session.full_wake_count;
+
+    unit_adbms_fake_time_us = 1000u + AMS_ADBMS_SESSION_GUARD_US - 1u;
+    EXPECT_TRUE(adbms6830_session_require_awake(&dev) == HAL_OK);
+    EXPECT_TRUE(dev.session.full_wake_count == wakes_before);
+
+    dev.session.coherent_snapshot_active = true;
+    unit_adbms_fake_time_us = 1000u + AMS_ADBMS_SESSION_GUARD_US + 10u;
+    EXPECT_TRUE(adbms6830_session_require_awake(&dev) == HAL_BUSY);
+    EXPECT_TRUE(dev.session.guard_expiry_count == 1u);
+    EXPECT_TRUE(dev.session.full_wake_count == wakes_before);
+
+    dev.session.coherent_snapshot_active = false;
+    dev.session.last_activity_us = 1000u;
+    EXPECT_TRUE(adbms6830_session_require_awake(&dev) == HAL_OK);
+    EXPECT_TRUE(dev.session.full_wake_count == wakes_before + 1u);
+    EXPECT_TRUE(dev.session.guard_rewake_count == 1u);
+    adbms6830_session_close(&dev);
+
+    unit_spi_reset();
+    adbms6830_resync_command_counter_tracking(&dev);
+    unit_adbms_make_cfga_mute_packet(
+        &unit_spi_txrx_response[CMDSZ + PEC15SZ], true, 1u);
+    EXPECT_TRUE(adbms6830_mute_checked(&dev) == HAL_OK);
+    EXPECT_TRUE(unit_spi_tx_calls == 1u);
+    EXPECT_TRUE(unit_spi_txrx_calls == 1u);
+    EXPECT_TRUE(unit_spi_last_tx[0] == 0x00u);
+    EXPECT_TRUE(unit_spi_last_tx[1] == 0x28u);
+    EXPECT_TRUE(dev.ics[0].rx_cfga.mute_st == 1u);
+    EXPECT_TRUE(dev.health.mute_count == 1u);
+    EXPECT_TRUE(dev.health.mute_verify_fail_count == 0u);
+
+    unit_spi_reset();
+    unit_adbms_make_cfga_mute_packet(
+        &unit_spi_txrx_response[CMDSZ + PEC15SZ], false, 2u);
+    EXPECT_TRUE(adbms6830_unmute_checked(&dev) == HAL_OK);
+    EXPECT_TRUE(unit_spi_tx_calls == 1u);
+    EXPECT_TRUE(unit_spi_txrx_calls == 1u);
+    EXPECT_TRUE(unit_spi_last_tx[0] == 0x00u);
+    EXPECT_TRUE(unit_spi_last_tx[1] == 0x29u);
+    EXPECT_TRUE(dev.ics[0].rx_cfga.mute_st == 0u);
+    EXPECT_TRUE(dev.health.unmute_count == 1u);
+    EXPECT_TRUE(dev.health.unmute_verify_fail_count == 0u);
+}
+
+
+static void test_adbms_v05_products_aux2_post_and_diagnostic_freshness(void)
+{
+    adbms6830_driver_t dev;
+    adbms6830_asic ics[1];
+    SPI_HandleTypeDef spi;
+    GPIO_TypeDef gpio_a;
+    GPIO_TypeDef gpio_b;
+    uint8_t packet[RX_DATA];
+    uint8_t payload[TX_DATA];
+    int16_t aux2_raw[ADBMS6830_MAX_TRACKED_ICS] = {0};
+    uint16_t aux2_valid = 0u;
+    uint16_t failed = 0u;
+    uint16_t unexpected = 0u;
+    const uint8_t sensor = 5u;
+    const uint8_t mux_idx = sensor / SENSORS_PER_MUX;
+    const uint8_t sw_pos = sensor % SENSORS_PER_MUX;
+    const uint8_t gpio_ch = GPIO_AUX_IDX[mux_idx];
+    const uint32_t sensor_bit = (uint32_t)(1UL << sensor);
+
+    memset(&dev, 0, sizeof(dev));
+    memset(ics, 0, sizeof(ics));
+    memset(&spi, 0, sizeof(spi));
+    memset(&gpio_a, 0, sizeof(gpio_a));
+    memset(&gpio_b, 0, sizeof(gpio_b));
+    unit_adbms_init_driver(&dev, ics, &spi, &gpio_a, &gpio_b, 1u);
+
+    /* Bit-exact product parsing: AVG8 and IIR must remain distinct from raw C
+     * storage, with exactly the source 16-bit code preserved. */
+    memset(payload, 0, sizeof(payload));
+    payload[0] = 0x34u; payload[1] = 0x12u;
+    payload[2] = 0x78u; payload[3] = 0x56u;
+    payload[4] = 0xBCu; payload[5] = 0x1Au;
+    unit_adbms_make_read_packet_from_data(packet, payload, 0u, false);
+    dev.health.last_cmd_counter_mismatch_mask = 0u;
+    adbms6830_parse_cell_product(&dev, packet, A, false);
+    EXPECT_TRUE(dev.ics[0].acell.ac_codes[0] == (int16_t)0x1234);
+    EXPECT_TRUE(dev.ics[0].acell.ac_codes[1] == (int16_t)0x5678);
+    EXPECT_TRUE(dev.ics[0].acell.ac_codes[2] == (int16_t)0x1ABC);
+    EXPECT_TRUE((dev.last_acell_updated_mask[0] & 0x0007u) == 0x0007u);
+    EXPECT_TRUE((dev.last_acell_pec_mask[0] & 0x0007u) == 0u);
+    EXPECT_TRUE(dev.ics[0].cell.c_codes[0] != dev.ics[0].acell.ac_codes[0]);
+
+    memset(payload, 0, sizeof(payload));
+    payload[0] = 0x11u; payload[1] = 0x21u;
+    payload[2] = 0x22u; payload[3] = 0x32u;
+    payload[4] = 0x33u; payload[5] = 0x43u;
+    unit_adbms_make_read_packet_from_data(packet, payload, 0u, false);
+    adbms6830_parse_cell_product(&dev, packet, B, true);
+    EXPECT_TRUE(dev.ics[0].fcell.fc_codes[3] == (int16_t)0x2111);
+    EXPECT_TRUE(dev.ics[0].fcell.fc_codes[4] == (int16_t)0x3222);
+    EXPECT_TRUE(dev.ics[0].fcell.fc_codes[5] == (int16_t)0x4333);
+    EXPECT_TRUE((dev.last_fcell_updated_mask[0] & 0x0038u) == 0x0038u);
+    EXPECT_TRUE((dev.last_fcell_pec_mask[0] & 0x0038u) == 0u);
+
+    /* The diagnostic AUX path must never clear or overwrite the primary
+     * temperature freshness image merely because publish_sample=false. */
+    dev.mux_selection_valid_mask[mux_idx] = 0x0001u;
+    dev.mux_selected_channel[0][mux_idx] = sw_pos;
+    dev.last_temp_updated_mask[0] = sensor_bit;
+    dev.ics[0].temp.raw[sensor] = (int16_t)0x2222;
+    unit_spi_reset();
+    unit_adbms_make_aux_result(&unit_spi_txrx_response[CMDSZ + PEC15SZ],
+                               gpio_ch,
+                               0x2345u,
+                               1u,
+                               false);
+    EXPECT_TRUE(adbms6830_capture_aux_gpio_for_sensor(&dev,
+                                                       sensor,
+                                                       true,
+                                                       false) == HAL_OK);
+    EXPECT_TRUE((dev.last_temp_updated_mask[0] & sensor_bit) != 0u);
+    EXPECT_TRUE(dev.ics[0].temp.raw[sensor] == (int16_t)0x2222);
+
+    /* AUX2 is an independent GPIO result product.  A selected channel must be
+     * captured into raux without replacing primary AUX temperature ownership. */
+    dev.mux_selection_valid_mask[mux_idx] = 0x0001u;
+    dev.mux_selected_channel[0][mux_idx] = sw_pos;
+    adbms6830_resync_command_counter_tracking(&dev);
+    unit_spi_reset();
+    unit_adbms_make_aux_result(&unit_spi_txrx_response[CMDSZ + PEC15SZ],
+                               gpio_ch,
+                               0x2456u,
+                               1u,
+                               false);
+    EXPECT_TRUE(adbms6830_capture_aux2_gpio_for_sensor(&dev,
+                                                        sensor,
+                                                        aux2_raw,
+                                                        &aux2_valid) == HAL_OK);
+    EXPECT_TRUE(aux2_valid == 0x0001u);
+    EXPECT_TRUE(aux2_raw[0] == (int16_t)0x2456);
+    EXPECT_TRUE(dev.ics[0].raux.ra_codes[gpio_ch] == (int16_t)0x2456);
+    EXPECT_TRUE(dev.ics[0].temp.raw[sensor] == (int16_t)0x2222);
+    EXPECT_TRUE(adbms6830_code_delta_mv(1000, 1100) == 15);
+    EXPECT_TRUE(adbms6830_code_delta_mv(1100, 1000) == 15);
+
+    /* FLAG_D POST matching is intentionally a reporting-path test. Lock the
+     * expected Status-C interpretation independently of the transport script. */
+    memset(&dev.diag[0], 0, sizeof(dev.diag[0]));
+    dev.diag[0].statc_valid = true;
+    dev.diag[0].oscchk = 1u;
+    EXPECT_TRUE(adbms6830_post_stage_matches(&dev,
+                                              ADBMS6830_POST_OSC_FAST,
+                                              &failed,
+                                              &unexpected));
+    EXPECT_TRUE(failed == 0u && unexpected == 0u);
+
+    memset(&dev.diag[0], 0, sizeof(dev.diag[0]));
+    dev.diag[0].statc_valid = true;
+    dev.diag[0].ced = 1u;
+    dev.diag[0].sed = 1u;
+    EXPECT_TRUE(adbms6830_post_stage_matches(&dev,
+                                              ADBMS6830_POST_NVM_ED,
+                                              &failed,
+                                              &unexpected));
+
+    memset(&dev.diag[0], 0, sizeof(dev.diag[0]));
+    dev.diag[0].statc_valid = true;
+    dev.diag[0].spiflt = 1u;
+    EXPECT_TRUE(adbms6830_post_stage_matches(&dev,
+                                              ADBMS6830_POST_SPIFLT,
+                                              &failed,
+                                              &unexpected));
+    EXPECT_TRUE(failed == 0u && unexpected == 0u);
+
+    memset(&dev.diag[0], 0, sizeof(dev.diag[0]));
+    dev.diag[0].statc_valid = true;
+    dev.diag[0].oscchk = 1u;
+    dev.diag[0].thsd = 1u;
+    EXPECT_FALSE(adbms6830_post_stage_matches(&dev,
+                                               ADBMS6830_POST_OSC_SLOW,
+                                               &failed,
+                                               &unexpected));
+    EXPECT_TRUE(unexpected == 0x0001u);
+
+    /* The coherent C conversion counter is an independent freshness proof.
+     * Current Rev5 restarts ADCV every scan, so zero after the conversion
+     * wait is invalid while any nonzero CCTS is accepted. */
+    {
+        uint8_t ccts_packet[RX_DATA];
+        uint8_t ccts_payload[TX_DATA];
+        memset(ccts_packet, 0, sizeof(ccts_packet));
+        unit_adbms_make_statc_ccts_payload(ccts_payload, 0u);
+        unit_adbms_make_read_packet_from_data(ccts_packet, ccts_payload, 0u, false);
+        dev.health.last_cmd_counter_mismatch_mask = 0u;
+        EXPECT_TRUE(adbms6830_capture_coherent_cadc_counter(&dev, ccts_packet) == HAL_ERROR);
+        EXPECT_TRUE(dev.health.cadc_ccts_fault_ic_mask == 0x0001u);
+
+        unit_adbms_make_statc_ccts_payload(ccts_payload, 4u);
+        unit_adbms_make_read_packet_from_data(ccts_packet, ccts_payload, 0u, false);
+        EXPECT_TRUE(adbms6830_capture_coherent_cadc_counter(&dev, ccts_packet) == HAL_OK);
+        EXPECT_TRUE(dev.health.cadc_ccts_valid_ic_mask == 0x0001u);
+        EXPECT_TRUE(dev.health.cadc_ccts_fault_ic_mask == 0u);
+        EXPECT_TRUE(dev.health.sticky_cadc_ccts_fault_ic_mask == 0x0001u);
+    }
+
+    /* AVG8 is an optional estimator/diagnostic product. A corrupt AVG8 group
+     * must withdraw AVG8 only; it must not revoke a clean coherent RAW C
+     * safety epoch. */
+    {
+        uint8_t coherent_statc[TX_DATA] = {0u};
+        uint8_t clean_statd[TX_DATA] = {0u};
+        unit_spi_reset();
+        adbms6830_resync_command_counter_tracking(&dev);
+        unit_spi_txrx_sequence_count = 9u;
+        for(uint8_t group = 0u; group < 6u; group++)
+        {
+            unit_adbms_make_valid_read_packet(
+                &unit_spi_txrx_sequence[group][CMDSZ + PEC15SZ],
+                (uint8_t)(0x10u + group * 0x10u),
+                5u,
+                false);
+        }
+        unit_adbms_make_statc_ccts_payload(coherent_statc, 4u);
+        unit_adbms_make_read_packet_from_data(
+            &unit_spi_txrx_sequence[6u][CMDSZ + PEC15SZ], coherent_statc, 5u, false);
+        unit_adbms_make_read_packet_from_data(
+            &unit_spi_txrx_sequence[7u][CMDSZ + PEC15SZ], clean_statd, 5u, false);
+        unit_adbms_make_valid_read_packet(
+            &unit_spi_txrx_sequence[8u][CMDSZ + PEC15SZ], 0x70u, 5u, true);
+
+        EXPECT_TRUE(adbms6830_read_cell_voltage_products(&dev, true, false) == HAL_OK);
+        EXPECT_TRUE((dev.last_cell_updated_mask[0] & 0x7FFFu) == 0x7FFFu);
+        EXPECT_TRUE(dev.last_acell_updated_mask[0] == 0u);
+        EXPECT_TRUE(dev.health.avg8_read_fail_count == 1u);
+        EXPECT_TRUE(dev.health.coherent_statc_read_count >= 1u);
+        EXPECT_TRUE(dev.health.coherent_statd_read_count >= 1u);
+        EXPECT_TRUE(unit_spi_txrx_calls == 9u);
+    }
+
+    /* Service fault injection is one-shot and cannot accept unbounded gaps. */
+#if AMS_ENABLE_SERVICE_CLI
+    EXPECT_TRUE(adbms6830_session_inject_gap_once(&dev, 6000u, false) == HAL_OK);
+    EXPECT_TRUE(dev.session.inject_gap_us_once == 6000u);
+    EXPECT_FALSE(dev.session.inject_bypass_guard_once);
+    EXPECT_TRUE(adbms6830_session_inject_gap_once(&dev, 100001u, false) == HAL_ERROR);
+#endif
 }
 
 static void test_adbms_spi_debug_write_and_full_duplex_paths(void)
@@ -1825,37 +2516,14 @@ static void test_adbms_spi_debug_write_and_full_duplex_paths(void)
     EXPECT_TRUE(adbms6830_spi_write(&dev, tx, sizeof(tx), 1u) == HAL_OK);
     EXPECT_TRUE(unit_spi_tx_calls == 1u);
     EXPECT_TRUE(unit_spi_last_tx_len == sizeof(tx));
-    EXPECT_TRUE(unit_gpio_states[3u] == GPIO_PIN_SET);
+    EXPECT_TRUE(unit_gpio_states[dev.cs_pin[dev.write_string]] == GPIO_PIN_SET);
     EXPECT_TRUE(dev.spi_debug.tx_count == 1u);
     EXPECT_TRUE(dev.spi_debug.rx_count == 0u);
     EXPECT_TRUE(dev.spi_debug.last_tx_len == sizeof(tx));
     EXPECT_TRUE(dev.spi_debug.last_rx_len == 0u);
     EXPECT_TRUE(dev.spi_debug.last_status == HAL_OK);
     EXPECT_TRUE(memcmp(dev.spi_debug.last_tx_preview, tx, sizeof(tx)) == 0);
-    EXPECT_TRUE(unit_delay_reset_calls == 2u);
 
-    /* Setup timing failure must deassert CS and must not clock SPI. */
-    unit_spi_reset();
-    adbms6830_spi_debug_clear(&dev);
-    unit_delay_timer_advances = false;
-    EXPECT_TRUE(adbms6830_spi_write(&dev, tx, sizeof(tx), 1u) == HAL_TIMEOUT);
-    EXPECT_TRUE(unit_spi_tx_calls == 0u);
-    EXPECT_TRUE(unit_gpio_states[3u] == GPIO_PIN_SET);
-    EXPECT_TRUE(unit_delay_reset_calls == 1u);
-    unit_delay_timer_advances = true;
-
-    /* Hold timing failure occurs after the wire transfer but still fails the
-     * checked operation and leaves CS inactive. */
-    unit_spi_reset();
-    adbms6830_spi_debug_clear(&dev);
-    unit_delay_freeze_on_reset_call = 2u;
-    EXPECT_TRUE(adbms6830_spi_write(&dev, tx, sizeof(tx), 1u) == HAL_TIMEOUT);
-    EXPECT_TRUE(unit_spi_tx_calls == 1u);
-    EXPECT_TRUE(unit_gpio_states[3u] == GPIO_PIN_SET);
-    EXPECT_TRUE(unit_delay_reset_calls == 2u);
-
-    unit_spi_reset();
-    adbms6830_spi_debug_clear(&dev);
     unit_spi_tx_status = HAL_TIMEOUT;
     EXPECT_TRUE(adbms6830_spi_write(&dev, tx, sizeof(tx), 1u) == HAL_TIMEOUT);
     EXPECT_TRUE(dev.spi_debug.error_count == 1u);
@@ -1882,7 +2550,6 @@ static void test_adbms_spi_debug_write_and_full_duplex_paths(void)
     EXPECT_TRUE(dev.spi_debug.rx_count == 1u);
     EXPECT_TRUE(dev.spi_debug.last_total_len == (sizeof(tx) + sizeof(rx)));
     EXPECT_TRUE(memcmp(dev.spi_debug.last_rx_preview, rx, sizeof(rx)) == 0);
-    EXPECT_TRUE(unit_delay_reset_calls == 2u);
 
     unit_spi_txrx_status = HAL_ERROR;
     memset(rx, 0xA5, sizeof(rx));
@@ -1932,7 +2599,7 @@ static void test_adbms_spi_debug_rd48_pec_masks_and_clear(void)
 
     unit_adbms_make_valid_read_packet(&unit_spi_txrx_response[CMDSZ + PEC15SZ], 0x10u, 3u, false);
     unit_adbms_make_valid_read_packet(&unit_spi_txrx_response[CMDSZ + PEC15SZ + RX_DATA], 0x20u, 4u, false);
-    EXPECT_TRUE(adbms6830_rd48_checked(&dev, RDCFGA, rx) == HAL_OK);
+    adbms6830_rd48(&dev, RDCFGA, rx);
 
     EXPECT_TRUE(unit_spi_txrx_calls == 1u);
     EXPECT_TRUE(dev.spi_debug.last_op == ADBMS6830_SPI_OP_RD48);
@@ -1943,53 +2610,16 @@ static void test_adbms_spi_debug_rd48_pec_masks_and_clear(void)
     EXPECT_TRUE(dev.spi_debug.last_cmd_counter[0] == 3u);
     EXPECT_TRUE(dev.spi_debug.last_cmd_counter[1] == 4u);
     EXPECT_TRUE(dev.spi_debug.error_count == 0u);
-    EXPECT_TRUE(dev.health.last_read_result == ADBMS6830_READ_RESULT_OK);
 
-    /* One corrupt packet must fail the checked API even when later ICs pass.
-     * Resync isolates PEC semantics from the independently-tested counter. */
     unit_spi_reset();
     adbms6830_spi_debug_clear(&dev);
-    adbms6830_resync_command_counter_tracking(&dev);
     unit_adbms_make_valid_read_packet(&unit_spi_txrx_response[CMDSZ + PEC15SZ], 0x30u, 1u, false);
     unit_adbms_make_valid_read_packet(&unit_spi_txrx_response[CMDSZ + PEC15SZ + RX_DATA], 0x40u, 2u, true);
-    EXPECT_TRUE(adbms6830_rd48_checked(&dev, RDCFGA, rx) == HAL_ERROR);
+    adbms6830_rd48(&dev, RDCFGA, rx);
 
     EXPECT_TRUE(dev.spi_debug.last_read_pec_pass_mask == 0x0001u);
     EXPECT_TRUE(dev.spi_debug.last_read_pec_fail_mask == 0x0002u);
-    EXPECT_TRUE(dev.health.last_read_result == ADBMS6830_READ_RESULT_PEC_ERROR);
-    EXPECT_TRUE(dev.health.last_status == HAL_ERROR);
-
-    /* Establish a clean counter baseline, then prove a valid-PEC counter
-     * mismatch is a checked-read failure rather than diagnostic-only state. */
-    unit_spi_reset();
-    adbms6830_spi_debug_clear(&dev);
-    adbms6830_resync_command_counter_tracking(&dev);
-    unit_adbms_make_valid_read_packet(&unit_spi_txrx_response[CMDSZ + PEC15SZ], 0x50u, 7u, false);
-    unit_adbms_make_valid_read_packet(&unit_spi_txrx_response[CMDSZ + PEC15SZ + RX_DATA], 0x60u, 8u, false);
-    EXPECT_TRUE(adbms6830_rd48_checked(&dev, RDCFGA, rx) == HAL_OK);
-
-    unit_spi_reset();
-    unit_adbms_make_valid_read_packet(&unit_spi_txrx_response[CMDSZ + PEC15SZ], 0x70u, 9u, false);
-    unit_adbms_make_valid_read_packet(&unit_spi_txrx_response[CMDSZ + PEC15SZ + RX_DATA], 0x80u, 8u, false);
-    EXPECT_TRUE(adbms6830_rd48_checked(&dev, RDCFGA, rx) == HAL_ERROR);
-    EXPECT_TRUE(dev.health.last_cmd_counter_mismatch_mask == 0x0001u);
-    EXPECT_TRUE(dev.health.last_read_result == ADBMS6830_READ_RESULT_COUNTER_ERROR);
-
-    /* A mixed failure reports both causes and preserves all per-IC masks. */
-    adbms6830_resync_command_counter_tracking(&dev);
-    unit_spi_reset();
-    unit_adbms_make_valid_read_packet(&unit_spi_txrx_response[CMDSZ + PEC15SZ], 0x90u, 11u, false);
-    unit_adbms_make_valid_read_packet(&unit_spi_txrx_response[CMDSZ + PEC15SZ + RX_DATA], 0xA0u, 12u, false);
-    EXPECT_TRUE(adbms6830_rd48_checked(&dev, RDCFGA, rx) == HAL_OK);
-
-    unit_spi_reset();
-    unit_adbms_make_valid_read_packet(&unit_spi_txrx_response[CMDSZ + PEC15SZ], 0xB0u, 13u, false);
-    unit_adbms_make_valid_read_packet(&unit_spi_txrx_response[CMDSZ + PEC15SZ + RX_DATA], 0xC0u, 12u, true);
-    EXPECT_TRUE(adbms6830_rd48_checked(&dev, RDCFGA, rx) == HAL_ERROR);
-    EXPECT_TRUE(dev.health.last_cmd_counter_mismatch_mask == 0x0001u);
-    EXPECT_TRUE(dev.health.last_pec_fail_mask == 0x0002u);
-    EXPECT_TRUE(dev.health.last_read_result ==
-                ADBMS6830_READ_RESULT_PEC_AND_COUNTER_ERROR);
+    EXPECT_TRUE(dev.spi_debug.error_count == 1u);
 
     adbms6830_spi_debug_enable(&dev, false);
     adbms6830_spi_debug_clear(&dev);
@@ -2234,8 +2864,12 @@ static void test_adbms_startup_reference_and_full_status_policy(void)
     unit_spi_reset();
     adbms6830_spi_debug_clear(&dev);
     unit_adbms_make_status_sequence(stata, statb, statc, statd, state, 11u);
-    EXPECT_TRUE(adbms6830_refresh_diagnostics(&dev) == HAL_ERROR);
+    /* Monitored-cell OV/UV is owned by voltage_fault.c.  A clean Status-D
+     * transaction with an asserted comparator remains a valid monitor image,
+     * not a generic ADBMS transport/silicon failure. */
+    EXPECT_TRUE(adbms6830_refresh_diagnostics(&dev) == HAL_OK);
     EXPECT_TRUE(dev.health.cell_ovuv_fault_ic_mask == 0x0001u);
+    EXPECT_TRUE(adbms6830_non_cs_diagnostics_ok(&dev));
 
     /* Startup remains inhibited if even the first flag-clear transfer fails. */
     memset(statd, 0, sizeof(statd));
@@ -2323,31 +2957,34 @@ static void test_adbms_counter_mismatch_rejects_stale_data(void)
     EXPECT_TRUE(dev.diag[0].osc_counter == 0x3Cu);
     EXPECT_TRUE(dev.health.sticky_cmd_counter_mismatch_mask == 0x0001u);
 
-    /* The same rule applies to voltage groups. Reject only the mismatched
-     * group, retain its previous values, and make the complete scan fail. */
+    /* The same rule applies to voltage groups. A counter mismatch is now a
+     * critical coherent-epoch failure: stop immediately, retry the whole SNAP
+     * epoch once, and never refresh the mismatched group's old cell values. */
     unit_spi_reset();
     adbms6830_spi_debug_clear(&dev);
+    adbms6830_resync_command_counter_tracking(&dev);
     ics[0].cell.c_codes[3] = 1111;
     ics[0].cell.c_codes[4] = 2222;
     ics[0].cell.c_codes[5] = 3333;
-    unit_spi_txrx_sequence_count = 6u;
-    for(uint8_t group = 0u; group < 6u; group++)
-    {
-        uint8_t counter = (group == 0u) ? 5u : 6u;
-        unit_adbms_make_valid_read_packet(
-            &unit_spi_txrx_sequence[group][CMDSZ + PEC15SZ],
-            (uint8_t)(0x10u + (group * 0x10u)),
-            counter,
-            false);
-    }
+    unit_spi_txrx_sequence_count = 4u;
+    unit_adbms_make_valid_read_packet(
+        &unit_spi_txrx_sequence[0][CMDSZ + PEC15SZ], 0x10u, 5u, false);
+    unit_adbms_make_valid_read_packet(
+        &unit_spi_txrx_sequence[1][CMDSZ + PEC15SZ], 0x20u, 6u, false);
+    /* First cleanup UNSNAP advances 6 -> 7 and retry SNAP advances 7 -> 8. */
+    unit_adbms_make_valid_read_packet(
+        &unit_spi_txrx_sequence[2][CMDSZ + PEC15SZ], 0x30u, 8u, false);
+    unit_adbms_make_valid_read_packet(
+        &unit_spi_txrx_sequence[3][CMDSZ + PEC15SZ], 0x40u, 9u, false);
 
     EXPECT_TRUE(adbms6830_read_cell_voltages(&dev) == HAL_ERROR);
-    EXPECT_TRUE(dev.last_cell_updated_mask[0] == 0xFFC7u);
+    EXPECT_TRUE(dev.last_cell_updated_mask[0] == 0x0007u);
     EXPECT_TRUE(dev.last_cell_pec_mask[0] == 0u);
     EXPECT_TRUE(ics[0].cell.c_codes[3] == 1111);
     EXPECT_TRUE(ics[0].cell.c_codes[4] == 2222);
     EXPECT_TRUE(ics[0].cell.c_codes[5] == 3333);
     EXPECT_TRUE(dev.health.sticky_cmd_counter_mismatch_mask == 0x0001u);
+    EXPECT_TRUE(unit_spi_txrx_calls == 4u);
 }
 
 static void test_adbms_cell_adc_conversion_diagnostic(void)
@@ -2360,6 +2997,7 @@ static void test_adbms_cell_adc_conversion_diagnostic(void)
     uint8_t stata[TX_DATA] = {0u};
     uint8_t statb[TX_DATA] = {0u};
     uint8_t statc[TX_DATA] = {0u};
+    uint8_t coherent_statc[TX_DATA] = {0u};
     uint8_t statd[TX_DATA] = {0u};
     uint8_t state[TX_DATA] = {0u};
     const uint8_t *status_payloads[5] = {stata, statb, statc, statd, state};
@@ -2371,10 +3009,11 @@ static void test_adbms_cell_adc_conversion_diagnostic(void)
     memset(&gpio_b, 0, sizeof(gpio_b));
     unit_adbms_init_driver(&dev, ics, &spi, &gpio_a, &gpio_b, 1u);
 
-    /* Six cell groups establish command counter 10.  UNSNAP and the
-     * subsequent ADAX advance it twice, so the fresh Status A-E image must
-     * report counter 12. */
-    unit_spi_txrx_sequence_count = 11u;
+    /* ADCV then SNAP put the tracked command counter at 10 in this fixture.
+     * The coherent raw epoch now reads six C groups plus Status C (CCTS
+     * freshness) and Status D (OV/UV image), all at that same counter.  After
+     * UNSNAP and the diagnostic ADAX it advances to 12 for Status A-E. */
+    unit_spi_txrx_sequence_count = 13u;
     for(uint8_t group = 0u; group < 6u; group++)
     {
         unit_adbms_make_valid_read_packet(
@@ -2383,6 +3022,13 @@ static void test_adbms_cell_adc_conversion_diagnostic(void)
             10u,
             false);
     }
+    unit_adbms_make_statc_ccts_payload(coherent_statc, 4u);
+    unit_adbms_make_read_packet_from_data(
+        &unit_spi_txrx_sequence[6u][CMDSZ + PEC15SZ],
+        coherent_statc, 10u, false);
+    unit_adbms_make_read_packet_from_data(
+        &unit_spi_txrx_sequence[7u][CMDSZ + PEC15SZ],
+        statd, 10u, false);
 
     unit_adbms_put_s16(stata, 0u, 10000); /* VREF2 = 3.000 V */
     unit_adbms_put_s16(stata, 1u, 4900);  /* ITMP = 25.0 C */
@@ -2393,7 +3039,7 @@ static void test_adbms_cell_adc_conversion_diagnostic(void)
     for(uint8_t group = 0u; group < 5u; group++)
     {
         unit_adbms_make_read_packet_from_data(
-            &unit_spi_txrx_sequence[6u + group][CMDSZ + PEC15SZ],
+            &unit_spi_txrx_sequence[8u + group][CMDSZ + PEC15SZ],
             status_payloads[group],
             12u,
             false);
@@ -2402,20 +3048,29 @@ static void test_adbms_cell_adc_conversion_diagnostic(void)
     EXPECT_TRUE(adbms6830_run_cell_adc_self_test(&dev) == HAL_OK);
     EXPECT_TRUE(dev.health.cell_adc_self_test_count == 1u);
     EXPECT_TRUE((dev.last_cell_updated_mask[0] & 0x7FFFu) == 0x7FFFu);
+    EXPECT_TRUE(dev.health.cadc_ccts_valid_ic_mask == 0x0001u);
+    EXPECT_TRUE(dev.health.cadc_ccts_fault_ic_mask == 0u);
     EXPECT_TRUE(dev.health.status_fault_ic_mask == 0u);
-    EXPECT_TRUE(unit_spi_txrx_calls == 11u);
+    EXPECT_TRUE(unit_spi_txrx_calls == 13u);
 
-    /* A plausible stale payload with a bad data PEC must fail the diagnostic
-     * before Status A-E is consulted. */
+    /* A plausible stale payload with a bad data PEC must fail the coherent
+     * diagnostic.  The reader retries exactly once; the retry uses the
+     * command count after the first attempt's cleanup/re-SNAP. */
     unit_spi_reset();
     adbms6830_spi_debug_clear(&dev);
+    adbms6830_resync_command_counter_tracking(&dev);
     unit_spi_txrx_sequence_count = 6u;
-    for(uint8_t group = 0u; group < 6u; group++)
+    for(uint8_t group = 0u; group < 3u; group++)
     {
         unit_adbms_make_valid_read_packet(
             &unit_spi_txrx_sequence[group][CMDSZ + PEC15SZ],
             (uint8_t)(0x20u + (group * 0x10u)),
             20u,
+            group == 2u);
+        unit_adbms_make_valid_read_packet(
+            &unit_spi_txrx_sequence[3u + group][CMDSZ + PEC15SZ],
+            (uint8_t)(0x50u + (group * 0x10u)),
+            22u,
             group == 2u);
     }
     EXPECT_TRUE(adbms6830_run_cell_adc_self_test(&dev) == HAL_ERROR);
@@ -2442,7 +3097,7 @@ static void test_adbms_spi_coldwake_and_clear_flags(void)
     adbms6830_wakeup_cold(&dev);
     EXPECT_TRUE(dev.spi_debug.last_op == ADBMS6830_SPI_OP_COLD_WAKE);
     EXPECT_TRUE(unit_gpio_write_calls == 4u);
-    EXPECT_TRUE(unit_gpio_states[3u] == GPIO_PIN_SET);
+    EXPECT_TRUE(unit_gpio_states[dev.cs_pin[dev.write_string]] == GPIO_PIN_SET);
 
     unit_spi_reset();
     adbms6830_spi_debug_clear(&dev);
@@ -2521,13 +3176,101 @@ static void test_adbms6830_final_ring_subset_write_owner(void)
     EXPECT_TRUE(unit_spi_tx_calls == 1u);
     EXPECT_TRUE(unit_spi_last_tx_len == five_packet_frame);
 
-    /* The same five packets from String B would target the APM and four SMBs. */
-    dev.string = STRING_B;
+    /* The same five-packet subset from the non-owner String A is forbidden;
+     * the current production write owner is String B. */
+    dev.string = STRING_A;
     unit_spi_reset();
     EXPECT_TRUE(adbms6830_wrcfgb_checked(&dev) == HAL_ERROR);
     EXPECT_TRUE(unit_spi_tx_calls == 0u);
     EXPECT_TRUE(unit_spi_txrx_calls == 0u);
     EXPECT_TRUE(unit_gpio_write_calls == 0u);
+}
+
+static void test_adbms6830_cfgb_timer_write_guard(void)
+{
+    adbms6830_driver_t dev;
+    adbms6830_asic ics[1];
+    SPI_HandleTypeDef spi;
+    GPIO_TypeDef gpio_a;
+    GPIO_TypeDef gpio_b;
+    const adbms6830_cfgb_write_event_t *event;
+
+    memset(&spi, 0, sizeof(spi));
+    memset(&gpio_a, 0, sizeof(gpio_a));
+    memset(&gpio_b, 0, sizeof(gpio_b));
+    unit_adbms_init_driver(&dev, ics, &spi, &gpio_a, &gpio_b, 1u);
+    dev.string = dev.write_string;
+    /* The common fixture intentionally preserves the initialization write.
+     * Reset only this test's private audit ring so the assertions below are
+     * relative to the mutation/recovery sequence under test. */
+    memset(dev.cfgb_write_history, 0, sizeof(dev.cfgb_write_history));
+    dev.cfgb_write_history_count = 0u;
+    dev.cfgb_write_history_index = 0u;
+    dev.cfgb_write_total_count = 0u;
+
+    /* Recreate the observed nonzero CFGBR3 image.  A balance path must reject
+     * it before any SPI clocks, preserve the exact payload in history, and
+     * restore the software shadow to the reviewed timer-disabled policy. */
+    ics[0].tx_cfgb.dtmen = 0u;
+    ics[0].tx_cfgb.dtrng = 0u;
+    ics[0].tx_cfgb.dcto = 41u;
+    ics[0].tx_cfgb.dcc = 0u;
+    unit_spi_reset();
+    EXPECT_TRUE(adbms6830_wrcfgb_checked_reason(
+                    &dev, ADBMS6830_CFGB_WRITE_BALANCE_APPLY) == HAL_ERROR);
+    EXPECT_TRUE(unit_spi_tx_calls == 0u);
+    EXPECT_TRUE(dev.health.config_write_guard_fault_mask == 0x0001u);
+    EXPECT_TRUE(dev.health.sticky_config_write_guard_fault_mask == 0x0001u);
+    EXPECT_TRUE(dev.health.config_write_guard_reject_count[0] == 1u);
+    EXPECT_TRUE(ics[0].tx_cfgb.dtmen == 0u);
+    EXPECT_TRUE(ics[0].tx_cfgb.dtrng == 0u);
+    EXPECT_TRUE(ics[0].tx_cfgb.dcto == 0u);
+    EXPECT_TRUE(dev.cfgb_write_history_count == 1u);
+    event = &dev.cfgb_write_history[0];
+    EXPECT_TRUE(event->reason == ADBMS6830_CFGB_WRITE_BALANCE_APPLY);
+    EXPECT_TRUE(event->payload[0][3] == 0x29u);
+    EXPECT_TRUE(event->timer_nonzero_mask == 0x0001u);
+    EXPECT_TRUE(event->rejected_mask == 0x0001u);
+    EXPECT_TRUE(event->status == HAL_ERROR);
+
+    /* The next safe clear writes exactly the sanitized image. */
+    unit_spi_reset();
+    EXPECT_TRUE(adbms6830_wrcfgb_checked_reason(
+                    &dev, ADBMS6830_CFGB_WRITE_BALANCE_CLEAR) == HAL_OK);
+    EXPECT_TRUE(unit_spi_tx_calls == 1u);
+    EXPECT_TRUE(unit_spi_last_tx[0] == 0x00u);
+    EXPECT_TRUE(unit_spi_last_tx[1] == 0x24u);
+    EXPECT_TRUE(unit_spi_last_tx[7] == 0x00u);
+    EXPECT_TRUE(dev.cfgb_write_history_count == 2u);
+    event = &dev.cfgb_write_history[1];
+    EXPECT_TRUE(event->payload[0][3] == 0x00u);
+    EXPECT_TRUE(event->rejected_mask == 0u);
+    EXPECT_TRUE(event->status == HAL_OK);
+
+    /* Clearing ordinary SPI counters must not erase the CFGB audit trail. */
+    adbms6830_spi_debug_clear(&dev);
+    EXPECT_TRUE(dev.cfgb_write_history_count == 2u);
+    EXPECT_TRUE(dev.cfgb_write_total_count == 2u);
+
+    /* The guard remains active until a transport-clean readback proves the
+     * actual device image matches the safe shadow. */
+    adbms6830_pack_cfga(&dev);
+    adbms6830_pack_cfgb(&dev);
+    unit_spi_reset();
+    unit_spi_txrx_sequence_count = 2u;
+    unit_adbms_make_read_packet_from_data(
+        &unit_spi_txrx_sequence[0][CMDSZ + PEC15SZ],
+        ics[0].configa.tx_data,
+        4u,
+        false);
+    unit_adbms_make_read_packet_from_data(
+        &unit_spi_txrx_sequence[1][CMDSZ + PEC15SZ],
+        ics[0].configb.tx_data,
+        4u,
+        false);
+    EXPECT_TRUE(adbms6830_verify_config_readback(&dev) == HAL_OK);
+    EXPECT_TRUE(dev.health.config_write_guard_fault_mask == 0u);
+    EXPECT_TRUE(dev.health.sticky_config_write_guard_fault_mask == 0x0001u);
 }
 
 static void test_adbms_config_and_balance_readback(void)
@@ -2667,6 +3410,53 @@ static void test_adbms_config_and_balance_readback(void)
     EXPECT_TRUE(dev.health.balance_mismatch_mask == 0x0001u);
     EXPECT_TRUE(unit_spi_txrx_calls == 3u);
     unit_spi_txrx_status = HAL_OK;
+}
+
+
+static void test_adbms_i2c_comm_releases_sda_for_slave_ack(void)
+{
+    adbms6830_driver_t dev;
+    adbms6830_asic ics[1];
+    SPI_HandleTypeDef spi;
+    GPIO_TypeDef gpio;
+
+    memset(&dev, 0, sizeof(dev));
+    memset(ics, 0, sizeof(ics));
+    memset(&spi, 0, sizeof(spi));
+    memset(&gpio, 0, sizeof(gpio));
+    dev.num_ics = 1;
+    dev.physical_chain_count = 1u;
+    dev.ics_capacity = 1u;
+    dev.ics = ics;
+    dev.hspi = &spi;
+    dev.string = STRING_A;
+    dev.write_string = STRING_A;
+    dev.cs_port[STRING_A] = &gpio;
+    dev.cs_pin[STRING_A] = 1u;
+
+    ics[0].comm.icomm[0] = ICOMM_START_;
+    ics[0].comm.fcomm[0] = FCOMM_RELEASE_FOR_SLAVE_ACK_;
+    ics[0].comm.data[0] = 0x98u;
+    ics[0].comm.icomm[1] = ICOMM_BLANK_;
+    ics[0].comm.fcomm[1] = FCOMM_RELEASE_FOR_SLAVE_ACK_;
+    ics[0].comm.data[1] = 0x00u;
+    ics[0].comm.icomm[2] = ICOMM_STOP_;
+    ics[0].comm.fcomm[2] = FCOMM_NACK_STOP_;
+    ics[0].comm.data[2] = 0xFFu;
+
+    adbms6830_pack_comm(&dev);
+
+    EXPECT_TRUE(ics[0].com.tx_data[0] == 0x68u);
+    EXPECT_TRUE(ics[0].com.tx_data[1] == 0x98u);
+    EXPECT_TRUE(ics[0].com.tx_data[2] == 0x08u);
+    EXPECT_TRUE(ics[0].com.tx_data[3] == 0x00u);
+    EXPECT_TRUE(ics[0].com.tx_data[4] == 0x19u);
+    EXPECT_TRUE(ics[0].com.tx_data[5] == 0xFFu);
+
+    /* 0x60/0x00 was the invalid v0.3.2 probe pattern: it made the master
+     * generate ACK itself instead of releasing SDA for the slave. */
+    EXPECT_TRUE(ics[0].com.tx_data[0] != 0x60u);
+    EXPECT_TRUE(ics[0].com.tx_data[2] != 0x00u);
 }
 
 static void test_adbms_mux_ack_and_temperature_freshness(void)
@@ -2946,6 +3736,32 @@ static void test_adbms_open_wire_full_measurement_and_fault_injection(void)
     EXPECT_TRUE(unit_spi_txrx_calls == 0u);
     EXPECT_FALSE(dev.diag[0].open_wire_even_valid);
     unit_delay_timer_advances = true;
+
+    /* The present Rev5 S2N-S15N routing defect requires the same complete
+     * diagnostic through the C path.  ADI documents about 10/12 of baseline
+     * for an intact C path, so 2.775 V from a 3.33 V baseline is nominal. */
+    memset(&dev, 0, sizeof(dev));
+    memset(ics, 0, sizeof(ics));
+    unit_adbms_init_driver(&dev, ics, &spi, &gpio_a, &gpio_b, 1u);
+    unit_spi_reset();
+    unit_spi_txrx_sequence_count = 15u;
+    unit_adbms_fill_open_wire_phase(0u, 7u, baseline_code);
+    unit_adbms_fill_open_wire_phase(5u, 8u, 8500);
+    unit_adbms_fill_open_wire_phase(10u, 9u, 8500);
+    EXPECT_TRUE(adbms6830_run_open_wire_diagnostic_path(
+        &dev, ADBMS6830_OPEN_WIRE_PATH_C) == HAL_OK);
+    EXPECT_TRUE(unit_spi_tx_calls == 3u);
+    EXPECT_TRUE(unit_spi_txrx_calls == 15u);
+    EXPECT_TRUE(unit_spi_last_tx[0] == 0x02u);
+    EXPECT_TRUE(unit_spi_last_tx[1] == 0x62u); /* ADCV, RD_OFF, odd OW. */
+    EXPECT_TRUE(dev.health.open_wire_c_full_count == 1u);
+    EXPECT_TRUE(dev.health.open_wire_s_full_count == 0u);
+    EXPECT_TRUE(dev.health.open_wire_last_path == ADBMS6830_OPEN_WIRE_PATH_C);
+    EXPECT_TRUE(dev.diag[0].open_wire_path == ADBMS6830_OPEN_WIRE_PATH_C);
+    EXPECT_TRUE(dev.health.open_wire_incomplete_ic_mask == 0u);
+    EXPECT_TRUE(dev.health.open_wire_fault_ic_mask == 0u);
+    EXPECT_TRUE(dev.diag[0].open_wire_even_attenuation_fault_mask == 0u);
+    EXPECT_TRUE(dev.diag[0].open_wire_odd_attenuation_fault_mask == 0u);
 }
 
 
@@ -3019,19 +3835,6 @@ static void test_adbms2950_spi_debug_write_and_full_duplex_paths(void)
     EXPECT_TRUE(dev.spi_debug.last_status == HAL_OK);
     EXPECT_TRUE(memcmp(dev.spi_debug.last_tx_preview, tx, sizeof(tx)) == 0);
 
-    /* The ADBMS2950 path shares the local ADBMS6822-facing CS contract.
-     * Removing the timer proves setup failure performs no SPI and leaves CS
-     * inactive; the separately compiled host delay covers the success path. */
-    unit_spi_reset();
-    adbms2950_spi_debug_clear(&dev);
-    dev.htim = NULL;
-    EXPECT_TRUE(adbms2950_spi_write(&dev, tx, sizeof(tx), 1u) == HAL_ERROR);
-    EXPECT_TRUE(unit_spi_tx_calls == 0u);
-    EXPECT_TRUE(unit_gpio_states[5u] == GPIO_PIN_SET);
-    dev.htim = &unit_delay_timer;
-
-    unit_spi_reset();
-    adbms2950_spi_debug_clear(&dev);
     unit_spi_tx_status = HAL_BUSY;
     EXPECT_TRUE(adbms2950_spi_write(&dev, tx, sizeof(tx), 1u) == HAL_BUSY);
     EXPECT_TRUE(dev.spi_debug.error_count == 1u);
@@ -3170,6 +3973,7 @@ static void test_adbms2950_mixed_chain_init_identity_and_readback(void)
     GPIO_TypeDef gpio_b;
     uint8_t sid[TX_DATA] = {0x11u, 0x22u, 0x33u, 0x44u, 0x55u,
                             (uint8_t)(ADBMS2950B_DEVICE_ID << 1u)};
+    const uint8_t refup_cfga[TX_DATA] = {0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x10u};
     const uint8_t cfga[TX_DATA] = {0x00u, 0x00u, 0x00u, 0x3Cu, 0x3Cu, 0x01u};
     const uint8_t cfgb[TX_DATA] = {0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0xF0u};
     const uint8_t status_payload[TX_DATA] = {0u, 0x40u, 0u, 0u, 0u, 0x10u};
@@ -3190,24 +3994,29 @@ static void test_adbms2950_mixed_chain_init_identity_and_readback(void)
     unit_adbms2950_make_flag_payload(initialization_flag_payload, 150u, 0u);
     unit_adbms2950_make_flag_payload(continuous_flag_payload, 2u, 0u);
 
-    unit_spi_txrx_sequence_count = 7u;
+    /* Current initialization proves REFUP before any APM-specific write.
+     * Reads do not advance CCNT, so SID and REFUP share epoch 1; the two
+     * configuration writes advance the readback epoch to 3. */
+    unit_spi_txrx_sequence_count = 8u;
     unit_adbms_make_read_packet_from_data(
         &unit_spi_txrx_sequence[0][CMDSZ + PEC15SZ], sid, 1u, false);
     unit_adbms_make_read_packet_from_data(
-        &unit_spi_txrx_sequence[1][CMDSZ + PEC15SZ], cfga, 3u, false);
+        &unit_spi_txrx_sequence[1][CMDSZ + PEC15SZ], refup_cfga, 1u, false);
     unit_adbms_make_read_packet_from_data(
-        &unit_spi_txrx_sequence[2][CMDSZ + PEC15SZ], cfgb, 3u, false);
+        &unit_spi_txrx_sequence[2][CMDSZ + PEC15SZ], cfga, 3u, false);
     unit_adbms_make_read_packet_from_data(
-        &unit_spi_txrx_sequence[3][CMDSZ + PEC15SZ], status_payload, 4u, false);
+        &unit_spi_txrx_sequence[3][CMDSZ + PEC15SZ], cfgb, 3u, false);
     unit_adbms_make_read_packet_from_data(
-        &unit_spi_txrx_sequence[4][CMDSZ + PEC15SZ],
+        &unit_spi_txrx_sequence[4][CMDSZ + PEC15SZ], status_payload, 4u, false);
+    unit_adbms_make_read_packet_from_data(
+        &unit_spi_txrx_sequence[5][CMDSZ + PEC15SZ],
         initialization_flag_payload,
         4u,
         false);
     unit_adbms_make_read_packet_from_data(
-        &unit_spi_txrx_sequence[5][CMDSZ + PEC15SZ], status_payload, 5u, false);
+        &unit_spi_txrx_sequence[6][CMDSZ + PEC15SZ], status_payload, 5u, false);
     unit_adbms_make_read_packet_from_data(
-        &unit_spi_txrx_sequence[6][CMDSZ + PEC15SZ],
+        &unit_spi_txrx_sequence[7][CMDSZ + PEC15SZ],
         continuous_flag_payload,
         5u,
         false);
@@ -3238,7 +4047,7 @@ static void test_adbms2950_mixed_chain_init_identity_and_readback(void)
     EXPECT_TRUE(dev.health.device_id == ADBMS2950B_DEVICE_ID);
     EXPECT_FALSE(dev.health.hv_dividers_enabled);
     EXPECT_TRUE(unit_spi_tx_calls == 4u); /* Configs + init ADI1 + continuous ADI1. */
-    EXPECT_TRUE(unit_spi_txrx_calls == 7u); /* SID, configs, then two STAT/FLAG pairs. */
+    EXPECT_TRUE(unit_spi_txrx_calls == 8u); /* SID, REFUP, configs, then two STAT/FLAG pairs. */
     EXPECT_TRUE(dev.ics[0].tx_cfga.gpo1c == GPO_CLR);
     EXPECT_TRUE(dev.ics[0].tx_cfga.gpo2c == GPO_CLR);
 
@@ -3249,8 +4058,11 @@ static void test_adbms2950_mixed_chain_init_identity_and_readback(void)
     unit_spi_tx_status_sequence_count = 2u;
     unit_spi_tx_status_sequence[0] = HAL_TIMEOUT;
     unit_spi_tx_status_sequence[1] = HAL_OK;
+    unit_spi_txrx_sequence_count = 2u;
     unit_adbms_make_read_packet_from_data(
-        &unit_spi_txrx_response[CMDSZ + PEC15SZ], sid, 1u, false);
+        &unit_spi_txrx_sequence[0][CMDSZ + PEC15SZ], sid, 1u, false);
+    unit_adbms_make_read_packet_from_data(
+        &unit_spi_txrx_sequence[1][CMDSZ + PEC15SZ], refup_cfga, 1u, false);
     EXPECT_TRUE(adbms2950_init_mixed_chain(&dev,
                                            1u,
                                            ics,
@@ -3362,6 +4174,7 @@ static void test_adbms2950_sid_probe_and_primary_sample_integrity(void)
         &unit_spi_txrx_sequence[1][CMDSZ + PEC15SZ], sample_payload, 5u, false);
     unit_adbms_make_read_packet_from_data(
         &unit_spi_txrx_sequence[2][CMDSZ + PEC15SZ], flag_payload, 5u, false);
+    adbms2950_resync_command_counter_tracking(&dev);
     EXPECT_TRUE(adbms2950_read_primary_sample(&dev, 1234u) == HAL_OK);
     EXPECT_TRUE(dev.health.sample_valid);
     EXPECT_TRUE(dev.health.current_valid);
@@ -3392,6 +4205,7 @@ static void test_adbms2950_sid_probe_and_primary_sample_integrity(void)
         &unit_spi_txrx_sequence[1][CMDSZ + PEC15SZ], sample_payload, 5u, false);
     unit_adbms_make_read_packet_from_data(
         &unit_spi_txrx_sequence[2][CMDSZ + PEC15SZ], flag_payload, 5u, false);
+    adbms2950_resync_command_counter_tracking(&dev);
     EXPECT_TRUE(adbms2950_read_primary_sample(&dev, 1500u) == HAL_ERROR);
     EXPECT_FALSE(dev.health.sample_valid);
     EXPECT_FALSE(dev.health.current_valid);
@@ -3416,6 +4230,7 @@ static void test_adbms2950_sid_probe_and_primary_sample_integrity(void)
         &unit_spi_txrx_sequence[1][CMDSZ + PEC15SZ], sample_payload, 6u, false);
     unit_adbms_make_read_packet_from_data(
         &unit_spi_txrx_sequence[2][CMDSZ + PEC15SZ], flag_payload, 6u, false);
+    adbms2950_resync_command_counter_tracking(&dev);
     EXPECT_TRUE(adbms2950_read_primary_sample(&dev, 1600u) == HAL_OK);
     EXPECT_TRUE(dev.health.counter_seen);
     EXPECT_TRUE(dev.health.counter_advanced);
@@ -3432,6 +4247,7 @@ static void test_adbms2950_sid_probe_and_primary_sample_integrity(void)
     sample_payload[2] = 0x00u;
     unit_adbms_make_read_packet_from_data(
         &unit_spi_txrx_sequence[1][CMDSZ + PEC15SZ], sample_payload, 7u, true);
+    adbms2950_resync_command_counter_tracking(&dev);
     EXPECT_TRUE(adbms2950_read_primary_sample(&dev, 2000u) == HAL_ERROR);
     EXPECT_FALSE(dev.health.sample_valid);
     EXPECT_FALSE(dev.health.current_valid);
@@ -3449,6 +4265,7 @@ static void test_adbms2950_sid_probe_and_primary_sample_integrity(void)
         &unit_spi_txrx_sequence[1][CMDSZ + PEC15SZ], sample_payload, 8u, false);
     unit_adbms_make_read_packet_from_data(
         &unit_spi_txrx_sequence[2][CMDSZ + PEC15SZ], flag_payload, 8u, false);
+    adbms2950_resync_command_counter_tracking(&dev);
     EXPECT_TRUE(adbms2950_read_primary_sample(&dev, 2500u) == HAL_ERROR);
     EXPECT_FALSE(dev.health.sample_valid);
     EXPECT_TRUE(dev.health.current_a == prior_current);
@@ -3461,6 +4278,7 @@ static void test_adbms2950_sid_probe_and_primary_sample_integrity(void)
     status_payload[1] = 0u;
     unit_adbms_make_read_packet_from_data(
         &unit_spi_txrx_response[CMDSZ + PEC15SZ], status_payload, 8u, false);
+    adbms2950_resync_command_counter_tracking(&dev);
     EXPECT_TRUE(adbms2950_read_primary_sample(&dev, 3000u) == HAL_ERROR);
     EXPECT_TRUE(unit_spi_txrx_calls == 1u);
     EXPECT_FALSE(dev.health.i1_calibrated);
@@ -3478,9 +4296,326 @@ static void test_adbms2950_sid_probe_and_primary_sample_integrity(void)
         &unit_spi_txrx_sequence[1][CMDSZ + PEC15SZ], sample_payload, 8u, false);
     unit_adbms_make_read_packet_from_data(
         &unit_spi_txrx_sequence[2][CMDSZ + PEC15SZ], flag_payload, 8u, false);
+    adbms2950_resync_command_counter_tracking(&dev);
     EXPECT_TRUE(adbms2950_read_primary_sample(&dev, 4000u) == HAL_ERROR);
     EXPECT_FALSE(dev.health.sample_valid);
     EXPECT_TRUE(dev.health.current_a == prior_current);
+}
+
+static void test_adbms2950_calibration_profiles_and_phase_freshness(void)
+{
+    adbms2950_driver_t dev;
+    adbms2950_asic ics[1];
+    SPI_HandleTypeDef spi;
+    GPIO_TypeDef gpio_a;
+    GPIO_TypeDef gpio_b;
+    adbms2950_calibration_t custom;
+    uint8_t status_payload[TX_DATA] = {0u, 0x40u, 0u, 0u, 0u, 0xA0u};
+    uint8_t sample_payload[TX_DATA] = {0x39u, 0x30u, 0x00u, 0xFFu, 0x50u, 0x46u};
+    uint8_t flag_payload[TX_DATA];
+
+    memset(&spi, 0, sizeof(spi));
+    memset(&gpio_a, 0, sizeof(gpio_a));
+    memset(&gpio_b, 0, sizeof(gpio_b));
+    unit_adbms2950_init_driver(&dev, ics, &spi, &gpio_a, &gpio_b, 1u);
+    dev.string = STRING_B;
+    dev.write_string = STRING_B;
+
+    EXPECT_TRUE(adbms2950_set_calibration_profile(
+        &dev, ADBMS2950_CAL_PROFILE_DER_APM) == HAL_OK);
+    EXPECT_NEAR(dev.calibration.shunt_resistance_ohm, 100.0e-6f, 1.0e-9f);
+    EXPECT_NEAR(dev.calibration.vb1_divider_ratio,
+                ADBMS2950_DER_VB1_DIVIDER_RATIO, 0.001f);
+    EXPECT_TRUE(adbms2950_set_calibration_profile(
+        &dev, ADBMS2950_CAL_PROFILE_EVAL_BASIC) == HAL_OK);
+    EXPECT_NEAR(dev.calibration.shunt_resistance_ohm, 50.0e-6f, 1.0e-9f);
+    EXPECT_NEAR(dev.calibration.vb1_divider_ratio,
+                ADBMS2950_EVAL_VB1_DIVIDER_RATIO, 0.001f);
+    EXPECT_TRUE(strcmp(adbms2950_calibration_profile_str(
+        dev.calibration.profile), "EVAL_BASIC_50uR") == 0);
+
+    custom = dev.calibration;
+    custom.profile = ADBMS2950_CAL_PROFILE_CUSTOM;
+    custom.shunt_resistance_ohm = 0.0f;
+    EXPECT_TRUE(adbms2950_set_calibration(&dev, &custom) == HAL_ERROR);
+
+    dev.health.initialized = true;
+    dev.health.i1_continuous_ready = true;
+    dev.health.counter_seen = false;
+    unit_adbms2950_make_flag_payload(flag_payload, 10u, 0u);
+    unit_spi_txrx_sequence_count = 3u;
+    unit_adbms_make_read_packet_from_data(
+        &unit_spi_txrx_sequence[0][CMDSZ + PEC15SZ], status_payload, 4u, false);
+    unit_adbms_make_read_packet_from_data(
+        &unit_spi_txrx_sequence[1][CMDSZ + PEC15SZ], sample_payload, 4u, false);
+    unit_adbms_make_read_packet_from_data(
+        &unit_spi_txrx_sequence[2][CMDSZ + PEC15SZ], flag_payload, 4u, false);
+    EXPECT_TRUE(adbms2950_read_primary_sample(&dev, 100u) == HAL_OK);
+    EXPECT_NEAR(dev.health.current_a, 246.90f, 0.01f);
+    EXPECT_NEAR(dev.health.pack_voltage_v,
+                18000.0f * VBAT1_SCALE * ADBMS2950_EVAL_VB1_DIVIDER_RATIO,
+                0.02f);
+
+    /* I1PHA can advance four times inside one 1 ms conversion.  A phase-only
+     * change is not a new published I1 result and must remain stale. */
+    unit_spi_reset();
+    unit_adbms2950_make_flag_payload(flag_payload, 10u, 1u);
+    unit_spi_txrx_sequence_count = 3u;
+    unit_adbms_make_read_packet_from_data(
+        &unit_spi_txrx_sequence[0][CMDSZ + PEC15SZ], status_payload, 7u, false);
+    unit_adbms_make_read_packet_from_data(
+        &unit_spi_txrx_sequence[1][CMDSZ + PEC15SZ], sample_payload, 7u, false);
+    unit_adbms_make_read_packet_from_data(
+        &unit_spi_txrx_sequence[2][CMDSZ + PEC15SZ], flag_payload, 7u, false);
+    EXPECT_TRUE(adbms2950_read_primary_sample(&dev, 101u) == HAL_ERROR);
+    EXPECT_FALSE(dev.health.counter_advanced);
+    EXPECT_TRUE(dev.health.counter_stall_count == 1u);
+}
+
+static void test_adbms2950_masked_config_readback(void)
+{
+    adbms2950_driver_t dev;
+    adbms2950_asic ics[1];
+    SPI_HandleTypeDef spi;
+    GPIO_TypeDef gpio_a;
+    GPIO_TypeDef gpio_b;
+    uint8_t cfga[TX_DATA];
+    uint8_t cfgb[TX_DATA];
+
+    memset(&spi, 0, sizeof(spi));
+    memset(&gpio_a, 0, sizeof(gpio_a));
+    memset(&gpio_b, 0, sizeof(gpio_b));
+    unit_adbms2950_init_driver(&dev, ics, &spi, &gpio_a, &gpio_b, 1u);
+    dev.string = STRING_B;
+    dev.write_string = STRING_B;
+    adbms2950_reset_cfg_regs(&dev);
+    adbms2950_pack_cfga(&dev);
+    adbms2950_pack_cfgb(&dev);
+    memcpy(cfga, ics[0].configa.tx_data, TX_DATA);
+    memcpy(cfgb, ics[0].configb.tx_data, TX_DATA);
+
+    /* Live SNAPST/REFUP and reserved bits can differ without changing the
+     * writable configuration. */
+    cfga[1] |= 0x20u;
+    cfga[3] |= 0x80u;
+    cfga[5] |= 0x30u;
+    cfgb[0] |= 0x80u;
+    cfgb[1] |= 0x80u;
+    cfgb[2] |= 0x80u;
+    cfgb[3] |= 0xF4u;
+    unit_spi_txrx_sequence_count = 2u;
+    unit_adbms_make_read_packet_from_data(
+        &unit_spi_txrx_sequence[0][CMDSZ + PEC15SZ], cfga, 3u, false);
+    unit_adbms_make_read_packet_from_data(
+        &unit_spi_txrx_sequence[1][CMDSZ + PEC15SZ], cfgb, 3u, false);
+    EXPECT_TRUE(adbms2950_verify_config_readback(&dev) == HAL_OK);
+    EXPECT_TRUE(dev.health.configa_mismatch_ic_mask == 0u);
+    EXPECT_TRUE(dev.health.configb_mismatch_ic_mask == 0u);
+
+    unit_spi_reset();
+    cfga[0] ^= 0x01u;
+    unit_adbms_make_read_packet_from_data(
+        &unit_spi_txrx_response[CMDSZ + PEC15SZ], cfga, 3u, false);
+    EXPECT_TRUE(adbms2950_verify_config_readback(&dev) == HAL_ERROR);
+    EXPECT_TRUE(dev.health.configa_mismatch_ic_mask == 0x0001u);
+}
+
+static void test_adbms2950_comm_ack_release_and_eeprom_probe(void)
+{
+    adbms2950_driver_t dev;
+    adbms2950_asic ics[1];
+    SPI_HandleTypeDef spi;
+    GPIO_TypeDef gpio_a;
+    GPIO_TypeDef gpio_b;
+    adbms2950_i2c_probe_result_t result;
+    uint8_t pre[TX_DATA] = {0x68u, 0xA0u, 0x08u, 0x00u, 0x19u, 0xFFu};
+    uint8_t post[TX_DATA] = {0x67u, 0xA0u, 0x77u, 0x00u, 0x1Fu, 0xFFu};
+
+    memset(&spi, 0, sizeof(spi));
+    memset(&gpio_a, 0, sizeof(gpio_a));
+    memset(&gpio_b, 0, sizeof(gpio_b));
+    unit_adbms2950_init_driver(&dev, ics, &spi, &gpio_a, &gpio_b, 1u);
+    dev.string = STRING_B;
+    dev.write_string = STRING_B;
+    unit_spi_txrx_sequence_count = 2u;
+    unit_adbms_make_read_packet_from_data(
+        &unit_spi_txrx_sequence[0][CMDSZ + PEC15SZ], pre, 6u, false);
+    unit_adbms_make_read_packet_from_data(
+        &unit_spi_txrx_sequence[1][CMDSZ + PEC15SZ], post, 7u, false);
+
+    EXPECT_TRUE(adbms2950_i2c_write_probe(&dev, 0x50u, 0x00u, &result) == HAL_OK);
+    EXPECT_TRUE(result.transport_status == HAL_OK);
+    EXPECT_TRUE(result.address_ack);
+    EXPECT_TRUE(result.data_ack);
+    EXPECT_TRUE(memcmp(result.pre_rdcomm, pre, TX_DATA) == 0);
+    EXPECT_TRUE(memcmp(result.post_rdcomm, post, TX_DATA) == 0);
+    EXPECT_TRUE(unit_spi_tx_calls == 2u); /* WRCOMM + dynamically built STCOMM. */
+    EXPECT_TRUE(unit_spi_txrx_calls == 2u);
+    EXPECT_TRUE(unit_spi_last_tx_len == 13u);
+    EXPECT_TRUE(unit_spi_last_tx[0] == 0x07u);
+    EXPECT_TRUE(unit_spi_last_tx[1] == 0x23u);
+
+    /* Address ACK with data NACK is reported separately and cannot pass. */
+    unit_spi_reset();
+    post[2] = 0x7Fu;
+    unit_spi_txrx_sequence_count = 2u;
+    unit_adbms_make_read_packet_from_data(
+        &unit_spi_txrx_sequence[0][CMDSZ + PEC15SZ], pre, 8u, false);
+    unit_adbms_make_read_packet_from_data(
+        &unit_spi_txrx_sequence[1][CMDSZ + PEC15SZ], post, 9u, false);
+    EXPECT_TRUE(adbms2950_i2c_write_probe(&dev, 0x50u, 0x00u, &result) == HAL_ERROR);
+    EXPECT_TRUE(result.transport_status == HAL_OK);
+    EXPECT_TRUE(result.address_ack);
+    EXPECT_FALSE(result.data_ack);
+    EXPECT_TRUE(dev.health.last_stage == ADBMS2950_STAGE_EEPROM);
+    EXPECT_TRUE(dev.health.last_reason == ADBMS2950_REASON_PERIPHERAL_NACK);
+}
+
+static void test_adbms2950_redundant_diagnostic_and_cs_timing(void)
+{
+    adbms2950_driver_t dev;
+    adbms2950_asic ics[1];
+    SPI_HandleTypeDef spi;
+    GPIO_TypeDef gpio_a;
+    GPIO_TypeDef gpio_b;
+    uint8_t status_cal[TX_DATA] = {0u, 0xC0u, 0u, 0u, 0u, 0x10u};
+    uint8_t rdi[TX_DATA] = {0xE8u, 0x03u, 0x00u, 0x18u, 0xFCu, 0xFFu};
+    uint8_t rdvb[TX_DATA] = {0u, 0u, 0x10u, 0x27u, 0x0Bu, 0xD2u};
+    uint8_t flag[TX_DATA];
+    uint8_t tx[2] = {0xAAu, 0x55u};
+
+    memset(&spi, 0, sizeof(spi));
+    memset(&gpio_a, 0, sizeof(gpio_a));
+    memset(&gpio_b, 0, sizeof(gpio_b));
+    unit_adbms2950_init_driver(&dev, ics, &spi, &gpio_a, &gpio_b, 1u);
+    dev.string = STRING_B;
+    dev.write_string = STRING_B;
+    EXPECT_TRUE(adbms2950_set_calibration_profile(
+        &dev, ADBMS2950_CAL_PROFILE_DER_APM) == HAL_OK);
+    dev.health.initialized = true;
+    dev.health.i1_continuous_ready = true;
+    dev.health.i1_calibrated = true;
+    unit_adbms2950_make_flag_payload(flag, 20u, 0u);
+    unit_spi_txrx_sequence_count = 5u;
+    unit_adbms_make_read_packet_from_data(
+        &unit_spi_txrx_sequence[0][CMDSZ + PEC15SZ], status_cal, 3u, false);
+    unit_adbms_make_read_packet_from_data(
+        &unit_spi_txrx_sequence[1][CMDSZ + PEC15SZ], status_cal, 5u, false);
+    unit_adbms_make_read_packet_from_data(
+        &unit_spi_txrx_sequence[2][CMDSZ + PEC15SZ], rdi, 5u, false);
+    unit_adbms_make_read_packet_from_data(
+        &unit_spi_txrx_sequence[3][CMDSZ + PEC15SZ], rdvb, 5u, false);
+    unit_adbms_make_read_packet_from_data(
+        &unit_spi_txrx_sequence[4][CMDSZ + PEC15SZ], flag, 5u, false);
+    EXPECT_TRUE(adbms2950_read_redundant_sample(&dev, 777u) == HAL_OK);
+    EXPECT_TRUE(dev.redundant_sample.valid);
+    EXPECT_NEAR(dev.redundant_sample.current1_a, 10.0f, 0.001f);
+    EXPECT_NEAR(dev.redundant_sample.current2_a, 10.0f, 0.001f);
+    EXPECT_NEAR(dev.redundant_sample.current_disagreement_a, 0.0f, 0.001f);
+    EXPECT_NEAR(dev.redundant_sample.pack_voltage_disagreement_v, 0.0f, 0.05f);
+    EXPECT_FALSE(dev.health.i2_continuous_ready);
+    EXPECT_FALSE(dev.health.counter_seen);
+
+    /* A failed restore leaves the normal primary mode unproven and must
+     * withdraw both the redundant result and I1 continuous readiness. */
+    unit_spi_reset();
+    dev.health.initialized = true;
+    dev.health.i1_continuous_ready = true;
+    dev.health.i1_calibrated = true;
+    unit_spi_tx_status_sequence_count = 5u;
+    unit_spi_tx_status_sequence[0] = HAL_OK;
+    unit_spi_tx_status_sequence[1] = HAL_OK;
+    unit_spi_tx_status_sequence[2] = HAL_OK;
+    unit_spi_tx_status_sequence[3] = HAL_OK;
+    unit_spi_tx_status_sequence[4] = HAL_TIMEOUT;
+    unit_spi_txrx_sequence_count = 5u;
+    unit_adbms_make_read_packet_from_data(
+        &unit_spi_txrx_sequence[0][CMDSZ + PEC15SZ], status_cal, 8u, false);
+    unit_adbms_make_read_packet_from_data(
+        &unit_spi_txrx_sequence[1][CMDSZ + PEC15SZ], status_cal, 10u, false);
+    unit_adbms_make_read_packet_from_data(
+        &unit_spi_txrx_sequence[2][CMDSZ + PEC15SZ], rdi, 10u, false);
+    unit_adbms_make_read_packet_from_data(
+        &unit_spi_txrx_sequence[3][CMDSZ + PEC15SZ], rdvb, 10u, false);
+    unit_adbms_make_read_packet_from_data(
+        &unit_spi_txrx_sequence[4][CMDSZ + PEC15SZ], flag, 10u, false);
+    EXPECT_TRUE(adbms2950_read_redundant_sample(&dev, 778u) == HAL_TIMEOUT);
+    EXPECT_FALSE(dev.redundant_sample.valid);
+    EXPECT_FALSE(dev.health.i1_continuous_ready);
+    EXPECT_FALSE(dev.health.i2_continuous_ready);
+
+    unit_spi_reset();
+    dev.htim = NULL;
+    EXPECT_TRUE(adbms2950_spi_write(&dev, tx, sizeof(tx), 1u) == HAL_ERROR);
+    EXPECT_TRUE(unit_spi_tx_calls == 0u);
+    EXPECT_TRUE(unit_gpio_states[6u] == GPIO_PIN_SET);
+}
+
+
+static void test_adbms2950_refup_snapshot_flags_and_counter_reset(void)
+{
+    adbms2950_driver_t dev;
+    adbms2950_asic ics[1];
+    SPI_HandleTypeDef spi;
+    GPIO_TypeDef gpio_a;
+    GPIO_TypeDef gpio_b;
+    adbms2950_core_snapshot_t snapshot;
+    uint8_t cfga[TX_DATA] = {0u, 0u, 0u, 0u, 0u, 0x10u};
+    uint8_t cfgb[TX_DATA] = {0u};
+    uint8_t stat[TX_DATA] = {0u, 0xC0u, 0u, 0u, 0u, 0x10u};
+    uint8_t flag[TX_DATA] = {0u};
+    uint8_t sid[TX_DATA] = {1u, 2u, 3u, 4u, 5u,
+                            (uint8_t)(ADBMS2950B_DEVICE_ID << 1u)};
+
+    memset(&spi, 0, sizeof(spi));
+    memset(&gpio_a, 0, sizeof(gpio_a));
+    memset(&gpio_b, 0, sizeof(gpio_b));
+    unit_adbms2950_init_driver(&dev, ics, &spi, &gpio_a, &gpio_b, 1u);
+    dev.string = STRING_B;
+    dev.write_string = STRING_B;
+
+    /* REFUP is a required readiness gate before ADC commands. */
+    unit_adbms_make_read_packet_from_data(
+        &unit_spi_txrx_response[CMDSZ + PEC15SZ], cfga, 2u, false);
+    EXPECT_TRUE(adbms2950_verify_refup(&dev) == HAL_OK);
+    EXPECT_TRUE(dev.health.refup_valid);
+    EXPECT_TRUE(dev.health.refup);
+
+    /* FLAG decoding keeps raw bytes and exposes reset/fault latches. */
+    unit_spi_reset();
+    flag[5] = 0x08u; /* RESET latch. */
+    unit_adbms_make_read_packet_from_data(
+        &unit_spi_txrx_response[CMDSZ + PEC15SZ], flag, 2u, false);
+    EXPECT_TRUE(adbms2950_read_flag(&dev) == HAL_OK);
+    EXPECT_TRUE(dev.health.flag_valid);
+    EXPECT_TRUE((dev.health.fault_mask & (1u << 23)) != 0u);
+
+    /* All core groups in one debug snapshot must report one CCNT epoch. */
+    unit_spi_reset();
+    unit_spi_txrx_sequence_count = 5u;
+    unit_adbms_make_read_packet_from_data(
+        &unit_spi_txrx_sequence[0][CMDSZ + PEC15SZ], cfga, 9u, false);
+    unit_adbms_make_read_packet_from_data(
+        &unit_spi_txrx_sequence[1][CMDSZ + PEC15SZ], cfgb, 9u, false);
+    unit_adbms_make_read_packet_from_data(
+        &unit_spi_txrx_sequence[2][CMDSZ + PEC15SZ], stat, 9u, false);
+    unit_adbms_make_read_packet_from_data(
+        &unit_spi_txrx_sequence[3][CMDSZ + PEC15SZ], flag, 9u, false);
+    unit_adbms_make_read_packet_from_data(
+        &unit_spi_txrx_sequence[4][CMDSZ + PEC15SZ], sid, 9u, false);
+    adbms2950_resync_command_counter_tracking(&dev);
+    EXPECT_TRUE(adbms2950_read_core_snapshot(&dev, &snapshot) == HAL_OK);
+    EXPECT_TRUE(snapshot.valid);
+    EXPECT_TRUE(snapshot.cfga_ccnt == 9u);
+    EXPECT_TRUE(snapshot.sid_ccnt == 9u);
+
+    /* A zero CCNT after an established nonzero epoch is an unexpected reset. */
+    unit_spi_reset();
+    unit_adbms_make_read_packet_from_data(
+        &unit_spi_txrx_response[CMDSZ + PEC15SZ], sid, 0u, false);
+    EXPECT_TRUE(adbms2950_spi_probe_sid(&dev) == HAL_ERROR);
+    EXPECT_TRUE(dev.health.unexpected_counter_reset_count == 1u);
+    EXPECT_TRUE(dev.spi_debug.sticky_unexpected_counter_reset_mask == 0x0001u);
 }
 
 static void run_test(const char *name, void (*fn)(void))
@@ -3496,6 +4631,13 @@ static void run_test(const char *name, void (*fn)(void))
 
 int main(void)
 {
+#if defined(AMS_HOST_ONLY_ADBMS2950_HARDENING_TEST)
+    run_test("ADBMS2950 calibration/phase freshness", test_adbms2950_calibration_profiles_and_phase_freshness);
+    run_test("ADBMS2950 masked config readback", test_adbms2950_masked_config_readback);
+    run_test("ADBMS2950 COMM ACK/EEPROM probe", test_adbms2950_comm_ack_release_and_eeprom_probe);
+    run_test("ADBMS2950 redundant diagnostic/CS timing", test_adbms2950_redundant_diagnostic_and_cs_timing);
+    run_test("ADBMS2950 REFUP/snapshot/flags/CCNT reset", test_adbms2950_refup_snapshot_flags_and_counter_reset);
+#else
     run_test("lut basic ranges", test_lut_basic_ranges);
     run_test("lut clamp behavior", test_lut_clamps_out_of_range_queries);
     run_test("pack config and init", test_pack_config_and_init);
@@ -3505,6 +4647,7 @@ int main(void)
     run_test("R0 initialization clamp", test_r0_initialization_clamp);
     run_test("R0 observability/accounting", test_r0_observability_and_accounting);
     run_test("single-step nominal pack", test_single_step_nominal_pack);
+    run_test("EKF innovation gate/dt observability", test_ekf_innovation_gate_and_dt_observability);
     run_test("invalid step inputs", test_invalid_step_inputs);
     run_test("200-step numerical stability", test_200_step_numerical_stability);
     run_test("estimator summary aggregation", test_estimator_summary_aggregation);
@@ -3512,9 +4655,14 @@ int main(void)
     run_test("coulomb count baseline", test_coulomb_count_baseline);
     run_test("voltage fault thresholds/latch", test_voltage_fault_thresholds_latch_and_reset);
     run_test("voltage fault read failure/strings", test_voltage_fault_read_failure_precedence_and_strings);
+    run_test("voltage hardware Status-D crosscheck", test_voltage_fault_hardware_status_crosscheck);
+    run_test("parallel connection observer advisory", test_parallel_connection_observer_advisory);
+    run_test("main fuse plausibility/controlled clear", test_main_fuse_monitor_plausibility_and_clear);
     run_test("ADBMS topology/delay guards", test_adbms_topology_and_delay_guards);
+    run_test("ADBMS v0.5 session/filter/MUTE contract", test_adbms_v05_session_filter_and_mute_contract);
+    run_test("ADBMS v0.5 products/AUX2/POST diagnostics", test_adbms_v05_products_aux2_post_and_diagnostic_freshness);
     run_test("ADBMS SPI debug write/full-duplex", test_adbms_spi_debug_write_and_full_duplex_paths);
-    run_test("ADBMS SPI checked-read integrity", test_adbms_spi_debug_rd48_pec_masks_and_clear);
+    run_test("ADBMS SPI rd48 PEC masks", test_adbms_spi_debug_rd48_pec_masks_and_clear);
     run_test("ADBMS SPI scope activity", test_adbms_spi_scope_activity);
     run_test("ADBMS SPI SID/status/counter diagnostics", test_adbms_spi_sid_status_and_counter_mismatch);
     run_test("ADBMS startup/reference/full status safety policy", test_adbms_startup_reference_and_full_status_policy);
@@ -3523,7 +4671,9 @@ int main(void)
     run_test("ADBMS SPI cold wake and clear flags", test_adbms_spi_coldwake_and_clear_flags);
     run_test("ADBMS PWM write packing", test_adbms_pwm_write_packing);
     run_test("ADBMS final-ring subset write owner", test_adbms6830_final_ring_subset_write_owner);
+    run_test("ADBMS CFGB timer write guard", test_adbms6830_cfgb_timer_write_guard);
     run_test("ADBMS config/balance readback", test_adbms_config_and_balance_readback);
+    run_test("ADBMS I2C COMM releases SDA for slave ACK", test_adbms_i2c_comm_releases_sda_for_slave_ack);
     run_test("ADBMS mux ACK/temperature freshness", test_adbms_mux_ack_and_temperature_freshness);
     run_test("ADBMS mux transport/ACK failures", test_adbms_mux_transport_and_ack_failures);
     run_test("ADBMS full open-wire measurement/fault injection", test_adbms_open_wire_full_measurement_and_fault_injection);
@@ -3533,6 +4683,10 @@ int main(void)
     run_test("ADBMS2950 SPI probe PEC masks", test_adbms2950_spi_probe_pec_masks_and_clear);
     run_test("ADBMS2950 mixed-chain init/identity/readback", test_adbms2950_mixed_chain_init_identity_and_readback);
     run_test("ADBMS2950 SID/sample integrity", test_adbms2950_sid_probe_and_primary_sample_integrity);
+    run_test("ADBMS2950 calibration/phase freshness", test_adbms2950_calibration_profiles_and_phase_freshness);
+    run_test("ADBMS2950 masked config readback", test_adbms2950_masked_config_readback);
+    run_test("ADBMS2950 COMM ACK/EEPROM probe", test_adbms2950_comm_ack_release_and_eeprom_probe);
+    run_test("ADBMS2950 redundant diagnostic/CS timing", test_adbms2950_redundant_diagnostic_and_cs_timing);
     run_test("current sensor conversion/range", test_current_sensor_conversion_zero_and_range_selection);
     run_test("current sensor invalid conditions", test_current_sensor_invalid_conditions);
     run_test("current sensor fresh pair/channel mapping", test_current_sensor_requires_fresh_pair_and_channel_mapping);
@@ -3541,6 +4695,7 @@ int main(void)
     run_test("current sensor ADC status path", test_current_sensor_read_adc_status_path);
     run_test("current fault policy", test_current_fault_policy);
     run_test("current fault threshold edges/recovery", test_current_fault_threshold_edges_and_recovery);
+#endif
 
     if (g_failures != 0)
     {

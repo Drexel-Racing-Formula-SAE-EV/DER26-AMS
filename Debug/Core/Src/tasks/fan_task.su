@@ -1,2 +1,0 @@
-../Core/Src/tasks/fan_task.c:12:14:fan_task_start	32	static
-../Core/Src/tasks/fan_task.c:19:6:fan_task_fn	32	static

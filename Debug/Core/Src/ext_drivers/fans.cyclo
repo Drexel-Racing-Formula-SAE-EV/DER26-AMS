@@ -1,2 +1,0 @@
-../Core/Src/ext_drivers/fans.c:9:5:fan_init	1
-../Core/Src/ext_drivers/fans.c:24:5:set_fan_percent	3

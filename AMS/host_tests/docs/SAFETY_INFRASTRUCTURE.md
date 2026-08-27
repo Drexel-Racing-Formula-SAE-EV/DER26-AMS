@@ -32,7 +32,7 @@ threshold policy.
 | Area | Reason |
 |---|---|
 | Physical IMD enablement | The TIM2 capture/freshness path exists but remains disabled and fail-closed by default until the external PWM/status wiring, pull network, polarity, scaling and fault cases are bench-validated. |
-| Fuse-fault producer | The supervisor gate exists, but no confirmed protected fuse-monitor hardware signal currently produces `fuse_fault`. |
+| Main-fuse/HV-path fault producer | A reviewed plausibility monitor now exists, but remains explicitly unavailable on current hardware. It may assert `fuse_fault` only in a separately validated build with fresh AIR command/auxiliary-contact feedback, independent pack/load-side voltage, calibrated current, closed-contact/precharge proof, and a persistent open-path signature. |
 | AIR auxiliary-contact enablement | The complete monitor/evaluator exists behind a fail-closed build gate, but the current PCB lacks the reviewed AIR+/AIR-/precharge auxiliary inputs and board adapter. |
 | Formal service fault-clear policy | Deferred until the team decides the final inspection/service reset workflow. Existing threshold latch behavior is unchanged. |
 | Flash fault logging | Deferred to avoid flash-wear/noise during bring-up. Current log is RAM-only. |
@@ -65,3 +65,19 @@ wdg feedok
 ```
 
 Do not ship competition firmware with fault injection enabled.
+
+
+## ADBMS voltage, sense-path, and connection diagnostics (2026-08-04)
+
+| Area | Behavior |
+|---|---|
+| C-channel OV/UV authority | Fresh, complete, PEC-valid C measurements remain the safety source of truth. Existing warning/hard/severe thresholds and latch behavior remain unchanged. |
+| Status-D OV/UV cross-check | Populated-channel OV/UV bits are decoded separately from generic silicon/transport health. C16 and other unused channels are masked. A 20 mV comparison margin prevents non-atomic threshold crossings from being mislabeled as disagreement. Hardware-only warning or disagreement is diagnostic; it does not replace the C-value policy. |
+| Electrical sense-path open | The complete baseline/even/odd ADBMS6830 open-wire procedure is implemented for C and S paths. Current Rev5 hardware uses the C path because S2N-S15N are not routed correctly. Results are named **electrical sense-path open**, because a failed 1 A fuse, wire, connector, tab, trace, filter resistor, or solder joint are electrically indistinguishable. |
+| C-result restoration | C-path open-wire conversions overwrite the C result registers. Firmware always performs a normal checked C/S measurement afterward and refuses to republish open-wire data. If restoration fails, all C authority masks are invalidated immediately and the diagnostic fault remains fail-closed. |
+| Automatic open-wire gate | Bench and HIL builds keep automatic C open-wire disabled. A vehicle build can enable it only with `AMS_C_OPEN_WIRE_TARGET_VALIDATED=1`; runtime execution is restricted to START/CHARGE, near-zero current, valid voltage/current, and balancing off. |
+| Parallel-connection observer | Repeated short current steps estimate apparent resistance of each parallel group relative to the segment median. It is advisory only, requires repeated evidence, and cannot identify an individual fusible wire bond. Validated authority is separately build-gated by current polarity/calibration evidence. |
+| Main fuse/HV path | The monitor requires authoritative AIR feedback and independent load/DC-link voltage. Current hardware does not provide those inputs, so it reports unavailable and cannot assert `fuse_fault`. A motor-controller complaint alone is not treated as proof of an open 80 A fuse. |
+| Temperature transaction hardening | Mux writes now require transport-valid address/data ACK, all three mux selections are associated with the exact sensor before publication, and explicit settle/AUX guard delays are applied. Automatic scanning remains blocked until the Rev5 100 ohm pull-ups are replaced and validated. |
+
+No item above relaxes S redundancy, temperature availability, balancing interlocks, or BMS_OK gating.

@@ -1,2 +1,0 @@
-../Core/Src/tasks/air_task.c:11:14:air_task_start	32	static
-../Core/Src/tasks/air_task.c:18:6:air_task_fn	24	static

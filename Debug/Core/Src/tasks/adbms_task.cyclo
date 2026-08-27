@@ -1,2 +1,0 @@
-../Core/Src/tasks/adbms_task.c:12:14:adbms_task_start	1
-../Core/Src/tasks/adbms_task.c:19:6:adbms_task_fn	3

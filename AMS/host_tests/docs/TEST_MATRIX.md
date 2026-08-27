@@ -93,7 +93,7 @@ Unit-only additions:
 | `test_adbms_spi_sid_status_and_counter_mismatch` | Verifies ADBMS6830 RDSID product-ID validation, valid/identity-mismatch masks, RDSTATC/RDSTATD/RDSTATE parsing, and command-counter mismatch detection. |
 | `test_adbms_spi_coldwake_and_clear_flags` | Verifies conservative cold-wake pulse generation and CLRFLAG all-flag packing/command dispatch. |
 | `test_adbms6830_diagnostic_commands_and_cli_health` | Verifies ADBMS6830 config readback, cell ADC diagnostic hook, full open-wire command hooks, AUX/GPIO diagnostic hook, sticky health counters, and CLI visibility. |
-| `test_adbms_periodic_diagnostics_and_safe_open_wire` | Verifies real-time status/config/open-wire scheduling, config mismatch fail-closed behavior, and automatic full open-wire evaluation in charge/discharge/balance states. |
+| `test_adbms_periodic_diagnostics_and_safe_open_wire` | Verifies status/config scheduling, config mismatch fail-closed behavior, automatic open-wire is absent in bench/BALANCE, and an evidenced auto-C build is restricted to START/CHARGE at near-zero current with balancing off. |
 | `test_adbms_cli_scan_guard_and_cs_probe_commands` | Verifies CLI SPI probes, PE4/PF4 candidate pin pulsing, and scope traffic are refused during active ADBMS scans, CS_A/CS_B probe commands select the intended chip-select path, scope preset/toggle mode drives default `spi scope`, and manual full/phase open-wire commands are limited to safe service states. |
 | `test_adbms_open_wire_full_measurement_and_fault_injection` | Links the real driver and verifies both S-ADC parity commands, conversion waits, five-group reads for 15 populated cells, exact fault-bit mapping, bad PEC/counter rejection, stale-buffer preservation, and stopped-timer failure. |
 | `test_adbms2950_spi_debug_write_and_full_duplex_paths` | Verifies ADBMS2950/APM SPI write and full-duplex read debug state, CS wrapping, dummy-byte TX padding, RX extraction, HAL error propagation, and counters/previews. |
@@ -110,9 +110,9 @@ Hardware bring-up notes:
 
 | Area | Purpose |
 |---|---|
-| ADBMS6830 SPI debug CLI | Firmware exposes `spi status`, `spi preset`, `spi toggle`, `spi scope`, `spi probe`, `spi sid`, `spi stat`, `spi staterr`, `spi cfgchk`, `spi cellst`, `spi owcheck`, `spi oweven`, `spi owodd`, `spi auxdiag`, `spi wake`, `spi coldwake`, `spi clrflag`, `spi clear`, `spi diagclear`, `spi enable`, and `spi disable` for board-side ADBMS6830 chain bring-up. Host tests cover command/result logic; physical thresholds, timing, and harness mapping still require injected-open LV testing. |
-| ADBMS2950/APM final-ring CLI | Firmware exposes `apm status`, `apm health`, `apm sid`, `apm config`, `apm sample`, `apm scope [1-100]`, `apm clear`, `apm enable`, and `apm disable`. The APM is enabled by default on String B, divider controls default off, and its data remains advisory/non-gating. |
-| Dedicated APM SIL gate | `make apm-sil` links the real ADBMS2950 driver for unit/injection tests and separately runs topology, fault-isolation, and CLI behavior in the system SIL harness. |
+| ADBMS6830 SPI debug CLI | Firmware exposes `spi status`, `spi preset`, `spi toggle`, `spi scope`, `spi probe`, `spi sid`, `spi stat`, `spi staterr`, `spi cfgchk`, `spi cellst`, `spi owc`, `spi ows`, `spi oweven`, `spi owodd`, `spi auxdiag`, `spi wake`, `spi coldwake`, `spi clrflag`, `spi clear`, `spi diagclear`, `spi enable`, and `spi disable`. `spi owc` is the current C-path electrical sense-open command; physical thresholds and mapping still require an injected-open low-voltage fixture. |
+| ADBMS2950/APM standalone/final-ring CLI | Firmware exposes `apm status`, `apm sid`, `apm refup`, `apm config`, `apm flags`, `apm raw`, `apm sample`, `apm redundant`, `apm eeprom`, `apm scope sid|sample [1-100]`, `apm recover`, `apm profile`, `apm trace`, and `apm clear`. The v0.3.6 eval release defaults to one standalone ADBMS2950B on String B, with EVAL 50 uOhm scaling, divider controls off, and advisory/non-gating data. |
+| Dedicated APM firmware gate | `make apm-bench-gates` runs focused real-driver tests, standalone and five-SMB final-ring syntax builds, service-CLI syntax, and static release checks without requiring external model/oracle repositories. `make apm-sil` remains the broader integrated harness when all sibling assets are present. |
 | Hardware bring-up BMS_OK inhibit | Firmware supports `AMS_HW_BRINGUP=1`, which defaults BMS_OK output inhibited until `bmsok release` is run from CLI. `bmsok inhibit` forces it low again. |
 | Staged bring-up CLI summaries | Firmware exposes `bringup board`, `bringup adbms6830`, `bringup apm2950`, `bringup charger-lv`, `bringup charger-battery`, `bringup ready`, `bringup snapshot`, and `bringup evidence` to make bench phase decisions repeatable without mutating safety state. |
 | Shared ADBMS SPI lock | ADBMS6830 and ADBMS2950 low-level SPI transfers call shared `adbms_spi_lock()` / `adbms_spi_unlock()` hooks so CLI probing cannot collide with periodic reads on SPI6. |
@@ -140,3 +140,18 @@ Hardware bring-up notes:
 | `make fuse-oracle` / `fuse/fuse_oracle_test.c` | CI-gating independent validation of the production fuse observer. Checks an exact `long double` zero-order-hold reference against high-resolution trapezoidal integration, then compares 50,000 randomized production updates for no thermal-state underestimate, no nonconservative current cap, bounded numeric error, conservative latch behavior, and fail-closed invalid inputs. |
 | `Tools/fuse_replay/fuse_replay` | Strict per-sample CSV replay through production and independent reference paths. Reports state/cap deltas, initialization, authority, exhaustion, recovery, reason flags, and reset behavior. |
 | `make fuse-replay` | Non-gating generation and characterization of pulse, corner-exit, autocross, endurance, invalid-input, and warm-reset traces over startup/reset, budget-fraction, and cooling-time policies. Does not enable fuse authority or select final calibration. |
+
+
+## ADBMS sense-path/OVUV and connection-observer coverage (2026-08-04)
+
+| Test / gate | Coverage |
+|---|---|
+| `test_voltage_fault_hardware_status_crosscheck` | Verifies fresh C values remain authoritative, populated Status-D OV/UV masks are decoded, C16 is ignored, near-threshold non-atomic changes are tolerated, and definite hardware/software disagreement is warning-only. |
+| `test_adbms_open_wire_full_measurement_and_fault_injection` | Exercises real C and S open-wire command construction, baseline/even/odd phases, conversion waits, 15-cell register coverage, attenuation/fault masks, PEC/counter rejection, and path tracking. |
+| `test_c_open_wire_restore_failure_invalidates_authority` | Proves a failed mandatory normal C restoration immediately clears publication/driver-valid masks, marks monitored channels stale, and prevents old C values from retaining authority. Runs in redundant and explicit C-only modes. |
+| `test_parallel_connection_observer_advisory` | Verifies current-step qualification, per-segment median comparison, repeated-evidence confirmation, balancing/invalid-input reset behavior, and the fact that the result remains advisory. |
+| `test_main_fuse_monitor_plausibility_and_clear` | Verifies unavailable inputs cannot assert a fuse fault, a fully authoritative persistent open-HV-path signature can latch, and clear requires fresh OFF/SHUTDOWN, discharged load bus, and near-zero current. |
+| `make profile-gates` | In addition to existing profile checks, rejects vehicle auto-open-wire without target evidence, automatic temperature scans without corrected pull-up evidence, main-fuse authority without AIR/current/independent-load-voltage evidence, and parallel-connection authority without current polarity/calibration evidence. |
+| Focused `adbms-resilience-test` | Runs one-SMB redundant, explicit C-only, and auto-C-open-wire-policy builds with strict warnings; includes restoration-failure invalidation and runtime-policy regressions. |
+
+Hardware qualification still requires an approved isolated low-voltage fixture. Do not create an open cell-tap condition on an energized real segment.

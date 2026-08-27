@@ -73,6 +73,28 @@ uint8_t ams_rtos_task_priority(ams_rtos_task_id_t id)
     return (id < AMS_RTOS_TASK_COUNT) ? g_task_prio[id] : 0u;
 }
 
+static uint16_t ams_rtos_stack_threshold_words(ams_rtos_task_id_t id,
+                                               uint16_t floor_words,
+                                               uint16_t percent)
+{
+    uint32_t configured = ams_rtos_task_config_stack_words(id);
+    uint32_t proportional = (configured * (uint32_t)percent + 99u) / 100u;
+    uint32_t threshold = (proportional > floor_words) ? proportional : floor_words;
+    return (threshold > 0xFFFFu) ? 0xFFFFu : (uint16_t)threshold;
+}
+
+uint16_t ams_rtos_task_stack_warn_words(ams_rtos_task_id_t id)
+{
+    return ams_rtos_stack_threshold_words(id, AMS_RTOS_STACK_WARN_FLOOR_WORDS,
+                                          AMS_RTOS_STACK_WARN_PERCENT);
+}
+
+uint16_t ams_rtos_task_stack_critical_words(ams_rtos_task_id_t id)
+{
+    return ams_rtos_stack_threshold_words(id, AMS_RTOS_STACK_CRITICAL_FLOOR_WORDS,
+                                          AMS_RTOS_STACK_CRITICAL_PERCENT);
+}
+
 const char *ams_rtos_fault_reason_str(uint8_t reason)
 {
     switch((ams_rtos_fault_reason_t)reason)
@@ -188,11 +210,13 @@ void ams_rtos_diag_init(app_data_t *data)
     data->rtos_last_fault_tick = 0u;
     data->rtos_min_stack_high_water_words = 0xFFFFu;
     data->rtos_stack_warn_mask = 0u;
+    data->rtos_stack_critical_mask = 0u;
     data->rtos_fault_flags = 0u;
     data->rtos_last_fault_reason = (uint8_t)AMS_RTOS_FAULT_NONE;
     data->rtos_last_fault_task = (uint8_t)AMS_RTOS_TASK_COUNT;
     data->rtos_fault = false;
     data->rtos_stack_warning = false;
+    data->rtos_stack_critical = false;
     data->rtos_heap_warning = false;
 
     g_last_logged_stack_warn_mask = 0u;
@@ -208,6 +232,7 @@ void ams_rtos_diag_init(app_data_t *data)
 void ams_rtos_diag_update(app_data_t *data)
 {
     uint16_t warn_mask = 0u;
+    uint16_t critical_mask = 0u;
     uint16_t min_hw = 0xFFFFu;
 
     if(data == NULL)
@@ -242,9 +267,13 @@ void ams_rtos_diag_update(app_data_t *data)
             {
                 min_hw = hw;
             }
-            if(hw < AMS_RTOS_STACK_WARN_WORDS)
+            if(hw < ams_rtos_task_stack_warn_words(id))
             {
                 warn_mask |= AMS_RTOS_TASK_BIT(id);
+            }
+            if(hw < ams_rtos_task_stack_critical_words(id))
+            {
+                critical_mask |= AMS_RTOS_TASK_BIT(id);
             }
         }
 
@@ -258,7 +287,9 @@ void ams_rtos_diag_update(app_data_t *data)
 
     data->rtos_min_stack_high_water_words = min_hw;
     data->rtos_stack_warn_mask = warn_mask;
+    data->rtos_stack_critical_mask = critical_mask;
     data->rtos_stack_warning = (warn_mask != 0u);
+    data->rtos_stack_critical = (critical_mask != 0u);
     data->rtos_heap_warning = (data->rtos_heap_min_ever_free_bytes < AMS_RTOS_HEAP_WARN_BYTES);
 
     if(data->rtos_stack_warning)
@@ -268,6 +299,15 @@ void ams_rtos_diag_update(app_data_t *data)
     else
     {
         data->rtos_fault_flags &= (uint16_t)~AMS_RTOS_FAULT_FLAG_LOW_STACK_WARN;
+    }
+
+    if(data->rtos_stack_critical)
+    {
+        data->rtos_fault_flags |= AMS_RTOS_FAULT_FLAG_LOW_STACK_CRITICAL;
+    }
+    else
+    {
+        data->rtos_fault_flags &= (uint16_t)~AMS_RTOS_FAULT_FLAG_LOW_STACK_CRITICAL;
     }
 
     if(data->rtos_heap_warning)

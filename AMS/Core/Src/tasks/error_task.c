@@ -85,6 +85,11 @@ static bool error_task_operating_inputs_ready(const app_data_t *data,
            data->current_valid &&
            !data->current_fault &&
            !data->adbms_diag_fault &&
+           /* MUTE is the fast kill, but watchdog behavior makes it transient.
+            * Whenever balancing is not actively and successfully applied,
+            * BMS_OK requires verified persistent DCC/PWM zero state. */
+           (data->adbms_balance_active ||
+            data->adbms_balance_durable_zero_verified) &&
            !data->task_heartbeat_fault &&
            !data->fuse_fault &&
            !data->charger_fault &&
@@ -226,7 +231,8 @@ void error_task_update(app_data_t *data, uint32_t now)
                         data->task_heartbeat_fault ||
                         data->current_overcurrent_fault ||
                         data->current_fault_latched ||
-                        data->rtos_fault);
+                        data->rtos_fault ||
+                        data->rtos_stack_critical);
 
     data->soft_fault = (data->cli_fault ||
                         data->canbus_fault ||
@@ -304,38 +310,6 @@ void error_task_fn(void *arg)
     {
         entry = osKernelGetTickCount();
         error_task_update(data, entry);
-//        data->cascadia_error = HAL_GPIO_ReadPin(MTR_Fault_GPIO_Port, MTR_Fault_Pin);
-//		data->imd_fail = HAL_GPIO_ReadPin(IMD_Fail_GPIO_Port, IMD_Fail_Pin);
-//		data->bms_fail = HAL_GPIO_ReadPin(BMS_Fail_GPIO_Port, BMS_Fail_Pin);
-//		data->bspd_fail = HAL_GPIO_ReadPin(BSPD_Fail_GPIO_Port, BSPD_Fail_Pin);
-//
-//		if(!data->board.ams.air_state && !data->imd_fail && !data->bms_fail && !data->bspd_fail) set_ssa(100);
-//		else set_ssa(0);
-//
-////		data->hard_fault = (data->apps_fault ||
-////				            data->bse_fault ||
-////							data->coolant_fault ||
-////							data->cascadia_error
-////						    );
-////		data->hard_fault = (data->coolant_fault ||
-////							data->cascadia_error
-////						    );
-//
-//        data->soft_fault =(data->bppc_fault ||
-//        				   data->cli_fault ||
-//						   data->acc_fault ||
-//						   data->canbus_fault ||
-//						   data->dashboard_fault
-//						   );
-//
-//        if(data->fw_override) set_ecu_ok(data->fw_override_state);
-//        else set_ecu_ok(!data->coolant_fault);
-//        // I believe this needs to be set low on an APPS/BSE fault (rules say disable inverter but no need to disable tractive system)
-//        set_cascadia_enable(!data->hard_fault);
-//
-//        if(data->hard_fault){
-//        	set_ecu_ok(0);
-//        }
         osDelayUntil(entry + (1000 / ERR_FREQ));
     }
 }

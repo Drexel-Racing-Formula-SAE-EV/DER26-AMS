@@ -1,2 +1,0 @@
-../Core/Src/ext_drivers/current_sensor.c:17:6:current_sensor_init	24	static
-../Core/Src/ext_drivers/current_sensor.c:32:7:current_sensor_convert	16	static

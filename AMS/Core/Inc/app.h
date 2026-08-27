@@ -22,16 +22,38 @@
 #include "ext_drivers/voltage_fault.h"
 #include "ext_drivers/temperature_fault.h"
 #include "ext_drivers/air_monitor.h"
+#include "ext_drivers/main_fuse_monitor.h"
+#include "ext_drivers/parallel_connection_observer.h"
 #include "ext_drivers/ams_safety.h"
+#include "ext_drivers/ams_tuning_telemetry.h"
 #include "measurement/ams_measurement.h"
 #include "sop/ams_power_state.h"
 
 #define VER_MAJOR 0
-#define VER_MINOR 3
-#define VER_BUG   0
+#define VER_MINOR 5
+#define VER_BUG   13
+
+/* DER26-CAN-V4 nominal vehicle bitrate. The asynchronous scheduler must remain
+ * safety-correct at 250 kbps; 500 kbps is additional vehicle headroom. The
+ * validated STM32F767 clock tree derives CAN1 from the HSE/PLL path. */
+#ifndef DER26_CAN_BITRATE_KBPS
+#define DER26_CAN_BITRATE_KBPS 500u
+#endif
+#if DER26_CAN_BITRATE_KBPS == 500u
+#define DER26_CAN_PRESCALER 6u
+#elif DER26_CAN_BITRATE_KBPS == 250u
+#define DER26_CAN_PRESCALER 12u
+#else
+#error "DER26 CAN supports only validated 250 or 500 kbps timing"
+#endif
+#define DER26_CAN_SJW CAN_SJW_2TQ
+#define DER26_CAN_BS1 CAN_BS1_15TQ
+#define DER26_CAN_BS2 CAN_BS2_2TQ
+#define DER26_CAN_CONTRACT_NAME "DER26-CAN-V4"
+
 
 #define AMS_BUILD_MANIFEST_MAGIC 0x414D5342u /* 'AMSB' */
-#define AMS_BUILD_MANIFEST_SCHEMA 4u
+#define AMS_BUILD_MANIFEST_SCHEMA 5u
 
 #define AMS_BUILD_FEATURE_HIL_CAN      (1u << 0u)
 #define AMS_BUILD_FEATURE_HIL_ADBMS    (1u << 1u)
@@ -146,15 +168,7 @@
 #error "AMS_HIL_REPLACE_ADBMS requires AMS_ENABLE_HIL_CAN=1"
 #endif
 
-#define AMS_HIL_ADBMS_ASSEMBLY_TIMEOUT_MS 250u
 #define AMS_HIL_ADBMS_IMAGE_TIMEOUT_MS 500u
-
-#if AMS_HIL_ADBMS_ASSEMBLY_TIMEOUT_MS > 0x7FFFFFFFu
-#error "HIL ADBMS assembly timeout must be tick-wrap safe"
-#endif
-#if AMS_HIL_ADBMS_IMAGE_TIMEOUT_MS > 0x7FFFFFFFu
-#error "HIL ADBMS image timeout must be tick-wrap safe"
-#endif
 
 #define ERR_FREQ 20
 #define CLI_FREQ 20
@@ -242,20 +256,31 @@
 #define AMS_STACK_ERROR_WORDS       256u
 #define AMS_STACK_CURRENT_WORDS     256u
 #define AMS_STACK_ADBMS_WORDS      1536u
-#define AMS_STACK_CAN_WORDS         512u
+#define AMS_STACK_CAN_WORDS        1536u
 #define AMS_STACK_ESTIMATOR_WORDS  1536u
 #define AMS_STACK_FAN_WORDS         192u
 #define AMS_STACK_AIR_WORDS         192u
 #define AMS_STACK_IMD_WORDS         192u
 #define AMS_STACK_CLI_WORDS         512u
 
-#define AMS_RTOS_STACK_WARN_WORDS    96u
-#define AMS_RTOS_HEAP_WARN_BYTES   2048u
+/* Stack margin policy. Warn early enough to investigate on bench, and
+ * fail-low before a task is close to corrupting adjacent RTOS state.
+ * Thresholds are the larger of a fixed floor and a percentage of each task's
+ * configured stack, so large CAN/ADBMS/estimator stacks get proportional
+ * headroom while small control tasks retain a conservative absolute floor. */
+#define AMS_RTOS_STACK_WARN_FLOOR_WORDS      96u
+#define AMS_RTOS_STACK_WARN_PERCENT          25u
+#define AMS_RTOS_STACK_CRITICAL_FLOOR_WORDS  64u
+#define AMS_RTOS_STACK_CRITICAL_PERCENT      15u
+#define AMS_RTOS_HEAP_WARN_BYTES           2048u
 
-#define ECU_CANBUS_ID 0x69u
+/* Retired DER25/early-DER26 paged telemetry. If explicitly enabled in a
+ * non-vehicle compatibility build it lives below the V4 detail region, not
+ * at historical 0x069 where it would outrank protected authority. */
+#define AMS_LEGACY_TELEM_CAN_ID 0x6B1u
 
 /* Compact AMS -> ECU safety/status contract. These frames are intentionally
- * separate from the legacy paged 0x069 telemetry stream and the passive logger
+ * separate from the legacy paged compatibility telemetry stream and the passive logger
  * 0x690+ stream. ECU should use these for runtime gating; full cell/temp data
  * can stay slow/logger-side during staged bench bring-up. */
 #define AMS_ECU_CAN_ID_STATUS      0x680u
@@ -269,6 +294,7 @@
 #define AMS_ECU_CAN_ID_MISSION_REQUEST 0x688u
 #define AMS_ECU_CAN_ID_STRATEGY_STATUS 0x689u
 #define AMS_ECU_CAN_ID_SOP_BINDINGS  0x68Au
+#define AMS_ECU_CAN_ID_CURRENT_DIAG  0x68Bu
 #define AMS_CAN_ECU_FAST_FREQ_HZ   10u
 #define AMS_CAN_ECU_FAST_PERIOD_MS (1000u / AMS_CAN_ECU_FAST_FREQ_HZ)
 
@@ -297,8 +323,11 @@ typedef struct
     uint8_t profile;
     uint16_t feature_flags;
     uint8_t estimator_topology;
+    uint32_t config_fingerprint;
     const char *profile_name;
     const char *git_commit;
+    const char *build_date;
+    const char *build_time;
 	const char *estimator_model_revision;
 	const char *sop_model_revision;
 	const char *soh_model_revision;
@@ -393,6 +422,67 @@ typedef enum
 } ams_heartbeat_id_t;
 
 
+/* Persistent ADBMS fault classification.  The legacy boolean fields remain
+ * for compatibility, while these masks make the exact active and historical
+ * causes visible to CLI/CAN diagnostics. */
+#define AMS_ADBMS_FAULT_COMMUNICATION      (1u << 0u)
+#define AMS_ADBMS_FAULT_PEC                (1u << 1u)
+#define AMS_ADBMS_FAULT_COMMAND_COUNTER    (1u << 2u)
+#define AMS_ADBMS_FAULT_CONFIG_READBACK    (1u << 3u)
+#define AMS_ADBMS_FAULT_REFERENCE          (1u << 4u)
+#define AMS_ADBMS_FAULT_S_REDUNDANCY       (1u << 5u)
+#define AMS_ADBMS_FAULT_TEMP_UNAVAILABLE   (1u << 6u)
+#define AMS_ADBMS_FAULT_CELL_DATA_STALE    (1u << 7u)
+#define AMS_ADBMS_FAULT_OPEN_WIRE          (1u << 8u)
+#define AMS_ADBMS_FAULT_BALANCE_WRITE      (1u << 9u)
+#define AMS_ADBMS_FAULT_STATUS             (1u << 10u)
+#define AMS_ADBMS_FAULT_IDENTITY           (1u << 11u)
+#define AMS_ADBMS_FAULT_C_DATA_INVALID     (1u << 12u)
+#define AMS_ADBMS_FAULT_TOPOLOGY           (1u << 13u)
+#define AMS_ADBMS_FAULT_VOLTAGE_DEGRADED   (1u << 14u)
+#define AMS_ADBMS_FAULT_DEVICE_RESET       (1u << 15u)
+
+/* Explicit C-channel authority proof.  This is intentionally separate from
+ * generic voltage_valid so a consumer can distinguish "fresh primary data"
+ * from "independent C/S redundancy passed". */
+#define AMS_ADBMS_C_AUTH_TRANSPORT          (1u << 0u)
+#define AMS_ADBMS_C_AUTH_PEC                (1u << 1u)
+#define AMS_ADBMS_C_AUTH_COUNTER            (1u << 2u)
+#define AMS_ADBMS_C_AUTH_CODES              (1u << 3u)
+#define AMS_ADBMS_C_AUTH_RANGE              (1u << 4u)
+#define AMS_ADBMS_C_AUTH_SLEW               (1u << 5u)
+#define AMS_ADBMS_C_AUTH_FRESH              (1u << 6u)
+#define AMS_ADBMS_C_AUTH_CONFIG             (1u << 7u)
+#define AMS_ADBMS_C_AUTH_REFERENCE          (1u << 8u)
+#define AMS_ADBMS_C_AUTH_IDENTITY           (1u << 9u)
+#define AMS_ADBMS_C_AUTH_TOPOLOGY           (1u << 10u)
+#define AMS_ADBMS_C_AUTH_REQUIRED_MASK      ((1u << 11u) - 1u)
+
+typedef enum
+{
+    AMS_ADBMS_STATE_OFFLINE = 0,
+    AMS_ADBMS_STATE_WAKING,
+    AMS_ADBMS_STATE_IDENTIFIED,
+    AMS_ADBMS_STATE_CONFIGURING,
+    AMS_ADBMS_STATE_MEASURING,
+    AMS_ADBMS_STATE_READY_REDUNDANT,
+    AMS_ADBMS_STATE_READY_C_ONLY_DEGRADED,
+    AMS_ADBMS_STATE_FAULTED,
+    AMS_ADBMS_STATE_RECOVERING
+} ams_adbms_state_t;
+
+typedef enum
+{
+    AMS_ADBMS_STATE_REASON_BOOT = 0,
+    AMS_ADBMS_STATE_REASON_SCAN_BEGIN,
+    AMS_ADBMS_STATE_REASON_IDENTITY_OK,
+    AMS_ADBMS_STATE_REASON_CONFIG_OK,
+    AMS_ADBMS_STATE_REASON_MEASUREMENT_OK,
+    AMS_ADBMS_STATE_REASON_FAULT_ACTIVE,
+    AMS_ADBMS_STATE_REASON_RECOVERY_REQUEST,
+    AMS_ADBMS_STATE_REASON_RECOVERY_RESULT
+} ams_adbms_state_reason_t;
+
 typedef enum
 {
     AMS_RTOS_TASK_ERROR = 0,
@@ -422,6 +512,7 @@ typedef enum
 #define AMS_RTOS_FAULT_FLAG_ASSERT_FAILED  (1u << 2u)
 #define AMS_RTOS_FAULT_FLAG_LOW_STACK_WARN (1u << 3u)
 #define AMS_RTOS_FAULT_FLAG_LOW_HEAP_WARN  (1u << 4u)
+#define AMS_RTOS_FAULT_FLAG_LOW_STACK_CRITICAL (1u << 5u)
 
 #define AMS_HEARTBEAT_BIT(id) ((uint16_t)(1u << (uint16_t)(id)))
 #define AMS_HEARTBEAT_SAFETY_MASK (AMS_HEARTBEAT_BIT(AMS_HEARTBEAT_ADBMS) | \
@@ -437,6 +528,8 @@ typedef struct
 {
 	uint32_t boot_tick;
 	uint32_t last_tick[AMS_HEARTBEAT_COUNT];
+	uint32_t last_gap_ms[AMS_HEARTBEAT_COUNT];
+	uint32_t max_gap_ms[AMS_HEARTBEAT_COUNT];
 	uint32_t count[AMS_HEARTBEAT_COUNT];
 	uint16_t seen_mask;
 	uint16_t stale_mask;
@@ -489,6 +582,9 @@ struct app_data_t
 	uint32_t can_tx_detail_phase_count;
 	uint32_t can_tx_detail_phase_fail_count;
 	uint32_t can_tx_detail_suppressed_count;
+	uint32_t can_tuning_suppression_count;
+	uint32_t can_tuning_suppression_reason_mask;
+	bool can_tuning_suppressed;
 	uint32_t can_task_cycle_count;
 	uint32_t can_task_deadline_miss_count;
 	uint32_t can_task_last_duration_ms;
@@ -505,11 +601,13 @@ struct app_data_t
     uint16_t rtos_stack_config_words[AMS_RTOS_TASK_COUNT];
     uint16_t rtos_min_stack_high_water_words;
     uint16_t rtos_stack_warn_mask;
+    uint16_t rtos_stack_critical_mask;
     uint16_t rtos_fault_flags;
     uint8_t rtos_last_fault_reason;
     uint8_t rtos_last_fault_task;
     bool rtos_fault;
     bool rtos_stack_warning;
+    bool rtos_stack_critical;
     bool rtos_heap_warning;
 
 	bool fan_fault;
@@ -526,6 +624,10 @@ struct app_data_t
 	current_fault_mode_t current_fault_mode;
 	current_fault_state_t current_fault_state;
 	bool fuse_fault;
+	/* Main-fuse/HV-path plausibility remains unavailable on current hardware
+	 * until independent load-side voltage and AIR auxiliary feedback exist. */
+	ams_main_fuse_monitor_t main_fuse_monitor;
+	ams_parallel_connection_observer_t parallel_connection_observer;
 	bool temp_fault;
 	bool temp_valid;
 	bool temp_read_fault;
@@ -561,6 +663,8 @@ struct app_data_t
 	bool voltage_fault;
 	bool voltage_valid;
 	bool voltage_read_fault;
+	bool voltage_read_fault_pending;
+	uint8_t voltage_read_fault_streak;
 	bool voltage_warning;
 	bool charge_voltage_stop;
 	bool overvoltage_fault;
@@ -589,6 +693,9 @@ struct app_data_t
 	 * sense, not proof of AIR+, AIR- or precharge contact position. */
 	bool air_state;
 	ams_air_monitor_t air_monitor;
+	/* Coherent raw input image retained for diagnostics and the main-fuse
+	 * plausibility observer. All valid bits remain false on current hardware. */
+	ams_air_monitor_inputs_t air_monitor_inputs;
 	bool imd_ok;
 	bool imd_valid;
 	bool imd_fault;
@@ -608,7 +715,62 @@ struct app_data_t
 	 * until reset. A later pass may restore measurement freshness, but cannot
 	 * silently restore BMS permission in the same boot. */
 	bool adbms_open_wire_fault;
+	bool adbms_open_wire_restore_fault;
+	adbms6830_open_wire_path_t adbms_open_wire_last_path;
+	uint16_t adbms_sense_path_open_mask[NSMBS];
+	uint16_t adbms_sense_path_open_sticky_mask[NSMBS];
 	bool adbms_balance_write_fault;
+	volatile bool adbms_urgent_mute_requested;
+	bool adbms_mute_asserted;
+	bool adbms_balance_durable_zero_verified;
+	accumulator_balance_inhibit_reason_t adbms_balance_inhibit_reason;
+	uint32_t adbms_urgent_mute_request_count;
+	uint32_t adbms_urgent_mute_service_count;
+	uint32_t adbms_urgent_mute_fail_count;
+	uint32_t adbms_aux2_diag_count;
+	uint32_t adbms_aux2_diag_fail_count;
+	uint32_t adbms_aux2_next_due_tick;
+	uint8_t adbms_aux2_next_sensor;
+	uint32_t adbms_therm_ow_diag_count;
+	uint32_t adbms_therm_ow_diag_fail_count;
+	uint32_t adbms_therm_ow_last_tick;
+	uint8_t adbms_therm_ow_next_sensor;
+	uint32_t adbms_s_diag_last_tick;
+	uint32_t adbms_post_fail_count;
+	/* Detailed active/latched reasons supplement the legacy aggregate flags. */
+	uint16_t adbms_fault_active_mask;
+	uint16_t adbms_fault_latched_mask;
+	uint16_t adbms_first_fault_mask;
+	uint16_t adbms_fault_injection_mask;
+	uint16_t adbms_c_authority_mask;
+	uint8_t adbms_fault_injection_cell;
+	bool adbms_c_authority_valid;
+	bool adbms_voltage_scan_attempted;
+	bool adbms_last_voltage_scan_ok;
+	bool adbms_voltage_redundancy_degraded;
+	ams_adbms_state_t adbms_lifecycle_state;
+	ams_adbms_state_t adbms_lifecycle_previous_state;
+	ams_adbms_state_reason_t adbms_lifecycle_reason;
+	uint32_t adbms_lifecycle_transition_count;
+	uint32_t adbms_lifecycle_last_transition_tick;
+	uint32_t adbms_first_fault_tick;
+	uint32_t adbms_last_fault_tick;
+	uint32_t adbms_last_recovery_tick;
+	uint32_t adbms_fault_transition_count;
+	uint32_t adbms_device_reset_count;
+	uint32_t adbms_device_reset_driver_count_seen;
+	uint16_t adbms_last_device_reset_mask;
+	uint32_t adbms_c_last_valid_tick;
+	uint32_t adbms_s_last_valid_tick;
+	uint32_t adbms_temp_last_valid_tick;
+	uint32_t adbms_status_last_valid_tick;
+	uint32_t adbms_config_last_valid_tick;
+	uint32_t adbms_identity_last_valid_tick;
+	uint32_t adbms_config_expected_fingerprint;
+	uint32_t adbms_config_readback_fingerprint;
+	uint16_t adbms_balance_shadow_plan[NSMBS];
+	uint32_t adbms_balance_shadow_plan_tick;
+	uint32_t adbms_comm_failure_count;
 	bool adbms_scan_active;
 	bool adbms_balance_active;
 	uint32_t adbms_scan_count;
@@ -620,10 +782,19 @@ struct app_data_t
 	uint32_t adbms_scan_deadline_miss_count;
 	uint32_t adbms_last_scan_duration_ms;
 	uint32_t adbms_max_scan_duration_ms;
+	uint32_t adbms_last_scan_cpu_us;
+	uint32_t adbms_max_scan_cpu_us;
+	uint32_t adbms_last_scan_yield_us;
+	uint32_t adbms_max_scan_yield_us;
 	uint32_t adbms_last_schedule_interval_ms;
 	uint32_t adbms_last_balance_on_ms;
 	uint32_t adbms_last_balance_off_ms;
 	uint32_t adbms_balance_apply_tick;
+	uint32_t adbms_spi_lock_acquire_count;
+	uint32_t adbms_spi_lock_contention_count;
+	uint32_t adbms_spi_lock_max_wait_ticks;
+	uint32_t adbms_spi_lock_max_hold_ticks;
+	uint32_t adbms_spi_lock_violation_count;
 	HAL_StatusTypeDef adbms_last_diag_status;
 	bool task_heartbeat_fault;
 	bool logger_heartbeat_fault;
@@ -647,6 +818,7 @@ struct app_data_t
 	ams_estimator_t estimator;
 	ams_power_state_t power_state;
 	ams_power_can_snapshot_t power_can_snapshot;
+	ams_tuning_store_t tuning_store;
 	ams_mission_request_state_t mission_request;
 	ams_current_window_accumulator_t current_window;
 	ams_measurement_store_t measurement_store;
@@ -776,5 +948,11 @@ void ams_heartbeat_kick(app_data_t *data, ams_heartbeat_id_t id, uint32_t now);
 uint16_t ams_heartbeat_update(app_data_t *data, uint32_t now);
 uint32_t ams_heartbeat_timeout_ms(ams_heartbeat_id_t id);
 const char *ams_heartbeat_name(ams_heartbeat_id_t id);
+const char *ams_adbms_state_str(ams_adbms_state_t state);
+const char *ams_adbms_state_reason_str(ams_adbms_state_reason_t reason);
+void ams_adbms_transition_state(app_data_t *data,
+                                ams_adbms_state_t next,
+                                ams_adbms_state_reason_t reason,
+                                uint32_t now);
 
 #endif /* INC_APP_H_ */

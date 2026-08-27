@@ -1,4 +1,0 @@
-../Core/Src/ext_drivers/adbms_shared.c:37:10:Pec15_Calc	24	static
-../Core/Src/ext_drivers/adbms_shared.c:50:10:pec10_calc	32	static
-../Core/Src/ext_drivers/adbms_shared.c:96:10:pec10_calc_int	24	static
-../Core/Src/ext_drivers/adbms_shared.c:117:10:pec10_calc_modular	24	static

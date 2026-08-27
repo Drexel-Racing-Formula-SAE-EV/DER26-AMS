@@ -20,6 +20,7 @@
 #include "tasks/estimator_task.h"
 #include "ext_drivers/ams_rtos_diag.h"
 #include "task.h"
+#include <string.h>
 
 app_data_t app = {0};
 
@@ -29,8 +30,11 @@ const ams_build_manifest_t ams_build_manifest = {
     .profile = AMS_BUILD_PROFILE,
     .feature_flags = AMS_BUILD_FEATURE_FLAGS_VALUE,
     .estimator_topology = AMS_ESTIMATOR_DEFAULT_TOPOLOGY,
+    .config_fingerprint = AMS_BUILD_CONFIG_FINGERPRINT,
     .profile_name = AMS_BUILD_PROFILE_NAME,
     .git_commit = AMS_BUILD_GIT_COMMIT,
+    .build_date = __DATE__,
+    .build_time = __TIME__,
 	.estimator_model_revision = AMS_ESTIMATOR_MODEL_REVISION,
 	.sop_model_revision = AMS_SOP_MODEL_REVISION,
 	.soh_model_revision = AMS_SOH_MODEL_REVISION,
@@ -40,6 +44,9 @@ const ams_build_manifest_t ams_build_manifest = {
 };
 static osMutexId_t adbms_spi_mutex;
 static StaticSemaphore_t adbms_spi_mutex_cb;
+static TaskHandle_t adbms_spi_owner;
+static uint16_t adbms_spi_lock_depth;
+static uint32_t adbms_spi_lock_acquired_tick;
 static osMutexId_t current_window_mutex;
 static StaticSemaphore_t current_window_mutex_cb;
 
@@ -106,6 +113,80 @@ const char *ams_heartbeat_name(ams_heartbeat_id_t id)
 	}
 }
 
+const char *ams_adbms_state_str(ams_adbms_state_t state)
+{
+    switch(state)
+    {
+    case AMS_ADBMS_STATE_OFFLINE: return "offline";
+    case AMS_ADBMS_STATE_WAKING: return "waking";
+    case AMS_ADBMS_STATE_IDENTIFIED: return "identified";
+    case AMS_ADBMS_STATE_CONFIGURING: return "configuring";
+    case AMS_ADBMS_STATE_MEASURING: return "measuring";
+    case AMS_ADBMS_STATE_READY_REDUNDANT: return "ready_redundant";
+    case AMS_ADBMS_STATE_READY_C_ONLY_DEGRADED: return "ready_c_only";
+    case AMS_ADBMS_STATE_FAULTED: return "faulted";
+    case AMS_ADBMS_STATE_RECOVERING: return "recovering";
+    default: return "unknown";
+    }
+}
+
+const char *ams_adbms_state_reason_str(ams_adbms_state_reason_t reason)
+{
+    switch(reason)
+    {
+    case AMS_ADBMS_STATE_REASON_BOOT: return "boot";
+    case AMS_ADBMS_STATE_REASON_SCAN_BEGIN: return "scan_begin";
+    case AMS_ADBMS_STATE_REASON_IDENTITY_OK: return "identity_ok";
+    case AMS_ADBMS_STATE_REASON_CONFIG_OK: return "config_ok";
+    case AMS_ADBMS_STATE_REASON_MEASUREMENT_OK: return "measurement_ok";
+    case AMS_ADBMS_STATE_REASON_FAULT_ACTIVE: return "fault_active";
+    case AMS_ADBMS_STATE_REASON_RECOVERY_REQUEST: return "recovery_request";
+    case AMS_ADBMS_STATE_REASON_RECOVERY_RESULT: return "recovery_result";
+    default: return "unknown";
+    }
+}
+
+
+void ams_adbms_transition_state(app_data_t *data,
+                                ams_adbms_state_t next,
+                                ams_adbms_state_reason_t reason,
+                                uint32_t now)
+{
+    ams_adbms_state_t previous;
+    uint16_t active_mask;
+
+    if(data == NULL)
+    {
+        return;
+    }
+
+    taskENTER_CRITICAL();
+    previous = data->adbms_lifecycle_state;
+    if(previous == next)
+    {
+        data->adbms_lifecycle_reason = reason;
+        taskEXIT_CRITICAL();
+        return;
+    }
+
+    data->adbms_lifecycle_previous_state = previous;
+    data->adbms_lifecycle_state = next;
+    data->adbms_lifecycle_reason = reason;
+    data->adbms_lifecycle_last_transition_tick = now;
+    if(data->adbms_lifecycle_transition_count != UINT32_MAX)
+    {
+        data->adbms_lifecycle_transition_count++;
+    }
+    active_mask = data->adbms_fault_active_mask;
+    taskEXIT_CRITICAL();
+
+    ams_fault_log_event(AMS_FAULT_LOG_ADBMS_STATE_TRANSITION,
+                        (uint16_t)reason,
+                        (((uint32_t)previous & 0xFFu) << 8u) |
+                            ((uint32_t)next & 0xFFu),
+                        active_mask);
+}
+
 void ams_heartbeat_init(app_data_t *data, uint32_t now)
 {
 	if(data == NULL)
@@ -121,6 +202,8 @@ void ams_heartbeat_init(app_data_t *data, uint32_t now)
 	for(uint8_t i = 0u; i < (uint8_t)AMS_HEARTBEAT_COUNT; i++)
 	{
 		data->heartbeat.last_tick[i] = now;
+		data->heartbeat.last_gap_ms[i] = 0u;
+		data->heartbeat.max_gap_ms[i] = 0u;
 		data->heartbeat.count[i] = 0u;
 	}
 
@@ -140,6 +223,15 @@ void ams_heartbeat_kick(app_data_t *data, ams_heartbeat_id_t id, uint32_t now)
 	/* Multiple tasks kick different bits in the same mask.  Protect the whole
 	 * read-modify-write so one preemption cannot erase another task's kick. */
 	taskENTER_CRITICAL();
+    if(data->heartbeat.count[id] != 0u)
+    {
+        uint32_t gap = (uint32_t)(now - data->heartbeat.last_tick[id]);
+        data->heartbeat.last_gap_ms[id] = gap;
+        if(gap > data->heartbeat.max_gap_ms[id])
+        {
+            data->heartbeat.max_gap_ms[id] = gap;
+        }
+    }
 	data->heartbeat.last_tick[id] = now;
 	if(data->heartbeat.count[id] != UINT32_MAX)
 	{
@@ -207,20 +299,101 @@ uint16_t ams_heartbeat_update(app_data_t *data, uint32_t now)
 
 void adbms_spi_lock(void)
 {
+	uint32_t wait_start;
+	uint32_t acquired_tick;
+	TaskHandle_t current_owner;
+
 	if(adbms_spi_mutex == NULL)
 	{
 		adbms_spi_lock_panic(AMS_PANIC_MUTEX_ACQUIRE_FAILED);
 	}
 
+	wait_start = osKernelGetTickCount();
 	if(osMutexAcquire(adbms_spi_mutex, AMS_ADBMS_MUTEX_TIMEOUT_TICKS) != osOK)
 	{
 		adbms_spi_lock_panic(AMS_PANIC_MUTEX_ACQUIRE_FAILED);
 	}
+
+	acquired_tick = osKernelGetTickCount();
+	current_owner = xTaskGetCurrentTaskHandle();
+	taskENTER_CRITICAL();
+	if(app.adbms_spi_lock_acquire_count != UINT32_MAX)
+	{
+		app.adbms_spi_lock_acquire_count++;
+	}
+	uint32_t wait_ticks = (uint32_t)(acquired_tick - wait_start);
+	if(wait_ticks != 0u)
+	{
+		if(app.adbms_spi_lock_contention_count != UINT32_MAX)
+		{
+			app.adbms_spi_lock_contention_count++;
+		}
+		if(wait_ticks > app.adbms_spi_lock_max_wait_ticks)
+		{
+			app.adbms_spi_lock_max_wait_ticks = wait_ticks;
+		}
+	}
+
+	if(adbms_spi_lock_depth == 0u)
+	{
+		adbms_spi_owner = current_owner;
+		adbms_spi_lock_depth = 1u;
+		adbms_spi_lock_acquired_tick = acquired_tick;
+	}
+	else if(adbms_spi_owner == current_owner)
+	{
+		if(adbms_spi_lock_depth != UINT16_MAX)
+		{
+			adbms_spi_lock_depth++;
+		}
+	}
+	else
+	{
+		if(app.adbms_spi_lock_violation_count != UINT32_MAX)
+		{
+			app.adbms_spi_lock_violation_count++;
+		}
+		taskEXIT_CRITICAL();
+		adbms_spi_lock_panic(AMS_PANIC_MUTEX_ACQUIRE_FAILED);
+	}
+	taskEXIT_CRITICAL();
 }
 
 void adbms_spi_unlock(void)
 {
-	if((adbms_spi_mutex == NULL) || (osMutexRelease(adbms_spi_mutex) != osOK))
+	TaskHandle_t current_owner = xTaskGetCurrentTaskHandle();
+	uint32_t now = osKernelGetTickCount();
+
+	if(adbms_spi_mutex == NULL)
+	{
+		adbms_spi_lock_panic(AMS_PANIC_MUTEX_RELEASE_FAILED);
+	}
+
+	taskENTER_CRITICAL();
+	if((adbms_spi_lock_depth == 0u) || (adbms_spi_owner != current_owner))
+	{
+		if(app.adbms_spi_lock_violation_count != UINT32_MAX)
+		{
+			app.adbms_spi_lock_violation_count++;
+		}
+		taskEXIT_CRITICAL();
+		adbms_spi_lock_panic(AMS_PANIC_MUTEX_RELEASE_FAILED);
+	}
+
+	adbms_spi_lock_depth--;
+	if(adbms_spi_lock_depth == 0u)
+	{
+		uint32_t hold_ticks = (uint32_t)(now - adbms_spi_lock_acquired_tick);
+		if(hold_ticks > app.adbms_spi_lock_max_hold_ticks)
+		{
+			app.adbms_spi_lock_max_hold_ticks = hold_ticks;
+		}
+		adbms_spi_owner = NULL;
+		adbms_spi_lock_acquired_tick = 0u;
+	}
+	taskEXIT_CRITICAL();
+
+	if(osMutexRelease(adbms_spi_mutex) != osOK)
 	{
 		adbms_spi_lock_panic(AMS_PANIC_MUTEX_RELEASE_FAILED);
 	}
@@ -281,6 +454,8 @@ void app_create(void)
 	app.current_fault_mode = CURRENT_FAULT_MODE_IDLE;
 	current_fault_init(&app.current_fault_state);
 	app.fuse_fault = false;
+	ams_main_fuse_monitor_init(&app.main_fuse_monitor);
+	ams_parallel_connection_observer_init(&app.parallel_connection_observer);
 	app.temp_fault = true;
 	app.temp_valid = false;
 	app.temp_read_fault = true;
@@ -350,7 +525,64 @@ void app_create(void)
 	app.adbms_config_fault = false;
 	app.adbms_status_fault = false;
 	app.adbms_open_wire_fault = false;
+	app.adbms_open_wire_restore_fault = false;
+	app.adbms_open_wire_last_path = ADBMS6830_OPEN_WIRE_PATH_C;
+	memset(app.adbms_sense_path_open_mask, 0,
+	       sizeof(app.adbms_sense_path_open_mask));
+	memset(app.adbms_sense_path_open_sticky_mask, 0,
+	       sizeof(app.adbms_sense_path_open_sticky_mask));
 	app.adbms_balance_write_fault = false;
+    app.adbms_urgent_mute_requested = false;
+    app.adbms_mute_asserted = false;
+    app.adbms_balance_durable_zero_verified = false;
+    app.adbms_balance_inhibit_reason = ACCUMULATOR_BALANCE_INHIBIT_NONE;
+    app.adbms_urgent_mute_request_count = 0u;
+    app.adbms_urgent_mute_service_count = 0u;
+    app.adbms_urgent_mute_fail_count = 0u;
+    app.adbms_aux2_diag_count = 0u;
+    app.adbms_aux2_diag_fail_count = 0u;
+    app.adbms_aux2_next_due_tick = 0u;
+    app.adbms_aux2_next_sensor = 0u;
+    app.adbms_therm_ow_diag_count = 0u;
+    app.adbms_therm_ow_diag_fail_count = 0u;
+    app.adbms_therm_ow_last_tick = 0u;
+    app.adbms_therm_ow_next_sensor = 0u;
+    app.adbms_s_diag_last_tick = 0u;
+    app.adbms_post_fail_count = 0u;
+	app.adbms_fault_active_mask = 0u;
+	app.adbms_fault_latched_mask = 0u;
+	app.adbms_first_fault_mask = 0u;
+	app.adbms_fault_injection_mask = 0u;
+	app.adbms_fault_injection_cell = 0u;
+	app.adbms_c_authority_mask = 0u;
+	app.adbms_c_authority_valid = false;
+	app.adbms_voltage_scan_attempted = false;
+	app.adbms_last_voltage_scan_ok = false;
+	app.adbms_voltage_redundancy_degraded = false;
+	app.adbms_lifecycle_state = AMS_ADBMS_STATE_OFFLINE;
+	app.adbms_lifecycle_previous_state = AMS_ADBMS_STATE_OFFLINE;
+	app.adbms_lifecycle_reason = AMS_ADBMS_STATE_REASON_BOOT;
+	app.adbms_lifecycle_transition_count = 0u;
+	app.adbms_lifecycle_last_transition_tick = 0u;
+	app.adbms_first_fault_tick = 0u;
+	app.adbms_last_fault_tick = 0u;
+	app.adbms_last_recovery_tick = 0u;
+	app.adbms_fault_transition_count = 0u;
+	app.adbms_device_reset_count = 0u;
+	app.adbms_device_reset_driver_count_seen = 0u;
+	app.adbms_last_device_reset_mask = 0u;
+	app.adbms_c_last_valid_tick = 0u;
+	app.adbms_s_last_valid_tick = 0u;
+	app.adbms_temp_last_valid_tick = 0u;
+	app.adbms_status_last_valid_tick = 0u;
+	app.adbms_config_last_valid_tick = 0u;
+	app.adbms_identity_last_valid_tick = 0u;
+	app.adbms_config_expected_fingerprint = 0u;
+	app.adbms_config_readback_fingerprint = 0u;
+	memset(app.adbms_balance_shadow_plan,
+	       0,
+	       sizeof(app.adbms_balance_shadow_plan));
+	app.adbms_balance_shadow_plan_tick = 0u;
 	app.adbms_scan_active = false;
 	app.adbms_balance_active = false;
 	app.adbms_scan_count = 0u;
@@ -362,10 +594,19 @@ void app_create(void)
 	app.adbms_scan_deadline_miss_count = 0u;
 	app.adbms_last_scan_duration_ms = 0u;
 	app.adbms_max_scan_duration_ms = 0u;
+    app.adbms_last_scan_cpu_us = 0u;
+    app.adbms_max_scan_cpu_us = 0u;
+    app.adbms_last_scan_yield_us = 0u;
+    app.adbms_max_scan_yield_us = 0u;
 	app.adbms_last_schedule_interval_ms = AMS_ADBMS_TASK_PERIOD_MS;
 	app.adbms_last_balance_on_ms = 0u;
 	app.adbms_last_balance_off_ms = 0u;
 	app.adbms_balance_apply_tick = 0u;
+	app.adbms_spi_lock_acquire_count = 0u;
+	app.adbms_spi_lock_contention_count = 0u;
+	app.adbms_spi_lock_max_wait_ticks = 0u;
+	app.adbms_spi_lock_max_hold_ticks = 0u;
+	app.adbms_spi_lock_violation_count = 0u;
 	app.adbms_last_diag_status = HAL_OK;
 	app.task_heartbeat_fault = false;
 	app.logger_heartbeat_fault = false;
@@ -393,6 +634,7 @@ void app_create(void)
 	app.air_state = false;
 	ams_air_monitor_init(&app.air_monitor,
 	                     (AMS_ENABLE_AIR_AUX_FEEDBACK != 0));
+	app.air_monitor_inputs = (ams_air_monitor_inputs_t){0};
 	/* Fail closed until the IMD driver and capture path have produced a
 	 * validated result.  The IMD task is currently disabled on this board, so
 	 * treating the value as healthy here would be unsafe. */
@@ -462,6 +704,10 @@ void app_create(void)
 		adbms_spi_lock_panic(AMS_PANIC_MUTEX_CREATE_FAILED);
 	}
 
+    ams_adbms_transition_state(&app,
+                               AMS_ADBMS_STATE_WAKING,
+                               AMS_ADBMS_STATE_REASON_SCAN_BEGIN,
+                               osKernelGetTickCount());
 	accumulator_init(&app.acc,
 					 app.board.stm32f767z.hspi6,
 					 CS_A_GPIO_Port,
@@ -469,17 +715,60 @@ void app_create(void)
 					 CS_A_Pin,
 					 CS_B_Pin,
 					 app.board.stm32f767z.htim1);
+    app.adbms_mute_asserted = app.acc.last_balance_mute_ok;
+    app.adbms_balance_durable_zero_verified =
+        app.acc.last_balance_durable_zero_verified;
+    app.adbms_balance_inhibit_reason =
+        (accumulator_balance_inhibit_reason_t)app.acc.last_balance_inhibit_reason;
+    app.adbms_post_fail_count = app.acc.smb.post.fail_count;
+    if(app.acc.smb_ready)
+    {
+        ams_adbms_transition_state(&app,
+                                   AMS_ADBMS_STATE_IDENTIFIED,
+                                   AMS_ADBMS_STATE_REASON_IDENTITY_OK,
+                                   osKernelGetTickCount());
+        ams_adbms_transition_state(&app,
+                                   AMS_ADBMS_STATE_CONFIGURING,
+                                   AMS_ADBMS_STATE_REASON_CONFIG_OK,
+                                   osKernelGetTickCount());
+        ams_adbms_transition_state(&app,
+                                   AMS_ADBMS_STATE_MEASURING,
+                                   AMS_ADBMS_STATE_REASON_SCAN_BEGIN,
+                                   osKernelGetTickCount());
+    }
+    else
+    {
+        ams_adbms_transition_state(&app,
+                                   AMS_ADBMS_STATE_FAULTED,
+                                   AMS_ADBMS_STATE_REASON_FAULT_ACTIVE,
+                                   osKernelGetTickCount());
+    }
+#if AMS_VOLTAGE_MODE == AMS_VOLTAGE_MODE_C_ONLY_MVP
+	/* Compile-time only degraded authority.  There is intentionally no runtime
+	 * fallback into this state after an S-channel fault. */
+	app.adbms_voltage_redundancy_degraded = true;
+	app.adbms_fault_active_mask |= AMS_ADBMS_FAULT_VOLTAGE_DEGRADED;
+	app.adbms_fault_latched_mask |= AMS_ADBMS_FAULT_VOLTAGE_DEGRADED;
+#endif
 #if !AMS_HIL_REPLACE_ADBMS
-	if(!app.acc.delay_timer_ready || !app.acc.smb_ready)
+	if(!app.acc.delay_timer_ready || !app.acc.smb_transport_ready)
 	{
 		/* ADBMS startup is not trustworthy without the microsecond timer and a
-		 * successful reset/config write/readback sequence. Keep the supervisor inhibited
-		 * even if a later undelayed transaction happens to return data. */
+		 * transport-clean identity/configuration/Status image. */
 		app.adbms_status_fault = true;
 		app.adbms_diag_fault = true;
-		app.adbms_last_diag_status = !app.acc.smb_ready ?
+		app.adbms_last_diag_status = !app.acc.smb_transport_ready ?
 		                             app.acc.smb_init_status :
 		                             app.acc.delay_timer_status;
+	}
+	else if(!app.acc.smb_ready)
+	{
+		/* The bus and primary measurement path are usable, but a safety-policy
+		 * class such as CSxFLT still blocks the normal redundant build.  Preserve
+		 * the inhibit without mislabeling the Status transport as failed. */
+		app.adbms_status_fault = false;
+		app.adbms_diag_fault = true;
+		app.adbms_last_diag_status = HAL_OK;
 	}
 #endif
 	(void)cli_uart_start_rx(&app.board.cli);
@@ -544,6 +833,35 @@ void set_bms(bool state)
 {
 	bool previous = app.bms_state;
 	bool assertion_owner = false;
+
+#if !AMS_PROFILE_BMS_RUNTIME_AUTHORITY_ALLOWED
+    /* Observation profiles are immutable no-authority images. This final hardware writer
+     * does not trust the mutable runtime inhibit as the only barrier.  Convert
+     * every attempted assertion into an ordinary fail-low call so the urgent
+     * ASIC balance-mute path is requested as well. */
+    if(state)
+    {
+        if(app.bms_output_block_count != UINT32_MAX)
+        {
+            app.bms_output_block_count++;
+        }
+        app.bms_output_inhibit = true;
+        state = false;
+    }
+#endif
+
+    /* Any fail-low BMS_OK decision also requests the ASIC-native fast balance
+     * kill.  The ADBMS task services this flag at interruptible wait boundaries
+     * while it owns the recursive transport mutex; high-priority safety tasks
+     * never block waiting for SPI ownership. */
+    if(!state && !app.adbms_urgent_mute_requested)
+    {
+        app.adbms_urgent_mute_requested = true;
+        if(app.adbms_urgent_mute_request_count != UINT32_MAX)
+        {
+            app.adbms_urgent_mute_request_count++;
+        }
+    }
 
 	if(state && (app.error_task != NULL))
 	{

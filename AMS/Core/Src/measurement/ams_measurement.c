@@ -423,10 +423,14 @@ void ams_measurement_snapshot_prepare(ams_measurement_snapshot_t *snapshot,
             continue;
         }
         snapshot->cell_usable_mask[seg] = acc->usable_voltage_mask[seg];
+        snapshot->cell_avg8_usable_mask[seg] = acc->avg8_usable_voltage_mask[seg];
+        snapshot->cell_iir_usable_mask[seg] = acc->iir_usable_voltage_mask[seg];
         snapshot->temp_usable_mask[seg] = acc->usable_temp_mask[seg];
         for(uint8_t cell = 0u; cell < NCELLS; cell++)
         {
             snapshot->cell_mv[seg][cell] = acc->cell_voltage_mv[seg][cell];
+            snapshot->cell_avg8_mv[seg][cell] = acc->cell_voltage_avg8_mv[seg][cell];
+            snapshot->cell_iir_mv[seg][cell] = acc->cell_voltage_iir_mv[seg][cell];
             snapshot->cell_age_ms[seg][cell] =
                 (uint32_t)(voltage_complete_tick -
                            acc->cell_voltage_last_update_ms[seg][cell]);

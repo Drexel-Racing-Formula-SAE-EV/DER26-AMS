@@ -368,11 +368,11 @@ static void MX_CAN1_Init(void)
 
   /* USER CODE END CAN1_Init 1 */
   hcan1.Instance = CAN1;
-  hcan1.Init.Prescaler = 12;
+  hcan1.Init.Prescaler = DER26_CAN_PRESCALER;
   hcan1.Init.Mode = CAN_MODE_NORMAL;
-  hcan1.Init.SyncJumpWidth = CAN_SJW_1TQ;
-  hcan1.Init.TimeSeg1 = CAN_BS1_15TQ;
-  hcan1.Init.TimeSeg2 = CAN_BS2_2TQ;
+  hcan1.Init.SyncJumpWidth = DER26_CAN_SJW;
+  hcan1.Init.TimeSeg1 = DER26_CAN_BS1;
+  hcan1.Init.TimeSeg2 = DER26_CAN_BS2;
   hcan1.Init.TimeTriggeredMode = DISABLE;
   hcan1.Init.AutoBusOff = ENABLE;
   hcan1.Init.AutoWakeUp = ENABLE;
@@ -417,7 +417,13 @@ static void MX_SPI6_Init(void)
   hspi6.Init.CLKPolarity = SPI_POLARITY_HIGH;
   hspi6.Init.CLKPhase = SPI_PHASE_2EDGE;
   hspi6.Init.NSS = SPI_NSS_SOFT;
+#if AMS_ADBMS_SPI_PRESCALER_DIV == 64
+  hspi6.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_64;
+#elif AMS_ADBMS_SPI_PRESCALER_DIV == 128
+  hspi6.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_128;
+#else
   hspi6.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_256;
+#endif
   hspi6.Init.FirstBit = SPI_FIRSTBIT_MSB;
   hspi6.Init.TIMode = SPI_TIMODE_DISABLE;
   hspi6.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;

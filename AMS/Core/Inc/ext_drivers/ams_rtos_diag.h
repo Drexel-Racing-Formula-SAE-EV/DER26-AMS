@@ -9,6 +9,8 @@ void ams_rtos_diag_update(app_data_t *data);
 const char *ams_rtos_task_name(ams_rtos_task_id_t id);
 uint16_t ams_rtos_task_config_stack_words(ams_rtos_task_id_t id);
 uint8_t ams_rtos_task_priority(ams_rtos_task_id_t id);
+uint16_t ams_rtos_task_stack_warn_words(ams_rtos_task_id_t id);
+uint16_t ams_rtos_task_stack_critical_words(ams_rtos_task_id_t id);
 const char *ams_rtos_fault_reason_str(uint8_t reason);
 
 void ams_rtos_assert_failed(const char *file, int line);

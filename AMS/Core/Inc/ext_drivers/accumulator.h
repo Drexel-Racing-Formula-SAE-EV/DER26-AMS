@@ -10,6 +10,7 @@
 #define INC_EXT_DRIVERS_ACCUMULATOR_H_
 
 #include <stdbool.h>
+#include "ams_build_profile.h"
 #include "stm32f7xx_hal.h"
 #include "ext_drivers/adbms2950.h"
 #include "ext_drivers/adbms6830_functions.h"
@@ -44,13 +45,17 @@
 #define ACCUMULATOR_CELL_STUCK_SAME_COUNT     120u
 
 
-/* Final-ring topology:
- *   String A -> five ADBMS6830 SMBs -> one ADBMS2950 APM -> String B.
- * The APM is initialized and sampled by default, but remains advisory and
- * cannot affect BMS_OK until its scaling, polarity and fault policy are
- * validated on final hardware. */
+/* Single-SMB CAN/logging bench topology:
+ *   MCU SPI6 + CS_B/PE4 -> ADBMS6822 -> one ADBMS6830B SMB.
+ * The standalone ADBMS2950 evaluation path is disabled in this release so a
+ * missing APM cannot disturb the validated one-SMB transport test.  The shared
+ * source still supports the APM/final-ring profile through explicit overrides. */
+#ifndef AMS_APM_STANDALONE_EVAL_BENCH
+#define AMS_APM_STANDALONE_EVAL_BENCH 0
+#endif
+
 #ifndef AMS_ENABLE_APM_2950
-#define AMS_ENABLE_APM_2950 1
+#define AMS_ENABLE_APM_2950 0
 #endif
 
 #ifndef AMS_HIL_REPLACE_ADBMS
@@ -65,20 +70,48 @@
 
 #define ACCUMULATOR_APM_SAMPLE_STALE_TIMEOUT_MS 2500u
 
+/* Keep one storage slot so the disabled APM object remains standard C. */
 #define NAPMS 1
 #define HVEN1 GPO1
 #define HVEN2 GPO2
 
+/* The single-SMB bench image remains the default. Host/SIL builds may
+ * override NSMBS explicitly to exercise the production five-segment topology. */
+#ifndef NSMBS
+#if (AMS_BUILD_PROFILE == AMS_PROFILE_TESTDAY) || \
+    ((AMS_BUILD_PROFILE == AMS_PROFILE_BENCH_VALIDATION) && !AMS_BENCH_VALIDATION_SINGLE_SMB)
 #define NSMBS 5
+#else
+#define NSMBS 1
+#endif
+#endif
+#ifndef ACCUMULATOR_PHYSICAL_CHAIN_COUNT
+#define ACCUMULATOR_PHYSICAL_CHAIN_COUNT NSMBS
+#endif
+#ifndef ACCUMULATOR_SMB_STRING
+#if (AMS_ENABLE_APM_2950 && !AMS_APM_STANDALONE_EVAL_BENCH) || \
+    (AMS_BUILD_PROFILE == AMS_PROFILE_TESTDAY) || \
+    ((AMS_BUILD_PROFILE == AMS_PROFILE_BENCH_VALIDATION) && !AMS_BENCH_VALIDATION_SINGLE_SMB)
+/* Final ring: five SMBs are the leading String-A subset; the ADBMS2950 is
+ * addressed independently from String B. */
+#define ACCUMULATOR_SMB_STRING STRING_A
+#else
+/* Single-SMB EVAL jumper reaches the monitor through CS_B / String B. */
+#define ACCUMULATOR_SMB_STRING STRING_B
+#endif
+#endif
 
-#if NSMBS > 8
-#error "Atomic HIL image address supports at most eight segments"
+/* The physical DER26 accumulator is five 15s segments.  The single-SMB
+ * release is intentionally a bench image, but a vehicle build must never be
+ * able to inherit that one-device storage topology by accident. */
+#if (AMS_BUILD_PROFILE == AMS_PROFILE_VEHICLE) && (NSMBS != 5)
+#error "Vehicle profile requires NSMBS=5 for the five physical accumulator segments"
 #endif
-#if NCELLS > 16 || NTEMPS > 32
-#error "Atomic HIL image masks support at most 16 cells/32 temperatures per segment"
+#if (AMS_BUILD_PROFILE == AMS_PROFILE_VEHICLE) &&     (ACCUMULATOR_PHYSICAL_CHAIN_COUNT != 6)
+#error "Vehicle profile requires ACCUMULATOR_PHYSICAL_CHAIN_COUNT=6 (five SMBs plus one ADBMS2950)"
 #endif
-#if (NSMBS * NCELLS) > 255 || (NSMBS * NTEMPS) > 255
-#error "Atomic HIL START topology counts must fit uint8"
+#if (AMS_BUILD_PROFILE == AMS_PROFILE_VEHICLE) && !AMS_ENABLE_APM_2950
+#error "Vehicle profile requires AMS_ENABLE_APM_2950=1 for the installed final ring"
 #endif
 
 typedef struct
@@ -133,6 +166,10 @@ typedef struct
 	bool temp_startup_scan_complete;
 
 	uint16_t cell_voltage_mv[NSMBS][NCELLS];
+	uint16_t cell_voltage_avg8_mv[NSMBS][NCELLS];
+	uint16_t cell_voltage_iir_mv[NSMBS][NCELLS];
+	uint16_t avg8_usable_voltage_mask[NSMBS];
+	uint16_t iir_usable_voltage_mask[NSMBS];
 	bool cell_voltage_valid[NSMBS][NCELLS];
 	uint32_t cell_voltage_last_update_ms[NSMBS][NCELLS];
 	uint8_t cell_voltage_consecutive_misses[NSMBS][NCELLS];
@@ -141,32 +178,6 @@ typedef struct
 	uint32_t hil_temp_last_update_ms[NSMBS][NTEMPS];
 	uint16_t hil_cell_seen_mask[NSMBS];
 	uint32_t hil_temp_seen_mask[NSMBS];
-	/* HIL CAN images are staged here and copied into the ADBMS replacement
-	 * image only after a complete generation passes its CRC.  The public
-	 * smb_ics image therefore never contains a mixture of plant steps. */
-	uint16_t hil_stage_cell_mv[NSMBS][NCELLS];
-	int16_t hil_stage_temp_deci_c[NSMBS][NTEMPS];
-	uint16_t hil_stage_cell_mask[NSMBS];
-	uint32_t hil_stage_temp_mask[NSMBS];
-	uint32_t hil_image_start_ms;
-	uint32_t hil_image_commit_ms;
-	uint32_t hil_image_accept_count;
-	uint32_t hil_image_reject_count;
-	uint32_t hil_image_timeout_count;
-	uint32_t hil_image_crc_fail_count;
-	uint32_t hil_image_incomplete_count;
-	uint32_t hil_image_duplicate_count;
-	uint32_t hil_image_duplicate_start_count;
-	uint32_t hil_image_conflicting_duplicate_count;
-	uint32_t hil_image_replay_reject_count;
-	uint32_t hil_image_resync_count;
-	uint16_t hil_stage_unique_cell_count;
-	uint16_t hil_stage_unique_temp_count;
-	uint8_t hil_stage_generation;
-	uint8_t hil_last_committed_generation;
-	bool hil_stage_active;
-	bool hil_stage_invalid;
-	bool hil_committed_valid;
 
 	uint16_t updated_voltage_mask[NSMBS];
 	uint16_t usable_voltage_mask[NSMBS];
@@ -199,6 +210,11 @@ typedef struct
 	 * not proof that HAL_TIM_Base_Start() succeeded. */
 	bool delay_timer_ready;
 	HAL_StatusTypeDef delay_timer_status;
+	/* Read-only measurement/diagnostic traffic may remain usable even when the
+	 * full safety-ready decision is blocked by a reported CSxFLT.  This flag is
+	 * established only after identity, configuration and non-CS diagnostics are
+	 * transport-clean.  It never authorizes balancing or BMS_OK. */
+	bool smb_transport_ready;
 	bool smb_ready;
 	HAL_StatusTypeDef smb_init_status;
 	bool apm_ready;
@@ -207,6 +223,15 @@ typedef struct
 	 * the complete mixed ring was awake.  accumulator_read_apm() consumes this
 	 * token before broadcasting SNAP/UNSNAP commands. */
 	bool apm_full_ring_awake_token;
+
+    /* Last hardware balancing transition result.  MUTE is the fast inhibit;
+     * durable_zero_verified is the persistent safe state after DCC/PWM zero
+     * has been written and read back.  Keep these separate because the
+     * ADBMS watchdog can clear MUTE while zeroed PWM/DCC remains safe. */
+    bool last_balance_mute_ok;
+    bool last_balance_durable_zero_verified;
+    bool last_balance_unmute_ok;
+    uint8_t last_balance_inhibit_reason;
 
 	adbms2950_asic apm_ics[NAPMS];
 	adbms2950_driver_t apm;
@@ -224,6 +249,13 @@ void accumulator_init(accumulator_t *dev,
 					  TIM_HandleTypeDef* htim
 					  );
 int accumulator_read_volt(accumulator_t *dev);
+/* Run a complete C-path baseline/even/odd sense-path diagnostic, then always
+ * restore and validate a normal redundant C/S conversion before returning.
+ * The result identifies an electrical sense-path open; it cannot distinguish
+ * a blown 1 A fuse from a wire, connector, tab, trace or resistor open. */
+int accumulator_run_c_open_wire_diagnostic(
+    accumulator_t *dev,
+    adbms6830_open_wire_result_t *result);
 /* Read the String-B APM after a successful accumulator_read_volt() has woken
  * the complete mixed ring.  The one-shot readiness token is consumed even if
  * the APM transaction fails.  Standalone service reads must use the driver
@@ -252,46 +284,39 @@ bool accumulator_final_ring_topology_valid(const accumulator_t *dev);
  * already perform the authoritative readback before returning success. */
 bool accumulator_balance_shadow_active(const accumulator_t *dev);
 uint16_t accumulator_balance_shadow_mask(const accumulator_t *dev, uint8_t seg);
-int accumulator_set_balance(accumulator_t *dev);
-int accumulator_clear_balance(accumulator_t *dev);
+/* Compute the exact balancing selection without changing the ADBMS register
+ * shadow or touching the bus.  This supports safe policy validation while
+ * physical balancing is inhibited. */
+bool accumulator_plan_balance(const accumulator_t *dev,
+                              uint16_t planned_mask[NSMBS]);
 typedef enum
 {
-	ACCUMULATOR_HIL_IMAGE_REJECTED = -1,
-	ACCUMULATOR_HIL_IMAGE_STAGED = 0,
-	ACCUMULATOR_HIL_IMAGE_COMMITTED = 1
-} accumulator_hil_image_result_t;
+    ACCUMULATOR_BALANCE_INHIBIT_NONE = 0,
+    ACCUMULATOR_BALANCE_INHIBIT_USER,
+    ACCUMULATOR_BALANCE_INHIBIT_VOLTAGE,
+    ACCUMULATOR_BALANCE_INHIBIT_TEMP,
+    ACCUMULATOR_BALANCE_INHIBIT_COMM,
+    ACCUMULATOR_BALANCE_INHIBIT_ADBMS_HEALTH,
+    ACCUMULATOR_BALANCE_INHIBIT_SHUTDOWN,
+    ACCUMULATOR_BALANCE_INHIBIT_CONFIG,
+    ACCUMULATOR_BALANCE_INHIBIT_WRITE_FAILURE
+} accumulator_balance_inhibit_reason_t;
 
-accumulator_hil_image_result_t accumulator_hil_image_begin(
-	accumulator_t *dev,
-	uint8_t generation,
-	uint8_t segment_count,
-	uint8_t total_cell_count,
-	uint8_t total_temp_count,
-	uint8_t expected_cell_frames,
-	uint8_t expected_temp_frames,
-	uint32_t now_ms,
-	uint32_t resync_timeout_ms);
-accumulator_hil_image_result_t accumulator_hil_image_stage_cell_triplet(
-	accumulator_t *dev,
-	uint8_t generation,
-	uint8_t seg,
-	uint8_t first_cell,
-	const uint16_t cell_mv[3]);
-accumulator_hil_image_result_t accumulator_hil_image_stage_temp_triplet(
-	accumulator_t *dev,
-	uint8_t generation,
-	uint8_t seg,
-	uint8_t first_sensor,
-	const int16_t temp_deci_c[3]);
-accumulator_hil_image_result_t accumulator_hil_image_commit(
-	accumulator_t *dev,
-	uint8_t generation,
-	uint32_t expected_crc,
-	uint32_t now_ms,
-	uint32_t assembly_timeout_ms);
-void accumulator_hil_image_expire(accumulator_t *dev,
-	                              uint32_t now_ms,
-	                              uint32_t assembly_timeout_ms);
+int accumulator_set_balance(accumulator_t *dev);
+int accumulator_clear_balance(accumulator_t *dev);
+int accumulator_emergency_balance_inhibit(accumulator_t *dev,
+                                          accumulator_balance_inhibit_reason_t reason);
+int accumulator_balance_requalify_and_unmute(accumulator_t *dev);
+int accumulator_hil_ingest_cell_triplet(accumulator_t *dev,
+                                        uint8_t seg,
+                                        uint8_t first_cell,
+                                        const uint16_t cell_mv[3],
+                                        uint32_t now_ms);
+int accumulator_hil_ingest_temp_triplet(accumulator_t *dev,
+                                        uint8_t seg,
+                                        uint8_t first_sensor,
+                                        const int16_t temp_deci_c[3],
+                                        uint32_t now_ms);
 void accumulator_hil_refresh_update_masks(accumulator_t *dev,
                                           uint32_t now_ms,
                                           uint32_t timeout_ms);

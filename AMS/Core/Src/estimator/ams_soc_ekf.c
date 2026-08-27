@@ -262,11 +262,27 @@ bool ams_ekf_step_gated(ams_ekf_instance_t *ekf,
     }
 
     float dt = dt_s;
+    bool dt_clamped = false;
     if ((!isfinite(dt)) || (dt <= 0.0f))
     {
         dt = ekf->cfg.sample_time_s;
+        dt_clamped = true;
     }
-    dt = clampf_local(dt, 0.001f, 1.0f);
+    if(dt < 0.001f)
+    {
+        dt = 0.001f;
+        dt_clamped = true;
+    }
+    else if(dt > 1.0f)
+    {
+        dt = 1.0f;
+        dt_clamped = true;
+    }
+    if(dt_clamped)
+    {
+        ekf->fault_flags |= AMS_EKF_FAULT_DT_CLAMPED;
+        saturating_increment(&ekf->dt_clamp_count);
+    }
 
     if(ekf->t_core_C < 5.0f)
     {
@@ -303,21 +319,72 @@ bool ams_ekf_step_gated(ams_ekf_instance_t *ekf,
                                   vp1_p - vp2_p);
     float innovation = v_meas_V - v_est;
 
-    update_adaptive_r(ekf, innovation);
+    /* Gate the measurement update against the PRIOR measurement covariance.
+     * A bad-but-in-range sample must not first inflate adaptive R and only
+     * protect the following sample.  Rejected samples are predict-only and
+     * do not enter the adaptive-R history. */
     float r_meas = ekf->r_meas_V2;
+    float s_hi = clampf_local(soc_p + AMS_EKF_DSOC, 0.0f, 1.0f);
+    float s_lo = clampf_local(soc_p - AMS_EKF_DSOC, 0.0f, 1.0f);
+    float d_ocv = (ams_p42a_ocv_v(s_hi, t_lut_C) - ams_p42a_ocv_v(s_lo, t_lut_C)) /
+                  ((s_hi - s_lo) + 1.0e-10f);
 
-    if(allow_r0_update)
+    float h_soc = series_count * d_ocv;
+    float h_vp1 = -series_count;
+    float h_vp2 = -series_count;
+
+    float s_x = (h_soc * h_soc * psoc_p) +
+                (h_vp1 * h_vp1 * pvp1_p) +
+                (h_vp2 * h_vp2 * pvp2_p) + r_meas;
+    float innovation_per_cell = fabsf(innovation) / series_count;
+    const float innovation_gate_sigma = 6.0f;
+    const bool bootstrap_step = ekf->step_count < AMS_EKF_ACQUISITION_STEPS;
+    bool innovation_rejected = (!isfinite(s_x)) || (s_x <= 1.0e-10f) ||
+        (!isfinite(innovation_per_cell));
+
+    if(!innovation_rejected)
     {
-        float innovation_per_cell = fabsf(innovation) / series_count;
-        if((!isfinite(innovation_per_cell)) ||
-           (innovation_per_cell > AMS_SOH_MAX_INNOVATION_PER_CELL_V))
+        if(bootstrap_step)
         {
-            if(r0_result != NULL)
-            {
-                *r0_result = AMS_EKF_R0_UPDATE_REJECT_INNOVATION;
-            }
+            /* The configured initial SoC is deliberately conservative and
+             * can be several hundred mV/cell away from a healthy partially
+             * charged pack.  Permit a short bounded acquisition window, but do
+             * not let an absurd yet input-window-valid sample (for example a
+             * contactor-bounce collapse near 2 V/cell) seed the estimator. */
+            innovation_rejected =
+                innovation_per_cell >
+                AMS_EKF_BOOTSTRAP_MAX_INNOVATION_PER_CELL_V;
         }
         else
+        {
+            innovation_rejected =
+                (innovation_per_cell > AMS_SOH_MAX_INNOVATION_PER_CELL_V) ||
+                ((innovation * innovation) >
+                 ((innovation_gate_sigma * innovation_gate_sigma) * s_x));
+        }
+    }
+
+    if(innovation_rejected)
+    {
+        ekf->fault_flags |= AMS_EKF_FAULT_INNOVATION_REJECT;
+        saturating_increment(&ekf->innovation_reject_count);
+        if(allow_r0_update && (r0_result != NULL))
+        {
+            *r0_result = AMS_EKF_R0_UPDATE_REJECT_INNOVATION;
+        }
+
+        /* Predict-only: preserve physical evolution without allowing the
+         * rejected measurement to move SoC/polarization/covariance. */
+        ekf->soc = soc_p;
+        ekf->vp1_V = vp1_p;
+        ekf->vp2_V = vp2_p;
+        ekf->p_soc = psoc_p;
+        ekf->p_vp1 = pvp1_p;
+        ekf->p_vp2 = pvp2_p;
+    }
+    else
+    {
+        if(allow_r0_update)
         {
             float h_r0 = -series_count * i_cell_A;
             float s_r0 = (h_r0 * h_r0 * ekf->p_r0) + r_meas;
@@ -354,48 +421,39 @@ bool ams_ekf_step_gated(ams_ekf_instance_t *ekf,
                 }
             }
         }
+
+        float inv_s = 1.0f / s_x;
+        float k_soc = psoc_p * h_soc * inv_s;
+        float k_vp1 = pvp1_p * h_vp1 * inv_s;
+        float k_vp2 = pvp2_p * h_vp2 * inv_s;
+
+        ekf->soc = clampf_local(soc_p + (k_soc * innovation), 0.0f, 1.0f);
+        ekf->vp1_V = vp1_p + (k_vp1 * innovation);
+        ekf->vp2_V = vp2_p + (k_vp2 * innovation);
+
+        float a00 = 1.0f - (k_soc * h_soc);
+        float a01 =      - (k_soc * h_vp1);
+        float a02 =      - (k_soc * h_vp2);
+
+        float a10 =      - (k_vp1 * h_soc);
+        float a11 = 1.0f - (k_vp1 * h_vp1);
+        float a12 =      - (k_vp1 * h_vp2);
+
+        float a20 =      - (k_vp2 * h_soc);
+        float a21 =      - (k_vp2 * h_vp1);
+        float a22 = 1.0f - (k_vp2 * h_vp2);
+
+        ekf->p_soc = (a00 * a00 * psoc_p) + (a01 * a01 * pvp1_p) + (a02 * a02 * pvp2_p) +
+                     (k_soc * k_soc * r_meas);
+        ekf->p_vp1 = (a10 * a10 * psoc_p) + (a11 * a11 * pvp1_p) + (a12 * a12 * pvp2_p) +
+                     (k_vp1 * k_vp1 * r_meas);
+        ekf->p_vp2 = (a20 * a20 * psoc_p) + (a21 * a21 * pvp1_p) + (a22 * a22 * pvp2_p) +
+                     (k_vp2 * k_vp2 * r_meas);
+
+        /* Adapt for the NEXT sample only after this innovation passed the
+         * current sample's authority gate. */
+        update_adaptive_r(ekf, innovation);
     }
-
-    float s_hi = clampf_local(soc_p + AMS_EKF_DSOC, 0.0f, 1.0f);
-    float s_lo = clampf_local(soc_p - AMS_EKF_DSOC, 0.0f, 1.0f);
-    float d_ocv = (ams_p42a_ocv_v(s_hi, t_lut_C) - ams_p42a_ocv_v(s_lo, t_lut_C)) /
-                  ((s_hi - s_lo) + 1.0e-10f);
-
-    float h_soc = series_count * d_ocv;
-    float h_vp1 = -series_count;
-    float h_vp2 = -series_count;
-
-    float s_x = (h_soc * h_soc * psoc_p) +
-                (h_vp1 * h_vp1 * pvp1_p) +
-                (h_vp2 * h_vp2 * pvp2_p) + r_meas;
-    float inv_s = (s_x > 1.0e-10f) ? (1.0f / s_x) : 0.0f;
-
-    float k_soc = psoc_p * h_soc * inv_s;
-    float k_vp1 = pvp1_p * h_vp1 * inv_s;
-    float k_vp2 = pvp2_p * h_vp2 * inv_s;
-
-    ekf->soc = clampf_local(soc_p + (k_soc * innovation), 0.0f, 1.0f);
-    ekf->vp1_V = vp1_p + (k_vp1 * innovation);
-    ekf->vp2_V = vp2_p + (k_vp2 * innovation);
-
-    float a00 = 1.0f - (k_soc * h_soc);
-    float a01 =      - (k_soc * h_vp1);
-    float a02 =      - (k_soc * h_vp2);
-
-    float a10 =      - (k_vp1 * h_soc);
-    float a11 = 1.0f - (k_vp1 * h_vp1);
-    float a12 =      - (k_vp1 * h_vp2);
-
-    float a20 =      - (k_vp2 * h_soc);
-    float a21 =      - (k_vp2 * h_vp1);
-    float a22 = 1.0f - (k_vp2 * h_vp2);
-
-    ekf->p_soc = (a00 * a00 * psoc_p) + (a01 * a01 * pvp1_p) + (a02 * a02 * pvp2_p) +
-                 (k_soc * k_soc * r_meas);
-    ekf->p_vp1 = (a10 * a10 * psoc_p) + (a11 * a11 * pvp1_p) + (a12 * a12 * pvp2_p) +
-                 (k_vp1 * k_vp1 * r_meas);
-    ekf->p_vp2 = (a20 * a20 * psoc_p) + (a21 * a21 * pvp1_p) + (a22 * a22 * pvp2_p) +
-                 (k_vp2 * k_vp2 * r_meas);
 
     if (ekf->p_soc < 1.0e-12f) { ekf->p_soc = 1.0e-12f; }
     if (ekf->p_vp1 < 1.0e-12f) { ekf->p_vp1 = 1.0e-12f; }
@@ -760,7 +818,9 @@ void ams_estimator_cc_reset(ams_estimator_t *est, float soc_init)
 
     est->cc_soc = clampf_local(soc_init, 0.0f, 1.0f);
     est->cc_valid = 1U;
+    est->cc_last_dt_clamped = 0U;
     est->cc_step_count = 0U;
+    est->cc_dt_clamp_count = 0U;
 }
 
 bool ams_estimator_cc_step(ams_estimator_t *est, float i_pack_A, float dt_s)
@@ -776,11 +836,27 @@ bool ams_estimator_cc_step(ams_estimator_t *est, float i_pack_A, float dt_s)
     }
 
     float dt = dt_s;
+    bool dt_clamped = false;
     if ((!isfinite(dt)) || (dt <= 0.0f))
     {
         dt = AMS_EKF_DEFAULT_DT_S;
+        dt_clamped = true;
     }
-    dt = clampf_local(dt, 0.001f, 1.0f);
+    if(dt < 0.001f)
+    {
+        dt = 0.001f;
+        dt_clamped = true;
+    }
+    else if(dt > 1.0f)
+    {
+        dt = 1.0f;
+        dt_clamped = true;
+    }
+    est->cc_last_dt_clamped = dt_clamped ? 1U : 0U;
+    if(dt_clamped)
+    {
+        saturating_increment(&est->cc_dt_clamp_count);
+    }
 
     if (est->cc_valid == 0U)
     {
