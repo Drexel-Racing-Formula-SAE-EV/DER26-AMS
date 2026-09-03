@@ -31,20 +31,22 @@
 
 #define VER_MAJOR 0
 #define VER_MINOR 5
-#define VER_BUG   13
+#define VER_BUG   15
 
 /* DER26-CAN-V4 nominal vehicle bitrate. The asynchronous scheduler must remain
- * safety-correct at 250 kbps; 500 kbps is additional vehicle headroom. The
- * validated STM32F767 clock tree derives CAN1 from the HSE/PLL path. */
+ * safety-correct at 250 kbps; 1 Mbit/s is the DER26 vehicle configuration. The
+ * STM32F767 clock tree derives CAN1 from the 54-MHz HSE/PLL path. */
 #ifndef DER26_CAN_BITRATE_KBPS
-#define DER26_CAN_BITRATE_KBPS 500u
+#define DER26_CAN_BITRATE_KBPS 1000u
 #endif
-#if DER26_CAN_BITRATE_KBPS == 500u
+#if DER26_CAN_BITRATE_KBPS == 1000u
+#define DER26_CAN_PRESCALER 3u
+#elif DER26_CAN_BITRATE_KBPS == 500u
 #define DER26_CAN_PRESCALER 6u
 #elif DER26_CAN_BITRATE_KBPS == 250u
 #define DER26_CAN_PRESCALER 12u
 #else
-#error "DER26 CAN supports only validated 250 or 500 kbps timing"
+#error "DER26 CAN supports only 250, 500, or 1000 kbps timing"
 #endif
 #define DER26_CAN_SJW CAN_SJW_2TQ
 #define DER26_CAN_BS1 CAN_BS1_15TQ

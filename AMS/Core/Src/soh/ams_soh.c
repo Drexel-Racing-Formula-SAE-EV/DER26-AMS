@@ -202,6 +202,150 @@ static void refresh_resistance_summary(ams_soh_estimator_t *estimator,
         minimum_confidence : 0u;
 }
 
+static float resistance_episode_median(const float *values, uint8_t count)
+{
+    float sorted[AMS_SOH_RESISTANCE_EPISODE_MAX_OBSERVATIONS];
+    if((values == NULL) || (count == 0u) ||
+       (count > AMS_SOH_RESISTANCE_EPISODE_MAX_OBSERVATIONS))
+    {
+        return NAN;
+    }
+    for(uint8_t i = 0u; i < count; i++)
+    {
+        sorted[i] = values[i];
+    }
+    for(uint8_t i = 1u; i < count; i++)
+    {
+        const float key = sorted[i];
+        uint8_t j = i;
+        while((j > 0u) && (sorted[j - 1u] > key))
+        {
+            sorted[j] = sorted[j - 1u];
+            j--;
+        }
+        sorted[j] = key;
+    }
+    if((count & 1u) != 0u)
+    {
+        return sorted[count / 2u];
+    }
+    return 0.5f * (sorted[(count / 2u) - 1u] + sorted[count / 2u]);
+}
+
+static void clear_resistance_episode(ams_soh_estimator_t *estimator,
+                                     uint8_t segment)
+{
+    estimator->segment_resistance_episode_count[segment] = 0u;
+    estimator->segment_resistance_episode_write_index[segment] = 0u;
+    estimator->segment_resistance_episode_min_confidence[segment] = 100u;
+    estimator->segment_resistance_episode_last_fresh_ms[segment] = 0u;
+    memset(estimator->segment_resistance_episode_ratio[segment], 0,
+           sizeof(estimator->segment_resistance_episode_ratio[segment]));
+}
+
+static void commit_resistance_episode(ams_soh_estimator_t *estimator,
+                                      const ams_soh_config_t *cfg,
+                                      uint8_t segment)
+{
+    const uint8_t count = estimator->segment_resistance_episode_count[segment];
+    if(count < AMS_SOH_RESISTANCE_EPISODE_MIN_OBSERVATIONS)
+    {
+        clear_resistance_episode(estimator, segment);
+        return;
+    }
+
+    float ordered[AMS_SOH_RESISTANCE_EPISODE_MAX_OBSERVATIONS];
+    const uint8_t write = estimator->segment_resistance_episode_write_index[segment];
+    /* The episode buffer is a ring once full.  Reconstruct only the samples
+     * still represented by the bounded buffer before taking the robust median. */
+    if(count < AMS_SOH_RESISTANCE_EPISODE_MAX_OBSERVATIONS)
+    {
+        for(uint8_t i = 0u; i < count; i++)
+        {
+            ordered[i] = estimator->segment_resistance_episode_ratio[segment][i];
+        }
+    }
+    else
+    {
+        for(uint8_t i = 0u; i < count; i++)
+        {
+            const uint8_t idx = (uint8_t)((write + i) %
+                AMS_SOH_RESISTANCE_EPISODE_MAX_OBSERVATIONS);
+            ordered[i] = estimator->segment_resistance_episode_ratio[segment][idx];
+        }
+    }
+
+    const float confirmed_ratio = resistance_episode_median(ordered, count);
+    const uint8_t confirmed_confidence =
+        estimator->segment_resistance_episode_min_confidence[segment];
+    if(!isfinite(confirmed_ratio))
+    {
+        clear_resistance_episode(estimator, segment);
+        return;
+    }
+
+    const float uncertainty = cfg->resistance_uncertainty_floor +
+        (0.20f * (100.0f - (float)confirmed_confidence) / 100.0f);
+    const float upper = clampf_local(confirmed_ratio + uncertainty,
+                                     1.0f, 3.0f);
+    const uint8_t bit = (uint8_t)(1u << segment);
+    const bool already_valid =
+        (estimator->segment_resistance_valid_mask & bit) != 0u;
+
+    /* SoH is a slow ageing state, not an instantaneous safety limit.  A fresh
+     * R0 update burst is one correlated excitation episode, not many independent
+     * ageing observations.  Commit only the robust episode median after the
+     * episode closes; this prevents the leading polarization transient from
+     * becoming a permanent monotonic SoH increase.  Cell-voltage protection and
+     * the estimator remain immediate, while SoP retains the conservative prior
+     * until episode-level evidence is available. */
+    if(!already_valid ||
+       (upper > estimator->segment_resistance_growth_upper[segment]))
+    {
+        estimator->segment_resistance_growth_ratio[segment] = confirmed_ratio;
+        estimator->segment_resistance_growth_upper[segment] = upper;
+    }
+    if(!already_valid ||
+       (confirmed_confidence >
+        estimator->segment_resistance_confidence_pct[segment]))
+    {
+        estimator->segment_resistance_confidence_pct[segment] =
+            confirmed_confidence;
+    }
+    estimator->segment_resistance_valid_mask |= bit;
+    clear_resistance_episode(estimator, segment);
+}
+
+static void append_resistance_episode_sample(ams_soh_estimator_t *estimator,
+                                             uint8_t segment,
+                                             float ratio,
+                                             uint8_t confidence,
+                                             uint32_t now_ms)
+{
+    uint8_t count = estimator->segment_resistance_episode_count[segment];
+    uint8_t write = estimator->segment_resistance_episode_write_index[segment];
+    if(count < AMS_SOH_RESISTANCE_EPISODE_MAX_OBSERVATIONS)
+    {
+        estimator->segment_resistance_episode_ratio[segment][count] = ratio;
+        count++;
+        write = (count < AMS_SOH_RESISTANCE_EPISODE_MAX_OBSERVATIONS) ? count : 0u;
+    }
+    else
+    {
+        estimator->segment_resistance_episode_ratio[segment][write] = ratio;
+        write = (uint8_t)((write + 1u) %
+            AMS_SOH_RESISTANCE_EPISODE_MAX_OBSERVATIONS);
+    }
+    estimator->segment_resistance_episode_count[segment] = count;
+    estimator->segment_resistance_episode_write_index[segment] = write;
+    if((count == 1u) ||
+       (confidence < estimator->segment_resistance_episode_min_confidence[segment]))
+    {
+        estimator->segment_resistance_episode_min_confidence[segment] = confidence;
+    }
+    estimator->segment_resistance_episode_last_fresh_ms[segment] = now_ms;
+}
+
 static void refresh_resistance_result(ams_soh_estimator_t *estimator,
                                       const ams_soh_config_t *cfg,
                                       const ams_soh_input_t *input)
@@ -211,37 +355,28 @@ static void refresh_resistance_result(ams_soh_estimator_t *estimator,
         const float ratio = input->segment_resistance_growth_ratio[segment];
         const uint8_t confidence =
             input->segment_resistance_confidence_pct[segment];
-        if((input->segment_resistance_valid[segment] == 0u) ||
-           !isfinite(ratio) || (ratio < 0.50f) || (ratio > 3.0f) ||
-           (confidence < cfg->minimum_resistance_confidence_pct))
+        const bool fresh = (input->segment_resistance_valid[segment] != 0u) &&
+            isfinite(ratio) && (ratio >= 0.50f) && (ratio <= 3.0f) &&
+            (confidence >= cfg->minimum_resistance_confidence_pct);
+
+        const uint8_t episode_count =
+            estimator->segment_resistance_episode_count[segment];
+        const uint32_t last_fresh =
+            estimator->segment_resistance_episode_last_fresh_ms[segment];
+        const bool episode_timed_out = (episode_count > 0u) &&
+            ((uint32_t)(input->now_ms - last_fresh) >=
+             AMS_SOH_RESISTANCE_EPISODE_GAP_MS);
+
+        if(episode_timed_out)
         {
-            continue;
+            commit_resistance_episode(estimator, cfg, segment);
         }
 
-        const float uncertainty = cfg->resistance_uncertainty_floor +
-            (0.20f * (100.0f - (float)confidence) / 100.0f);
-        const float upper = clampf_local(ratio + uncertainty, 1.0f, 3.0f);
-        const uint8_t bit = (uint8_t)(1u << segment);
-        const bool already_valid =
-            (estimator->segment_resistance_valid_mask & bit) != 0u;
-
-        /* Normalized cell resistance is treated as an ageing state. A lower
-         * later observation cannot erase a previously qualified conservative
-         * bound; a battery/segment replacement requires an explicit service
-         * reset and new calibration record. */
-        if(!already_valid ||
-           (upper > estimator->segment_resistance_growth_upper[segment]))
+        if(fresh)
         {
-            estimator->segment_resistance_growth_ratio[segment] = ratio;
-            estimator->segment_resistance_growth_upper[segment] = upper;
+            append_resistance_episode_sample(estimator, segment, ratio,
+                                             confidence, input->now_ms);
         }
-        if(!already_valid ||
-           (confidence >
-            estimator->segment_resistance_confidence_pct[segment]))
-        {
-            estimator->segment_resistance_confidence_pct[segment] = confidence;
-        }
-        estimator->segment_resistance_valid_mask |= bit;
     }
 
     refresh_resistance_summary(estimator, cfg);
@@ -285,6 +420,7 @@ void ams_soh_init(ams_soh_estimator_t *estimator,
         estimator->segment_resistance_growth_ratio[segment] = 1.0f;
         estimator->segment_resistance_growth_upper[segment] =
             cfg->prior_resistance_soh_upper;
+        estimator->segment_resistance_episode_min_confidence[segment] = 100u;
     }
     refresh_resistance_summary(estimator, cfg);
     refresh_capacity_result(estimator, cfg);

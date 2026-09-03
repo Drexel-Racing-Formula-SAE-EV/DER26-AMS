@@ -10,7 +10,7 @@ or ECU torque authority.
 All frames use standard 11-bit identifiers, DLC 8, and big-endian multibyte
 fields unless a raw-byte field is explicitly named. The payload definitions in
 this file are the original v1 layouts; the live DER26-CAN-V4 logger protocol
-version is `3` and the detail snapshot version remains `2`.
+version is `4` and the detail snapshot version remains `2`.
 
 ## Scheduling and snapshot behavior
 

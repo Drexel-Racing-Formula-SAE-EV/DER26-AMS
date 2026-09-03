@@ -185,7 +185,8 @@ static void build_soh_input(const ams_measurement_snapshot_t *measurement,
         input->segment_resistance_confidence_pct[segment] =
             resistance->observation_confidence_pct;
         input->segment_resistance_valid[segment] =
-            ((resistance->status_flags & AMS_SOH_STATUS_ADVISORY_VALID) != 0u) ?
+            (((resistance->status_flags & AMS_SOH_STATUS_ADVISORY_VALID) != 0u) &&
+             ((resistance->status_flags & AMS_SOH_STATUS_LAST_OBSERVABLE) != 0u)) ?
             1u : 0u;
         if(instance->valid == 0u)
         {
@@ -242,6 +243,7 @@ static void build_sop_input(const ams_power_state_t *state,
     input->estimator_valid =
         (input->estimator_segment_topology != 0u) &&
         (estimator->fault_flags == 0u);
+    input->estimator_acquired = input->estimator_segment_topology;
     input->current_calibrated = policy->current_calibrated &&
         measurement->current.calibration_record_confident &&
         (measurement->current.calibration_id != 0u) &&
@@ -304,6 +306,10 @@ static void build_sop_input(const ams_power_state_t *state,
         if(instance->valid == 0u)
         {
             input->estimator_valid = 0u;
+        }
+        if(instance->acquisition.state != AMS_EKF_ACQ_COMPLETE)
+        {
+            input->estimator_acquired = 0u;
         }
     }
 }

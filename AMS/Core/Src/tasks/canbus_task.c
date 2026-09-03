@@ -2081,6 +2081,29 @@ static uint16_t tuning_u16_scaled(float value, float scale)
     return sat_u16_from_float(value * scale);
 }
 
+/* Signed tuning quantities reserve INT16_MIN as an invalid sentinel so a
+ * non-finite covariance cannot silently decode as a physically meaningful
+ * zero correlation. */
+static int16_t tuning_i16_scaled(float value, float scale)
+{
+    if(!isfinite(value))
+    {
+        return INT16_MIN;
+    }
+
+    const float scaled = value * scale;
+    if(scaled >= 32767.0f)
+    {
+        return INT16_MAX;
+    }
+    if(scaled <= -32767.0f)
+    {
+        return -32767;
+    }
+    return (int16_t)((scaled >= 0.0f) ? (scaled + 0.5f) :
+                                             (scaled - 0.5f));
+}
+
 static HAL_StatusTypeDef send_tuning_ekf_fast(
     canbus_device_t *canbus,
     const ams_tuning_snapshot_t *snapshot)
@@ -2154,7 +2177,27 @@ static HAL_StatusTypeDef send_tuning_ekf_slow(
         logger_put_u16(payload, 2u,
                        (uint16_t)seg->innovation_reject_count);
         logger_put_u16(payload, 4u, (uint16_t)seg->fault_flags);
-        logger_put_u16(payload, 6u, (uint16_t)seg->step_count);
+        logger_put_u16(payload, 6u,
+                       tuning_u16_scaled(
+                           sqrtf(fmaxf(0.0f, seg->innovation_variance_v2)),
+                           1000.0f));
+        status |= send_logger_frame(canbus,
+                                    AMS_LOGGER_CAN_ID_EKF_COVARIANCE,
+                                    payload);
+
+        /* Covariance page 3: signed full-covariance cross terms. Scale 1e7
+         * gives 1e-7 native-unit resolution and +/-3.2767e-3 range, which
+         * comfortably covers the qualified startup and normal covariance
+         * envelopes while preserving useful offline NEES precision. */
+        memset(payload, 0, sizeof(payload));
+        payload[0] = i;
+        payload[1] = (uint8_t)(0xC0u | sequence);
+        logger_put_i16(payload, 2u,
+                       tuning_i16_scaled(seg->p_soc_vp1, 10000000.0f));
+        logger_put_i16(payload, 4u,
+                       tuning_i16_scaled(seg->p_soc_vp2, 10000000.0f));
+        logger_put_i16(payload, 6u,
+                       tuning_i16_scaled(seg->p_vp1_vp2, 10000000.0f));
         status |= send_logger_frame(canbus,
                                     AMS_LOGGER_CAN_ID_EKF_COVARIANCE,
                                     payload);
@@ -2226,14 +2269,17 @@ static HAL_StatusTypeDef send_tuning_ekf_slow(
         status |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_EKF_CONTEXT,
                                     payload);
 
-        /* Context page 3: health/counter detail. */
+        /* Context page 3: health/counter detail. The global full estimator
+         * step is already carried by 0x6BF, so the previous duplicate low16
+         * segment step is replaced with the covariance-repair counter. */
         memset(payload, 0, sizeof(payload));
         payload[0] = i;
         payload[1] = (uint8_t)(0xC0u | sequence);
         payload[2] = (uint8_t)((seg->fresh_temp_count > 255u) ?
                                255u : seg->fresh_temp_count);
         payload[3] = seg->model_domain_flags;
-        logger_put_u16(payload, 4u, (uint16_t)seg->step_count);
+        logger_put_u16(payload, 4u,
+                       (uint16_t)seg->covariance_repair_count);
         payload[6] = seg->soh_accepted_count;
         payload[7] = seg->soh_rejected_count;
         status |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_EKF_CONTEXT,
@@ -2264,6 +2310,38 @@ static HAL_StatusTypeDef send_tuning_meta(
     logger_put_u32(payload, 2u, snapshot->source_tick_ms);
     logger_put_u16(payload, 6u, (uint16_t)snapshot->measurement_sequence);
     status |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_TUNING_META, payload);
+    return status;
+}
+
+static HAL_StatusTypeDef send_tuning_acquisition_meta(
+    canbus_device_t *canbus,
+    const ams_tuning_snapshot_t *snapshot)
+{
+    if((canbus == NULL) || (snapshot == NULL))
+    {
+        return HAL_ERROR;
+    }
+
+    HAL_StatusTypeDef status = HAL_OK;
+    const uint8_t sequence = (uint8_t)snapshot->snapshot_sequence;
+    for(uint8_t i = 0u; i < snapshot->instance_count; i++)
+    {
+        const ams_tuning_segment_t *seg = &snapshot->segment[i];
+        uint8_t payload[8] = {0};
+        /* 0x6BF acquisition page: byte0 bit7 distinguishes per-segment
+         * acquisition telemetry from global metadata pages 0/1. */
+        payload[0] = (uint8_t)(0x80u | (i & 0x0Fu));
+        payload[1] = sequence;
+        payload[2] = seg->acquisition_state;
+        payload[3] = seg->acquisition_reason;
+        payload[4] = seg->acquisition_sample_count;
+        payload[5] = seg->acquisition_reject_count;
+        logger_put_u16(payload, 6u,
+                       tuning_u16_scaled(seg->acquisition_candidate_soc,
+                                         10000.0f));
+        status |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_TUNING_META,
+                                    payload);
+    }
     return status;
 }
 
@@ -2588,6 +2666,7 @@ static HAL_StatusTypeDef canbus_publish_tuning_fast(
     canbus_device_t *canbus,
     const ams_tuning_snapshot_t *tuning,
     bool include_sop,
+    bool include_acquisition,
     uint32_t publish_tick)
 {
     if((canbus == NULL) || (tuning == NULL))
@@ -2604,6 +2683,10 @@ static HAL_StatusTypeDef canbus_publish_tuning_fast(
     }
     status = send_tuning_ekf_fast(canbus, tuning);
     status |= send_tuning_meta(canbus, tuning);
+    if(include_acquisition)
+    {
+        status |= send_tuning_acquisition_meta(canbus, tuning);
+    }
     if(include_sop)
     {
         status |= send_tuning_sop_fuse(canbus, tuning);
@@ -2723,6 +2806,7 @@ void canbus_task_fn(void *arg)
 #if AMS_ENABLE_TUNING_CAN
     uint32_t last_tuning_publish_tick = osKernelGetTickCount();
     uint32_t last_tuning_sop_publish_tick = osKernelGetTickCount();
+    uint32_t last_tuning_acq_publish_tick = osKernelGetTickCount();
 #endif
 
     const uint16_t voltage10x = (uint16_t)(CHARGE_MAX_VOLTAGE * 10.0f);
@@ -2866,12 +2950,20 @@ void canbus_task_fn(void *arg)
             bool include_sop =
                 ((uint32_t)(entry - last_tuning_sop_publish_tick) >=
                  AMS_TUNING_CAN_SOP_PERIOD_MS);
+            bool include_acquisition =
+                ((uint32_t)(entry - last_tuning_acq_publish_tick) >=
+                 AMS_TUNING_CAN_ACQ_PERIOD_MS);
             if(include_sop)
             {
                 last_tuning_sop_publish_tick = entry;
             }
+            if(include_acquisition)
+            {
+                last_tuning_acq_publish_tick = entry;
+            }
             HAL_StatusTypeDef tuning_status = canbus_publish_tuning_fast(
-                canbus, &canbus_tuning_cache, include_sop, entry);
+                canbus, &canbus_tuning_cache, include_sop,
+                include_acquisition, entry);
             canbus_record_tx_class(&data->can_tx_detail_phase_count,
                                    &data->can_tx_detail_phase_fail_count,
                                    tuning_status);

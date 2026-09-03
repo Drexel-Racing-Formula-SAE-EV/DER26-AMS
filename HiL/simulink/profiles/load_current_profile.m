@@ -7,7 +7,7 @@ switch kind
         profile = synthetic_hppc(sim_cfg);
 
     case 'embedded_c_header'
-        values = parse_c_array(profile_cfg.source_file, profile_cfg.array_name);
+        values = hil.parse_int16_c_array(profile_cfg.source_file, profile_cfg.array_name);
         source_time = (0:(numel(values) - 1)).' * ...
             double(profile_cfg.source_sample_time_s);
         source_current = values(:) * ...
@@ -94,24 +94,6 @@ profile = struct( ...
     'sample_time_s', median(diff(time)), ...
     'repeat_policy', char(profile_cfg.repeat_policy), ...
     'scaling_mode', char(profile_cfg.scaling_mode));
-end
-
-function values = parse_c_array(file_path, array_name)
-text = fileread(file_path);
-pattern = sprintf( ...
-    'static\\s+const\\s+int16_t\\s+%s\\s*\\[\\]\\s*=\\s*\\{(.*?)\\}\\s*;', ...
-    regexptranslate('escape', array_name));
-match = regexp(text, pattern, 'tokens', 'once');
-if isempty(match)
-    error('hil:profile:CArrayMissing', ...
-        'Could not find int16 array "%s" in %s.', array_name, file_path);
-end
-tokens = regexp(match{1}, '[-+]?\\d+', 'match');
-values = cellfun(@str2double, tokens(:));
-if isempty(values) || any(~isfinite(values))
-    error('hil:profile:CArrayInvalid', ...
-        'Array "%s" in %s contains no valid values.', array_name, file_path);
-end
 end
 
 function profile = apply_repeat_policy(profile, cfg, sim_cfg)

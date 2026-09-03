@@ -9550,7 +9550,11 @@ static void test_estimator_task_hil_and_hardware_paths(void){
     CHECK(app.estimator.resistance_soh[0].reject_low_current_count == 1u);
 
     /* A second coherent HIL epoch with known synthetic current calibration,
-     * sufficient current, and a real step may update advisory R0. */
+     * sufficient current, a real step, AND qualified estimator acquisition may
+     * update advisory R0. Acquisition gating is intentional production policy;
+     * this focused test marks the estimator acquired so it can exercise the
+     * downstream R0/SoH advisory acceptance path independently. */
+    app.estimator.inst[0].acquisition.state = AMS_EKF_ACQ_COMPLETE;
     app.hil.meas.counter = 1u;
     app.hil.meas.last_rx_tick = 1200u;
     app.hil.meas.i_pack_A = -30.0f;
@@ -9624,6 +9628,13 @@ static void test_estimator_rejects_invalid_hardware_inputs(void)
     app.current_valid = true;
     app.current = 20.0f;
     app.voltage_valid = false;
+    /* Global raw-safety validity is intentionally independent from the
+     * segment-local estimator path. To test an actually unusable estimator
+     * voltage input, clear the per-segment usable masks as well. */
+    for(uint8_t seg = 0u; seg < NSMBS; seg++)
+    {
+        app.acc.usable_voltage_mask[seg] = 0u;
+    }
     (void)host_publish_measurement_snapshot(
         &app, 300u, 20.0f,
         AMS_MEAS_VALID_TEMPERATURE | AMS_MEAS_VALID_CURRENT |
@@ -9632,8 +9643,14 @@ static void test_estimator_rejects_invalid_hardware_inputs(void)
     CHECK(app.estimator.cc_soc < cc_before);
     CHECK(app.estimator.inst[0].step_count == steps_before);
 
+    /* Restore local voltage data, then make temperature locally unusable. */
+    fill_nominal_pack(&app, 3.90f);
     app.voltage_valid = true;
     app.temp_valid = false;
+    for(uint8_t seg = 0u; seg < NSMBS; seg++)
+    {
+        app.acc.usable_temp_mask[seg] = 0u;
+    }
     (void)host_publish_measurement_snapshot(
         &app, 400u, 20.0f,
         AMS_MEAS_VALID_VOLTAGE | AMS_MEAS_VALID_CURRENT |
@@ -9757,6 +9774,17 @@ static void test_passive_tuning_packet_contract(void)
         snapshot.segment[i].measured_v = 55.0f + (float)i;
         snapshot.segment[i].v_pred_v = 54.9f + (float)i;
         snapshot.segment[i].innovation_v = 0.1f;
+        snapshot.segment[i].innovation_variance_v2 = 0.25f;
+        snapshot.segment[i].p_soc_vp1 = 1.23e-5f;
+        snapshot.segment[i].p_soc_vp2 = -2.34e-5f;
+        snapshot.segment[i].p_vp1_vp2 = 3.45e-5f;
+        snapshot.segment[i].covariance_repair_count = 7u;
+        snapshot.segment[i].acquisition_state = AMS_EKF_ACQ_COMPLETE;
+        snapshot.segment[i].acquisition_reason =
+            AMS_EKF_ACQ_REASON_FIXED_BASIS_ANCHOR;
+        snapshot.segment[i].acquisition_sample_count = 21u;
+        snapshot.segment[i].acquisition_reject_count = 2u;
+        snapshot.segment[i].acquisition_candidate_soc = 0.6123f;
         snapshot.segment[i].valid = 1u;
     }
 
@@ -9777,12 +9805,39 @@ static void test_passive_tuning_packet_contract(void)
 
     tx_count = 0u;
     CHECK(send_tuning_ekf_slow(&app.board.canbus, &snapshot) == HAL_OK);
-    CHECK(tx_count == 45u); /* 3 covariance + 2 SoH + 4 context pages, x5 */
+    CHECK(tx_count == 50u); /* 4 covariance + 2 SoH + 4 context pages, x5 */
     for(uint8_t i = 0u; i < tx_count; i++)
     {
         CHECK(tx_log[i].stdid >= AMS_LOGGER_CAN_ID_EKF_COVARIANCE);
         CHECK(tx_log[i].stdid <= AMS_LOGGER_CAN_ID_EKF_CONTEXT);
     }
+    /* Segment 0 covariance page 2 exports exact prior innovation sigma, not
+     * the duplicate estimator step. Page 3 carries signed cross terms. */
+    CHECK(tx_log[2u].stdid == AMS_LOGGER_CAN_ID_EKF_COVARIANCE);
+    CHECK((tx_log[2u].data[1] & 0xC0u) == 0x80u);
+    CHECK(word_at(2u, 3u) == 500u);
+    CHECK(tx_log[3u].stdid == AMS_LOGGER_CAN_ID_EKF_COVARIANCE);
+    CHECK((tx_log[3u].data[1] & 0xC0u) == 0xC0u);
+    CHECK((int16_t)word_at(3u, 1u) == 123);
+    CHECK((int16_t)word_at(3u, 2u) == -234);
+    CHECK((int16_t)word_at(3u, 3u) == 345);
+    /* Context page 3 now exposes covariance repair count in place of the
+     * redundant low16 segment-step field. */
+    CHECK(tx_log[9u].stdid == AMS_LOGGER_CAN_ID_EKF_CONTEXT);
+    CHECK((tx_log[9u].data[1] & 0xC0u) == 0xC0u);
+    CHECK(word_at(9u, 2u) == 7u);
+
+    tx_count = 0u;
+    CHECK(send_tuning_acquisition_meta(&app.board.canbus, &snapshot) == HAL_OK);
+    CHECK(tx_count == 5u);
+    CHECK(tx_log[0u].stdid == AMS_LOGGER_CAN_ID_TUNING_META);
+    CHECK(tx_log[0u].data[0] == 0x80u);
+    CHECK(tx_log[0u].data[1] == 0x11u);
+    CHECK(tx_log[0u].data[2] == AMS_EKF_ACQ_COMPLETE);
+    CHECK(tx_log[0u].data[3] == AMS_EKF_ACQ_REASON_FIXED_BASIS_ANCHOR);
+    CHECK(tx_log[0u].data[4] == 21u);
+    CHECK(tx_log[0u].data[5] == 2u);
+    CHECK(word_at(0u, 3u) == 6123u);
 
     snapshot.fuse_valid = 1u;
     snapshot.fuse_authority_valid = 0u;

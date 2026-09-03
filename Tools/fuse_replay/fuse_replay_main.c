@@ -16,14 +16,14 @@ static void usage(const char *program)
         "  --summary FILE.csv            One-row summary CSV\n"
         "  --startup cold-soak|known-cold|seeded:UTIL\n"
         "  --reset unknown|known-cold|restore|seeded:UTIL\n"
-        "  --usable-fraction VALUE       Default 0.25\n"
+        "  --curve-time-fraction VALUE   Default 0.25\n  --usable-fraction VALUE       Legacy alias for --curve-time-fraction\n"
         "  --cooling-tau-s VALUE         Default 300\n"
         "  --rated-current-a VALUE       Default 80\n"
         "  --soak-s VALUE                Default 300\n"
         "  --quiescent-current-a VALUE   Default 5\n"
         "  --uncertainty-a VALUE         Default 0.5\n"
         "  --temperature-c VALUE         Default 30\n"
-        "  --state-abs-tol VALUE         Default 0.25 A^2s\n"
+        "  --state-abs-tol VALUE         Dimensionless state tolerance; default 2e-5\n"
         "  --state-rel-tol VALUE         Default 0.001\n"
         "  --cap-tol-a VALUE             Default 0.20 A\n"
         "  --strict                      Exit nonzero on oracle mismatch\n",
@@ -160,10 +160,11 @@ int main(int argc, char **argv)
                 return EXIT_FAILURE;
             }
         }
-        else if(strcmp(arg, "--usable-fraction") == 0)
+        else if((strcmp(arg, "--curve-time-fraction") == 0) ||
+                (strcmp(arg, "--usable-fraction") == 0))
         {
             REQUIRE_VALUE();
-            if(!parse_double_arg(argv[i], &options.usable_i2t_fraction)) return EXIT_FAILURE;
+            if(!parse_double_arg(argv[i], &options.curve_time_fraction)) return EXIT_FAILURE;
         }
         else if(strcmp(arg, "--cooling-tau-s") == 0)
         {
@@ -198,7 +199,7 @@ int main(int argc, char **argv)
         else if(strcmp(arg, "--state-abs-tol") == 0)
         {
             REQUIRE_VALUE();
-            if(!parse_double_arg(argv[i], &options.state_abs_tolerance_a2s)) return EXIT_FAILURE;
+            if(!parse_double_arg(argv[i], &options.state_abs_tolerance)) return EXIT_FAILURE;
         }
         else if(strcmp(arg, "--state-rel-tol") == 0)
         {

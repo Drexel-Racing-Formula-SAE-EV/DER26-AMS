@@ -156,7 +156,7 @@ WARN := \
 CFLAGS_COMMON := -std=c11 -g -O0 $(WARN) $(COMMON_DEFS) $(INC)
 LDLIBS := -lm
 
-.PHONY: help check-root check-core-root compile unit can-tx-scheduler-test temp-ack-decoder-test apm-hardening-test apm-cli-test can-logger-contract-test can-logger-contract-5s-test testday-lock-test bench-validation-lock-test apm-bench-gates firmware-asan can-load-budget can-v4-contract-gate can-clock-contract-gate adbms-v05-contract-gate adbms-v05-variant-gates firmware-ci prevehicle-ci power-core power-metamorphic power-sensitivity power-oracle power-consumer power-resources fuse-oracle fuse-replay dashboard-decoder thermistor-validate test profile-gates estimator-topology-gates production-gates static-allocation-gate state-ownership-gate target-project-gate whole-source-analyze system-sil apm-sil bringup-test hil-adbms-test adbms-resilience-test imd-test air-feedback-stub-test safety-test stress ci asan ubsan analyze clang-analyze clean list make-build-dir
+.PHONY: help check-root check-core-root compile unit can-tx-scheduler-test temp-ack-decoder-test apm-hardening-test apm-cli-test can-logger-contract-test can-logger-contract-5s-test testday-lock-test bench-validation-lock-test apm-bench-gates firmware-asan can-load-budget can-v4-contract-gate can-irq-contract-gate rtos-fail-low-order-gate can-clock-contract-gate adbms-v05-contract-gate adbms-v05-variant-gates firmware-ci prevehicle-ci power-core power-metamorphic power-sensitivity power-oracle power-consumer power-resources fuse-oracle fuse-replay dashboard-decoder thermistor-validate test profile-gates estimator-topology-gates production-gates static-allocation-gate state-ownership-gate target-project-gate whole-source-analyze system-sil apm-sil bringup-test hil-adbms-test adbms-resilience-test imd-test air-feedback-stub-test safety-test stress ci asan ubsan analyze clang-analyze clean list make-build-dir
 
 help:
 	@echo "DER26 AMS host test harness"
@@ -201,6 +201,8 @@ help:
 	@echo "  make prevehicle-ci Add sanitizers and extended seeded stress to firmware CI"
 	@echo "  make can-load-budget Check conservative DER26-CAN-V4 utilization budget"
 	@echo "  make can-v4-contract-gate Verify V4 ID priority/scheduler contract"
+	@echo "  make can-irq-contract-gate Verify CAN1 RX0/TX/SCE vector coverage for enabled notifications"
+	@echo "  make rtos-fail-low-order-gate Verify fatal RTOS hooks fail BMS_OK low before diagnostics"
 	@echo "  make can-clock-contract-gate Verify 500k/250k timing and HSE clock contract"
 	@echo "  make adbms-v05-contract-gate Verify ADBMS session/fault/filter/balance cross-module contract"
 	@echo "  make adbms-v05-variant-gates Compile /128,/64, AVG8/IIR and post-S-ECO feature variants"
@@ -623,7 +625,7 @@ target-project-gate: check-core-root
 	@test "$$(grep -c 'name="BENCH Validation 1-SMB Release"' "$(AMS_ROOT)/.cproject")" -ge 1
 	@test "$$(grep -c 'value="AMS_BENCH_VALIDATION_SINGLE_SMB=1"' "$(AMS_ROOT)/.cproject")" -eq 2
 	@test "$$(grep -c 'value="AMS_BUILD_PROFILE=5"' "$(AMS_ROOT)/.cproject")" -eq 4
-	@test "$$(grep -c 'value="DER26_CAN_BITRATE_KBPS=500"' "$(AMS_ROOT)/.cproject")" -eq 4
+	@test "$$(grep -c 'value="DER26_CAN_BITRATE_KBPS=1000"' "$(AMS_ROOT)/.cproject")" -eq 4
 	@echo "PASS CubeIDE BENCH Validation 5-SMB/1-SMB identity/profile/bitrate, build paths, warning flags, XML and linker-script metadata"
 
 system-sil: test
@@ -758,6 +760,12 @@ firmware-asan: check-core-root make-build-dir
 can-v4-contract-gate: check-core-root
 	$(PYTHON) tools/check_can_v4_contract.py
 
+can-irq-contract-gate: check-core-root
+	$(PYTHON) tools/check_can_irq_contract.py
+
+rtos-fail-low-order-gate: check-core-root
+	$(PYTHON) tools/check_rtos_fail_low_order.py
+
 can-clock-contract-gate: check-core-root
 	$(PYTHON) tools/check_can_clock_contract.py
 
@@ -784,7 +792,8 @@ firmware-ci: unit can-tx-scheduler-test temp-ack-decoder-test test testday-lock-
 	can-logger-contract-5s-test adbms-resilience-test profile-gates \
 	estimator-topology-gates production-gates static-allocation-gate \
 	state-ownership-gate target-project-gate analyze whole-source-analyze \
-	can-load-budget can-v4-contract-gate can-clock-contract-gate adbms-v05-contract-gate adbms-v05-variant-gates
+	can-load-budget can-v4-contract-gate can-irq-contract-gate rtos-fail-low-order-gate \
+	can-clock-contract-gate adbms-v05-contract-gate adbms-v05-variant-gates
 	@echo "PASS self-contained AMS firmware CI (external oracle repositories not required)"
 
 prevehicle-ci: firmware-ci firmware-asan ubsan stress

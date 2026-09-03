@@ -270,6 +270,10 @@ uint32_t ams_sop_input_reason_flags(const ams_sop_input_t *input,
     {
         reasons |= AMS_SOP_REASON_ESTIMATOR_INVALID;
     }
+    if(input->estimator_acquired == 0u)
+    {
+        reasons |= AMS_SOP_REASON_ESTIMATOR_UNACQUIRED;
+    }
     if(input->current_calibrated == 0u)
     {
         reasons |= AMS_SOP_REASON_CURRENT_UNCALIBRATED;
@@ -392,6 +396,7 @@ static uint32_t fatal_input_reasons(void)
 {
     return AMS_SOP_REASON_MEASUREMENT_INVALID |
            AMS_SOP_REASON_ESTIMATOR_INVALID |
+           AMS_SOP_REASON_ESTIMATOR_UNACQUIRED |
            AMS_SOP_REASON_CURRENT_UNCALIBRATED |
            AMS_SOP_REASON_CURRENT_POLARITY |
            AMS_SOP_REASON_MEASUREMENT_STALE |

@@ -31,6 +31,7 @@ static void make_input(ams_sop_input_t *input, float soc, float temperature_c)
     input->operating_mode = AMS_SOP_MODE_DRIVE;
     input->measurement_valid = 1u;
     input->estimator_valid = 1u;
+    input->estimator_acquired = 1u;
     input->estimator_segment_topology = 1u;
     input->current_calibrated = 1u;
     input->current_polarity_validated = 1u;

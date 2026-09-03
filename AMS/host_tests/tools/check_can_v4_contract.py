@@ -64,6 +64,10 @@ tuning_names = [
 ]
 if [macro(logger, name) for name in tuning_names] != list(range(0x6B5, 0x6C1)):
     raise SystemExit("FAIL passive tuning IDs must remain contiguous 0x6B5..0x6C0")
+if macro(logger, "AMS_LOGGER_PROTOCOL_VERSION") != 4:
+    raise SystemExit("FAIL logger protocol must be v4 for full-covariance/acquisition pages")
+if macro(logger, "AMS_TUNING_CAN_ACQ_PERIOD_MS") != 1000:
+    raise SystemExit("FAIL acquisition tuning telemetry must remain at 1 Hz")
 if "250-kbit/s image" not in logger or "AMS tuning CAN is prohibited at 250" not in logger:
     raise SystemExit("FAIL 250-kbit/s tuning compile exclusion is missing")
 if macro(app, "AMS_LEGACY_TELEM_CAN_ID") != 0x6B1:
@@ -89,6 +93,12 @@ if "canbus_publish_protected_generation" not in task or "canbus_publish_detail_s
     raise SystemExit("FAIL CAN task does not build V4 protected/detail publications")
 if "canbus_publish_tuning_fast" not in task or "CANBUS_TX_BUILD_DETAIL" not in task:
     raise SystemExit("FAIL tuning telemetry is not explicitly built as DETAIL traffic")
+if "p_soc_vp1" not in task or "p_soc_vp2" not in task or "p_vp1_vp2" not in task:
+    raise SystemExit("FAIL tuning CAN does not export full EKF cross-covariance")
+if "send_tuning_acquisition_meta" not in task or "acquisition_candidate_soc" not in task:
+    raise SystemExit("FAIL tuning CAN lacks per-segment acquisition diagnostics")
+if "covariance_repair_count" not in task or "innovation_variance_v2" not in task:
+    raise SystemExit("FAIL tuning CAN lacks covariance-repair / exact innovation-variance diagnostics")
 if "canbus_tuning_health_guard" not in task or "can_tuning_suppressed" not in task:
     raise SystemExit("FAIL tuning stream lacks one-way runtime suppression guard")
 if "ams_can_tx_publish_protected" not in canbus or "ams_can_tx_publish_detail" not in canbus:

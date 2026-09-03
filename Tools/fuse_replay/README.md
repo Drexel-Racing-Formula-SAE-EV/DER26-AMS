@@ -7,12 +7,11 @@ behavior or enable fuse-model authority.
 
 ## Why two implementations exist
 
-The production observer advances the excess thermal/I²t state with the
+The production observer advances the dimensionless thermal-utilization state with the
 conservative discrete update
 
 ```text
 x[k+1] = x[k] exp(-dt/tau) + q[k] dt
-q[k]   = max(0, Ieff[k]^2 - Icontinuous[k]^2)
 ```
 
 The independent reference uses `long double` and the exact zero-order-hold
