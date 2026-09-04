@@ -382,7 +382,13 @@ void ams_power_state_init(ams_power_state_t *state)
     ams_fuse_observer_default_config(&state->fuse_config);
     ams_power_strategy_default_config(&state->strategy_config);
     ams_soh_init(&state->soh, &state->soh_config);
-    ams_fuse_observer_init(&state->fuse);
+    if(!ams_fuse_observer_init_conservative(&state->fuse,
+                                            &state->fuse_config))
+    {
+        /* Defensive fallback.  The default configuration is compile-time
+         * constant and valid, but a failed seed must never create authority. */
+        ams_fuse_observer_init(&state->fuse);
+    }
     ams_power_strategy_init(&state->strategy);
     ams_power_state_invalidate(state, 0u,
                                AMS_SOP_REASON_MEASUREMENT_INVALID);

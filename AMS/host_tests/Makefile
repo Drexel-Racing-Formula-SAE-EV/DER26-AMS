@@ -260,6 +260,13 @@ can-tx-scheduler-test: check-core-root make-build-dir
 		-o "$(CAN_TX_SCHED_UNIT_BIN)" $(LDLIBS)
 	"$(CAN_TX_SCHED_UNIT_BIN)"
 
+.PHONY: can-tx-regression-test
+can-tx-regression-test: check-core-root make-build-dir
+	$(CC) $(CFLAGS_COMMON) -Werror -ffunction-sections -fdata-sections \
+		unit/can_tx_regression_test.c $(CAN_TX_SCHED_SRC) \
+		-Wl,--gc-sections -o "$(BUILD_DIR)/can_tx_regression_tests" $(LDLIBS)
+	"$(BUILD_DIR)/can_tx_regression_tests"
+
 temp-ack-decoder-test: check-core-root make-build-dir
 	$(CC) $(CFLAGS_COMMON) -Werror $(TEMP_ACK_DECODER_UNIT_SRC) \
 		-o "$(TEMP_ACK_DECODER_UNIT_BIN)" $(LDLIBS)
@@ -788,7 +795,7 @@ adbms-v05-variant-gates: check-core-root
 can-load-budget: check-core-root
 	$(PYTHON) tools/check_can_load_budget.py
 
-firmware-ci: unit can-tx-scheduler-test temp-ack-decoder-test test testday-lock-test apm-sil apm-bench-gates \
+firmware-ci: unit can-tx-scheduler-test can-tx-regression-test temp-ack-decoder-test test testday-lock-test apm-sil apm-bench-gates \
 	can-logger-contract-5s-test adbms-resilience-test profile-gates \
 	estimator-topology-gates production-gates static-allocation-gate \
 	state-ownership-gate target-project-gate analyze whole-source-analyze \

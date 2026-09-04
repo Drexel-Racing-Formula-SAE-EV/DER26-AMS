@@ -1,7 +1,7 @@
 function summary = summarize_result(result)
 %SUMMARIZE_RESULT Compact release/report-friendly scenario result.
 summary=struct();
-summary.schema_version=7;
+summary.schema_version=8;
 summary.scenario_id=result.scenario_id;
 summary.seed=result.seed;
 summary.mil_configuration_hash=result.mil_configuration_hash;
@@ -183,10 +183,13 @@ if isfield(result.metrics,'fuse')
     summary.fuse_model_consistency_pass=result.metrics.fuse.pass;
     summary.fuse_max_state_nonconservative=result.metrics.fuse.max_state_nonconservative;
     summary.fuse_max_cap_nonconservative_A=result.metrics.fuse.max_cap_nonconservative_A;
+    summary.fuse_max_charge_cap_nonconservative_A= ...
+        result.metrics.fuse.max_charge_cap_nonconservative_A;
 else
     summary.fuse_model_consistency_pass=true;
     summary.fuse_max_state_nonconservative=NaN;
     summary.fuse_max_cap_nonconservative_A=NaN;
+    summary.fuse_max_charge_cap_nonconservative_A=NaN;
 end
 summary.numeric_pass=result.metrics.numeric.pass;
 summary.production_covariance_psd_checked=field_or( ...

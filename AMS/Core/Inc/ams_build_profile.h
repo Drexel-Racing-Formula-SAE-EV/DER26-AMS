@@ -49,6 +49,24 @@
 #define AMS_BUILD_PROFILE AMS_PROFILE_BENCH
 #endif
 
+/* Passive five-SMB ring observer used for LV bench characterization when the
+ * accumulator DHAB and the thermistor mux bus are not connected.  This only
+ * permits the segment EKFs to acquire an OCV-based advisory SoC using an
+ * explicit zero-current/open-ring assumption and a 25 C temperature fallback.
+ * It does not change measurement-valid bits, SoH/SoP authority, BMS_OK, or
+ * balancing.  Disable it for any bench setup that can carry pack current. */
+#ifndef AMS_ENABLE_BENCH_PASSIVE_RING_ESTIMATOR
+#if (AMS_BUILD_PROFILE == AMS_PROFILE_BENCH_VALIDATION) && \
+    !AMS_BENCH_VALIDATION_SINGLE_SMB
+#define AMS_ENABLE_BENCH_PASSIVE_RING_ESTIMATOR 1
+#else
+#define AMS_ENABLE_BENCH_PASSIVE_RING_ESTIMATOR 0
+#endif
+#endif
+
+#define AMS_BENCH_PASSIVE_RING_TEMP_C 25.0f
+#define AMS_BENCH_PASSIVE_RING_CURRENT_UNCERTAINTY_A 0.25f
+
 #define AMS_ESTIMATOR_TOPOLOGY_PACK     1
 #define AMS_ESTIMATOR_TOPOLOGY_SEGMENTS 2
 
@@ -614,6 +632,17 @@
 #error "AMS_ENABLE_AUTO_TEMP_MUX_SCAN must be 0 or 1"
 #endif
 
+#if (AMS_ENABLE_BENCH_PASSIVE_RING_ESTIMATOR != 0) && \
+    (AMS_ENABLE_BENCH_PASSIVE_RING_ESTIMATOR != 1)
+#error "AMS_ENABLE_BENCH_PASSIVE_RING_ESTIMATOR must be 0 or 1"
+#endif
+
+#if AMS_ENABLE_BENCH_PASSIVE_RING_ESTIMATOR && \
+    ((AMS_BUILD_PROFILE != AMS_PROFILE_BENCH_VALIDATION) || \
+     AMS_BENCH_VALIDATION_SINGLE_SMB)
+#error "Passive ring estimator is restricted to the five-SMB BENCH_VALIDATION profile"
+#endif
+
 #if (AMS_ENABLE_ADBMS_FAULT_INJECTION != 0) && \
     (AMS_ENABLE_ADBMS_FAULT_INJECTION != 1)
 #error "AMS_ENABLE_ADBMS_FAULT_INJECTION must be 0 or 1"
@@ -712,7 +741,7 @@
 #endif
 
 #ifndef AMS_SOURCE_REVISION
-#define AMS_SOURCE_REVISION "DER26-AMS-v0.5.17-20260903"
+#define AMS_SOURCE_REVISION "DER26-AMS-v0.5.20-20260904"
 #endif
 #ifndef AMS_BUILD_GIT_COMMIT
 #define AMS_BUILD_GIT_COMMIT AMS_SOURCE_REVISION

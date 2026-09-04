@@ -14,7 +14,7 @@ static void usage(const char *program)
         "Options:\n"
         "  --output FILE.csv             Detailed production/reference replay\n"
         "  --summary FILE.csv            One-row summary CSV\n"
-        "  --startup cold-soak|known-cold|seeded:UTIL\n"
+        "  --startup conservative|cold-soak|known-cold|seeded:UTIL\n"
         "  --reset unknown|known-cold|restore|seeded:UTIL\n"
         "  --curve-time-fraction VALUE   Default 0.25\n  --usable-fraction VALUE       Legacy alias for --curve-time-fraction\n"
         "  --cooling-tau-s VALUE         Default 300\n"
@@ -50,6 +50,12 @@ static bool parse_double_arg(const char *text, double *value)
 static bool parse_startup(const char *text,
                           fuse_replay_init_policy_t *policy)
 {
+    if(strcmp(text, "conservative") == 0)
+    {
+        policy->kind = FUSE_REPLAY_INIT_CONSERVATIVE_UNKNOWN;
+        policy->utilization = 0.0;
+        return true;
+    }
     if(strcmp(text, "cold-soak") == 0)
     {
         policy->kind = FUSE_REPLAY_INIT_COLD_SOAK;

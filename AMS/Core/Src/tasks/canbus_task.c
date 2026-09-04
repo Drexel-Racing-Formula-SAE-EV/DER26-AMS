@@ -2473,7 +2473,7 @@ static void canbus_record_tx_class(uint32_t *attempt_count,
 
 static HAL_StatusTypeDef canbus_publish_charger_command(
     canbus_device_t *canbus,
-    uint32_t generation,
+    uint32_t request_id,
     uint16_t source_tag,
     uint16_t voltage10x,
     uint16_t current10x,
@@ -2485,13 +2485,14 @@ static HAL_StatusTypeDef canbus_publish_charger_command(
     }
 
     HAL_StatusTypeDef status = canbus_tx_build_begin(
-        canbus, CANBUS_TX_BUILD_CRITICAL, generation,
+        canbus, CANBUS_TX_BUILD_CRITICAL, canbus_tx_next_generation(canbus),
         osKernelGetTickCount(), source_tag);
     if(status != HAL_OK)
     {
         return status;
     }
 
+    canbus->tx_builder.request_id = request_id;
     status = canbus_send_charger_command(canbus, voltage10x, current10x,
                                          disable ? CHARGER_CMD_DISABLE :
                                                    CHARGER_CMD_ENABLE);
@@ -2556,7 +2557,7 @@ static HAL_StatusTypeDef canbus_run_periodic_charger_command(
     }
 
     HAL_StatusTypeDef status = canbus_publish_charger_command(
-        canbus, canbus_tx_next_generation(canbus),
+        canbus, 0u,
         CANBUS_TX_TAG_CHARGER_NORMAL, voltage10x, current10x, disable_charge);
     canbus_record_tx_class(&data->can_tx_critical_attempt_count,
                            &data->can_tx_critical_fail_count, status);
@@ -2675,7 +2676,7 @@ static HAL_StatusTypeDef canbus_publish_tuning_fast(
     }
 
     HAL_StatusTypeDef status = canbus_tx_build_begin(
-        canbus, CANBUS_TX_BUILD_DETAIL,
+        canbus, CANBUS_TX_BUILD_TUNING,
         canbus_tx_next_generation(canbus), publish_tick, CANBUS_TX_TAG_NONE);
     if(status != HAL_OK)
     {
@@ -2844,19 +2845,24 @@ void canbus_task_fn(void *arg)
         }
 
         /* State-exit charger disable retains absolute software priority. */
+        if(canbus->tx_refresh_pending)
+        {
+            /* Force a fresh charger decision this cycle before resumed TX. */
+            charger_div = CAN_CHARGER_DIV;
+        }
         bool charger_shutdown_attempted = false;
         if(ccs->shutdown_pending)
         {
-            uint32_t shutdown_generation;
+            uint32_t shutdown_request_id;
             taskENTER_CRITICAL();
-            shutdown_generation = ccs->shutdown_request_count;
+            shutdown_request_id = ccs->shutdown_request_count;
             taskEXIT_CRITICAL();
 
             charger_shutdown_attempted = true;
             ccs->target_voltage = 0.0f;
             ccs->target_current = 0.0f;
             HAL_StatusTypeDef shutdown_status = canbus_publish_charger_command(
-                canbus, shutdown_generation, CANBUS_TX_TAG_CHARGER_SHUTDOWN,
+                canbus, shutdown_request_id, CANBUS_TX_TAG_CHARGER_SHUTDOWN,
                 0u, 0u, true);
             canbus_record_tx_class(&data->can_tx_critical_attempt_count,
                                    &data->can_tx_critical_fail_count,
@@ -2910,6 +2916,11 @@ void canbus_task_fn(void *arg)
                                &data->can_tx_compact_bundle_fail_count,
                                protected_status);
         task_status |= protected_status;
+
+        if(canbus->tx_refresh_pending && (task_status == HAL_OK))
+        {
+            canbus_tx_resume_after_refresh(canbus);
+        }
 
         /* 2 Hz coherent detail snapshot. ACTIVE runs to completion; only the
          * latest PENDING snapshot may supersede an older PENDING snapshot. */

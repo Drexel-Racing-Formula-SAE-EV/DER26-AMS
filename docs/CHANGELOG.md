@@ -14,9 +14,24 @@ Major work represented in the current source line includes:
 - explicit bench-validation and single-SMB/five-SMB configurations;
 - RTOS/CAN robustness review and target-validation hooks.
 
-Current synchronized source revision marker: `DER26-AMS-v0.5.15-20260826`.
+Current synchronized source revision marker: `DER26-AMS-v0.5.20-20260904`.
 
 For exact historical changes, use repository history and release tags.
+
+## CAN scheduler fixes — 2026-09-04 (package v2.6.17, AMS v0.5.20)
+
+Removed the full-generation detail stack temporary. Required completion now
+uses frame classes and validates the required count. Fast tuning yields to a
+pending base snapshot. Fixed mailbox selection respects both hardware flags and
+software ownership; all CAN vectors defer refill until HAL dispatch finishes.
+Bus-off recovery waits for hardware BOFF and outstanding requests to settle,
+then waits for fresh charger/protected publication. Charger TX chronology and
+shutdown acknowledgment identity are separate, and obsolete loaded critical
+commands receive abort requests. Repeated-bus-off recovery is counted once.
+
+See `AMS/docs/CAN_SCHEDULER_FIXES_2026-09-04.md` for focused verification and
+target-test limits. Battery estimator, SoH, SoP, fuse and MiL logic are unchanged
+from package v2.6.16.
 
 
 ## Production acquisition candidate — 2026-08-29

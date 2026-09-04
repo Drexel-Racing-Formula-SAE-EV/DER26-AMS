@@ -145,6 +145,9 @@ void vPortExitCritical(void){}
 HAL_StatusTypeDef HAL_CAN_Start(CAN_HandleTypeDef *hcan){ return hcan ? fake_can_recover_status : HAL_ERROR; }
 HAL_StatusTypeDef HAL_CAN_Stop(CAN_HandleTypeDef *hcan){ return hcan ? fake_can_recover_status : HAL_ERROR; }
 HAL_CAN_StateTypeDef HAL_CAN_GetState(const CAN_HandleTypeDef *hcan){ return hcan ? HAL_CAN_STATE_LISTENING : HAL_CAN_STATE_RESET; }
+/* This legacy harness completes TX synchronously; asynchronous dispatch is
+ * covered by unit/can_tx_regression_test.c. */
+void HAL_CAN_IRQHandler(CAN_HandleTypeDef *hcan){ (void)hcan; }
 HAL_StatusTypeDef HAL_CAN_AbortTxRequest(CAN_HandleTypeDef *hcan, uint32_t mailboxes){ (void)mailboxes; return hcan ? HAL_OK : HAL_ERROR; }
 HAL_StatusTypeDef HAL_CAN_ResetError(CAN_HandleTypeDef *hcan){ if(!hcan) return HAL_ERROR; if(fake_can_recover_status == HAL_OK) fake_can_error = HAL_CAN_ERROR_NONE; return fake_can_recover_status; }
 uint32_t HAL_CAN_GetError(const CAN_HandleTypeDef *hcan){ (void)hcan; return fake_can_error; }

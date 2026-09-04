@@ -20,4 +20,7 @@ disp('FAILED:');
 disp(S(~S.pass,vars));
 ```
 
-Expected deterministic-core target: 9/9. Production AMS C is unchanged at v0.5.17, so current v0.5.17 host runners may be reused.
+Expected deterministic-core target: 9/9. Production source is now v0.5.19.
+The v0.5.19 change is confined to the target bench adapter/CLI; the production
+EKF, SoH, SoP and fuse model used by the host runners are unchanged from
+v0.5.18, so current v0.5.18 host runners do not need another rebuild.

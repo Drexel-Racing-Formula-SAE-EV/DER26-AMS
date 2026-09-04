@@ -970,6 +970,15 @@ bool estimator_task_update(app_data_t *data, uint32_t now, float cc_dt_s)
 
     bool current_contiguous = measurement.current.valid;
     double charge_delta_As = measurement.current.charge_As;
+#if AMS_ENABLE_BENCH_PASSIVE_RING_ESTIMATOR
+    /* The five-SMB passive ring has no pack-current path.  Keep this
+     * assumption local to the advisory EKF: the measurement snapshot remains
+     * invalid for current, so SoH, SoP and every authority consumer still
+     * fail closed. */
+    const bool passive_ring_current_fallback = !measurement.current.valid;
+#else
+    const bool passive_ring_current_fallback = false;
+#endif
     if(data->estimator.current_total_initialized != 0u)
     {
         charge_delta_As = measurement.current.total_charge_As -
@@ -978,12 +987,18 @@ bool estimator_task_update(app_data_t *data, uint32_t now, float cc_dt_s)
             (measurement.current.total_invalid_sample_count ==
              data->estimator.last_current_total_invalid_sample_count);
     }
+    if(passive_ring_current_fallback)
+    {
+        current_contiguous = true;
+        charge_delta_As = 0.0;
+    }
 
     data->estimator.last_current_total_charge_As =
         measurement.current.total_charge_As;
     data->estimator.last_current_total_invalid_sample_count =
         measurement.current.total_invalid_sample_count;
-    data->estimator.current_total_initialized = 1u;
+    data->estimator.current_total_initialized =
+        passive_ring_current_fallback ? 0u : 1u;
 
     bool charge_valid = current_contiguous && isfinite(charge_delta_As);
     if(charge_valid)
@@ -993,8 +1008,13 @@ bool estimator_task_update(app_data_t *data, uint32_t now, float cc_dt_s)
     }
 
     float i_pack_A = measurement.current.average_A;
+    if(passive_ring_current_fallback)
+    {
+        i_pack_A = 0.0f;
+    }
     if((data->estimator.last_consumed_measurement_sequence != 0u) &&
-       dt_valid && isfinite(charge_delta_As))
+       dt_valid && isfinite(charge_delta_As) &&
+       !passive_ring_current_fallback)
     {
         i_pack_A = (float)(charge_delta_As / (double)dt_s);
     }
@@ -1006,7 +1026,8 @@ bool estimator_task_update(app_data_t *data, uint32_t now, float cc_dt_s)
      * the advisory estimator partitioned. estimator_selected_voltage() and
      * collect_group_temp() below remain the per-segment validity gates. */
     bool hardware_inputs_ready =
-        ((measurement.validity_flags & AMS_MEAS_VALID_CURRENT) != 0u) &&
+        (((measurement.validity_flags & AMS_MEAS_VALID_CURRENT) != 0u) ||
+         passive_ring_current_fallback) &&
         ((measurement.validity_flags & AMS_MEAS_BALANCE_RECOVERED) != 0u) &&
         dt_valid && charge_valid && isfinite(i_pack_A);
     const bool balance_recovered =
@@ -1016,14 +1037,20 @@ bool estimator_task_update(app_data_t *data, uint32_t now, float cc_dt_s)
         (AMS_CURRENT_CALIBRATION_VALIDATED != 0) &&
         measurement.current.calibration_record_confident &&
         (measurement.current.calibration_id != 0u);
+#if AMS_ENABLE_BENCH_PASSIVE_RING_ESTIMATOR
+    const bool acquisition_current_trusted = true;
+    const float acquisition_current_uncertainty_A =
+        AMS_BENCH_PASSIVE_RING_CURRENT_UNCERTAINTY_A;
+#else
     const bool acquisition_current_trusted =
         measurement.current.valid &&
         measurement.current.calibration_record_confident &&
         (measurement.current.calibration_id != 0u) &&
         (measurement.current.uncertainty_mA != UINT16_MAX);
     const float acquisition_current_uncertainty_A =
-        acquisition_current_trusted ?
-        ((float)measurement.current.uncertainty_mA / 1000.0f) : 0.0f;
+        (acquisition_current_trusted ?
+         ((float)measurement.current.uncertainty_mA / 1000.0f) : 0.0f);
+#endif
 
     if(!dt_valid)
     {
@@ -1055,6 +1082,18 @@ bool estimator_task_update(app_data_t *data, uint32_t now, float cc_dt_s)
         bool temp_ok = collect_group_temp(&measurement,
                                           &inst->cfg,
                                           &t_surf_C);
+#if AMS_ENABLE_BENCH_PASSIVE_RING_ESTIMATOR
+        if(!temp_ok)
+        {
+            /* The Rev5 100-ohm GPIO4/GPIO5 pull-ups are still under hardware
+             * review, so BENCH_VALIDATION deliberately does not run the mux
+             * bus periodically.  A room-temperature fallback is adequate for
+             * passive OCV observation, but it is never published as a valid
+             * temperature measurement or consumed by SoH/SoP. */
+            t_surf_C = AMS_BENCH_PASSIVE_RING_TEMP_C;
+            temp_ok = true;
+        }
+#endif
 
         if(hardware_inputs_ready && voltage_ok && temp_ok)
         {

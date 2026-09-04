@@ -42,7 +42,7 @@ bool fuse_ref_config_valid(const fuse_ref_config_t *c)
     if(!isfinite(c->maximum_curve_time_s)||c->maximum_curve_time_s<=0)return false;
     if(!isfinite(c->minimum_curve_time_s)||c->minimum_curve_time_s<=0||c->minimum_curve_time_s>=c->maximum_curve_time_s)return false;
     for(uint32_t h=0;h<FUSE_REF_HORIZON_COUNT;++h)
-        if(!isfinite(c->horizons_s[h])||c->horizons_s[h]<=0||!isfinite(c->discharge_static_cap_a[h])||c->discharge_static_cap_a[h]<0)return false;
+        if(!isfinite(c->horizons_s[h])||c->horizons_s[h]<=0||!isfinite(c->discharge_static_cap_a[h])||c->discharge_static_cap_a[h]<0||!isfinite(c->charge_static_cap_a[h])||c->charge_static_cap_a[h]<0)return false;
     return true;
 }
 void fuse_ref_state_init(fuse_ref_state_t *s){if(s!=NULL)memset(s,0,sizeof(*s));}
@@ -153,14 +153,14 @@ bool fuse_ref_step_exact_zoh(fuse_ref_state_t *s,const fuse_ref_config_t *c,cons
     }
     r->reason_flags=FUSE_REF_REASON_NONE;
     r->effective_current_a=fabsl(in->pack_current_a)+in->current_uncertainty_a;
-    if(!s->thermal_state_initialized){if(r->effective_current_a<=c->quiescent_current_a){s->quiescent_time_s+=in->elapsed_s;if(s->quiescent_time_s>=c->initialization_soak_s){s->thermal_state_initialized=1;s->thermal_utilization=0;s->budget_exhausted=0;}}else s->quiescent_time_s=0;}
+    if(!s->thermal_state_initialized){if(r->effective_current_a<=c->quiescent_current_a){s->quiescent_time_s+=in->elapsed_s;if(s->quiescent_time_s>=c->initialization_soak_s){s->thermal_state_initialized=1;}}else s->quiescent_time_s=0;}
     r->estimated_fuse_temperature_c=in->temperature_proxy_c;if(!in->temperature_measured_at_fuse){r->estimated_fuse_temperature_c+=c->fuse_temperature_margin_c;r->reason_flags|=FUSE_REF_REASON_TEMPERATURE_PROXY;}
     r->temperature_derating=fuse_ref_temperature_derating(r->estimated_fuse_temperature_c,c->minimum_temperature_derating);r->continuous_current_a=c->rated_current_a*r->temperature_derating;r->equivalent_25c_current_a=r->effective_current_a/r->temperature_derating;
     uint8_t ex=0;long double q=source_rate(c,r->equivalent_25c_current_a,&ex,&r->typical_melt_time_s,&r->usable_melt_time_s);if(ex){r->curve_extrapolated=1;r->reason_flags|=FUSE_REF_REASON_CURVE_EXTRAPOLATED;}
     long double d=expl(-in->elapsed_s/c->cooling_time_constant_s);s->thermal_utilization=s->thermal_utilization*d+q*c->cooling_time_constant_s*(1-d);s->thermal_utilization=clamp_ld(s->thermal_utilization,0,c->maximum_state_multiple);
-    r->utilization=s->thermal_utilization;r->remaining_utilization=fmaxl(0,1-s->thermal_utilization);if(r->utilization>=1)s->budget_exhausted=1;else if(r->utilization<=0.5L)s->budget_exhausted=0;
-    for(uint32_t h=0;h<FUSE_REF_HORIZON_COUNT;++h){uint8_t ce=0;r->discharge_current_cap_a[h]=solve_cap(s,c,c->discharge_static_cap_a[h],in->current_uncertainty_a,r->temperature_derating,c->horizons_s[h],&ce);if(ce){r->curve_extrapolated=1;r->reason_flags|=FUSE_REF_REASON_CURVE_EXTRAPOLATED;}if(r->discharge_current_cap_a[h]+1e-9L<c->discharge_static_cap_a[h])r->reason_flags|=FUSE_REF_REASON_CURVE_DERATED;}
-    r->valid=1;r->budget_exhausted=s->budget_exhausted;if(!in->model_validated)r->reason_flags|=FUSE_REF_REASON_MODEL_UNVALIDATED;if(!s->thermal_state_initialized)r->reason_flags|=FUSE_REF_REASON_INITIAL_STATE_UNKNOWN;if(s->budget_exhausted)r->reason_flags|=FUSE_REF_REASON_BUDGET_EXHAUSTED;r->authority_valid=(in->model_validated&&s->thermal_state_initialized)?1u:0u;return true;
+    r->utilization=s->thermal_utilization;r->remaining_utilization=fmaxl(0,1-s->thermal_utilization);if(r->utilization>=1)s->budget_exhausted=1;else if(r->utilization<=0.5L){s->budget_exhausted=0;s->initial_state_conservative=0;}
+    for(uint32_t h=0;h<FUSE_REF_HORIZON_COUNT;++h){uint8_t ce=0;r->discharge_current_cap_a[h]=solve_cap(s,c,c->discharge_static_cap_a[h],in->current_uncertainty_a,r->temperature_derating,c->horizons_s[h],&ce);if(ce){r->curve_extrapolated=1;r->reason_flags|=FUSE_REF_REASON_CURVE_EXTRAPOLATED;}if(r->discharge_current_cap_a[h]+1e-9L<c->discharge_static_cap_a[h])r->reason_flags|=FUSE_REF_REASON_CURVE_DERATED;ce=0;r->charge_current_cap_a[h]=solve_cap(s,c,c->charge_static_cap_a[h],in->current_uncertainty_a,r->temperature_derating,c->horizons_s[h],&ce);if(ce){r->curve_extrapolated=1;r->reason_flags|=FUSE_REF_REASON_CURVE_EXTRAPOLATED;}if(r->charge_current_cap_a[h]+1e-9L<c->charge_static_cap_a[h])r->reason_flags|=FUSE_REF_REASON_CURVE_DERATED;}
+    r->valid=1;r->budget_exhausted=s->budget_exhausted;if(!in->model_validated)r->reason_flags|=FUSE_REF_REASON_MODEL_UNVALIDATED;if(!s->thermal_state_initialized||s->initial_state_conservative)r->reason_flags|=FUSE_REF_REASON_INITIAL_STATE_UNKNOWN;if(s->budget_exhausted)r->reason_flags|=FUSE_REF_REASON_BUDGET_EXHAUSTED;r->authority_valid=(in->model_validated&&s->thermal_state_initialized)?1u:0u;return true;
 }
 long double fuse_ref_integrate_trapezoidal(long double x0,long double q,long double dt,long double tau,uint32_t n)
 {

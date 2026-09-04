@@ -28,6 +28,7 @@ typedef struct {
     uint8_t data[8];
     ams_can_tx_class_t tx_class;
     uint16_t source_tag;
+    uint32_t request_id; /* Charger shutdown identity; independent of TX order. */
 } ams_can_tx_frame_t;
 
 typedef enum {
@@ -77,6 +78,7 @@ typedef struct {
 
 typedef struct {
     bool valid;
+    bool is_tuning;
     uint32_t generation;
     uint32_t publish_tick;
     uint16_t frame_count;
@@ -106,6 +108,7 @@ typedef struct {
     uint32_t detail_generated;
     uint32_t detail_completed;
     uint32_t detail_superseded;
+    uint32_t detail_tuning_shed;
     uint32_t detail_discarded_on_recovery;
     uint32_t reserve_failures;
     uint32_t unexpected_completions;
@@ -120,11 +123,10 @@ bool ams_can_tx_publish_critical(ams_can_tx_scheduler_t *sched,
                                  const ams_can_tx_frame_t *frames,
                                  uint16_t frame_count);
 
-/* Returns true when publishing this generation crossed the protected 100 ms
- * generation boundary while the previous ACTIVE generation was still
- * incomplete.  That is pathological: the caller must request aborts for any
- * old-generation hardware mailboxes, and protected_deadline_miss is already
- * incremented.  New generations do not routinely abort a healthy ACTIVE set. */
+/* Returns true on accepted publication. stale_generation_out identifies an
+ * unfinished ACTIVE generation at the 100 ms boundary whose mailboxes need
+ * aborting. Only unfinished required frames count as a deadline miss; leftover
+ * advisory frames are obsolete without implying failed authority delivery. */
 bool ams_can_tx_publish_protected(ams_can_tx_scheduler_t *sched,
                                   uint32_t generation,
                                   uint32_t publish_tick,
@@ -134,6 +136,13 @@ bool ams_can_tx_publish_protected(ams_can_tx_scheduler_t *sched,
                                   uint32_t *stale_generation_out);
 
 bool ams_can_tx_publish_detail(ams_can_tx_scheduler_t *sched,
+                               uint32_t generation,
+                               uint32_t publish_tick,
+                               const ams_can_tx_frame_t *frames,
+                               uint16_t frame_count);
+
+/* Same storage/priority as detail. A pending base snapshot wins over tuning. */
+bool ams_can_tx_publish_tuning(ams_can_tx_scheduler_t *sched,
                                uint32_t generation,
                                uint32_t publish_tick,
                                const ams_can_tx_frame_t *frames,
@@ -161,7 +170,7 @@ bool ams_can_tx_generation_has_loaded(const ams_can_tx_scheduler_t *sched,
 bool ams_can_tx_token_requires_abort(const ams_can_tx_scheduler_t *sched,
                                      const ams_can_tx_token_t *token);
 
-/* Bus-off/re-init invalidates all hardware mailbox ownership. Preserve only
+/* Call only after old hardware requests and callbacks have settled. Preserve only
  * the newest critical/protected generation and make every preserved frame
  * pending again. Detail is deliberately discarded because an incomplete
  * historical snapshot is not useful after a controller epoch change. */

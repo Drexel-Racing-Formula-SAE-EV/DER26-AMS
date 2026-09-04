@@ -326,6 +326,7 @@ static void map_ref_config(const ams_fuse_observer_config_t *prod,
     {
         ref->horizons_s[h] = sop->horizons_s[h];
         ref->discharge_static_cap_a[h] = sop->discharge_current_max_a[h];
+        ref->charge_static_cap_a[h] = sop->charge_current_max_a[h];
     }
 }
 
@@ -352,6 +353,17 @@ static bool seed_states(ams_fuse_observer_t *prod,
 {
     ams_fuse_observer_init(prod);
     fuse_ref_state_init(ref);
+    if(policy->kind == FUSE_REPLAY_INIT_CONSERVATIVE_UNKNOWN)
+    {
+        if(!ams_fuse_observer_init_conservative(prod, pcfg) ||
+           !fuse_ref_state_seed_utilization(
+               ref, rcfg, rcfg->maximum_state_multiple))
+        {
+            return false;
+        }
+        ref->initial_state_conservative = 1u;
+        return true;
+    }
     if(policy->kind == FUSE_REPLAY_INIT_COLD_SOAK)
     {
         return true;
@@ -383,6 +395,8 @@ static bool apply_reset(ams_fuse_observer_t *prod,
         const long double ref_util = ref->thermal_utilization;
         const uint8_t prod_exhausted = prod->budget_exhausted;
         const uint8_t ref_exhausted = ref->budget_exhausted;
+        const uint8_t prod_conservative = prod->initial_state_conservative;
+        const uint8_t ref_conservative = ref->initial_state_conservative;
 
         ams_fuse_observer_init(prod);
         fuse_ref_state_init(ref);
@@ -390,18 +404,20 @@ static bool apply_reset(ams_fuse_observer_t *prod,
         prod->quiescent_time_s = pcfg->initialization_soak_s;
         prod->thermal_state_initialized = 1u;
         prod->budget_exhausted = prod_exhausted;
+        prod->initial_state_conservative = prod_conservative;
         if(!fuse_ref_state_seed_utilization(ref, rcfg, ref_util))
         {
             return false;
         }
         ref->budget_exhausted = ref_exhausted;
+        ref->initial_state_conservative = ref_conservative;
         return true;
     }
 
     fuse_replay_init_policy_t policy;
     if(options->reset_kind == FUSE_REPLAY_RESET_UNKNOWN)
     {
-        policy.kind = FUSE_REPLAY_INIT_COLD_SOAK;
+        policy.kind = FUSE_REPLAY_INIT_CONSERVATIVE_UNKNOWN;
         policy.utilization = 0.0;
     }
     else if(options->reset_kind == FUSE_REPLAY_RESET_KNOWN_COLD)
@@ -424,7 +440,7 @@ void fuse_replay_default_options(fuse_replay_options_t *options)
         return;
     }
     memset(options, 0, sizeof(*options));
-    options->startup_policy.kind = FUSE_REPLAY_INIT_COLD_SOAK;
+    options->startup_policy.kind = FUSE_REPLAY_INIT_CONSERVATIVE_UNKNOWN;
     options->reset_kind = FUSE_REPLAY_RESET_UNKNOWN;
     options->reset_seed_utilization = 0.80;
     options->curve_time_fraction = 0.25;
@@ -447,6 +463,7 @@ const char *fuse_replay_init_policy_name(const fuse_replay_init_policy_t *policy
     }
     switch(policy->kind)
     {
+        case FUSE_REPLAY_INIT_CONSERVATIVE_UNKNOWN: return "conservative";
         case FUSE_REPLAY_INIT_COLD_SOAK: return "cold-soak";
         case FUSE_REPLAY_INIT_KNOWN_COLD: return "known-cold";
         case FUSE_REPLAY_INIT_SEEDED_UTILIZATION: return "seeded";
@@ -476,6 +493,10 @@ static void write_output_header(FILE *output)
         "ref_remaining_utilization,prod_exhausted,ref_exhausted,"
         "prod_cap_0p1s_a,ref_cap_0p1s_a,prod_cap_1s_a,ref_cap_1s_a,"
         "prod_cap_10s_a,ref_cap_10s_a,prod_cap_30s_a,ref_cap_30s_a,"
+        "prod_charge_cap_0p1s_a,ref_charge_cap_0p1s_a,"
+        "prod_charge_cap_1s_a,ref_charge_cap_1s_a,"
+        "prod_charge_cap_10s_a,ref_charge_cap_10s_a,"
+        "prod_charge_cap_30s_a,ref_charge_cap_30s_a,"
         "prod_reason_flags,ref_reason_flags\n");
 }
 
@@ -492,7 +513,9 @@ static void write_output_row(FILE *output,
     fprintf(output,
         "%" PRIu64 ",%.9g,%.9g,%s,%u,%u,%u,%u,"
         "%.9g,%.12Lg,%.12Lg,%.9g,%.12Lg,%.9g,%.12Lg,%u,%u,"
-        "%.9g,%.12Lg,%.9g,%.12Lg,%.9g,%.12Lg,%.9g,%.12Lg,0x%04x,0x%04x\n",
+        "%.9g,%.12Lg,%.9g,%.12Lg,%.9g,%.12Lg,%.9g,%.12Lg,"
+        "%.9g,%.12Lg,%.9g,%.12Lg,%.9g,%.12Lg,%.9g,%.12Lg,"
+        "0x%04x,0x%04x\n",
         row->timestamp_ms,
         row->current_a,
         elapsed_s,
@@ -518,6 +541,14 @@ static void write_output_row(FILE *output,
         rout->discharge_current_cap_a[2],
         (double)pout->discharge_current_cap_a[3],
         rout->discharge_current_cap_a[3],
+        (double)pout->charge_current_cap_a[0],
+        rout->charge_current_cap_a[0],
+        (double)pout->charge_current_cap_a[1],
+        rout->charge_current_cap_a[1],
+        (double)pout->charge_current_cap_a[2],
+        rout->charge_current_cap_a[2],
+        (double)pout->charge_current_cap_a[3],
+        rout->charge_current_cap_a[3],
         (unsigned)pout->reason_flags,
         (unsigned)rout->reason_flags);
 }
@@ -926,21 +957,41 @@ bool fuse_replay_run(const fuse_replay_options_t *options,
 
         for(uint32_t h = 0u; h < FUSE_REF_HORIZON_COUNT; ++h)
         {
-            const double cap_abs = fabs(
+            const double discharge_cap_abs = fabs(
                 (double)pout.discharge_current_cap_a[h] -
                 (double)rout.discharge_current_cap_a[h]);
             if((pout.budget_exhausted == rout.budget_exhausted) &&
-               (cap_abs > summary->max_cap_abs_error_a))
+               (discharge_cap_abs > summary->max_cap_abs_error_a))
             {
-                summary->max_cap_abs_error_a = cap_abs;
+                summary->max_cap_abs_error_a = discharge_cap_abs;
             }
             if((pout.budget_exhausted == rout.budget_exhausted) &&
-               (cap_abs > options->cap_tolerance_a))
+               (discharge_cap_abs > options->cap_tolerance_a))
             {
                 ++summary->cap_tolerance_violations;
             }
             if((double)pout.discharge_current_cap_a[h] >
                (double)rout.discharge_current_cap_a[h] +
+               options->cap_tolerance_a)
+            {
+                ++summary->cap_nonconservative_violations;
+            }
+
+            const double charge_cap_abs = fabs(
+                (double)pout.charge_current_cap_a[h] -
+                (double)rout.charge_current_cap_a[h]);
+            if((pout.budget_exhausted == rout.budget_exhausted) &&
+               (charge_cap_abs > summary->max_cap_abs_error_a))
+            {
+                summary->max_cap_abs_error_a = charge_cap_abs;
+            }
+            if((pout.budget_exhausted == rout.budget_exhausted) &&
+               (charge_cap_abs > options->cap_tolerance_a))
+            {
+                ++summary->cap_tolerance_violations;
+            }
+            if((double)pout.charge_current_cap_a[h] >
+               (double)rout.charge_current_cap_a[h] +
                options->cap_tolerance_a)
             {
                 ++summary->cap_nonconservative_violations;

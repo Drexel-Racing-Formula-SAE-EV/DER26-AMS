@@ -505,6 +505,7 @@ static void canbus_parse_hil_frame(app_data_t *data, const canbus_rx_frame_t *fr
 
 static void canbus_tx_note_charger_complete_from_isr(
     const canbus_tx_mailbox_meta_t *meta);
+static void canbus_tx_abort_stale(canbus_device_t *dev);
 
 static uint8_t canbus_mailbox_index_from_mask(uint32_t mailbox)
 {
@@ -594,7 +595,8 @@ HAL_StatusTypeDef canbus_tx_build_append(canbus_device_t *dev,
     if(dev->tx_builder.frame_count >= build_limit)
     {
         canbus_increment_u32_sat(&dev->tx_build_overflow_count);
-        if(dev->tx_builder.kind == CANBUS_TX_BUILD_DETAIL)
+        if((dev->tx_builder.kind == CANBUS_TX_BUILD_DETAIL) ||
+           (dev->tx_builder.kind == CANBUS_TX_BUILD_TUNING))
         {
             canbus_increment_u32_sat(&dev->tx_build_detail_overflow_count);
         }
@@ -607,7 +609,8 @@ HAL_StatusTypeDef canbus_tx_build_append(canbus_device_t *dev,
        ((dev->tx_builder.kind == CANBUS_TX_BUILD_PROTECTED) &&
         (tx_class != AMS_CAN_TX_CLASS_PROTECTED_REQUIRED) &&
         (tx_class != AMS_CAN_TX_CLASS_PROTECTED_ADVISORY)) ||
-       ((dev->tx_builder.kind == CANBUS_TX_BUILD_DETAIL) &&
+       (((dev->tx_builder.kind == CANBUS_TX_BUILD_DETAIL) ||
+         (dev->tx_builder.kind == CANBUS_TX_BUILD_TUNING)) &&
         (tx_class != AMS_CAN_TX_CLASS_DETAIL)))
     {
         canbus_increment_u32_sat(&dev->tx_build_class_reject_count);
@@ -621,6 +624,7 @@ HAL_StatusTypeDef canbus_tx_build_append(canbus_device_t *dev,
     frame->dlc = DATALEN;
     frame->tx_class = tx_class;
     frame->source_tag = dev->tx_builder.source_tag;
+    frame->request_id = dev->tx_builder.request_id;
     memcpy(frame->data, payload, DATALEN);
     return HAL_OK;
 }
@@ -762,9 +766,70 @@ static void canbus_tx_load_failed_locked(canbus_device_t *dev,
     canbus_note_hal_load_error_locked(dev, frame);
 }
 
+static bool canbus_hardware_busoff(const canbus_device_t *dev)
+{
+#if AMS_HOST_TEST
+    /* The existing synchronous host harness has no register instance. */
+    if(dev->hcan->Instance == NULL)
+    {
+        return false; /* Synchronous legacy harness has no hardware BOFF. */
+    }
+#endif
+    return (dev->hcan->Instance->ESR & CAN_ESR_BOFF) != 0u;
+}
+
+/* HAL_CAN_AddTxMessage chooses from hardware-empty mailboxes alone. A mailbox
+ * can become empty before its completion callback retires the old token, even
+ * between a task-side check and HAL's TSR read. Select one fixed mailbox using
+ * BOTH hardware flags and software ownership, then write that exact mailbox.
+ * The register encoding is the same as the bundled STM32F7 HAL. */
+static HAL_StatusTypeDef canbus_tx_add_owned(canbus_device_t *dev,
+                                            const CAN_TxHeaderTypeDef *header,
+                                            const uint8_t data[8],
+                                            uint32_t *mailbox)
+{
+#if AMS_HOST_TEST
+    if(dev->hcan->Instance == NULL)
+    {
+        return HAL_CAN_AddTxMessage(dev->hcan, header, data, mailbox);
+    }
+#endif
+    if(HAL_CAN_GetState(dev->hcan) != HAL_CAN_STATE_LISTENING)
+    {
+        return HAL_ERROR;
+    }
+    if(dev->tx_suspended || canbus_hardware_busoff(dev))
+    {
+        return HAL_BUSY;
+    }
+    uint32_t tsr = dev->hcan->Instance->TSR;
+    for(uint8_t i = 0u; i < 3u; i++)
+    {
+        if((dev->tx_mailbox_meta[i].state != CANBUS_TX_MB_FREE) ||
+           ((tsr & (CAN_TSR_TME0 << i)) == 0u) ||
+           ((tsr & (CAN_TSR_RQCP0 << (8u * i))) != 0u))
+        {
+            continue;
+        }
+        CAN_TxMailBox_TypeDef *mb = &dev->hcan->Instance->sTxMailBox[i];
+        mb->TIR = (header->IDE == CAN_ID_STD) ?
+            (header->StdId << CAN_TI0R_STID_Pos) :
+            ((header->ExtId << CAN_TI0R_EXID_Pos) | CAN_ID_EXT);
+        mb->TDTR = header->DLC;
+        mb->TDLR = (uint32_t)data[0] | ((uint32_t)data[1] << 8u) |
+                   ((uint32_t)data[2] << 16u) | ((uint32_t)data[3] << 24u);
+        mb->TDHR = (uint32_t)data[4] | ((uint32_t)data[5] << 8u) |
+                   ((uint32_t)data[6] << 16u) | ((uint32_t)data[7] << 24u);
+        *mailbox = CAN_TX_MAILBOX0 << i;
+        mb->TIR |= CAN_TI0R_TXRQ;
+        return HAL_OK;
+    }
+    return HAL_BUSY; /* Pending completions are congestion, not a load fault. */
+}
+
 /* Load one already-reserved scheduler frame without globally masking
  * interrupts. Only the bxCAN TX-mailbox-empty notification is masked across
- * HAL_CAN_AddTxMessage() and metadata commit. This closes the otherwise
+ * the fixed-mailbox write and metadata commit. This closes the otherwise
  * possible "TX completes before mailbox metadata exists" race while leaving
  * RX, timer, ADC, and control-loop interrupts fully serviceable. */
 static bool canbus_tx_load_reserved(canbus_device_t *dev,
@@ -799,41 +864,46 @@ static bool canbus_tx_load_reserved(canbus_device_t *dev,
     }
 
     canbus_tx_fill_header(&header, frame);
-    status = HAL_CAN_AddTxMessage(dev->hcan, &header, (uint8_t *)frame->data,
-                                 &mailbox);
+    status = canbus_tx_add_owned(dev, &header, frame->data, &mailbox);
     if(status != HAL_OK)
     {
         (void)canbus_tx_tme_irq_restore(dev);
         if(from_isr)
         {
             UBaseType_t mask = CANBUS_ISR_ENTER_CRITICAL();
-            canbus_tx_load_failed_locked(dev, token, frame);
+            ams_can_tx_load_failed(&dev->tx_scheduler, token);
+            if(status != HAL_BUSY) canbus_note_hal_load_error_locked(dev, frame);
             CANBUS_ISR_EXIT_CRITICAL(mask);
         }
         else
         {
             taskENTER_CRITICAL();
-            canbus_tx_load_failed_locked(dev, token, frame);
+            ams_can_tx_load_failed(&dev->tx_scheduler, token);
+            if(status != HAL_BUSY) canbus_note_hal_load_error_locked(dev, frame);
             taskEXIT_CRITICAL();
         }
         return false;
     }
 
 #if AMS_HOST_TEST
-    /* Host HAL accepts synchronously. Dedicated scheduler tests exercise
-     * completion/abort races; broad SIL does not need artificial mailboxes. */
-    taskENTER_CRITICAL();
-    ams_can_tx_mark_loaded(&dev->tx_scheduler, token);
-    ams_can_tx_mark_complete(&dev->tx_scheduler, token, true, osKernelGetTickCount());
-    taskEXIT_CRITICAL();
-    canbus_tx_mailbox_meta_t host_meta = {0};
-    host_meta.source_tag = frame->source_tag;
-    host_meta.token = *token;
-    canbus_tx_note_charger_complete_from_isr(&host_meta);
-    canbus_increment_u32_sat(&dev->tx_complete_count);
-    (void)canbus_tx_tme_irq_restore(dev);
-    return true;
-#else
+    if(dev->hcan->Instance == NULL)
+    {
+        /* Legacy synchronous host mode. Register-backed tests use the target
+         * ownership and callback path below. */
+        taskENTER_CRITICAL();
+        ams_can_tx_mark_loaded(&dev->tx_scheduler, token);
+        ams_can_tx_mark_complete(&dev->tx_scheduler, token, true, osKernelGetTickCount());
+        taskEXIT_CRITICAL();
+        canbus_tx_mailbox_meta_t host_meta = {0};
+        host_meta.source_tag = frame->source_tag;
+        host_meta.request_id = frame->request_id;
+        host_meta.token = *token;
+        canbus_tx_note_charger_complete_from_isr(&host_meta);
+        canbus_increment_u32_sat(&dev->tx_complete_count);
+        (void)canbus_tx_tme_irq_restore(dev);
+        return true;
+    }
+#endif
     bool abort_after_load = false;
     bool epoch_valid = false;
     uint8_t index = canbus_mailbox_index_from_mask(mailbox);
@@ -853,8 +923,7 @@ static bool canbus_tx_load_reserved(canbus_device_t *dev,
     if(from_isr)
     {
         UBaseType_t mask = CANBUS_ISR_ENTER_CRITICAL();
-        epoch_valid = (token->controller_epoch == dev->tx_scheduler.controller_epoch) &&
-                      !dev->tx_suspended;
+        epoch_valid = (token->controller_epoch == dev->tx_scheduler.controller_epoch);
         if(epoch_valid)
         {
             /* RESERVED is a brief metadata transition while TME callbacks are
@@ -865,11 +934,12 @@ static bool canbus_tx_load_reserved(canbus_device_t *dev,
             dev->tx_mailbox_meta[index].loaded_tick = loaded_tick;
             dev->tx_mailbox_meta[index].tx_class = frame->tx_class;
             dev->tx_mailbox_meta[index].source_tag = frame->source_tag;
+            dev->tx_mailbox_meta[index].request_id = frame->request_id;
             dev->tx_mailbox_meta[index].controller_epoch =
                 dev->tx_scheduler.controller_epoch;
             ams_can_tx_mark_loaded(&dev->tx_scheduler, token);
             dev->tx_mailbox_meta[index].state = CANBUS_TX_MB_LOADED;
-            abort_after_load = ams_can_tx_token_requires_abort(
+            abort_after_load = dev->tx_suspended || ams_can_tx_token_requires_abort(
                 &dev->tx_scheduler, token);
             if(abort_after_load)
             {
@@ -883,8 +953,7 @@ static bool canbus_tx_load_reserved(canbus_device_t *dev,
     else
     {
         taskENTER_CRITICAL();
-        epoch_valid = (token->controller_epoch == dev->tx_scheduler.controller_epoch) &&
-                      !dev->tx_suspended;
+        epoch_valid = (token->controller_epoch == dev->tx_scheduler.controller_epoch);
         if(epoch_valid)
         {
             dev->tx_mailbox_meta[index].state = CANBUS_TX_MB_RESERVED;
@@ -893,11 +962,12 @@ static bool canbus_tx_load_reserved(canbus_device_t *dev,
             dev->tx_mailbox_meta[index].loaded_tick = loaded_tick;
             dev->tx_mailbox_meta[index].tx_class = frame->tx_class;
             dev->tx_mailbox_meta[index].source_tag = frame->source_tag;
+            dev->tx_mailbox_meta[index].request_id = frame->request_id;
             dev->tx_mailbox_meta[index].controller_epoch =
                 dev->tx_scheduler.controller_epoch;
             ams_can_tx_mark_loaded(&dev->tx_scheduler, token);
             dev->tx_mailbox_meta[index].state = CANBUS_TX_MB_LOADED;
-            abort_after_load = ams_can_tx_token_requires_abort(
+            abort_after_load = dev->tx_suspended || ams_can_tx_token_requires_abort(
                 &dev->tx_scheduler, token);
             if(abort_after_load)
             {
@@ -911,16 +981,15 @@ static bool canbus_tx_load_reserved(canbus_device_t *dev,
 
     if(!epoch_valid)
     {
-        /* Controller state changed while HAL was loading. Epoch reset already
-         * restored the newest protected/critical generation to PENDING. The
-         * old hardware request belongs to the prior epoch and any delayed
-         * callback is ignored by epoch metadata. */
+        /* A changed epoch must not leave an unowned hardware request alive. */
+        (void)HAL_CAN_AbortTxRequest(dev->hcan, mailbox);
+        dev->tx_recovery_pending = true;
         (void)canbus_tx_tme_irq_restore(dev);
         return false;
     }
 
-    /* If the protected generation crossed its pathological 100 ms boundary
-     * while this frame was RESERVED, request abort before re-enabling TME
+    /* If this generation became stale or TX was suspended while the frame was
+     * RESERVED, request abort before re-enabling TME
      * callbacks. This prevents a completion callback from freeing/reusing the
      * mailbox between our stale check and the abort request. */
     if(abort_after_load)
@@ -955,7 +1024,6 @@ static bool canbus_tx_load_reserved(canbus_device_t *dev,
 
     (void)canbus_tx_tme_irq_restore(dev);
     return true;
-#endif
 }
 
 static void canbus_tx_pump_owned(canbus_device_t *dev, bool from_isr)
@@ -963,6 +1031,7 @@ static void canbus_tx_pump_owned(canbus_device_t *dev, bool from_isr)
     for(;;)
     {
         while(!dev->tx_suspended && !dev->tx_latched_inhibit &&
+              !canbus_hardware_busoff(dev) &&
               (HAL_CAN_GetTxMailboxesFreeLevel(dev->hcan) > 0u))
         {
             ams_can_tx_token_t token;
@@ -1075,6 +1144,13 @@ HAL_StatusTypeDef canbus_tx_build_commit(canbus_device_t *dev,
                                        dev->tx_builder.frames,
                                        dev->tx_builder.frame_count);
         break;
+    case CANBUS_TX_BUILD_TUNING:
+        ok = ams_can_tx_publish_tuning(&dev->tx_scheduler,
+                                       dev->tx_builder.generation,
+                                       dev->tx_builder.publish_tick,
+                                       dev->tx_builder.frames,
+                                       dev->tx_builder.frame_count);
+        break;
     default:
         break;
     }
@@ -1087,20 +1163,16 @@ HAL_StatusTypeDef canbus_tx_build_commit(canbus_device_t *dev,
         return HAL_ERROR;
     }
 
-    if(stale_generation != 0u)
-    {
-        canbus_tx_abort_protected_generation(dev, stale_generation);
-    }
+    canbus_tx_abort_stale(dev);
     canbus_tx_kick(dev);
     return HAL_OK;
 }
 
-void canbus_tx_abort_protected_generation(canbus_device_t *dev,
-                                          uint32_t generation)
+static void canbus_tx_abort_stale(canbus_device_t *dev)
 {
     uint32_t abort_mask = 0u;
 
-    if((dev == NULL) || (dev->hcan == NULL) || (generation == 0u))
+    if((dev == NULL) || (dev->hcan == NULL))
     {
         return;
     }
@@ -1118,8 +1190,7 @@ void canbus_tx_abort_protected_generation(canbus_device_t *dev,
     {
         canbus_tx_mailbox_meta_t *meta = &dev->tx_mailbox_meta[i];
         if((meta->state == CANBUS_TX_MB_LOADED) &&
-           (meta->token.stream == AMS_CAN_TX_STREAM_PROTECTED) &&
-           (meta->token.generation == generation) &&
+           ams_can_tx_token_requires_abort(&dev->tx_scheduler, &meta->token) &&
            (meta->controller_epoch == dev->tx_scheduler.controller_epoch))
         {
             meta->state = CANBUS_TX_MB_ABORT_REQUESTED;
@@ -1140,8 +1211,7 @@ void canbus_tx_abort_protected_generation(canbus_device_t *dev,
             {
                 canbus_tx_mailbox_meta_t *meta = &dev->tx_mailbox_meta[i];
                 if((meta->state == CANBUS_TX_MB_ABORT_REQUESTED) &&
-                   (meta->token.stream == AMS_CAN_TX_STREAM_PROTECTED) &&
-                   (meta->token.generation == generation) &&
+                   ((abort_mask & (CAN_TX_MAILBOX0 << i)) != 0u) &&
                    (meta->controller_epoch == dev->tx_scheduler.controller_epoch))
                 {
                     meta->state = CANBUS_TX_MB_LOADED;
@@ -1168,32 +1238,91 @@ static void canbus_tx_reset_mailbox_metadata(canbus_device_t *dev)
 
 void canbus_tx_note_busoff(canbus_device_t *dev)
 {
-    if(dev == NULL)
+    if((dev == NULL) || (dev->hcan == NULL))
     {
         return;
     }
     taskENTER_CRITICAL();
     dev->tx_suspended = true;
-    ams_can_tx_controller_epoch_reset(&dev->tx_scheduler);
-    canbus_tx_reset_mailbox_metadata(dev);
-    dev->tx_recovery_epoch_count++;
+    dev->tx_recovery_pending = true;
     taskEXIT_CRITICAL();
+    /* Keep tokens until hardware completes/aborts. ABOM must never retry an
+     * old enable command after software has forgotten its mailbox owner. */
+    (void)HAL_CAN_AbortTxRequest(dev->hcan,
+        CAN_TX_MAILBOX0 | CAN_TX_MAILBOX1 | CAN_TX_MAILBOX2);
 }
 
-void canbus_tx_note_recovered(canbus_device_t *dev)
+static bool canbus_tx_mailboxes_settled(const canbus_device_t *dev)
 {
-    if(dev == NULL)
+    if(dev->tx_pump_busy)
     {
-        return;
+        return false;
+    }
+#if AMS_HOST_TEST
+    if(dev->hcan->Instance == NULL) return true;
+#endif
+    uint32_t tsr = dev->hcan->Instance->TSR;
+    const uint32_t empty = CAN_TSR_TME0 | CAN_TSR_TME1 | CAN_TSR_TME2;
+    if(((tsr & empty) != empty) ||
+       ((tsr & (CAN_TSR_RQCP0 | CAN_TSR_RQCP1 | CAN_TSR_RQCP2)) != 0u))
+    {
+        return false;
+    }
+    for(uint8_t i = 0u; i < 3u; i++)
+    {
+        if((dev->tx_mailbox_meta[i].state != CANBUS_TX_MB_FREE) ||
+           ((dev->hcan->Instance->sTxMailBox[i].TIR & CAN_TI0R_TXRQ) != 0u))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool canbus_tx_note_recovered(canbus_device_t *dev)
+{
+    if((dev == NULL) || (dev->hcan == NULL) ||
+       canbus_hardware_busoff(dev) ||
+       (HAL_CAN_GetState(dev->hcan) != HAL_CAN_STATE_LISTENING))
+    {
+        return false;
     }
     taskENTER_CRITICAL();
-    dev->tx_suspended = false;
-    canbus_tx_reset_mailbox_metadata(dev);
-    taskEXIT_CRITICAL();
-    if(!dev->tx_latched_inhibit)
+    if(!canbus_tx_mailboxes_settled(dev))
     {
-        canbus_tx_kick(dev);
+        taskEXIT_CRITICAL();
+        (void)HAL_CAN_AbortTxRequest(dev->hcan,
+            CAN_TX_MAILBOX0 | CAN_TX_MAILBOX1 | CAN_TX_MAILBOX2);
+        return false;
     }
+    ams_can_tx_controller_epoch_reset(&dev->tx_scheduler);
+    canbus_tx_reset_mailbox_metadata(dev);
+    /* Recovery is a freshness boundary. The task republishes current charger
+     * decisions and a complete protected bundle before TX resumes. */
+    memset(&dev->tx_scheduler.critical_active, 0,
+           sizeof(dev->tx_scheduler.critical_active));
+    memset(&dev->tx_scheduler.protected_active, 0,
+           sizeof(dev->tx_scheduler.protected_active));
+    dev->tx_recovery_pending = false;
+    dev->tx_refresh_pending = true;
+    dev->tx_suspended = true;
+    canbus_increment_u32_sat(&dev->tx_recovery_epoch_count);
+    taskEXIT_CRITICAL();
+    return true;
+}
+
+void canbus_tx_resume_after_refresh(canbus_device_t *dev)
+{
+    if((dev == NULL) || (dev->hcan == NULL)) return;
+    taskENTER_CRITICAL();
+    if(dev->tx_refresh_pending && !dev->tx_recovery_pending &&
+       !dev->tx_latched_inhibit && !canbus_hardware_busoff(dev))
+    {
+        dev->tx_refresh_pending = false;
+        dev->tx_suspended = false;
+    }
+    taskEXIT_CRITICAL();
+    canbus_tx_kick(dev);
 }
 
 static void canbus_tx_note_charger_complete_from_isr(const canbus_tx_mailbox_meta_t *meta)
@@ -1213,7 +1342,7 @@ static void canbus_tx_note_charger_complete_from_isr(const canbus_tx_mailbox_met
         canbus_increment_u32_sat(&ccs->tx_count);
         canbus_increment_u32_sat(&ccs->shutdown_tx_count);
         if(ccs->shutdown_pending &&
-           (ccs->shutdown_request_count == meta->token.generation))
+           (ccs->shutdown_request_count == meta->request_id))
         {
             if(ccs->shutdown_frames_remaining > 0u)
             {
@@ -1246,7 +1375,6 @@ static void canbus_tx_complete_callback(canbus_device_t *dev,
     {
         canbus_increment_u32_sat(&dev->tx_unexpected_callback_count);
         CANBUS_ISR_EXIT_CRITICAL(mask);
-        canbus_tx_kick_from_isr(dev);
         return;
     }
 
@@ -1257,7 +1385,6 @@ static void canbus_tx_complete_callback(canbus_device_t *dev,
                sizeof(dev->tx_mailbox_meta[mailbox_index]));
         dev->tx_mailbox_meta[mailbox_index].state = CANBUS_TX_MB_FREE;
         CANBUS_ISR_EXIT_CRITICAL(mask);
-        canbus_tx_kick_from_isr(dev);
         return;
     }
 
@@ -1280,7 +1407,37 @@ static void canbus_tx_complete_callback(canbus_device_t *dev,
     dev->tx_mailbox_meta[mailbox_index].state = CANBUS_TX_MB_FREE;
     CANBUS_ISR_EXIT_CRITICAL(mask);
 
-    canbus_tx_kick_from_isr(dev);
+    /* Refill only after the HAL has dispatched its entire TSR snapshot. */
+}
+
+void canbus_irq_handler(CAN_HandleTypeDef *hcan)
+{
+    canbus_device_t *dev = &app.board.canbus;
+    bool tx_enabled = (hcan->Instance->IER & CAN_IT_TX_MAILBOX_EMPTY) != 0u;
+    HAL_CAN_IRQHandler(hcan);
+    if(dev->hcan != hcan) return;
+
+    /* HAL clears TERR/ALST without issuing a mailbox callback. With refill
+     * deferred, an owned mailbox that is empty with RQCP already cleared is
+     * exactly such a terminal failure. Newly arrived completions still have
+     * RQCP set and belong to the next HAL dispatch. */
+    if(tx_enabled)
+    {
+        uint32_t tsr = hcan->Instance->TSR;
+        for(uint8_t i = 0u; i < 3u; i++)
+        {
+            if(((tsr & (CAN_TSR_TME0 << i)) != 0u) &&
+               ((tsr & (CAN_TSR_RQCP0 << (8u * i))) == 0u) &&
+               ((dev->tx_mailbox_meta[i].state == CANBUS_TX_MB_LOADED) ||
+                (dev->tx_mailbox_meta[i].state == CANBUS_TX_MB_ABORT_REQUESTED)))
+            {
+                canbus_tx_complete_callback(dev, i, true);
+            }
+        }
+    }
+    /* RX/SCE may interrupt a task while it masks TME around a load or abort.
+     * Do not start a new pump or re-enable TME inside that transaction. */
+    if(tx_enabled) canbus_tx_kick_from_isr(dev);
 }
 
 void HAL_CAN_TxMailbox0CompleteCallback(CAN_HandleTypeDef *hcan)
@@ -1338,7 +1495,14 @@ void HAL_CAN_ErrorCallback(CAN_HandleTypeDef *hcan)
     {
         return;
     }
-    dev->error_isr_code = HAL_CAN_GetError(hcan);
+    dev->error_isr_code |= HAL_CAN_GetError(hcan);
+    if((dev->error_isr_code & HAL_CAN_ERROR_BOF) != 0u)
+    {
+        /* Suspend/abort at the fault interrupt, before the 100 ms task poll. */
+        dev->tx_suspended = true;
+        (void)HAL_CAN_AbortTxRequest(hcan,
+            CAN_TX_MAILBOX0 | CAN_TX_MAILBOX1 | CAN_TX_MAILBOX2);
+    }
     if((dev->error_isr_code & HAL_CAN_ERROR_RX_FOV0) != 0u)
     {
         canbus_increment_u32_sat(&dev->rx_fifo_overrun_count);
@@ -1362,6 +1526,8 @@ HAL_StatusTypeDef canbus_device_init(canbus_device_t *dev, CAN_HandleTypeDef *hc
     dev->tx_pump_busy = false;
     dev->tx_kick_pending = false;
     dev->tx_suspended = false;
+    dev->tx_recovery_pending = false;
+    dev->tx_refresh_pending = false;
     dev->tx_latched_inhibit = false;
     dev->error_isr_pending = false;
     dev->error_isr_code = HAL_CAN_ERROR_NONE;
@@ -1616,9 +1782,18 @@ HAL_StatusTypeDef canbus_recover(canbus_device_t *dev)
         return HAL_ERROR;
     }
 
+    taskENTER_CRITICAL();
+    if(dev->tx_pump_busy)
+    {
+        taskEXIT_CRITICAL();
+        return HAL_BUSY;
+    }
+    dev->tx_suspended = true;
+    taskEXIT_CRITICAL();
+
     /* Manual/service recovery is the only path that clears the repeated
-     * bus-off application-TX latch. Preserve newest protected state across
-     * the controller epoch change and discard incomplete detail. */
+     * bus-off application-TX latch. Settle hardware ownership and require
+     * fresh task publications before resuming transmission. */
     canbus_tx_note_busoff(dev);
 	/* Stopping an already-stopped controller can itself return an error.  The
 	 * recovery result is therefore based on reset, restart, and notification
@@ -1660,7 +1835,10 @@ HAL_StatusTypeDef canbus_recover(canbus_device_t *dev)
         dev->tx_latched_inhibit = false;
         dev->busoff_window_start_tick = 0u;
         dev->busoff_window_count = 0u;
-        canbus_tx_note_recovered(dev);
+        if(!canbus_tx_note_recovered(dev))
+        {
+            dev->init_status = HAL_BUSY; /* Task polling finishes settlement. */
+        }
     }
 
 	return dev->init_status;
@@ -1678,6 +1856,7 @@ void canbus_poll_errors(canbus_device_t *dev, app_data_t *data)
     }
 
     now = osKernelGetTickCount();
+    taskENTER_CRITICAL();
     err = HAL_CAN_GetError(dev->hcan);
     if(dev->error_isr_pending)
     {
@@ -1685,6 +1864,8 @@ void canbus_poll_errors(canbus_device_t *dev, app_data_t *data)
         dev->error_isr_pending = false;
         dev->error_isr_code = HAL_CAN_ERROR_NONE;
     }
+    taskEXIT_CRITICAL();
+    if(canbus_hardware_busoff(dev)) err |= HAL_CAN_ERROR_BOF;
 
     if(dev->tx_irq_mask_error_count != dev->tx_irq_mask_error_reported)
     {
@@ -1759,20 +1940,21 @@ void canbus_poll_errors(canbus_device_t *dev, app_data_t *data)
         set_bms(false);
     }
 
-    /* Once bus-off has been observed, the CAN task owns supervised ABOM
-     * recovery. HAL's ErrorCode can retain the historical BOF bit after bxCAN
-     * has already returned to LISTENING, so service the recovery state before
-     * re-interpreting that latched bit as a new bus-off event. */
-    if(data->can_busoff_fault || data->can_recover_pending)
+    /* HAL LISTENING is only software state. Hardware BOFF, outstanding TXRQ,
+     * completion flags and software ownership must all settle before reset. */
+    if(data->can_recover_pending ||
+       (dev->tx_recovery_pending && ((err & HAL_CAN_ERROR_BOF) == 0u)))
     {
-        if(HAL_CAN_GetState(dev->hcan) == HAL_CAN_STATE_LISTENING)
+        data->can_recover_pending = true;
+        if(!canbus_hardware_busoff(dev) &&
+           canbus_tx_mailboxes_settled(dev) &&
+           (HAL_CAN_GetState(dev->hcan) == HAL_CAN_STATE_LISTENING))
         {
             HAL_StatusTypeDef reset_status = HAL_CAN_ResetError(dev->hcan);
-            if(reset_status == HAL_OK)
+            if((reset_status == HAL_OK) && canbus_tx_note_recovered(dev))
             {
                 data->can_error_code = HAL_CAN_ERROR_NONE;
                 data->can_recover_pending = false;
-                canbus_tx_note_recovered(dev);
                 canbus_increment_u32_sat(&data->can_recover_count);
                 ams_fault_log_event(AMS_FAULT_LOG_CAN_RECOVERED, 0u,
                                     data->can_recover_count,
@@ -1802,6 +1984,8 @@ void canbus_poll_errors(canbus_device_t *dev, app_data_t *data)
         else
         {
             data->canbus_fault = true;
+            (void)HAL_CAN_AbortTxRequest(dev->hcan,
+                CAN_TX_MAILBOX0 | CAN_TX_MAILBOX1 | CAN_TX_MAILBOX2);
         }
         return;
     }
@@ -1812,7 +1996,7 @@ void canbus_poll_errors(canbus_device_t *dev, app_data_t *data)
         ams_fault_log_event(AMS_FAULT_LOG_CAN_BUS_OFF, 0u, err,
                             data->can_busoff_count);
 
-        if((dev->busoff_window_start_tick == 0u) ||
+        if((dev->busoff_window_count == 0u) ||
            ((uint32_t)(now - dev->busoff_window_start_tick) > 10000u))
         {
             dev->busoff_window_start_tick = now;
@@ -1853,7 +2037,15 @@ void canbus_poll_errors(canbus_device_t *dev, app_data_t *data)
         return;
     }
 
-    if(had_new_hal_load_error && (err == HAL_CAN_ERROR_NONE))
+    if(dev->tx_latched_inhibit)
+    {
+        data->can_busoff_fault = true;
+        data->canbus_fault = true;
+        return;
+    }
+
+    if(had_new_hal_load_error && (err == HAL_CAN_ERROR_NONE) &&
+       !dev->tx_refresh_pending && !dev->tx_recovery_pending)
     {
         /* Resume eligibility for the next publication/kick. Do not kick here:
          * limiting recovery to the next CAN-task publication prevents a

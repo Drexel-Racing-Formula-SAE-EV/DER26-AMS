@@ -11,17 +11,28 @@ for k = 1:numel(valid_times)
     [~,idx] = min(abs(truth.time_s-valid_times(k)));
     item = mil.oracle.sop_snapshot(truth,idx,params,pack_cfg,cfg);
     item.electrothermal_discharge_current_A=item.discharge_current_A;
+    item.electrothermal_charge_current_A=item.charge_current_A;
     item.fuse_discharge_current_cap_A=inf(size(item.discharge_current_A));
+    item.fuse_charge_current_cap_A=inf(size(item.charge_current_A));
     item.combined_discharge_current_A=item.discharge_current_A;
+    item.combined_charge_current_A=item.charge_current_A;
     item.combined_discharge_binding=repmat({'electrothermal'}, ...
         size(item.discharge_current_A));
+    item.combined_charge_binding=repmat({'electrothermal'}, ...
+        size(item.charge_current_A));
     if ~isempty(fuse_replay)
         [~,fi]=min(abs(fuse_replay.time_s-truth.time_s(idx)));
         fuse_cap=double(fuse_replay.reference_cap_A(fi,:));
+        fuse_charge_cap=double(fuse_replay.reference_charge_cap_A(fi,:));
         item.fuse_discharge_current_cap_A=fuse_cap;
+        item.fuse_charge_current_cap_A=fuse_charge_cap;
         item.combined_discharge_current_A=min(item.discharge_current_A,fuse_cap);
+        item.combined_charge_current_A=-min(abs(item.charge_current_A), ...
+            fuse_charge_cap);
         bound=fuse_cap<item.discharge_current_A-1e-9;
         item.combined_discharge_binding(bound)={'fuse_reference'};
+        charge_bound=fuse_charge_cap<abs(item.charge_current_A)-1e-9;
+        item.combined_charge_binding(charge_bound)={'fuse_reference'};
     end
     items{k}=item;
 end

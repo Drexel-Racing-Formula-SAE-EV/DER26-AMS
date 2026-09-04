@@ -86,6 +86,8 @@ if isfield(result,'fuse_replay') && ~isempty(result.fuse_replay)
         result.fuse_replay.reference_utilization}; %#ok<AGROW>
     fields(end+1,:)={'fuse.reference_cap_A', ...
         result.fuse_replay.reference_cap_A}; %#ok<AGROW>
+    fields(end+1,:)={'fuse.reference_charge_cap_A', ...
+        result.fuse_replay.reference_charge_cap_A}; %#ok<AGROW>
 end
 for k=1:size(fields,1)
     x=double(fields{k,2});

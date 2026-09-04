@@ -44,6 +44,7 @@ typedef struct
     long double minimum_curve_time_s;
     long double horizons_s[FUSE_REF_HORIZON_COUNT];
     long double discharge_static_cap_a[FUSE_REF_HORIZON_COUNT];
+    long double charge_static_cap_a[FUSE_REF_HORIZON_COUNT];
 } fuse_ref_config_t;
 
 typedef struct
@@ -54,6 +55,7 @@ typedef struct
     uint64_t invalid_count;
     uint8_t thermal_state_initialized;
     uint8_t budget_exhausted;
+    uint8_t initial_state_conservative;
 } fuse_ref_state_t;
 
 typedef struct
@@ -81,6 +83,7 @@ typedef struct
     long double typical_melt_time_s;
     long double usable_melt_time_s;
     long double discharge_current_cap_a[FUSE_REF_HORIZON_COUNT];
+    long double charge_current_cap_a[FUSE_REF_HORIZON_COUNT];
     uint16_t reason_flags;
     uint8_t valid;
     uint8_t authority_valid;

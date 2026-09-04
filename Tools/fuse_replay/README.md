@@ -76,8 +76,8 @@ That target runs:
 ```
 
 The detailed output contains production and reference state, utilization,
-remaining budget, all four horizon caps, latch state, authority state, reason
-flags, and numeric deltas for every sample.
+remaining budget, all four discharge and charge horizon caps, latch state,
+authority state, reason flags, and numeric deltas for every sample.
 
 ## Accepted trace columns
 
@@ -114,7 +114,8 @@ row, matching the production task call pattern.
 Startup:
 
 ```text
-cold-soak       Production behavior: unknown until continuous low-current soak
+conservative    Production behavior: seed maximum utilization and exhausted
+cold-soak       Characterization-only low-current soak from a zero-state prior
 known-cold      Initialized immediately at zero utilization
 seeded:0.50     Initialized immediately at a specified utilization
 ```
@@ -122,14 +123,15 @@ seeded:0.50     Initialized immediately at a specified utilization
 Reset:
 
 ```text
-unknown         Reset to production uninitialized state
+unknown         Production behavior: reset to conservative maximum/exhausted
 known-cold      Reset to zero utilization and initialized
 seeded:0.80     Reset to a specified utilization and initialized
 restore         Restore the pre-reset modeled state
 ```
 
-These policies are characterization options only. They are not implemented in
-production firmware by this update.
+The conservative startup and unknown-reset policies mirror production. The
+other policies remain characterization options and require external evidence
+before they can represent a vehicle startup.
 
 ## Synthetic traces
 

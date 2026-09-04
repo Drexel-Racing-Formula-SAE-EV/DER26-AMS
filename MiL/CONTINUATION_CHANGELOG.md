@@ -527,3 +527,29 @@ The first licensed v2.6.12 C5 run exposed a MATLAB-only structure-array defect b
 - Added raw-R0 structural preflight and configuration validation.
 - Bumped scenario summary schema to v7 and exposed minimum raw-R0 observation count.
 - No production AMS C changes; firmware remains v0.5.17.
+
+## v2.6.15 - Fuse direction/reset-state hardening (2026-09-03)
+
+- production source marker advances to `DER26-AMS-v0.5.18-20260903`;
+- the EAC14-80 observer publishes charge and discharge caps for all horizons;
+- the strategy applies charge caps using the existing negative charge-current
+  sign convention and fuse binding/reason codes;
+- production startup/reset seeds maximum utilization and exhaustion, preventing
+  a reset from silently discarding fuse heat or disabling protection;
+- the conservative-seed diagnostic remains visible until the 0.50 hysteresis
+  release threshold is crossed;
+- cold-soak completion retains modeled utilization instead of assigning zero;
+- the independent oracle/replay checks both cap directions and defaults unknown
+  startup/reset to the production conservative policy;
+- fuse authority remains compile-time evidence-gated and disabled by default.
+## v2.6.16 - Five-SMB passive ring bench observer (2026-09-03)
+
+- production source marker advances to `DER26-AMS-v0.5.19-20260903`;
+- aligns the legacy CLI version with the source marker;
+- permits advisory OCV SoC acquisition in the five-SMB `BENCH_VALIDATION`
+  image when the electrically unloaded ring has no DHAB or valid thermistor
+  image;
+- keeps measurement validity, SoH, SoP, BMS_OK and balancing fail-closed;
+- adds all-five-segment acquisition/SoC CLI output and a short bench checklist;
+- intentionally does not rerun the already-passed deterministic, randomized,
+  oracle or MATLAB campaigns because their model code is unchanged.

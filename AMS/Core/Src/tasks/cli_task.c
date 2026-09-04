@@ -400,6 +400,10 @@ void cli_task_fn(void *arg)
              AMS_ENABLE_APM_2950,
              data->bms_output_inhibit);
     cli_printline(local_cli, outline);
+#if AMS_ENABLE_BENCH_PASSIVE_RING_ESTIMATOR
+    cli_printline(local_cli,
+        "PASSIVE RING OBSERVER: open-ring zero-current/25C fallback; SoH/SoP authority disabled");
+#endif
     /* Keep provenance fields on bounded independent lines.  Revision strings
      * are build inputs and may grow; combining all of them in one 128-byte CLI
      * buffer silently truncated exactly the metadata needed to identify a
@@ -6302,6 +6306,32 @@ int get_estimator_diag(int argc, char *argv[])
              (double)inst->p_r0);
     ret |= cli_printline(cli, outline);
 
+#if AMS_ENABLE_BENCH_PASSIVE_RING_ESTIMATOR
+    snprintf(outline, CLI_LINESZ,
+             "Passive ring current:%s temperature:%s; advisory SoC only",
+             data->current_valid ? "DHAB" : "assumed_zero",
+             data->temp_valid ? "measured" : "fixed_25C");
+    ret |= cli_printline(cli, outline);
+#endif
+
+    for(uint8_t segment = 0u;
+        (segment < data->estimator.instance_count) &&
+        (segment < AMS_EKF_MAX_INSTANCES);
+        segment++)
+    {
+        const ams_ekf_instance_t *segment_inst =
+            &data->estimator.inst[segment];
+        snprintf(outline, CLI_LINESZ,
+                 "Segment %u SoC:%.4f valid:%u acq:%u reason:%u samples:%u",
+                 (unsigned)segment,
+                 (double)segment_inst->soc,
+                 (unsigned)segment_inst->valid,
+                 (unsigned)segment_inst->acquisition.state,
+                 (unsigned)segment_inst->acquisition.reason,
+                 (unsigned)segment_inst->acquisition.sample_count);
+        ret |= cli_printline(cli, outline);
+    }
+
     {
         const uint16_t compare_bit = (uint16_t)(1u << active);
         const bool raw_ok =
@@ -6586,6 +6616,11 @@ int get_can_diag(int argc, char *argv[])
              (unsigned long)sched->detail_generated,
              (unsigned long)sched->detail_completed,
              (unsigned long)sched->detail_superseded);
+    ret |= cli_printline(cli, outline);
+
+    snprintf(outline, CLI_LINESZ, "CAN tuning shed:%lu recovery_wait:%d refresh_wait:%d",
+             (unsigned long)sched->detail_tuning_shed,
+             cdev->tx_recovery_pending, cdev->tx_refresh_pending);
     ret |= cli_printline(cli, outline);
 
     snprintf(outline, CLI_LINESZ,

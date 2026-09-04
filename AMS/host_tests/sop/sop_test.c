@@ -462,7 +462,7 @@ static bool test_fuse_observer(void)
     ams_fuse_observer_result_t result;
     ams_fuse_observer_default_config(&cfg);
     ams_sop_default_config(&sop_cfg);
-    ams_fuse_observer_init(&observer);
+    TEST_ASSERT(ams_fuse_observer_init_conservative(&observer, &cfg));
     memset(&input, 0, sizeof(input));
     input.current_uncertainty_a = 0.5f;
     input.temperature_proxy_c = 25.0f;
@@ -474,7 +474,24 @@ static bool test_fuse_observer(void)
 
     TEST_ASSERT(ams_fuse_observer_config_valid(&cfg));
     TEST_ASSERT(ams_fuse_temperature_derating(25.0f, 0.75f) == 1.0f);
-    for(uint16_t i = 0u; i < 300u; i++)
+    TEST_ASSERT(observer.thermal_state_initialized);
+    TEST_ASSERT(observer.budget_exhausted);
+    TEST_ASSERT(observer.initial_state_conservative);
+    TEST_ASSERT(fabsf(observer.thermal_utilization -
+                      cfg.maximum_state_multiple) < 0.001f);
+
+    /* Unknown startup/reset state is immediately bounded and authoritative
+     * when the model validation gate is enabled, but it remains fail-closed
+     * until the conservative overload debt decays through hysteresis. */
+    TEST_ASSERT(ams_fuse_observer_update(&observer, &cfg, &sop_cfg,
+                                         &input, &result));
+    TEST_ASSERT(result.valid && result.authority_valid);
+    TEST_ASSERT(result.budget_exhausted);
+    TEST_ASSERT((result.reason_flags &
+                 AMS_FUSE_REASON_INITIAL_STATE_UNKNOWN) != 0u);
+    TEST_ASSERT(result.discharge_current_cap_a[0] == 0.0f);
+    TEST_ASSERT(result.charge_current_cap_a[0] == 0.0f);
+    for(uint16_t i = 0u; i < 700u; i++)
     {
         TEST_ASSERT(ams_fuse_observer_update(&observer, &cfg, &sop_cfg,
                                              &input, &result));
@@ -486,7 +503,28 @@ static bool test_fuse_observer(void)
     {
         TEST_ASSERT(result.discharge_current_cap_a[h] <=
                     sop_cfg.discharge_current_max_a[h]);
+        TEST_ASSERT(result.charge_current_cap_a[h] <=
+                    sop_cfg.charge_current_max_a[h]);
     }
+    TEST_ASSERT(!result.budget_exhausted);
+    TEST_ASSERT(!observer.initial_state_conservative);
+    TEST_ASSERT((result.reason_flags &
+                 AMS_FUSE_REASON_INITIAL_STATE_UNKNOWN) == 0u);
+
+    /* A separately established cold-soak path may begin uninitialized, but
+     * completing its soak must never erase utilization accumulated earlier. */
+    ams_fuse_observer_t soaking;
+    ams_fuse_observer_init(&soaking);
+    soaking.thermal_utilization = 2.0f;
+    soaking.budget_exhausted = 1u;
+    for(uint16_t i = 0u; i < 300u; i++)
+    {
+        TEST_ASSERT(ams_fuse_observer_update(&soaking, &cfg, &sop_cfg,
+                                             &input, &result));
+    }
+    TEST_ASSERT(soaking.thermal_state_initialized);
+    TEST_ASSERT(soaking.thermal_utilization > 0.70f);
+    TEST_ASSERT(soaking.budget_exhausted);
 
     /* The curve model no longer treats 118 A as consuming a fixed 8020 A^2s
      * bucket in seconds.  It accumulates slowly according to the time-current
@@ -509,6 +547,7 @@ static bool test_fuse_observer(void)
                                          &input, &result));
     TEST_ASSERT(result.budget_exhausted);
     TEST_ASSERT(result.discharge_current_cap_a[0] == 0.0f);
+    TEST_ASSERT(result.charge_current_cap_a[0] == 0.0f);
 
     input.pack_current_a = 0.0f;
     input.model_validated = 0u;
@@ -582,6 +621,34 @@ static bool test_mission_strategy_and_request(void)
     TEST_ASSERT(result.active_profile == AMS_MISSION_QUALIFY);
     TEST_ASSERT(fabsf(limited.discharge_current_a[1] -
                       hard.discharge_current_a[1]) < 0.01f);
+
+    ams_fuse_observer_result_t fuse;
+    memset(&fuse, 0, sizeof(fuse));
+    fuse.valid = 1u;
+    fuse.authority_valid = 1u;
+    fuse.utilization = 0.90f;
+    for(uint8_t h = 0u; h < AMS_SOP_HORIZONS; h++)
+    {
+        fuse.discharge_current_cap_a[h] =
+            hard.discharge_current_a[h];
+        fuse.charge_current_cap_a[h] = 1.0f;
+    }
+    TEST_ASSERT(ams_power_strategy_update(&state, &cfg, &input, &fuse,
+                                          &hard, &limited, &result));
+    for(uint8_t h = 0u; h < AMS_SOP_HORIZONS; h++)
+    {
+        TEST_ASSERT(fabsf(limited.charge_current_a[h] + 1.0f) < 0.01f);
+        TEST_ASSERT(limited.charge_binding[h] ==
+                    AMS_SOP_BIND_FUSE_THERMAL);
+        TEST_ASSERT(limited.charge_limiting_segment[h] ==
+                    AMS_SOP_INVALID_INDEX);
+        TEST_ASSERT(limited.charge_limiting_cell[h] ==
+                    AMS_SOP_INVALID_INDEX);
+    }
+    TEST_ASSERT((limited.reason_flags &
+                 AMS_SOP_REASON_FUSE_DERATED) != 0u);
+    TEST_ASSERT((result.reason_flags &
+                 AMS_STRATEGY_REASON_FUSE_DERATED) != 0u);
 
     input.minimum_segment_soc_lower = 0.299f;
     TEST_ASSERT(ams_power_strategy_update(&state, &cfg, &input, NULL,
@@ -663,6 +730,10 @@ static bool test_strategy_fuse_randomized_invariants(void)
             TEST_ASSERT(fuse_result.discharge_current_cap_a[h] >= 0.0f);
             TEST_ASSERT(fuse_result.discharge_current_cap_a[h] <=
                         sop_cfg.discharge_current_max_a[h] + 0.001f);
+            TEST_ASSERT(isfinite(fuse_result.charge_current_cap_a[h]));
+            TEST_ASSERT(fuse_result.charge_current_cap_a[h] >= 0.0f);
+            TEST_ASSERT(fuse_result.charge_current_cap_a[h] <=
+                        sop_cfg.charge_current_max_a[h] + 0.001f);
         }
     }
 
@@ -698,7 +769,7 @@ static bool test_strategy_fuse_randomized_invariants(void)
                 lcg_range(&seed, 0.008f, 0.030f);
         }
         TEST_ASSERT(ams_power_strategy_update(
-            &strategy_state, &strategy_cfg, &strategy_input, NULL,
+            &strategy_state, &strategy_cfg, &strategy_input, &fuse_result,
             &hard, &limited, &strategy_result));
         TEST_ASSERT(strategy_result.active_profile <=
                     AMS_MISSION_LIMP_HOME);
@@ -710,6 +781,12 @@ static bool test_strategy_fuse_randomized_invariants(void)
                         hard.discharge_current_a[h] + 0.001f);
             TEST_ASSERT(limited.model_discharge_current_a[h] ==
                         hard.model_discharge_current_a[h]);
+            TEST_ASSERT(isfinite(limited.charge_current_a[h]));
+            TEST_ASSERT(limited.charge_current_a[h] <= 0.0f);
+            TEST_ASSERT(fabsf(limited.charge_current_a[h]) <=
+                        fabsf(hard.charge_current_a[h]) + 0.001f);
+            TEST_ASSERT(limited.model_charge_current_a[h] ==
+                        hard.model_charge_current_a[h]);
         }
     }
     return true;

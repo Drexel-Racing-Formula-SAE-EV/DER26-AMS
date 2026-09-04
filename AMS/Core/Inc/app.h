@@ -31,7 +31,7 @@
 
 #define VER_MAJOR 0
 #define VER_MINOR 5
-#define VER_BUG   15
+#define VER_BUG   19
 
 /* DER26-CAN-V4 nominal vehicle bitrate. The asynchronous scheduler must remain
  * safety-correct at 250 kbps; 1 Mbit/s is the DER26 vehicle configuration. The

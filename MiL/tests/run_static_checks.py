@@ -131,8 +131,10 @@ require("ams_soh.c" in soh_make,
 
 sop_campaign = text(MAT / "+mil" / "+oracle" / "sop_campaign.m")
 require("combined_discharge_current_A" in sop_campaign and
-        "fuse_discharge_current_cap_A" in sop_campaign,
-        "SoP oracle no longer reports the independent fuse-combined envelope")
+        "fuse_discharge_current_cap_A" in sop_campaign and
+        "combined_charge_current_A" in sop_campaign and
+        "fuse_charge_current_cap_A" in sop_campaign,
+        "SoP oracle no longer reports both independent fuse-combined envelopes")
 
 # Catch the old export field names that did not match the truth oracle schema.
 export_src = text(MAT / "+mil" / "export_result.m")
@@ -318,8 +320,8 @@ for token in ["PreconditionRestS", "pre_count", "O=O(pre_count+1:end,:)", "Estim
     require(token in run_estimator_src,
             f"production estimator precondition contract missing token: {token}")
 summary_src = text(MAT / "+mil" / "summarize_result.m")
-require("summary.schema_version=7" in summary_src,
-        "summary schema was not bumped for raw-R0 semantics fields")
+require("summary.schema_version=8" in summary_src,
+        "summary schema was not bumped for charge-fuse evidence fields")
 require("production_soh_capacity_accepted_windows" in summary_src and
         "production_soh_last_reason_flags" in summary_src and
         "production_soh_capacity_target" in summary_src and

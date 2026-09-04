@@ -1,6 +1,6 @@
 # DER26 AMS Model-in-the-Loop Verification
 
-> **Current qualification harness (v2.6.14 raw-R0 metric semantics):** C1 diagnostics proved five fresh post-acquisition LAST_OBSERVABLE R0 updates per segment with 0.35–0.92% p95 error, zero unobservable drift, and zero ADVISORY_VALID samples. The harness now scores raw EKF-R0 on fresh LAST_OBSERVABLE updates, reserves ADVISORY_VALID for slow resistance-SoH maturity, excludes the intentional acquisition LUT re-anchor from drift scoring, requires at least five raw observations when EKF-R0 accuracy is applicable, and preflights that structural opportunity. Production AMS remains v0.5.17.
+> **Current qualification harness (v2.6.16 five-SMB bench observer):** v2.6.15 fuse hardening remains intact. Production AMS v0.5.19 adds a strictly non-authoritative passive-ring SoC path for the five-SMB `BENCH_VALIDATION` image; no MiL estimator, SoH, SoP, or fuse model changed.
 
 This directory is the working MiL verification layer for the DER26 accumulator-management firmware. It reuses the checked-in MATLAB battery plant under `HiL/simulink` strictly as a plant/parameter library; it does **not** run the real-time HIL target.
 

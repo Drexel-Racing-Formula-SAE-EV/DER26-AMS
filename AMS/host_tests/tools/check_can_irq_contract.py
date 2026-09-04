@@ -36,12 +36,14 @@ for vector in required_vectors:
     if handler not in it_h:
         raise SystemExit(f"FAIL {handler} prototype missing")
     block = re.search(rf"void\s+{handler}\s*\(void\)\s*\{{(.*?)\n\}}", it_c, re.S)
-    if not block or "HAL_CAN_IRQHandler(&hcan1);" not in block.group(1):
-        raise SystemExit(f"FAIL {handler} does not route to HAL_CAN_IRQHandler(&hcan1)")
+    if not block or "canbus_irq_handler(&hcan1);" not in block.group(1):
+        raise SystemExit(f"FAIL {handler} bypasses deferred CAN mailbox refill")
     if f"NVIC.{irq}=true" not in ioc:
         raise SystemExit(f"FAIL CubeMX .ioc does not persist enabled {irq}")
 
 # RX1 is intentionally unused because no FIFO1 notification is activated.
+if "HAL_CAN_IRQHandler(hcan);" not in canbus:
+    raise SystemExit("FAIL CAN IRQ wrapper does not dispatch HAL callbacks")
 if "CAN_IT_RX_FIFO1" in canbus:
     raise SystemExit("FAIL FIFO1 notification introduced without extending IRQ contract")
 

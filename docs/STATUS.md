@@ -1,26 +1,29 @@
 # Current Source Status
 
-Updated: 2026-08-29
+Updated: 2026-09-04
 
-The synchronized firmware release marker remains
-`DER26-AMS-v0.5.15-20260826`. The current tree contains additional reviewed
-development-candidate estimator/acquisition/observability changes; it is **not** being
-claimed as a released v0.5.16 image.
+The current source revision is `DER26-AMS-v0.5.20-20260904` (package v2.6.17).
+It includes the v2.6.16 five-SMB bench observer and the CAN scheduler fixes
+documented in `AMS/docs/CAN_SCHEDULER_FIXES_2026-09-04.md`. This source package
+requires a target rebuild and flash; no hardware CAN validation was performed
+for the September 4 changes.
 
 ## Software review findings closed in the current tree
 
 1. **CAN DETAIL stack usage** — encoded-frame staging is owned by the persistent
    `canbus_device_t.tx_builder`; measurement/tuning caches and task stacks use static
-   storage. The task no longer relies on a large automatic DETAIL frame array.
+   storage. The scheduler now also writes directly into its owned generation
+   slot, removing the separate oversized automatic generation temporary.
 2. **CAN interrupt coverage** — CAN1 RX0, TX, and SCE NVIC vectors are enabled and
-   dispatch to `HAL_CAN_IRQHandler(&hcan1)`, matching RX FIFO0, TX-mailbox, bus-off,
+   dispatch through `canbus_irq_handler(&hcan1)` into HAL and refill only after
+   completion dispatch, matching RX FIFO0, TX-mailbox, bus-off,
    and error notifications enabled by the driver. A host static gate checks this
    contract against the CubeMX `.ioc`, MSP, ISR declarations, and driver.
 3. **Fatal RTOS fail-low ordering** — stack-overflow, malloc-failure, and assert paths
    execute the safety panic/fail-low action before best-effort diagnostic bookkeeping.
    A host static gate prevents regression.
 4. **Runtime version/provenance mismatch** — the runtime/source revision is
-   synchronized to v0.5.15 (`DER26-AMS-v0.5.15-20260826`).
+   synchronized to v0.5.20 (`DER26-AMS-v0.5.20-20260904`).
 5. **Estimator startup/covariance defects** — production now uses constrained/retryable
    acquisition, full symmetric 3x3 `[SoC,Vp1,Vp2]` covariance with Joseph update,
    covariance health guards, exact innovation variance, and fail-closed SoP authority

@@ -142,3 +142,17 @@ The first licensed v2.6.12 C5 attempt reached `mil.metrics.production_ekf` and f
 ## 2026-09-03 v2.6.14 raw-R0 metric semantics
 
 Licensed C1 post-mortem proved the previous EKF-R0 verdict was a harness semantics error: each segment produced five fresh post-acquisition `LAST_OBSERVABLE` R0 updates with 0.35-0.92% p95 relative error and zero post-acquisition unobservable drift, while `ADVISORY_VALID` remained false because the slow resistance-SoH observer had only five accepted observations. v2.6.14 separates these layers. Raw EKF-R0 accuracy is now scored on `LAST_OBSERVABLE`, unobservable drift is scored only after acquisition and only when no fresh R0 update occurs, the intentional acquisition LUT re-anchor is excluded, and applicable raw-R0 tests require at least five observations with a campaign preflight necessary-condition check. No production C changed from AMS v0.5.17.
+
+v2.6.15 advances production AMS to v0.5.18. The main-fuse observer now publishes
+and applies symmetric charge/discharge current caps. Production startup/reset
+uses a conservative maximum-state seed rather than a shadow-only zero-state
+soak, and cold-soak completion no longer erases accumulated utilization. The
+independent long-double oracle and strict replay validate both cap directions
+and the new production reset policy. Fuse validation locks remain disabled by
+default, so the current bench build remains shadow-only.
+
+v2.6.16 advances the source marker to v0.5.19 and adds a five-SMB
+`BENCH_VALIDATION` passive-ring observer. It permits advisory OCV SoC with an
+explicit open-ring zero-current assumption and fixed 25 C fallback, while
+leaving measurement validity, SoH, SoP, BMS_OK and balancing fail-closed. No
+MiL model or host production estimator/SoH/SoP/fuse source changed.
