@@ -37,6 +37,7 @@ static void map_config(const ams_fuse_observer_config_t *prod,
     {
         ref->horizons_s[h] = sop->horizons_s[h];
         ref->discharge_static_cap_a[h] = sop->discharge_current_max_a[h];
+        ref->charge_static_cap_a[h] = sop->charge_current_max_a[h];
     }
 }
 
@@ -185,6 +186,8 @@ static bool test_directed_production_comparison(void)
         {
             ASSERT_TRUE(cap_conservative(pout.discharge_current_cap_a[h],
                                          rout.discharge_current_cap_a[h]));
+            ASSERT_TRUE(cap_conservative(pout.charge_current_cap_a[h],
+                                         rout.charge_current_cap_a[h]));
         }
     }
     ASSERT_TRUE(pout.utilization > 0.0f);
@@ -272,6 +275,8 @@ static bool test_randomized_production_vs_independent_oracle(void)
         {
             ASSERT_TRUE(cap_conservative(pout.discharge_current_cap_a[h],
                                          rout.discharge_current_cap_a[h]));
+            ASSERT_TRUE(cap_conservative(pout.charge_current_cap_a[h],
+                                         rout.charge_current_cap_a[h]));
         }
         if(pout.budget_exhausted != rout.budget_exhausted)
         {

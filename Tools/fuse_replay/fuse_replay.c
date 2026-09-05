@@ -311,18 +311,22 @@ static void map_ref_config(const ams_fuse_observer_config_t *prod,
 {
     memset(ref, 0, sizeof(*ref));
     ref->rated_current_a = prod->rated_current_a;
-    ref->typical_melting_i2t_a2s = prod->typical_melting_i2t_a2s;
-    ref->usable_i2t_fraction = prod->usable_i2t_fraction;
+    ref->curve_time_fraction = prod->curve_time_fraction;
     ref->cooling_time_constant_s = prod->cooling_time_constant_s;
     ref->initialization_soak_s = prod->initialization_soak_s;
     ref->quiescent_current_a = prod->quiescent_current_a;
     ref->fuse_temperature_margin_c = prod->fuse_temperature_margin_c;
     ref->minimum_temperature_derating = prod->minimum_temperature_derating;
     ref->maximum_state_multiple = prod->maximum_state_multiple;
+    ref->low_current_fit_scale_s = prod->low_current_fit_scale_s;
+    ref->low_current_fit_exponent = prod->low_current_fit_exponent;
+    ref->maximum_curve_time_s = prod->maximum_curve_time_s;
+    ref->minimum_curve_time_s = prod->minimum_curve_time_s;
     for(uint32_t h = 0u; h < FUSE_REF_HORIZON_COUNT; ++h)
     {
         ref->horizons_s[h] = sop->horizons_s[h];
         ref->discharge_static_cap_a[h] = sop->discharge_current_max_a[h];
+        ref->charge_static_cap_a[h] = sop->charge_current_max_a[h];
     }
 }
 
@@ -349,6 +353,17 @@ static bool seed_states(ams_fuse_observer_t *prod,
 {
     ams_fuse_observer_init(prod);
     fuse_ref_state_init(ref);
+    if(policy->kind == FUSE_REPLAY_INIT_CONSERVATIVE_UNKNOWN)
+    {
+        if(!ams_fuse_observer_init_conservative(prod, pcfg) ||
+           !fuse_ref_state_seed_utilization(
+               ref, rcfg, rcfg->maximum_state_multiple))
+        {
+            return false;
+        }
+        ref->initial_state_conservative = 1u;
+        return true;
+    }
     if(policy->kind == FUSE_REPLAY_INIT_COLD_SOAK)
     {
         return true;
@@ -361,9 +376,7 @@ static bool seed_states(ams_fuse_observer_t *prod,
     {
         return false;
     }
-    const double budget = (double)pcfg->typical_melting_i2t_a2s *
-                          (double)pcfg->usable_i2t_fraction;
-    prod->excess_i2t_a2s = (float)(util * budget);
+    prod->thermal_utilization = (float)util;
     prod->quiescent_time_s = pcfg->initialization_soak_s;
     prod->thermal_state_initialized = 1u;
     prod->budget_exhausted = (util >= 1.0) ? 1u : 0u;
@@ -378,35 +391,33 @@ static bool apply_reset(ams_fuse_observer_t *prod,
 {
     if(options->reset_kind == FUSE_REPLAY_RESET_RESTORE_PRE_RESET)
     {
-        const double prod_budget = (double)pcfg->typical_melting_i2t_a2s *
-                                   (double)pcfg->usable_i2t_fraction;
-        const long double ref_budget = rcfg->typical_melting_i2t_a2s *
-                                       rcfg->usable_i2t_fraction;
-        const double prod_util = (prod_budget > 0.0) ?
-            ((double)prod->excess_i2t_a2s / prod_budget) : 1.0;
-        const long double ref_util = (ref_budget > 0.0L) ?
-            (ref->excess_i2t_a2s / ref_budget) : 1.0L;
+        const double prod_util = (double)prod->thermal_utilization;
+        const long double ref_util = ref->thermal_utilization;
         const uint8_t prod_exhausted = prod->budget_exhausted;
         const uint8_t ref_exhausted = ref->budget_exhausted;
+        const uint8_t prod_conservative = prod->initial_state_conservative;
+        const uint8_t ref_conservative = ref->initial_state_conservative;
 
         ams_fuse_observer_init(prod);
         fuse_ref_state_init(ref);
-        prod->excess_i2t_a2s = (float)(prod_util * prod_budget);
+        prod->thermal_utilization = (float)prod_util;
         prod->quiescent_time_s = pcfg->initialization_soak_s;
         prod->thermal_state_initialized = 1u;
         prod->budget_exhausted = prod_exhausted;
+        prod->initial_state_conservative = prod_conservative;
         if(!fuse_ref_state_seed_utilization(ref, rcfg, ref_util))
         {
             return false;
         }
         ref->budget_exhausted = ref_exhausted;
+        ref->initial_state_conservative = ref_conservative;
         return true;
     }
 
     fuse_replay_init_policy_t policy;
     if(options->reset_kind == FUSE_REPLAY_RESET_UNKNOWN)
     {
-        policy.kind = FUSE_REPLAY_INIT_COLD_SOAK;
+        policy.kind = FUSE_REPLAY_INIT_CONSERVATIVE_UNKNOWN;
         policy.utilization = 0.0;
     }
     else if(options->reset_kind == FUSE_REPLAY_RESET_KNOWN_COLD)
@@ -429,18 +440,18 @@ void fuse_replay_default_options(fuse_replay_options_t *options)
         return;
     }
     memset(options, 0, sizeof(*options));
-    options->startup_policy.kind = FUSE_REPLAY_INIT_COLD_SOAK;
+    options->startup_policy.kind = FUSE_REPLAY_INIT_CONSERVATIVE_UNKNOWN;
     options->reset_kind = FUSE_REPLAY_RESET_UNKNOWN;
     options->reset_seed_utilization = 0.80;
-    options->usable_i2t_fraction = 0.25;
+    options->curve_time_fraction = 0.25;
     options->cooling_time_constant_s = 300.0;
     options->rated_current_a = 80.0;
     options->initialization_soak_s = 300.0;
     options->quiescent_current_a = 5.0;
     options->current_uncertainty_default_a = 0.5;
     options->temperature_default_c = 30.0;
-    options->state_abs_tolerance_a2s = 0.25;
-    options->state_rel_tolerance = 0.001;
+    options->state_abs_tolerance = 2.0e-5;
+    options->state_rel_tolerance = 0.002;
     options->cap_tolerance_a = 0.20;
 }
 
@@ -452,6 +463,7 @@ const char *fuse_replay_init_policy_name(const fuse_replay_init_policy_t *policy
     }
     switch(policy->kind)
     {
+        case FUSE_REPLAY_INIT_CONSERVATIVE_UNKNOWN: return "conservative";
         case FUSE_REPLAY_INIT_COLD_SOAK: return "cold-soak";
         case FUSE_REPLAY_INIT_KNOWN_COLD: return "known-cold";
         case FUSE_REPLAY_INIT_SEEDED_UTILIZATION: return "seeded";
@@ -476,11 +488,15 @@ static void write_output_header(FILE *output)
     fprintf(output,
         "timestamp_ms,current_a,elapsed_s,event,"
         "prod_initialized,ref_initialized,prod_authority,ref_authority,"
-        "prod_excess_i2t_a2s,ref_excess_i2t_a2s,state_abs_error_a2s,"
-        "prod_utilization,ref_utilization,prod_remaining_i2t_a2s,"
-        "ref_remaining_i2t_a2s,prod_exhausted,ref_exhausted,"
+        "prod_state_utilization,ref_state_utilization,state_abs_error,"
+        "prod_utilization,ref_utilization,prod_remaining_utilization,"
+        "ref_remaining_utilization,prod_exhausted,ref_exhausted,"
         "prod_cap_0p1s_a,ref_cap_0p1s_a,prod_cap_1s_a,ref_cap_1s_a,"
         "prod_cap_10s_a,ref_cap_10s_a,prod_cap_30s_a,ref_cap_30s_a,"
+        "prod_charge_cap_0p1s_a,ref_charge_cap_0p1s_a,"
+        "prod_charge_cap_1s_a,ref_charge_cap_1s_a,"
+        "prod_charge_cap_10s_a,ref_charge_cap_10s_a,"
+        "prod_charge_cap_30s_a,ref_charge_cap_30s_a,"
         "prod_reason_flags,ref_reason_flags\n");
 }
 
@@ -493,11 +509,13 @@ static void write_output_row(FILE *output,
                              const fuse_ref_result_t *rout)
 {
     const long double state_error = fabsl(
-        (long double)pstate->excess_i2t_a2s - rstate->excess_i2t_a2s);
+        (long double)pstate->thermal_utilization - rstate->thermal_utilization);
     fprintf(output,
         "%" PRIu64 ",%.9g,%.9g,%s,%u,%u,%u,%u,"
         "%.9g,%.12Lg,%.12Lg,%.9g,%.12Lg,%.9g,%.12Lg,%u,%u,"
-        "%.9g,%.12Lg,%.9g,%.12Lg,%.9g,%.12Lg,%.9g,%.12Lg,0x%04x,0x%04x\n",
+        "%.9g,%.12Lg,%.9g,%.12Lg,%.9g,%.12Lg,%.9g,%.12Lg,"
+        "%.9g,%.12Lg,%.9g,%.12Lg,%.9g,%.12Lg,%.9g,%.12Lg,"
+        "0x%04x,0x%04x\n",
         row->timestamp_ms,
         row->current_a,
         elapsed_s,
@@ -506,13 +524,13 @@ static void write_output_row(FILE *output,
         (unsigned)rstate->thermal_state_initialized,
         (unsigned)pout->authority_valid,
         (unsigned)rout->authority_valid,
-        (double)pstate->excess_i2t_a2s,
-        rstate->excess_i2t_a2s,
+        (double)pstate->thermal_utilization,
+        rstate->thermal_utilization,
         state_error,
         (double)pout->utilization,
         rout->utilization,
-        (double)pout->remaining_i2t_a2s,
-        rout->remaining_i2t_a2s,
+        (double)pout->remaining_utilization,
+        rout->remaining_utilization,
         (unsigned)pout->budget_exhausted,
         (unsigned)rout->budget_exhausted,
         (double)pout->discharge_current_cap_a[0],
@@ -523,6 +541,14 @@ static void write_output_row(FILE *output,
         rout->discharge_current_cap_a[2],
         (double)pout->discharge_current_cap_a[3],
         rout->discharge_current_cap_a[3],
+        (double)pout->charge_current_cap_a[0],
+        rout->charge_current_cap_a[0],
+        (double)pout->charge_current_cap_a[1],
+        rout->charge_current_cap_a[1],
+        (double)pout->charge_current_cap_a[2],
+        rout->charge_current_cap_a[2],
+        (double)pout->charge_current_cap_a[3],
+        rout->charge_current_cap_a[3],
         (unsigned)pout->reason_flags,
         (unsigned)rout->reason_flags);
 }
@@ -557,12 +583,12 @@ static bool write_summary_csv(const fuse_replay_options_t *options,
 
     fprintf(file,
         "trace,startup_policy,startup_utilization,reset_policy,reset_utilization,"
-        "usable_i2t_fraction,cooling_tau_s,rated_current_a,"
+        "curve_time_fraction,cooling_tau_s,rated_current_a,"
         "samples,valid_updates,invalid_updates,reset_events,authority_loss_events,"
         "first_authority_ms,first_reset_ms,first_post_reset_authority_ms,first_post_reset_exhaust_ms,first_prod_exhaust_ms,first_ref_exhaust_ms,"
         "first_prod_recovery_ms,first_ref_recovery_ms,"
         "prod_utilization_before_reset,prod_utilization_after_reset_seed,max_prod_utilization,max_ref_utilization,final_prod_utilization,"
-        "final_ref_utilization,max_state_abs_error_a2s,max_state_rel_error,"
+        "final_ref_utilization,max_state_abs_error,max_state_rel_error,"
         "max_cap_abs_error_a,production_underestimate_violations,"
         "cap_nonconservative_violations,cap_tolerance_violations,state_tolerance_violations,"
         "result_mismatch_violations,latch_mismatch_samples,latch_nonconservative_violations,strict_pass\n");
@@ -577,7 +603,7 @@ static bool write_summary_csv(const fuse_replay_options_t *options,
         options->startup_policy.utilization,
         fuse_replay_reset_policy_name(options->reset_kind),
         options->reset_seed_utilization,
-        options->usable_i2t_fraction,
+        options->curve_time_fraction,
         options->cooling_time_constant_s,
         options->rated_current_a,
         summary->samples,
@@ -599,7 +625,7 @@ static bool write_summary_csv(const fuse_replay_options_t *options,
         summary->max_reference_utilization,
         summary->final_production_utilization,
         summary->final_reference_utilization,
-        summary->max_state_abs_error_a2s,
+        summary->max_state_abs_error,
         summary->max_state_rel_error,
         summary->max_cap_abs_error_a,
         summary->production_underestimate_violations,
@@ -631,7 +657,7 @@ static void print_summary(const fuse_replay_options_t *options,
     }
     printf("\n");
     printf("  config: usable=%.1f%% tau=%.1fs rated=%.1fA soak=%.1fs\n",
-           options->usable_i2t_fraction * 100.0,
+           options->curve_time_fraction * 100.0,
            options->cooling_time_constant_s,
            options->rated_current_a,
            options->initialization_soak_s);
@@ -660,8 +686,8 @@ static void print_summary(const fuse_replay_options_t *options,
     printf("  recovery prod/ref=%" PRId64 "/%" PRId64 " ms\n",
            summary->first_production_recovery_ms,
            summary->first_reference_recovery_ms);
-    printf("  max oracle delta: state=%.6g A^2s (rel %.6g), cap=%.6g A\n",
-           summary->max_state_abs_error_a2s,
+    printf("  max oracle delta: utilization=%.6g (rel %.6g), cap=%.6g A\n",
+           summary->max_state_abs_error,
            summary->max_state_rel_error,
            summary->max_cap_abs_error_a);
     printf("  violations: understate=%" PRIu64 " cap=%" PRIu64
@@ -684,9 +710,9 @@ bool fuse_replay_run(const fuse_replay_options_t *options,
 {
     if((options == NULL) || (summary == NULL) ||
        (options->trace_path == NULL) ||
-       !isfinite(options->usable_i2t_fraction) ||
-       (options->usable_i2t_fraction <= 0.0) ||
-       (options->usable_i2t_fraction > 1.0) ||
+       !isfinite(options->curve_time_fraction) ||
+       (options->curve_time_fraction <= 0.0) ||
+       (options->curve_time_fraction > 1.0) ||
        !isfinite(options->cooling_time_constant_s) ||
        (options->cooling_time_constant_s <= 0.0) ||
        !isfinite(options->rated_current_a) ||
@@ -730,7 +756,7 @@ bool fuse_replay_run(const fuse_replay_options_t *options,
     fuse_ref_config_t rcfg;
     ams_fuse_observer_default_config(&pcfg);
     ams_sop_default_config(&scfg);
-    pcfg.usable_i2t_fraction = (float)options->usable_i2t_fraction;
+    pcfg.curve_time_fraction = (float)options->curve_time_fraction;
     pcfg.cooling_time_constant_s = (float)options->cooling_time_constant_s;
     pcfg.rated_current_a = (float)options->rated_current_a;
     pcfg.initialization_soak_s = (float)options->initialization_soak_s;
@@ -822,11 +848,8 @@ bool fuse_replay_run(const fuse_replay_options_t *options,
         {
             ++summary->reset_events;
             update_time_metric(row.timestamp_ms, true, &summary->first_reset_ms);
-            const double reset_budget = (double)pcfg.typical_melting_i2t_a2s *
-                                        (double)pcfg.usable_i2t_fraction;
             summary->production_utilization_before_reset =
-                (reset_budget > 0.0) ?
-                ((double)pstate.excess_i2t_a2s / reset_budget) : 1.0;
+                (double)pstate.thermal_utilization;
             awaiting_post_reset_authority = true;
             awaiting_post_reset_exhaust = true;
             prod_has_exhausted = false;
@@ -840,8 +863,7 @@ bool fuse_replay_run(const fuse_replay_options_t *options,
                 return false;
             }
             summary->production_utilization_after_reset_seed =
-                (reset_budget > 0.0) ?
-                ((double)pstate.excess_i2t_a2s / reset_budget) : 1.0;
+                (double)pstate.thermal_utilization;
             memset(&pout, 0, sizeof(pout));
             memset(&rout, 0, sizeof(rout));
         }
@@ -910,46 +932,66 @@ bool fuse_replay_run(const fuse_replay_options_t *options,
             }
         }
 
-        const double pstate_value = (double)pstate.excess_i2t_a2s;
-        const double rstate_value = (double)rstate.excess_i2t_a2s;
+        const double pstate_value = (double)pstate.thermal_utilization;
+        const double rstate_value = (double)rstate.thermal_utilization;
         const double state_abs = fabs(pstate_value - rstate_value);
         const double state_rel = state_abs / fmax(1.0, fabs(rstate_value));
-        if(state_abs > summary->max_state_abs_error_a2s)
+        if(state_abs > summary->max_state_abs_error)
         {
-            summary->max_state_abs_error_a2s = state_abs;
+            summary->max_state_abs_error = state_abs;
         }
         if(state_rel > summary->max_state_rel_error)
         {
             summary->max_state_rel_error = state_rel;
         }
-        const double state_tolerance = options->state_abs_tolerance_a2s +
+        const double state_tolerance = options->state_abs_tolerance +
             options->state_rel_tolerance * fmax(1.0, fabs(rstate_value));
         if(state_abs > state_tolerance)
         {
             ++summary->state_tolerance_violations;
         }
-        if(pstate_value + options->state_abs_tolerance_a2s < rstate_value)
+        if(pstate_value + options->state_abs_tolerance < rstate_value)
         {
             ++summary->production_underestimate_violations;
         }
 
         for(uint32_t h = 0u; h < FUSE_REF_HORIZON_COUNT; ++h)
         {
-            const double cap_abs = fabs(
+            const double discharge_cap_abs = fabs(
                 (double)pout.discharge_current_cap_a[h] -
                 (double)rout.discharge_current_cap_a[h]);
             if((pout.budget_exhausted == rout.budget_exhausted) &&
-               (cap_abs > summary->max_cap_abs_error_a))
+               (discharge_cap_abs > summary->max_cap_abs_error_a))
             {
-                summary->max_cap_abs_error_a = cap_abs;
+                summary->max_cap_abs_error_a = discharge_cap_abs;
             }
             if((pout.budget_exhausted == rout.budget_exhausted) &&
-               (cap_abs > options->cap_tolerance_a))
+               (discharge_cap_abs > options->cap_tolerance_a))
             {
                 ++summary->cap_tolerance_violations;
             }
             if((double)pout.discharge_current_cap_a[h] >
                (double)rout.discharge_current_cap_a[h] +
+               options->cap_tolerance_a)
+            {
+                ++summary->cap_nonconservative_violations;
+            }
+
+            const double charge_cap_abs = fabs(
+                (double)pout.charge_current_cap_a[h] -
+                (double)rout.charge_current_cap_a[h]);
+            if((pout.budget_exhausted == rout.budget_exhausted) &&
+               (charge_cap_abs > summary->max_cap_abs_error_a))
+            {
+                summary->max_cap_abs_error_a = charge_cap_abs;
+            }
+            if((pout.budget_exhausted == rout.budget_exhausted) &&
+               (charge_cap_abs > options->cap_tolerance_a))
+            {
+                ++summary->cap_tolerance_violations;
+            }
+            if((double)pout.charge_current_cap_a[h] >
+               (double)rout.charge_current_cap_a[h] +
                options->cap_tolerance_a)
             {
                 ++summary->cap_nonconservative_violations;

@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "status": "UNFROZEN",
+  "note": "Provisional engineering thresholds. Freeze only after sensor and pack characterization, before holdout execution.",
+  "ekf": {
+    "soc_rmse_max": 0.02,
+    "soc_p95_abs_max": 0.04,
+    "soc_worst_abs_max": 0.075,
+    "convergence_time_max_s": 60.0
+  },
+  "sop": {
+    "unsafe_overprediction_max_A": 2.0,
+    "unsafe_overprediction_max_fraction": 0.02
+  },
+  "soh": {
+    "capacity_abs_error_max": 0.05,
+    "resistance_abs_error_max": 0.10,
+    "false_aging_growth_max": 0.10
+  },
+  "numeric": {
+    "allowed_failures": 0
+  }
+}

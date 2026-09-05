@@ -55,7 +55,8 @@ typedef enum {
     CANBUS_TX_BUILD_NONE = 0,
     CANBUS_TX_BUILD_CRITICAL,
     CANBUS_TX_BUILD_PROTECTED,
-    CANBUS_TX_BUILD_DETAIL
+    CANBUS_TX_BUILD_DETAIL,
+    CANBUS_TX_BUILD_TUNING
 } canbus_tx_build_kind_t;
 
 typedef enum {
@@ -82,6 +83,7 @@ typedef struct {
     uint32_t loaded_tick;
     ams_can_tx_class_t tx_class;
     uint16_t source_tag;
+    uint32_t request_id;
     uint32_t controller_epoch;
 } canbus_tx_mailbox_meta_t;
 
@@ -92,6 +94,7 @@ typedef struct {
     uint32_t publish_tick;
     uint16_t required_count;
     uint16_t source_tag;
+    uint32_t request_id;
     uint16_t frame_count;
     ams_can_tx_frame_t frames[CANBUS_TX_BUILD_MAX_FRAMES];
 } canbus_tx_builder_t;
@@ -133,6 +136,8 @@ typedef struct {
     volatile bool tx_pump_busy;
     volatile bool tx_kick_pending;
     volatile bool tx_suspended;
+    volatile bool tx_recovery_pending;
+    volatile bool tx_refresh_pending;
     volatile bool tx_latched_inhibit;
     volatile bool error_isr_pending;
     volatile uint32_t error_isr_code;
@@ -205,10 +210,13 @@ HAL_StatusTypeDef canbus_tx_build_commit(canbus_device_t *dev,
                                          uint16_t required_count);
 void canbus_tx_build_cancel(canbus_device_t *dev);
 void canbus_tx_kick(canbus_device_t *dev);
-void canbus_tx_abort_protected_generation(canbus_device_t *dev,
-                                          uint32_t generation);
+void canbus_irq_handler(CAN_HandleTypeDef *hcan);
 void canbus_tx_note_busoff(canbus_device_t *dev);
-void canbus_tx_note_recovered(canbus_device_t *dev);
+/* Returns false until hardware bus-off and old mailbox ownership have settled.
+ * On success, TX stays suspended for a fresh task-side publication. */
+bool canbus_tx_note_recovered(canbus_device_t *dev);
+/* CAN task only, after successful fresh charger decision/protected publication. */
+void canbus_tx_resume_after_refresh(canbus_device_t *dev);
 uint32_t canbus_tx_next_generation(canbus_device_t *dev);
 
 #endif /* __CANBUS_H_ */

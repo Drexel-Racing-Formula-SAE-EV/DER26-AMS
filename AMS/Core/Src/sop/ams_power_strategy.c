@@ -182,6 +182,28 @@ static void cap_discharge(ams_sop_result_t *result,
     }
 }
 
+static bool cap_charge_horizon(ams_sop_result_t *result,
+                               uint8_t horizon,
+                               float cap_magnitude_a,
+                               ams_sop_binding_t binding)
+{
+    const float old_magnitude_a = fmaxf(
+        0.0f, -result->charge_current_a[horizon]);
+    if(old_magnitude_a <= cap_magnitude_a)
+    {
+        return false;
+    }
+
+    const float ratio = (old_magnitude_a > 0.0f) ?
+        cap_magnitude_a / old_magnitude_a : 0.0f;
+    result->charge_current_a[horizon] = -cap_magnitude_a;
+    result->charge_power_w[horizon] *= ratio;
+    result->charge_binding[horizon] = binding;
+    result->charge_limiting_segment[horizon] = AMS_SOP_INVALID_INDEX;
+    result->charge_limiting_cell[horizon] = AMS_SOP_INVALID_INDEX;
+    return true;
+}
+
 static bool strategy_input_valid(const ams_power_strategy_input_t *input)
 {
     if((input == NULL) || !valid_profile((uint8_t)input->requested_profile) ||
@@ -286,6 +308,15 @@ bool ams_power_strategy_update(ams_power_strategy_state_t *state,
                         AMS_SOP_INVALID_INDEX;
                     limited_result->discharge_limiting_cell[h] =
                         AMS_SOP_INVALID_INDEX;
+                    limited_result->reason_flags |=
+                        AMS_SOP_REASON_FUSE_DERATED;
+                    strategy_result->reason_flags |=
+                        AMS_STRATEGY_REASON_FUSE_DERATED;
+                }
+                if(cap_charge_horizon(
+                       limited_result, h, fuse->charge_current_cap_a[h],
+                       AMS_SOP_BIND_FUSE_THERMAL))
+                {
                     limited_result->reason_flags |=
                         AMS_SOP_REASON_FUSE_DERATED;
                     strategy_result->reason_flags |=

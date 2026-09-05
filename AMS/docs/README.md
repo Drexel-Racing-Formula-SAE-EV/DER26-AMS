@@ -14,6 +14,7 @@
 
 ## Release notes
 
+- [AMS v0.5.16](releases/AMS_v0.5.16.md)
 - [AMS v0.5.15](releases/AMS_v0.5.15.md)
 
 Repository-level documentation is indexed in [`../../docs/README.md`](../../docs/README.md).

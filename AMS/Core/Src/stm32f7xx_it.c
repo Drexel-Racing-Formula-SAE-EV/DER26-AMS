@@ -165,6 +165,17 @@ void DebugMon_Handler(void)
 /******************************************************************************/
 
 /**
+  * @brief This function handles CAN1 TX interrupts.
+  */
+void CAN1_TX_IRQHandler(void)
+{
+  /* TX-mailbox-empty notifications are enabled by canbus.c so the
+   * asynchronous scheduler can retire mailbox tokens and pump the next
+   * protected/detail frame without polling. */
+  canbus_irq_handler(&hcan1);
+}
+
+/**
   * @brief This function handles CAN1 RX0 interrupts.
   */
 void CAN1_RX0_IRQHandler(void)
@@ -172,10 +183,21 @@ void CAN1_RX0_IRQHandler(void)
   /* USER CODE BEGIN CAN1_RX0_IRQn 0 */
 
   /* USER CODE END CAN1_RX0_IRQn 0 */
-  HAL_CAN_IRQHandler(&hcan1);
+  canbus_irq_handler(&hcan1);
   /* USER CODE BEGIN CAN1_RX0_IRQn 1 */
 
   /* USER CODE END CAN1_RX0_IRQn 1 */
+}
+
+/**
+  * @brief This function handles CAN1 status/error interrupts.
+  */
+void CAN1_SCE_IRQHandler(void)
+{
+  /* Bus-off and generic CAN error notifications are enabled by canbus.c.
+   * Routing SCE into the HAL handler ensures HAL_CAN_ErrorCallback() can
+   * latch the transport fault and start the existing recovery policy. */
+  canbus_irq_handler(&hcan1);
 }
 
 /**

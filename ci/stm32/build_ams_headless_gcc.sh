@@ -1,12 +1,32 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 AMS_DIR="$ROOT_DIR/AMS"
-BUILD_DIR="$AMS_DIR/build"
+AMS_BUILD_TYPE="${AMS_BUILD_TYPE:-Debug}"
+case "$AMS_BUILD_TYPE" in
+  Debug) MODE_FLAGS=(-O0 -g3 -DDEBUG) ;;
+  Release) MODE_FLAGS=(-O2 -g3) ;;
+  *) echo "AMS_BUILD_TYPE must be Debug or Release" >&2; exit 2 ;;
+esac
+# Explicit opt-in, independent of optimization and authority profile.
+AMS_WARNINGS_AS_ERRORS="${AMS_WARNINGS_AS_ERRORS:-0}"
+case "$AMS_WARNINGS_AS_ERRORS" in
+  0|1) ;;
+  *) echo "AMS_WARNINGS_AS_ERRORS must be 0 or 1" >&2; exit 2 ;;
+esac
+if [[ -n "${SOURCE_DATE_EPOCH:-}" ]]; then
+  [[ "$SOURCE_DATE_EPOCH" =~ ^[0-9]+$ ]] || { echo "Invalid SOURCE_DATE_EPOCH" >&2; exit 2; }
+  export SOURCE_DATE_EPOCH
+fi
+for tool in arm-none-eabi-gcc arm-none-eabi-size arm-none-eabi-objcopy arm-none-eabi-objdump; do
+  command -v "$tool" >/dev/null || { echo "Missing required tool: $tool" >&2; exit 2; }
+done
 
-rm -rf "$BUILD_DIR"
-mkdir -p "$BUILD_DIR"
+# Preserve previous ELF/MAP evidence, including failed-build diagnostics.
+mkdir -p "$AMS_DIR/build"
+BUILD_DIR="$(mktemp -d "$AMS_DIR/build/${AMS_BUILD_TYPE}.XXXXXX")"
+echo "Build artifacts: $BUILD_DIR"
 
 CFLAGS=(
   -mcpu=cortex-m7
@@ -14,15 +34,16 @@ CFLAGS=(
   -mfpu=fpv5-d16
   -mfloat-abi=hard
   -std=gnu11
-  -O0
-  -g3
+  "${MODE_FLAGS[@]}"
+  -fstack-usage
+  "-ffile-prefix-map=$ROOT_DIR=."
+  "-fdebug-prefix-map=$ROOT_DIR=."
   -ffunction-sections
   -fdata-sections
   -Wall
   -Wextra
   -Wno-unused-parameter
   -Wno-missing-field-initializers
-  -DDEBUG
   -DUSE_HAL_DRIVER
   -DSTM32F767xx
 )
@@ -80,7 +101,11 @@ echo "Compiling ${#SOURCES[@]} C files..."
 for src in "${SOURCES[@]}"; do
   rel="${src#$AMS_DIR/}"
   obj="$BUILD_DIR/${rel//\//_}.o"
-  arm-none-eabi-gcc "${CFLAGS[@]}" "${INCLUDES[@]}" -c "$src" -o "$obj"
+  PROJECT_FLAGS=()
+  if [[ "$AMS_WARNINGS_AS_ERRORS" == 1 && "$src" == "$AMS_DIR/Core/Src/"* ]]; then
+    PROJECT_FLAGS=(-Werror)
+  fi
+  arm-none-eabi-gcc "${CFLAGS[@]}" "${PROJECT_FLAGS[@]}" "${INCLUDES[@]}" -c "$src" -o "$obj"
   OBJECTS+=("$obj")
 done
 

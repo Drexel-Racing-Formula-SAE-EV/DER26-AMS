@@ -10,7 +10,8 @@ extern "C" {
 
 typedef enum
 {
-    FUSE_REPLAY_INIT_COLD_SOAK = 0,
+    FUSE_REPLAY_INIT_CONSERVATIVE_UNKNOWN = 0,
+    FUSE_REPLAY_INIT_COLD_SOAK,
     FUSE_REPLAY_INIT_KNOWN_COLD,
     FUSE_REPLAY_INIT_SEEDED_UTILIZATION
 } fuse_replay_init_kind_t;
@@ -37,14 +38,14 @@ typedef struct
     fuse_replay_init_policy_t startup_policy;
     fuse_replay_reset_kind_t reset_kind;
     double reset_seed_utilization;
-    double usable_i2t_fraction;
+    double curve_time_fraction;
     double cooling_time_constant_s;
     double rated_current_a;
     double initialization_soak_s;
     double quiescent_current_a;
     double current_uncertainty_default_a;
     double temperature_default_c;
-    double state_abs_tolerance_a2s;
+    double state_abs_tolerance;
     double state_rel_tolerance;
     double cap_tolerance_a;
     bool strict;
@@ -78,7 +79,7 @@ typedef struct
     double max_reference_utilization;
     double final_production_utilization;
     double final_reference_utilization;
-    double max_state_abs_error_a2s;
+    double max_state_abs_error;
     double max_state_rel_error;
     double max_cap_abs_error_a;
     bool strict_pass;

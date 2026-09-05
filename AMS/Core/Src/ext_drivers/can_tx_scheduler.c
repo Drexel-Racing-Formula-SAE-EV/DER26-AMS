@@ -56,14 +56,20 @@ static bool protected_required_done(const ams_can_tx_protected_generation_t *gen
     /* Required authority is considered delivered only if every required
      * frame actually completed on the wire. DISCARDED is terminal for
      * bookkeeping, but it is not a successful protected delivery. */
-    for(uint16_t i = 0u; i < gen->required_count; i++)
+    uint16_t required = 0u;
+    for(uint16_t i = 0u; i < gen->frame_count; i++)
     {
+        if(gen->frames[i].tx_class != AMS_CAN_TX_CLASS_PROTECTED_REQUIRED)
+        {
+            continue;
+        }
+        required++;
         if(gen->state[i] != AMS_CAN_TX_FRAME_COMPLETE)
         {
             return false;
         }
     }
-    return true;
+    return required == gen->required_count;
 }
 
 static void reset_states(ams_can_tx_frame_state_t *state, uint16_t count)
@@ -203,6 +209,12 @@ bool ams_can_tx_publish_critical(ams_can_tx_scheduler_t *sched,
     }
     else
     {
+        /* Critical commands are latest-value, including commands already in
+         * hardware. The transport aborts obsolete requests; a completion that
+         * wins that race is still accounted to its original request identity. */
+        sched->critical_active.stale = true;
+        discard_not_loaded(sched->critical_active.state,
+                           sched->critical_active.frame_count);
         if(sched->critical_pending.valid)
         {
             sat_inc(&sched->critical_superseded);
@@ -230,6 +242,23 @@ bool ams_can_tx_publish_protected(ams_can_tx_scheduler_t *sched,
     if((sched == NULL) || (frames == NULL) || (frame_count == 0u) ||
        (frame_count > AMS_CAN_TX_PROTECTED_MAX_FRAMES) ||
        (required_count == 0u) || (required_count > frame_count))
+    {
+        return false;
+    }
+
+    uint16_t actual_required = 0u;
+    for(uint16_t i = 0u; i < frame_count; i++)
+    {
+        if(frames[i].tx_class == AMS_CAN_TX_CLASS_PROTECTED_REQUIRED)
+        {
+            actual_required++;
+        }
+        else if(frames[i].tx_class != AMS_CAN_TX_CLASS_PROTECTED_ADVISORY)
+        {
+            return false;
+        }
+    }
+    if(actual_required != required_count)
     {
         return false;
     }
@@ -294,13 +323,14 @@ bool ams_can_tx_publish_protected(ams_can_tx_scheduler_t *sched,
     return true;
 }
 
-bool ams_can_tx_publish_detail(ams_can_tx_scheduler_t *sched,
+static bool publish_detail(ams_can_tx_scheduler_t *sched,
                                uint32_t generation,
                                uint32_t publish_tick,
                                const ams_can_tx_frame_t *frames,
-                               uint16_t frame_count)
+                               uint16_t frame_count,
+                               bool is_tuning)
 {
-    ams_can_tx_detail_generation_t next;
+    ams_can_tx_detail_generation_t *next;
 
     if((sched == NULL) || (frames == NULL) || (frame_count == 0u) ||
        (frame_count > AMS_CAN_TX_DETAIL_MAX_FRAMES))
@@ -308,29 +338,53 @@ bool ams_can_tx_publish_detail(ams_can_tx_scheduler_t *sched,
         return false;
     }
 
-    memset(&next, 0, sizeof(next));
-    next.valid = true;
-    next.generation = generation;
-    next.publish_tick = publish_tick;
-    next.frame_count = frame_count;
-    memcpy(next.frames, frames, (size_t)frame_count * sizeof(frames[0]));
-    reset_states(next.state, frame_count);
     sat_inc(&sched->detail_generated);
 
     promote_detail(sched);
     if(!sched->detail_active.valid)
     {
-        sched->detail_active = next;
+        next = &sched->detail_active;
     }
     else
     {
         if(sched->detail_pending.valid)
         {
+            if(is_tuning && !sched->detail_pending.is_tuning)
+            {
+                /* Intentional telemetry shedding, not a transport fault. */
+                sat_inc(&sched->detail_tuning_shed);
+                return true;
+            }
             sat_inc(&sched->detail_superseded);
         }
-        sched->detail_pending = next;
+        next = &sched->detail_pending;
     }
+    /* Caller serializes publication against ISR promotion. Write directly to
+     * the owned slot: a full-generation local exceeds the CAN task stack. */
+    next->valid = true;
+    next->is_tuning = is_tuning;
+    next->generation = generation;
+    next->publish_tick = publish_tick;
+    next->frame_count = frame_count;
+    memcpy(next->frames, frames, (size_t)frame_count * sizeof(frames[0]));
+    reset_states(next->state, frame_count);
     return true;
+}
+
+bool ams_can_tx_publish_detail(ams_can_tx_scheduler_t *sched,
+                               uint32_t generation, uint32_t publish_tick,
+                               const ams_can_tx_frame_t *frames,
+                               uint16_t frame_count)
+{
+    return publish_detail(sched, generation, publish_tick, frames, frame_count, false);
+}
+
+bool ams_can_tx_publish_tuning(ams_can_tx_scheduler_t *sched,
+                               uint32_t generation, uint32_t publish_tick,
+                               const ams_can_tx_frame_t *frames,
+                               uint16_t frame_count)
+{
+    return publish_detail(sched, generation, publish_tick, frames, frame_count, true);
 }
 
 static bool reserve_from_generation(ams_can_tx_frame_t *frames,
@@ -503,7 +557,9 @@ void ams_can_tx_load_failed(ams_can_tx_scheduler_t *sched,
     }
     if(*state == AMS_CAN_TX_FRAME_RESERVED)
     {
-        *state = AMS_CAN_TX_FRAME_PENDING;
+        *state = ams_can_tx_token_requires_abort(sched, token) ?
+            AMS_CAN_TX_FRAME_DISCARDED : AMS_CAN_TX_FRAME_PENDING;
+        promote_all(sched);
     }
 }
 
@@ -597,16 +653,21 @@ bool ams_can_tx_token_requires_abort(const ams_can_tx_scheduler_t *sched,
                                      const ams_can_tx_token_t *token)
 {
     if((sched == NULL) || (token == NULL) || !token->valid ||
-       (token->controller_epoch != sched->controller_epoch) ||
-       (token->stream != AMS_CAN_TX_STREAM_PROTECTED) ||
-       !sched->protected_active.valid ||
-       (sched->protected_active.generation != token->generation) ||
-       (token->frame_index >= sched->protected_active.frame_count))
+       (token->controller_epoch != sched->controller_epoch))
     {
         return false;
     }
 
-    return sched->protected_active.stale;
+    if(token->stream == AMS_CAN_TX_STREAM_CRITICAL)
+    {
+        return sched->critical_active.valid && sched->critical_active.stale &&
+            (sched->critical_active.generation == token->generation) &&
+            (token->frame_index < sched->critical_active.frame_count);
+    }
+    return (token->stream == AMS_CAN_TX_STREAM_PROTECTED) &&
+        sched->protected_active.valid && sched->protected_active.stale &&
+        (sched->protected_active.generation == token->generation) &&
+        (token->frame_index < sched->protected_active.frame_count);
 }
 
 bool ams_can_tx_generation_has_loaded(const ams_can_tx_scheduler_t *sched,
@@ -699,20 +760,15 @@ void ams_can_tx_controller_epoch_reset(ams_can_tx_scheduler_t *sched)
         sched->controller_epoch = 1u;
     }
 
-    if(sched->critical_pending.valid &&
-       (!sched->critical_active.valid ||
-        ams_can_generation_is_newer(sched->critical_pending.generation,
-                                    sched->critical_active.generation)))
+    /* PENDING was published after ACTIVE. Tokens are identities, not clocks. */
+    if(sched->critical_pending.valid)
     {
         sched->critical_active = sched->critical_pending;
     }
     memset(&sched->critical_pending, 0, sizeof(sched->critical_pending));
     critical_reset_to_pending(&sched->critical_active);
 
-    if(sched->protected_pending.valid &&
-       (!sched->protected_active.valid ||
-        ams_can_generation_is_newer(sched->protected_pending.generation,
-                                    sched->protected_active.generation)))
+    if(sched->protected_pending.valid)
     {
         sched->protected_active = sched->protected_pending;
     }

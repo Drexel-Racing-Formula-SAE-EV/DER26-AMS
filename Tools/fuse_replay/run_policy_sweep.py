@@ -67,7 +67,10 @@ def main() -> None:
         args.trace_dir / "repeated_corner_exit.csv",
         args.trace_dir / "synthetic_endurance.csv",
     ]
-    startups = ["cold-soak", "known-cold", "seeded:0.5", "seeded:0.8"]
+    startups = [
+        "conservative", "cold-soak", "known-cold", "seeded:0.5",
+        "seeded:0.8",
+    ]
     for trace in traces:
         for startup in startups:
             for usable in (0.25, 0.50, 0.75):

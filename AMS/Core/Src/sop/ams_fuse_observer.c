@@ -146,6 +146,23 @@ void ams_fuse_observer_init(ams_fuse_observer_t *observer)
     }
 }
 
+bool ams_fuse_observer_init_conservative(
+    ams_fuse_observer_t *observer,
+    const ams_fuse_observer_config_t *cfg)
+{
+    if((observer == NULL) || !ams_fuse_observer_config_valid(cfg))
+    {
+        return false;
+    }
+
+    memset(observer, 0, sizeof(*observer));
+    observer->thermal_utilization = cfg->maximum_state_multiple;
+    observer->thermal_state_initialized = 1u;
+    observer->budget_exhausted = 1u;
+    observer->initial_state_conservative = 1u;
+    return true;
+}
+
 float ams_fuse_temperature_derating(float fuse_temperature_c,
                                      float minimum_derating)
 {
@@ -424,8 +441,9 @@ bool ams_fuse_observer_update(ams_fuse_observer_t *observer,
             if(observer->quiescent_time_s >= cfg->initialization_soak_s)
             {
                 observer->thermal_state_initialized = 1u;
-                observer->thermal_utilization = 0.0f;
-                observer->budget_exhausted = 0u;
+                /* The soak establishes authority but does not erase thermal
+                 * history.  Any utilization accumulated before/during the
+                 * soak must decay through the normal model. */
             }
         }
         else
@@ -478,6 +496,7 @@ bool ams_fuse_observer_update(ams_fuse_observer_t *observer,
     else if(result->utilization <= 0.50f)
     {
         observer->budget_exhausted = 0u;
+        observer->initial_state_conservative = 0u;
     }
 
     for(uint8_t h = 0u; h < AMS_SOP_HORIZONS; ++h)
@@ -497,6 +516,22 @@ bool ams_fuse_observer_update(ams_fuse_observer_t *observer,
         {
             result->reason_flags |= AMS_FUSE_REASON_CURVE_DERATED;
         }
+
+        cap_extrapolated = 0u;
+        result->charge_current_cap_a[h] = solve_horizon_cap(
+            observer, cfg, sop_cfg->charge_current_max_a[h],
+            input->current_uncertainty_a, result->temperature_derating,
+            sop_cfg->horizons_s[h], &cap_extrapolated);
+        if(cap_extrapolated != 0u)
+        {
+            result->curve_extrapolated = 1u;
+            result->reason_flags |= AMS_FUSE_REASON_CURVE_EXTRAPOLATED;
+        }
+        if(result->charge_current_cap_a[h] + 1.0e-3f <
+           sop_cfg->charge_current_max_a[h])
+        {
+            result->reason_flags |= AMS_FUSE_REASON_CURVE_DERATED;
+        }
     }
 
     result->valid = 1u;
@@ -505,7 +540,8 @@ bool ams_fuse_observer_update(ams_fuse_observer_t *observer,
     {
         result->reason_flags |= AMS_FUSE_REASON_MODEL_UNVALIDATED;
     }
-    if(observer->thermal_state_initialized == 0u)
+    if((observer->thermal_state_initialized == 0u) ||
+       (observer->initial_state_conservative != 0u))
     {
         result->reason_flags |= AMS_FUSE_REASON_INITIAL_STATE_UNKNOWN;
     }

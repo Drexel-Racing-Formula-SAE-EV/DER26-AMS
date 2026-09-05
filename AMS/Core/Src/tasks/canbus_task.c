@@ -52,6 +52,8 @@ typedef struct
 {
     const ams_measurement_snapshot_t *snapshot;
     uint32_t measurement_sequence;
+    uint16_t cell_usable_mask[NSMBS];
+    uint32_t temp_usable_mask[NSMBS];
     bool voltage_valid;
     bool temperature_valid;
     bool current_valid;
@@ -128,7 +130,9 @@ static void can_measurement_view_build(const app_data_t *data,
     {
         view->voltage_valid = data->voltage_valid && !data->voltage_read_fault;
         view->temperature_valid = data->temp_valid && !data->temp_read_fault;
-        view->current_valid = data->current_valid && !data->current_sensor_fault;
+        view->current_valid = data->current_valid && !data->current_sensor_fault &&
+            ((uint32_t)(osKernelGetTickCount() - data->current_sample_tick) <=
+             AMS_CURRENT_WINDOW_MAX_SAMPLE_AGE_MS);
         view->pack_voltage_V = (data->total_voltage > 0.0f) ?
                                data->total_voltage : data->acc.total_volt;
         view->current_A = data->current;
@@ -175,9 +179,18 @@ static void can_measurement_view_build(const app_data_t *data,
         ((snapshot->validity_flags & AMS_MEAS_VALID_TEMPERATURE) != 0u);
     view->current_valid =
         ((snapshot->validity_flags & AMS_MEAS_VALID_CURRENT) != 0u) &&
-        snapshot->current.valid;
+        snapshot->current.valid &&
+        ((uint32_t)(osKernelGetTickCount() - snapshot->current.latest_sample_tick) <=
+         AMS_CURRENT_WINDOW_MAX_SAMPLE_AGE_MS);
     view->current_A = snapshot->current.average_A;
 
+    /* Stored ages are relative to acquisition/publication, not this CAN
+     * cycle. Expire individual readings even while the enclosing snapshot
+     * remains inside the 500 ms publication timeout. Subtract from the limit
+     * after checking it to avoid age-addition overflow. */
+    const uint32_t now = osKernelGetTickCount();
+    const uint32_t voltage_elapsed = now - snapshot->voltage_complete_tick;
+    const uint32_t temperature_elapsed = now - snapshot->publication_tick;
     uint32_t pack_mv = 0u;
     int64_t temp_sum = 0;
     bool have_cell = false;
@@ -190,6 +203,14 @@ static void can_measurement_view_build(const app_data_t *data,
             {
                 continue;
             }
+            if((voltage_elapsed > ACCUMULATOR_CELL_STALE_TIMEOUT_MS) ||
+               (snapshot->cell_age_ms[seg][cell] >
+                ACCUMULATOR_CELL_STALE_TIMEOUT_MS - voltage_elapsed))
+            {
+                view->voltage_valid = false;
+                continue;
+            }
+            view->cell_usable_mask[seg] |= (uint16_t)(1u << cell);
             uint16_t mv = snapshot->cell_mv[seg][cell];
             pack_mv += mv;
             if(!have_cell || (mv < view->min_cell_mv))
@@ -217,6 +238,14 @@ static void can_measurement_view_build(const app_data_t *data,
             {
                 continue;
             }
+            if((temperature_elapsed > ACCUMULATOR_TEMP_STALE_TIMEOUT_MS) ||
+               (snapshot->temp_age_ms[seg][sensor] >
+                ACCUMULATOR_TEMP_STALE_TIMEOUT_MS - temperature_elapsed))
+            {
+                view->temperature_valid = false;
+                continue;
+            }
+            view->temp_usable_mask[seg] |= (1UL << sensor);
             int16_t temperature = snapshot->temp_deci_c[seg][sensor];
             if(!have_temp || (temperature < view->min_temp_deci_c))
             {
@@ -324,7 +353,7 @@ static uint16_t cell_mv_for_view(const app_data_t *data,
     if((view != NULL) && (view->snapshot != NULL))
     {
         if((seg >= NSMBS) || (cell >= NCELLS) ||
-           ((view->snapshot->cell_usable_mask[seg] &
+           ((view->cell_usable_mask[seg] &
              (uint16_t)(1u << cell)) == 0u))
         {
             return 0u;
@@ -359,7 +388,7 @@ static uint16_t temp_deci_c_for_view(const app_data_t *data,
     if((view != NULL) && (view->snapshot != NULL))
     {
         if((seg >= NSMBS) || (sensor >= NTEMPS) ||
-           ((view->snapshot->temp_usable_mask[seg] &
+           ((view->temp_usable_mask[seg] &
              (1UL << sensor)) == 0u))
         {
             return ECU_TEMP_INVALID_DECI_C;
@@ -656,11 +685,29 @@ static HAL_StatusTypeDef send_ecu_current_diag(canbus_device_t *canbus,
     }
 
     uint8_t payload[8] = {0};
+    const uint32_t now = osKernelGetTickCount();
+    taskENTER_CRITICAL();
     uint32_t sample_tick = data->current_sample_tick;
     uint32_t sample_sequence = data->current_sample_sequence;
     bool valid = (view != NULL) ? view->current_valid : data->current_valid;
+    taskEXIT_CRITICAL();
+    bool calibrated = false;
+    if((view != NULL) && (view->snapshot != NULL))
+    {
+        /* Quality, age and sequence must describe the immutable current
+         * window used by the electrical frame, not a newer live ADC sample. */
+        const ams_current_window_t *current = &view->snapshot->current;
+        sample_tick = current->latest_sample_tick;
+        sample_sequence = current->sequence;
+        calibrated = current->calibration_record_confident &&
+                     (current->calibration_id != 0u) &&
+                     (current->uncertainty_mA != UINT16_MAX) &&
+                     (current->uncertainty_mA > 0u);
+    }
+    valid = valid && ((uint32_t)(now - sample_tick) <=
+                      AMS_CURRENT_WINDOW_MAX_SAMPLE_AGE_MS);
     uint8_t source = valid ? 1u : 0u;   /* 1 = DHAB, 2 = ADBMS2950 */
-    uint8_t quality = valid ? 2u : 0u;  /* calibrated primary */
+    uint8_t quality = valid ? (calibrated ? 2u : 1u) : 0u;
 
 #if AMS_APM_STANDALONE_EVAL_BENCH && AMS_ENABLE_APM_2950
     if(data->acc.apm.health.sample_valid &&
@@ -670,7 +717,7 @@ static HAL_StatusTypeDef send_ecu_current_diag(canbus_device_t *canbus,
         sample_tick = data->acc.apm.health.last_update_ms;
         sample_sequence = data->acc.apm.health.sample_count;
         quality = data->acc.apm.redundant_sample.valid ? 3u : 2u;
-        valid = ((uint32_t)(osKernelGetTickCount() - sample_tick) <=
+        valid = ((uint32_t)(now - sample_tick) <=
                  ACCUMULATOR_APM_SAMPLE_STALE_TIMEOUT_MS);
     }
 #endif
@@ -679,7 +726,7 @@ static HAL_StatusTypeDef send_ecu_current_diag(canbus_device_t *canbus,
     {
         source = 0u;
         quality = 0u;
-        sample_tick = osKernelGetTickCount();
+        sample_tick = now;
         sample_sequence = 0u;
     }
 
@@ -689,7 +736,7 @@ static HAL_StatusTypeDef send_ecu_current_diag(canbus_device_t *canbus,
     payload[3] = 1u;              /* boot source epoch */
     ecu_put_u16(payload, 4u, (uint16_t)sample_sequence);
     ecu_put_u16(payload, 6u,
-                sat_u16_scaled((float)(osKernelGetTickCount() - sample_tick),
+                sat_u16_scaled((float)(now - sample_tick),
                                1.0f));
     return canbus_send(canbus, CAN_ID_STD, AMS_ECU_CAN_ID_CURRENT_DIAG, payload);
 }
@@ -1047,7 +1094,7 @@ static uint16_t temp_deci_c_for_logger_view(const app_data_t *data,
     if((view != NULL) && (view->snapshot != NULL))
     {
         if((seg >= NSMBS) || (sensor >= NTEMPS) ||
-           ((view->snapshot->temp_usable_mask[seg] &
+           ((view->temp_usable_mask[seg] &
              (1UL << sensor)) == 0u))
         {
             return AMS_LOGGER_TEMP_INVALID_DECI_C;
@@ -1077,7 +1124,7 @@ static uint16_t cell_mv_for_logger_view(const app_data_t *data,
     if((view != NULL) && (view->snapshot != NULL))
     {
         if((seg >= NSMBS) || (cell >= NCELLS) ||
-           ((view->snapshot->cell_usable_mask[seg] &
+           ((view->cell_usable_mask[seg] &
              (uint16_t)(1u << cell)) == 0u))
         {
             return 0u;
@@ -1747,7 +1794,7 @@ static HAL_StatusTypeDef send_logger_detail_phase(
         (phase < accumulator_configured_smb_count(acc)) ?
         acc->updated_voltage_mask[phase] : 0u;
     uint16_t usable = (view != NULL) && (view->snapshot != NULL) ?
-        view->snapshot->cell_usable_mask[phase] :
+        view->cell_usable_mask[phase] :
         ((phase < accumulator_configured_smb_count(acc)) ?
          acc->usable_voltage_mask[phase] : 0u);
     uint16_t stale =
@@ -1774,7 +1821,7 @@ static HAL_StatusTypeDef send_logger_detail_phase(
         (phase < accumulator_configured_smb_count(acc)) ?
         acc->updated_temp_mask[phase] : 0u;
     uint32_t temp_usable = (view != NULL) && (view->snapshot != NULL) ?
-        view->snapshot->temp_usable_mask[phase] :
+        view->temp_usable_mask[phase] :
         ((phase < accumulator_configured_smb_count(acc)) ?
          acc->usable_temp_mask[phase] : 0u);
     uint32_t temp_stale =
@@ -2081,6 +2128,29 @@ static uint16_t tuning_u16_scaled(float value, float scale)
     return sat_u16_from_float(value * scale);
 }
 
+/* Signed tuning quantities reserve INT16_MIN as an invalid sentinel so a
+ * non-finite covariance cannot silently decode as a physically meaningful
+ * zero correlation. */
+static int16_t tuning_i16_scaled(float value, float scale)
+{
+    if(!isfinite(value))
+    {
+        return INT16_MIN;
+    }
+
+    const float scaled = value * scale;
+    if(scaled >= 32767.0f)
+    {
+        return INT16_MAX;
+    }
+    if(scaled <= -32767.0f)
+    {
+        return -32767;
+    }
+    return (int16_t)((scaled >= 0.0f) ? (scaled + 0.5f) :
+                                             (scaled - 0.5f));
+}
+
 static HAL_StatusTypeDef send_tuning_ekf_fast(
     canbus_device_t *canbus,
     const ams_tuning_snapshot_t *snapshot)
@@ -2154,7 +2224,27 @@ static HAL_StatusTypeDef send_tuning_ekf_slow(
         logger_put_u16(payload, 2u,
                        (uint16_t)seg->innovation_reject_count);
         logger_put_u16(payload, 4u, (uint16_t)seg->fault_flags);
-        logger_put_u16(payload, 6u, (uint16_t)seg->step_count);
+        logger_put_u16(payload, 6u,
+                       tuning_u16_scaled(
+                           sqrtf(fmaxf(0.0f, seg->innovation_variance_v2)),
+                           1000.0f));
+        status |= send_logger_frame(canbus,
+                                    AMS_LOGGER_CAN_ID_EKF_COVARIANCE,
+                                    payload);
+
+        /* Covariance page 3: signed full-covariance cross terms. Scale 1e7
+         * gives 1e-7 native-unit resolution and +/-3.2767e-3 range, which
+         * comfortably covers the qualified startup and normal covariance
+         * envelopes while preserving useful offline NEES precision. */
+        memset(payload, 0, sizeof(payload));
+        payload[0] = i;
+        payload[1] = (uint8_t)(0xC0u | sequence);
+        logger_put_i16(payload, 2u,
+                       tuning_i16_scaled(seg->p_soc_vp1, 10000000.0f));
+        logger_put_i16(payload, 4u,
+                       tuning_i16_scaled(seg->p_soc_vp2, 10000000.0f));
+        logger_put_i16(payload, 6u,
+                       tuning_i16_scaled(seg->p_vp1_vp2, 10000000.0f));
         status |= send_logger_frame(canbus,
                                     AMS_LOGGER_CAN_ID_EKF_COVARIANCE,
                                     payload);
@@ -2226,14 +2316,17 @@ static HAL_StatusTypeDef send_tuning_ekf_slow(
         status |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_EKF_CONTEXT,
                                     payload);
 
-        /* Context page 3: health/counter detail. */
+        /* Context page 3: health/counter detail. The global full estimator
+         * step is already carried by 0x6BF, so the previous duplicate low16
+         * segment step is replaced with the covariance-repair counter. */
         memset(payload, 0, sizeof(payload));
         payload[0] = i;
         payload[1] = (uint8_t)(0xC0u | sequence);
         payload[2] = (uint8_t)((seg->fresh_temp_count > 255u) ?
                                255u : seg->fresh_temp_count);
         payload[3] = seg->model_domain_flags;
-        logger_put_u16(payload, 4u, (uint16_t)seg->step_count);
+        logger_put_u16(payload, 4u,
+                       (uint16_t)seg->covariance_repair_count);
         payload[6] = seg->soh_accepted_count;
         payload[7] = seg->soh_rejected_count;
         status |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_EKF_CONTEXT,
@@ -2264,6 +2357,38 @@ static HAL_StatusTypeDef send_tuning_meta(
     logger_put_u32(payload, 2u, snapshot->source_tick_ms);
     logger_put_u16(payload, 6u, (uint16_t)snapshot->measurement_sequence);
     status |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_TUNING_META, payload);
+    return status;
+}
+
+static HAL_StatusTypeDef send_tuning_acquisition_meta(
+    canbus_device_t *canbus,
+    const ams_tuning_snapshot_t *snapshot)
+{
+    if((canbus == NULL) || (snapshot == NULL))
+    {
+        return HAL_ERROR;
+    }
+
+    HAL_StatusTypeDef status = HAL_OK;
+    const uint8_t sequence = (uint8_t)snapshot->snapshot_sequence;
+    for(uint8_t i = 0u; i < snapshot->instance_count; i++)
+    {
+        const ams_tuning_segment_t *seg = &snapshot->segment[i];
+        uint8_t payload[8] = {0};
+        /* 0x6BF acquisition page: byte0 bit7 distinguishes per-segment
+         * acquisition telemetry from global metadata pages 0/1. */
+        payload[0] = (uint8_t)(0x80u | (i & 0x0Fu));
+        payload[1] = sequence;
+        payload[2] = seg->acquisition_state;
+        payload[3] = seg->acquisition_reason;
+        payload[4] = seg->acquisition_sample_count;
+        payload[5] = seg->acquisition_reject_count;
+        logger_put_u16(payload, 6u,
+                       tuning_u16_scaled(seg->acquisition_candidate_soc,
+                                         10000.0f));
+        status |= send_logger_frame(canbus, AMS_LOGGER_CAN_ID_TUNING_META,
+                                    payload);
+    }
     return status;
 }
 
@@ -2395,7 +2520,7 @@ static void canbus_record_tx_class(uint32_t *attempt_count,
 
 static HAL_StatusTypeDef canbus_publish_charger_command(
     canbus_device_t *canbus,
-    uint32_t generation,
+    uint32_t request_id,
     uint16_t source_tag,
     uint16_t voltage10x,
     uint16_t current10x,
@@ -2407,13 +2532,14 @@ static HAL_StatusTypeDef canbus_publish_charger_command(
     }
 
     HAL_StatusTypeDef status = canbus_tx_build_begin(
-        canbus, CANBUS_TX_BUILD_CRITICAL, generation,
+        canbus, CANBUS_TX_BUILD_CRITICAL, canbus_tx_next_generation(canbus),
         osKernelGetTickCount(), source_tag);
     if(status != HAL_OK)
     {
         return status;
     }
 
+    canbus->tx_builder.request_id = request_id;
     status = canbus_send_charger_command(canbus, voltage10x, current10x,
                                          disable ? CHARGER_CMD_DISABLE :
                                                    CHARGER_CMD_ENABLE);
@@ -2478,7 +2604,7 @@ static HAL_StatusTypeDef canbus_run_periodic_charger_command(
     }
 
     HAL_StatusTypeDef status = canbus_publish_charger_command(
-        canbus, canbus_tx_next_generation(canbus),
+        canbus, 0u,
         CANBUS_TX_TAG_CHARGER_NORMAL, voltage10x, current10x, disable_charge);
     canbus_record_tx_class(&data->can_tx_critical_attempt_count,
                            &data->can_tx_critical_fail_count, status);
@@ -2588,6 +2714,7 @@ static HAL_StatusTypeDef canbus_publish_tuning_fast(
     canbus_device_t *canbus,
     const ams_tuning_snapshot_t *tuning,
     bool include_sop,
+    bool include_acquisition,
     uint32_t publish_tick)
 {
     if((canbus == NULL) || (tuning == NULL))
@@ -2596,7 +2723,7 @@ static HAL_StatusTypeDef canbus_publish_tuning_fast(
     }
 
     HAL_StatusTypeDef status = canbus_tx_build_begin(
-        canbus, CANBUS_TX_BUILD_DETAIL,
+        canbus, CANBUS_TX_BUILD_TUNING,
         canbus_tx_next_generation(canbus), publish_tick, CANBUS_TX_TAG_NONE);
     if(status != HAL_OK)
     {
@@ -2604,6 +2731,10 @@ static HAL_StatusTypeDef canbus_publish_tuning_fast(
     }
     status = send_tuning_ekf_fast(canbus, tuning);
     status |= send_tuning_meta(canbus, tuning);
+    if(include_acquisition)
+    {
+        status |= send_tuning_acquisition_meta(canbus, tuning);
+    }
     if(include_sop)
     {
         status |= send_tuning_sop_fuse(canbus, tuning);
@@ -2723,6 +2854,7 @@ void canbus_task_fn(void *arg)
 #if AMS_ENABLE_TUNING_CAN
     uint32_t last_tuning_publish_tick = osKernelGetTickCount();
     uint32_t last_tuning_sop_publish_tick = osKernelGetTickCount();
+    uint32_t last_tuning_acq_publish_tick = osKernelGetTickCount();
 #endif
 
     const uint16_t voltage10x = (uint16_t)(CHARGE_MAX_VOLTAGE * 10.0f);
@@ -2760,19 +2892,24 @@ void canbus_task_fn(void *arg)
         }
 
         /* State-exit charger disable retains absolute software priority. */
+        if(canbus->tx_refresh_pending)
+        {
+            /* Force a fresh charger decision this cycle before resumed TX. */
+            charger_div = CAN_CHARGER_DIV;
+        }
         bool charger_shutdown_attempted = false;
         if(ccs->shutdown_pending)
         {
-            uint32_t shutdown_generation;
+            uint32_t shutdown_request_id;
             taskENTER_CRITICAL();
-            shutdown_generation = ccs->shutdown_request_count;
+            shutdown_request_id = ccs->shutdown_request_count;
             taskEXIT_CRITICAL();
 
             charger_shutdown_attempted = true;
             ccs->target_voltage = 0.0f;
             ccs->target_current = 0.0f;
             HAL_StatusTypeDef shutdown_status = canbus_publish_charger_command(
-                canbus, shutdown_generation, CANBUS_TX_TAG_CHARGER_SHUTDOWN,
+                canbus, shutdown_request_id, CANBUS_TX_TAG_CHARGER_SHUTDOWN,
                 0u, 0u, true);
             canbus_record_tx_class(&data->can_tx_critical_attempt_count,
                                    &data->can_tx_critical_fail_count,
@@ -2827,6 +2964,11 @@ void canbus_task_fn(void *arg)
                                protected_status);
         task_status |= protected_status;
 
+        if(canbus->tx_refresh_pending && (task_status == HAL_OK))
+        {
+            canbus_tx_resume_after_refresh(canbus);
+        }
+
         /* 2 Hz coherent detail snapshot. ACTIVE runs to completion; only the
          * latest PENDING snapshot may supersede an older PENDING snapshot. */
         if((uint32_t)(entry - last_detail_publish_tick) >=
@@ -2866,12 +3008,20 @@ void canbus_task_fn(void *arg)
             bool include_sop =
                 ((uint32_t)(entry - last_tuning_sop_publish_tick) >=
                  AMS_TUNING_CAN_SOP_PERIOD_MS);
+            bool include_acquisition =
+                ((uint32_t)(entry - last_tuning_acq_publish_tick) >=
+                 AMS_TUNING_CAN_ACQ_PERIOD_MS);
             if(include_sop)
             {
                 last_tuning_sop_publish_tick = entry;
             }
+            if(include_acquisition)
+            {
+                last_tuning_acq_publish_tick = entry;
+            }
             HAL_StatusTypeDef tuning_status = canbus_publish_tuning_fast(
-                canbus, &canbus_tuning_cache, include_sop, entry);
+                canbus, &canbus_tuning_cache, include_sop,
+                include_acquisition, entry);
             canbus_record_tx_class(&data->can_tx_detail_phase_count,
                                    &data->can_tx_detail_phase_fail_count,
                                    tuning_status);

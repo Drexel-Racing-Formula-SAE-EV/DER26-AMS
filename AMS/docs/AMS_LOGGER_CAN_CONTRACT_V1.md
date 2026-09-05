@@ -10,26 +10,30 @@ or ECU torque authority.
 All frames use standard 11-bit identifiers, DLC 8, and big-endian multibyte
 fields unless a raw-byte field is explicitly named. The payload definitions in
 this file are the original v1 layouts; the live DER26-CAN-V4 logger protocol
-version is `3` and the detail snapshot version remains `2`.
+version is `4` and the detail snapshot version remains `2`.
 
 ## Scheduling and snapshot behavior
 
-The CAN task runs on the 10 Hz fast period. Compact ECU and power-authority
-frames are sent first. Detail telemetry is divided into `NSMBS` phases:
+The CAN task runs on the 10 Hz fast period. Charger commands have first software
+priority, followed by required compact/power frames, advisory frames, and detail.
+Every 500 ms it builds all `NSMBS` detail phases from one measurement snapshot:
 
 - Phase zero carries summary frames and the current phase's detailed data.
 - Later phases carry the corresponding SMB cell, temperature, masks, and
   diagnostics.
 - `0x6AD` identifies snapshot version, logger sequence, phase, phase count, and
   the source measurement sequence.
-- With the temporary single-SMB build, phase count is one and all detail is sent
-  each 100 ms cycle.
-- With the five-SMB vehicle topology, one segment's detail is sent per cycle and
-  a full detailed sweep completes every five cycles.
+- Both single-SMB and five-SMB builds publish a complete base snapshot at 2 Hz.
+- All phases are queued together and drain asynchronously through mailbox
+  interrupts; they are not spread across five task cycles.
 
-If the compact/power bundle cannot be transmitted, slower detail traffic is
-suppressed for that cycle. CAN error, bus-off, recovery, compact failure, detail
-failure, and deadline counters remain available in CLI/CAN diagnostics.
+The active detail generation runs to completion. A newer base snapshot can
+replace the pending generation. Fast tuning can replace pending tuning, but is
+shed when a base snapshot is pending; `can diag` reports `CAN tuning shed`.
+Required/protected traffic is always selected before detail. Bus-off suspends
+TX, settles old hardware requests, and drops incomplete detail. Fresh charger
+decisions and a protected bundle are published before TX resumes. CAN errors,
+recovery, completion latency and deadline counters remain available in diagnostics.
 
 ## Summary identifiers
 

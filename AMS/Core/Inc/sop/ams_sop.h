@@ -91,6 +91,11 @@ typedef enum
 #define AMS_SOP_REASON_RECOVERY_THERMAL          0x02000000u
 #define AMS_SOP_REASON_RECOVERY_SOC_HOLD         0x04000000u
 #define AMS_SOP_REASON_RECOVERY_CURRENT_PATH     0x08000000u
+/* State-estimator acquisition is an explicit authority prerequisite. The
+ * constrained dynamic estimator may continue tracking while this bit is set,
+ * but SoP must fail zero until startup state ambiguity has been resolved by a
+ * qualified acquisition. */
+#define AMS_SOP_REASON_ESTIMATOR_UNACQUIRED       0x10000000u
 
 typedef struct
 {
@@ -136,6 +141,7 @@ typedef struct
     ams_sop_operating_mode_t operating_mode;
     uint8_t measurement_valid;
     uint8_t estimator_valid;
+    uint8_t estimator_acquired;
     uint8_t estimator_segment_topology;
     uint8_t current_calibrated;
     uint8_t current_polarity_validated;
