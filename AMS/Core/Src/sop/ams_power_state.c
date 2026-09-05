@@ -144,7 +144,8 @@ static void build_soh_input(const ams_measurement_snapshot_t *measurement,
     input->current_calibrated = policy->current_calibrated &&
         measurement->current.calibration_record_confident &&
         (measurement->current.calibration_id != 0u) &&
-        (measurement->current.uncertainty_mA != 0u);
+        (measurement->current.uncertainty_mA != 0u) &&
+        (measurement->current.uncertainty_mA != UINT16_MAX);
     input->current_polarity_validated = policy->current_polarity_validated;
     input->balance_recovered =
         ((measurement->validity_flags & AMS_MEAS_BALANCE_RECOVERED) != 0u) ?
@@ -247,7 +248,8 @@ static void build_sop_input(const ams_power_state_t *state,
     input->current_calibrated = policy->current_calibrated &&
         measurement->current.calibration_record_confident &&
         (measurement->current.calibration_id != 0u) &&
-        (measurement->current.uncertainty_mA != 0u);
+        (measurement->current.uncertainty_mA != 0u) &&
+        (measurement->current.uncertainty_mA != UINT16_MAX);
     input->current_polarity_validated = policy->current_polarity_validated;
     input->balance_recovered =
         ((measurement->validity_flags & AMS_MEAS_BALANCE_RECOVERED) != 0u) ?

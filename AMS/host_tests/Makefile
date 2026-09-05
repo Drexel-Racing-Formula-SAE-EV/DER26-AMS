@@ -614,10 +614,11 @@ state-ownership-gate: check-core-root
 	@echo "PASS centralized state writers and CAN control ownership gate"
 
 target-project-gate: check-core-root
+	@$(PYTHON) "$(AMS_ROOT)/host_tests/tools/check_release_identity.py" "$(AMS_ROOT)"
 	@$(PYTHON) -c 'import xml.etree.ElementTree as E; E.parse("$(AMS_ROOT)/.project"); E.parse("$(AMS_ROOT)/.cproject")'
 	@grep -q '<name>DER26-AMS</name>' "$(AMS_ROOT)/.project"
 	@grep -q 'project id="DER26-AMS' "$(AMS_ROOT)/.cproject"
-	@if grep -q 'DER25-AMS' "$(AMS_ROOT)/.cproject" "$(AMS_ROOT)/.project"; then \
+	@if grep -q 'DER25-AMS' "$(AMS_ROOT)/.cproject" "$(AMS_ROOT)/.project" "$(AMS_ROOT)/DER26-AMS.ioc"; then \
 		echo "ERROR: stale DER25 CubeIDE project metadata remains"; exit 1; \
 	fi
 	@grep -Fq 'buildPath="$${workspace_loc:/$${ProjName}/Bench5_Debug}"' "$(AMS_ROOT)/.cproject"
@@ -636,6 +637,10 @@ target-project-gate: check-core-root
 	@echo "PASS CubeIDE BENCH Validation 5-SMB/1-SMB identity/profile/bitrate, build paths, warning flags, XML and linker-script metadata"
 
 system-sil: test
+
+.PHONY: review-fixes-test
+review-fixes-test: target-project-gate can-irq-contract-gate
+	$(PYTHON) "$(AMS_ROOT)/host_tests/tools/test_review_fixes.py"
 
 # Dedicated final-ring ADBMS2950 gate.  The unit binary links the real driver;
 # the system binary exercises topology ownership, advisory fault behavior and
@@ -795,7 +800,7 @@ adbms-v05-variant-gates: check-core-root
 can-load-budget: check-core-root
 	$(PYTHON) tools/check_can_load_budget.py
 
-firmware-ci: unit can-tx-scheduler-test can-tx-regression-test temp-ack-decoder-test test testday-lock-test apm-sil apm-bench-gates \
+firmware-ci: unit can-tx-scheduler-test can-tx-regression-test measurement-integrity-test temp-ack-decoder-test test testday-lock-test apm-sil apm-bench-gates \
 	can-logger-contract-5s-test adbms-resilience-test profile-gates \
 	estimator-topology-gates production-gates static-allocation-gate \
 	state-ownership-gate target-project-gate analyze whole-source-analyze \
@@ -813,3 +818,10 @@ clean:
 	rm -rf $(BUILD_DIR) build-apm build-production "$(AMS_ROOT)/build"
 	$(MAKE) -C sop clean
 	@if [ -d "$(DASHBOARD_TEST_DIR)" ]; then $(MAKE) -C "$(DASHBOARD_TEST_DIR)" clean; fi
+
+.PHONY: measurement-integrity-test
+measurement-integrity-test: check-core-root make-build-dir
+	$(CC) $(CFLAGS_COMMON) -Werror -ffunction-sections -fdata-sections \
+		unit/measurement_integrity_test.c $(MEASUREMENT_SRC) \
+		-Wl,--gc-sections -o "$(BUILD_DIR)/measurement_integrity_tests" $(LDLIBS)
+	"$(BUILD_DIR)/measurement_integrity_tests"

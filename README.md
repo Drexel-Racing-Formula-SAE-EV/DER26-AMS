@@ -2,9 +2,11 @@
 
 Firmware, validation infrastructure, HIL support, and engineering tools for the DER26 Accumulator Management System (AMS).
 
-Current package: **v2.6.17**, AMS source **v0.5.20**. See
-[CAN scheduler fixes](AMS/docs/CAN_SCHEDULER_FIXES_2026-09-04.md) for changes and
-targeted verification. The v2.6.16 MiL and battery algorithms are preserved.
+Current package: **v2.6.19**, AMS source **v0.5.22**. See
+[measurement fixes and follow-up review](AMS/docs/MEASUREMENT_FIXES_2026-09-05.md).
+The [v2.6.18 review fixes](AMS/docs/REVIEW_FIXES_2026-09-05.md) and
+the preceding [CAN scheduler fixes](AMS/docs/CAN_SCHEDULER_FIXES_2026-09-04.md)
+are retained. MiL and battery algorithms are unchanged.
 
 The target application runs on an STM32F767 with FreeRTOS and interfaces with the accumulator monitoring chain, pack-current sensing, charger/IMD/AIR-related inputs, and the vehicle CAN network. The repository also contains host-side verification, HIL assets, and reference tools used to develop and qualify the firmware.
 

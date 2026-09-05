@@ -52,6 +52,8 @@ typedef struct
 {
     const ams_measurement_snapshot_t *snapshot;
     uint32_t measurement_sequence;
+    uint16_t cell_usable_mask[NSMBS];
+    uint32_t temp_usable_mask[NSMBS];
     bool voltage_valid;
     bool temperature_valid;
     bool current_valid;
@@ -128,7 +130,9 @@ static void can_measurement_view_build(const app_data_t *data,
     {
         view->voltage_valid = data->voltage_valid && !data->voltage_read_fault;
         view->temperature_valid = data->temp_valid && !data->temp_read_fault;
-        view->current_valid = data->current_valid && !data->current_sensor_fault;
+        view->current_valid = data->current_valid && !data->current_sensor_fault &&
+            ((uint32_t)(osKernelGetTickCount() - data->current_sample_tick) <=
+             AMS_CURRENT_WINDOW_MAX_SAMPLE_AGE_MS);
         view->pack_voltage_V = (data->total_voltage > 0.0f) ?
                                data->total_voltage : data->acc.total_volt;
         view->current_A = data->current;
@@ -175,9 +179,18 @@ static void can_measurement_view_build(const app_data_t *data,
         ((snapshot->validity_flags & AMS_MEAS_VALID_TEMPERATURE) != 0u);
     view->current_valid =
         ((snapshot->validity_flags & AMS_MEAS_VALID_CURRENT) != 0u) &&
-        snapshot->current.valid;
+        snapshot->current.valid &&
+        ((uint32_t)(osKernelGetTickCount() - snapshot->current.latest_sample_tick) <=
+         AMS_CURRENT_WINDOW_MAX_SAMPLE_AGE_MS);
     view->current_A = snapshot->current.average_A;
 
+    /* Stored ages are relative to acquisition/publication, not this CAN
+     * cycle. Expire individual readings even while the enclosing snapshot
+     * remains inside the 500 ms publication timeout. Subtract from the limit
+     * after checking it to avoid age-addition overflow. */
+    const uint32_t now = osKernelGetTickCount();
+    const uint32_t voltage_elapsed = now - snapshot->voltage_complete_tick;
+    const uint32_t temperature_elapsed = now - snapshot->publication_tick;
     uint32_t pack_mv = 0u;
     int64_t temp_sum = 0;
     bool have_cell = false;
@@ -190,6 +203,14 @@ static void can_measurement_view_build(const app_data_t *data,
             {
                 continue;
             }
+            if((voltage_elapsed > ACCUMULATOR_CELL_STALE_TIMEOUT_MS) ||
+               (snapshot->cell_age_ms[seg][cell] >
+                ACCUMULATOR_CELL_STALE_TIMEOUT_MS - voltage_elapsed))
+            {
+                view->voltage_valid = false;
+                continue;
+            }
+            view->cell_usable_mask[seg] |= (uint16_t)(1u << cell);
             uint16_t mv = snapshot->cell_mv[seg][cell];
             pack_mv += mv;
             if(!have_cell || (mv < view->min_cell_mv))
@@ -217,6 +238,14 @@ static void can_measurement_view_build(const app_data_t *data,
             {
                 continue;
             }
+            if((temperature_elapsed > ACCUMULATOR_TEMP_STALE_TIMEOUT_MS) ||
+               (snapshot->temp_age_ms[seg][sensor] >
+                ACCUMULATOR_TEMP_STALE_TIMEOUT_MS - temperature_elapsed))
+            {
+                view->temperature_valid = false;
+                continue;
+            }
+            view->temp_usable_mask[seg] |= (1UL << sensor);
             int16_t temperature = snapshot->temp_deci_c[seg][sensor];
             if(!have_temp || (temperature < view->min_temp_deci_c))
             {
@@ -324,7 +353,7 @@ static uint16_t cell_mv_for_view(const app_data_t *data,
     if((view != NULL) && (view->snapshot != NULL))
     {
         if((seg >= NSMBS) || (cell >= NCELLS) ||
-           ((view->snapshot->cell_usable_mask[seg] &
+           ((view->cell_usable_mask[seg] &
              (uint16_t)(1u << cell)) == 0u))
         {
             return 0u;
@@ -359,7 +388,7 @@ static uint16_t temp_deci_c_for_view(const app_data_t *data,
     if((view != NULL) && (view->snapshot != NULL))
     {
         if((seg >= NSMBS) || (sensor >= NTEMPS) ||
-           ((view->snapshot->temp_usable_mask[seg] &
+           ((view->temp_usable_mask[seg] &
              (1UL << sensor)) == 0u))
         {
             return ECU_TEMP_INVALID_DECI_C;
@@ -656,11 +685,29 @@ static HAL_StatusTypeDef send_ecu_current_diag(canbus_device_t *canbus,
     }
 
     uint8_t payload[8] = {0};
+    const uint32_t now = osKernelGetTickCount();
+    taskENTER_CRITICAL();
     uint32_t sample_tick = data->current_sample_tick;
     uint32_t sample_sequence = data->current_sample_sequence;
     bool valid = (view != NULL) ? view->current_valid : data->current_valid;
+    taskEXIT_CRITICAL();
+    bool calibrated = false;
+    if((view != NULL) && (view->snapshot != NULL))
+    {
+        /* Quality, age and sequence must describe the immutable current
+         * window used by the electrical frame, not a newer live ADC sample. */
+        const ams_current_window_t *current = &view->snapshot->current;
+        sample_tick = current->latest_sample_tick;
+        sample_sequence = current->sequence;
+        calibrated = current->calibration_record_confident &&
+                     (current->calibration_id != 0u) &&
+                     (current->uncertainty_mA != UINT16_MAX) &&
+                     (current->uncertainty_mA > 0u);
+    }
+    valid = valid && ((uint32_t)(now - sample_tick) <=
+                      AMS_CURRENT_WINDOW_MAX_SAMPLE_AGE_MS);
     uint8_t source = valid ? 1u : 0u;   /* 1 = DHAB, 2 = ADBMS2950 */
-    uint8_t quality = valid ? 2u : 0u;  /* calibrated primary */
+    uint8_t quality = valid ? (calibrated ? 2u : 1u) : 0u;
 
 #if AMS_APM_STANDALONE_EVAL_BENCH && AMS_ENABLE_APM_2950
     if(data->acc.apm.health.sample_valid &&
@@ -670,7 +717,7 @@ static HAL_StatusTypeDef send_ecu_current_diag(canbus_device_t *canbus,
         sample_tick = data->acc.apm.health.last_update_ms;
         sample_sequence = data->acc.apm.health.sample_count;
         quality = data->acc.apm.redundant_sample.valid ? 3u : 2u;
-        valid = ((uint32_t)(osKernelGetTickCount() - sample_tick) <=
+        valid = ((uint32_t)(now - sample_tick) <=
                  ACCUMULATOR_APM_SAMPLE_STALE_TIMEOUT_MS);
     }
 #endif
@@ -679,7 +726,7 @@ static HAL_StatusTypeDef send_ecu_current_diag(canbus_device_t *canbus,
     {
         source = 0u;
         quality = 0u;
-        sample_tick = osKernelGetTickCount();
+        sample_tick = now;
         sample_sequence = 0u;
     }
 
@@ -689,7 +736,7 @@ static HAL_StatusTypeDef send_ecu_current_diag(canbus_device_t *canbus,
     payload[3] = 1u;              /* boot source epoch */
     ecu_put_u16(payload, 4u, (uint16_t)sample_sequence);
     ecu_put_u16(payload, 6u,
-                sat_u16_scaled((float)(osKernelGetTickCount() - sample_tick),
+                sat_u16_scaled((float)(now - sample_tick),
                                1.0f));
     return canbus_send(canbus, CAN_ID_STD, AMS_ECU_CAN_ID_CURRENT_DIAG, payload);
 }
@@ -1047,7 +1094,7 @@ static uint16_t temp_deci_c_for_logger_view(const app_data_t *data,
     if((view != NULL) && (view->snapshot != NULL))
     {
         if((seg >= NSMBS) || (sensor >= NTEMPS) ||
-           ((view->snapshot->temp_usable_mask[seg] &
+           ((view->temp_usable_mask[seg] &
              (1UL << sensor)) == 0u))
         {
             return AMS_LOGGER_TEMP_INVALID_DECI_C;
@@ -1077,7 +1124,7 @@ static uint16_t cell_mv_for_logger_view(const app_data_t *data,
     if((view != NULL) && (view->snapshot != NULL))
     {
         if((seg >= NSMBS) || (cell >= NCELLS) ||
-           ((view->snapshot->cell_usable_mask[seg] &
+           ((view->cell_usable_mask[seg] &
              (uint16_t)(1u << cell)) == 0u))
         {
             return 0u;
@@ -1747,7 +1794,7 @@ static HAL_StatusTypeDef send_logger_detail_phase(
         (phase < accumulator_configured_smb_count(acc)) ?
         acc->updated_voltage_mask[phase] : 0u;
     uint16_t usable = (view != NULL) && (view->snapshot != NULL) ?
-        view->snapshot->cell_usable_mask[phase] :
+        view->cell_usable_mask[phase] :
         ((phase < accumulator_configured_smb_count(acc)) ?
          acc->usable_voltage_mask[phase] : 0u);
     uint16_t stale =
@@ -1774,7 +1821,7 @@ static HAL_StatusTypeDef send_logger_detail_phase(
         (phase < accumulator_configured_smb_count(acc)) ?
         acc->updated_temp_mask[phase] : 0u;
     uint32_t temp_usable = (view != NULL) && (view->snapshot != NULL) ?
-        view->snapshot->temp_usable_mask[phase] :
+        view->temp_usable_mask[phase] :
         ((phase < accumulator_configured_smb_count(acc)) ?
          acc->usable_temp_mask[phase] : 0u);
     uint32_t temp_stale =

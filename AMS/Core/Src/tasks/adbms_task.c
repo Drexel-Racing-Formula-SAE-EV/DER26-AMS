@@ -1451,6 +1451,11 @@ void adbms_task_fn(void *argument)
 #endif
 #endif
         accumulator_update_voltage_stats_at(acc, osKernelGetTickCount());
+	    /* Close the logical voltage/current epoch on the same serialized
+	     * timeline as current sample completion. Never save a boundary before
+	     * this lock: a higher-priority current update could overtake it. Cell
+	     * acquisition timestamps/ages remain owned by the ADBMS driver. */
+	    ams_current_window_lock();
 	    voltage_complete_tick = osKernelGetTickCount();
 	    if(balance_clear_timed)
 	    {
@@ -1458,7 +1463,6 @@ void adbms_task_fn(void *argument)
 	            (uint32_t)(voltage_complete_tick - balance_clear_tick);
 	    }
 	    data->adbms_last_balance_off_ms = balance_off_ms;
-	    ams_current_window_lock();
 	    (void)ams_current_window_rotate(&data->current_window,
 	                                    voltage_complete_tick,
 	                                    &current_window);

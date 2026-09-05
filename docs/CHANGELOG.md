@@ -14,7 +14,7 @@ Major work represented in the current source line includes:
 - explicit bench-validation and single-SMB/five-SMB configurations;
 - RTOS/CAN robustness review and target-validation hooks.
 
-Current synchronized source revision marker: `DER26-AMS-v0.5.20-20260904`.
+Current synchronized source revision marker: `DER26-AMS-v0.5.23-20260905`.
 
 For exact historical changes, use repository history and release tags.
 
@@ -58,3 +58,13 @@ telemetry. CAN1 TX and SCE interrupt handlers/NVIC configuration now match the
 notifications enabled by the asynchronous transport, and fatal RTOS hooks make the
 BMS fail-low panic precede diagnostic bookkeeping. Static gates preserve these
 contracts. The synchronized firmware revision marker remains v0.5.15.
+
+## Follow-up review — 2026-09-05 (package v2.6.20, AMS v0.5.23)
+
+Confirmed the four v2.6.18 current-window/CAN defects remain fixed. CAN now
+expires individual cell/temperature readings at encoding time and uses the
+resulting masks for aggregates, ECU/logger detail values and usable masks.
+SoP/SoH reject the UINT16_MAX unknown-current-uncertainty sentinel as
+calibration evidence. No RTOS migration or validation-gate changes.
+
+See `AMS/docs/FOLLOWUP_REVIEW_v2.6.20.md` for reproductions, scope and limits.

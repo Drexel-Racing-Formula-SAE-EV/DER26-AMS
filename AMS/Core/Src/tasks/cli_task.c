@@ -7409,7 +7409,7 @@ int get_version(int argc, char *argv[])
 	ret |= cli_printline(cli, outline);
     snprintf(outline, CLI_LINESZ,
              "build date:%s time:%s voltage_mode:%s topology:%u SMB cells:%u string:%u",
-             __DATE__, __TIME__, cli_voltage_mode_str(),
+             ams_build_manifest.build_date, ams_build_manifest.build_time, cli_voltage_mode_str(),
              (unsigned)NSMBS,
              (unsigned)data->acc.smb.monitored_cell_count,
              (unsigned)data->acc.smb.string);

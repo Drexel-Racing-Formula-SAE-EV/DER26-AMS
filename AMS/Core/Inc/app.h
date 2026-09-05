@@ -29,9 +29,9 @@
 #include "measurement/ams_measurement.h"
 #include "sop/ams_power_state.h"
 
-#define VER_MAJOR 0
-#define VER_MINOR 5
-#define VER_BUG   19
+#define VER_MAJOR AMS_VERSION_MAJOR
+#define VER_MINOR AMS_VERSION_MINOR
+#define VER_BUG   AMS_VERSION_PATCH
 
 /* DER26-CAN-V4 nominal vehicle bitrate. The asynchronous scheduler must remain
  * safety-correct at 250 kbps; 1 Mbit/s is the DER26 vehicle configuration. The

@@ -123,6 +123,8 @@ void ams_current_window_init(ams_current_window_accumulator_t *acc,
     memset(acc, 0, sizeof(*acc));
     acc->active.start_tick = now;
     acc->active.end_tick = now;
+    acc->last_uncertainty_mA = UINT16_MAX;
+    acc->sample_uncertainty_mA = UINT16_MAX;
     acc->initialized = true;
 }
 
@@ -141,6 +143,15 @@ void ams_current_window_update(ams_current_window_accumulator_t *acc,
     if(!acc->initialized)
     {
         ams_current_window_init(acc, now);
+    }
+
+    /* Timestamps share one mutex-serialized timeline. A late caller must not
+     * rewind it or subsequently expose a partially integrated window as valid.
+     * Unsigned subtraction accepts ordinary uint32_t tick wrap. */
+    if((uint32_t)(now - acc->active.end_tick) > INT32_MAX)
+    {
+        current_record_invalid(acc);
+        return;
     }
 
     valid = valid && current_value_valid(current_A);
@@ -164,7 +175,9 @@ void ams_current_window_update(ams_current_window_accumulator_t *acc,
     if(acc->last_sample_valid)
     {
         uint32_t dt_ms = (uint32_t)(now - acc->integration_tick);
-        if(dt_ms <= AMS_CURRENT_WINDOW_MAX_INTEGRATION_GAP_MS)
+        if((dt_ms <= AMS_CURRENT_WINDOW_MAX_INTEGRATION_GAP_MS) &&
+           ((uint32_t)(now - acc->last_sample_tick) <=
+            AMS_CURRENT_WINDOW_MAX_INTEGRATION_GAP_MS))
         {
             current_integrate(acc, acc->last_current_A, current_A, dt_ms);
         }
@@ -190,7 +203,7 @@ void ams_current_window_update(ams_current_window_accumulator_t *acc,
         }
     }
 
-    if(acc->active.sample_count == 0u)
+    if((acc->active.sample_count == 0u) && !acc->last_sample_valid)
     {
         acc->active.min_A = current_A;
         acc->active.max_A = current_A;
@@ -216,6 +229,8 @@ void ams_current_window_update(ams_current_window_accumulator_t *acc,
     acc->integration_tick = now;
     acc->last_current_A = current_A;
     acc->last_filtered_A = filtered_A;
+    acc->last_uncertainty_mA = acc->sample_uncertainty_mA;
+    acc->last_selected_range = acc->sample_selected_range;
     acc->last_calibration_record_confident =
         calibration_record_confident && (calibration_id != 0u);
     acc->last_calibration_id = acc->last_calibration_record_confident ?
@@ -242,9 +257,12 @@ void ams_current_window_set_sensor_metadata(
         acc->active.uncertainty_mA = uncertainty_mA;
     }
 
-    if(acc->active.selected_range == 0u)
+    acc->sample_uncertainty_mA = uncertainty_mA;
+    acc->sample_selected_range = selected_range;
+    if(!acc->active_sensor_metadata_initialized)
     {
         acc->active.selected_range = selected_range;
+        acc->active_sensor_metadata_initialized = true;
     }
     else if(acc->active.selected_range != selected_range)
     {
@@ -265,6 +283,19 @@ bool ams_current_window_rotate(ams_current_window_accumulator_t *acc,
         ams_current_window_init(acc, boundary_tick);
     }
 
+    if((uint32_t)(boundary_tick - acc->active.end_tick) > INT32_MAX)
+    {
+        /* Reject the old boundary without resetting integration/provenance.
+         * The active window stays tainted until a correctly ordered rotation. */
+        current_record_invalid(acc);
+        *completed = acc->active;
+        completed->valid = false;
+        completed->total_charge_As = acc->total_charge_As;
+        completed->total_absolute_charge_As = acc->total_absolute_charge_As;
+        completed->total_invalid_sample_count = acc->total_invalid_sample_count;
+        return false;
+    }
+
     uint32_t latest_age_ms = UINT32_MAX;
     if(acc->last_sample_valid)
     {
@@ -282,6 +313,9 @@ bool ams_current_window_rotate(ams_current_window_accumulator_t *acc,
         else
         {
             current_record_invalid(acc);
+            /* A stale tail cannot be carried into the next epoch: its
+             * integration cursor may still precede the new boundary. */
+            acc->last_sample_valid = false;
         }
     }
 
@@ -316,6 +350,7 @@ bool ams_current_window_rotate(ams_current_window_accumulator_t *acc,
     acc->active.start_tick = boundary_tick;
     acc->active.end_tick = boundary_tick;
     acc->active_calibration_provenance_initialized = false;
+    acc->active_sensor_metadata_initialized = false;
     if(acc->last_sample_valid)
     {
         acc->active.latest_sample_tick = acc->last_sample_tick;
@@ -323,6 +358,9 @@ bool ams_current_window_rotate(ams_current_window_accumulator_t *acc,
         acc->active.filtered_A = acc->last_filtered_A;
         acc->active.min_A = acc->last_current_A;
         acc->active.max_A = acc->last_current_A;
+        ams_current_window_set_sensor_metadata(acc,
+                                               acc->last_uncertainty_mA,
+                                               acc->last_selected_range);
         current_merge_calibration_provenance(
             acc,
             acc->last_calibration_record_confident,
