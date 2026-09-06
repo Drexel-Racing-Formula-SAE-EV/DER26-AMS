@@ -399,7 +399,10 @@ typedef enum
 
 static inline bool ams_state_is_valid(state_t state)
 {
-	return (state >= STATE_NULL) && (state <= STATE_ERROR);
+	/* STATE_NULL is zero. Cast to unsigned so negative/corrupt values also
+	 * fail the single upper-bound check without triggering -Wtype-limits on
+	 * toolchains that represent this enum with an unsigned narrow type. */
+	return (unsigned)state <= (unsigned)STATE_ERROR;
 }
 
 static inline bool ams_state_allows_bms_ok(state_t state)

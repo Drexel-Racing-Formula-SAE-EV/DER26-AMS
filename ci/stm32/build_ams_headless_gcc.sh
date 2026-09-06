@@ -207,4 +207,12 @@ arm-none-eabi-objdump -h -S "$BUILD_DIR/DER26-AMS.elf" > "$BUILD_DIR/DER26-AMS.l
   sha256sum DER26-AMS.elf DER26-AMS.map DER26-AMS.hex DER26-AMS.bin > SHA256SUMS.txt
 )
 
+# Keep the unique build directory as the immutable evidence location, while
+# publishing stable links for CI/reporting steps that consume AMS/build/*.
+# This avoids coupling downstream jobs to mktemp's Debug.* / Release.* suffix.
+build_leaf="$(basename "$BUILD_DIR")"
+for artifact in DER26-AMS.elf DER26-AMS.map DER26-AMS.hex DER26-AMS.bin DER26-AMS.list BUILD_PROVENANCE.txt SHA256SUMS.txt; do
+  ln -sfn "$build_leaf/$artifact" "$AMS_DIR/build/$artifact"
+done
+
 echo "Headless STM32 ARM-GCC build complete."
