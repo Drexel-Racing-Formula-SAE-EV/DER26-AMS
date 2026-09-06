@@ -194,9 +194,9 @@ void CAN1_RX0_IRQHandler(void)
   */
 void CAN1_SCE_IRQHandler(void)
 {
-  /* Bus-off and generic CAN error notifications are enabled by canbus.c.
-   * Routing SCE into the HAL handler ensures HAL_CAN_ErrorCallback() can
-   * latch the transport fault and start the existing recovery policy. */
+  /* Capture physical BOFF identity before HAL mutates/accumulates its sticky
+   * ErrorCode. Generic error decoding and flag clearing still belong to HAL. */
+  canbus_sce_irq_note(&hcan1);
   canbus_irq_handler(&hcan1);
 }
 
@@ -222,7 +222,9 @@ void USART3_IRQHandler(void)
   /* USER CODE BEGIN USART3_IRQn 0 */
 
   /* USER CODE END USART3_IRQn 0 */
+#if AMS_ENABLE_CLI
   HAL_UART_IRQHandler(&huart3);
+#endif
   /* USER CODE BEGIN USART3_IRQn 1 */
 
   /* USER CODE END USART3_IRQn 1 */
@@ -243,6 +245,7 @@ void TIM7_IRQHandler(void)
 }
 
 /* USER CODE BEGIN 1 */
+#if AMS_ENABLE_CLI
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
     cli_device_t *cli = &app.board.cli;
@@ -337,4 +340,5 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
         }
     }
 }
+#endif /* AMS_ENABLE_CLI */
 /* USER CODE END 1 */

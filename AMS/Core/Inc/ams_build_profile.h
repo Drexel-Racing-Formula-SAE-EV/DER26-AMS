@@ -305,6 +305,9 @@
 #ifndef AMS_ENABLE_SERVICE_CLI
 #define AMS_ENABLE_SERVICE_CLI 1
 #endif
+#ifndef AMS_ENABLE_CLI
+#define AMS_ENABLE_CLI 1
+#endif
 #ifndef AMS_ENABLE_IMD
 #define AMS_ENABLE_IMD 0
 #endif
@@ -347,6 +350,9 @@
 #ifndef AMS_ENABLE_SERVICE_CLI
 #define AMS_ENABLE_SERVICE_CLI 1
 #endif
+#ifndef AMS_ENABLE_CLI
+#define AMS_ENABLE_CLI 1
+#endif
 #ifndef AMS_ENABLE_IMD
 #define AMS_ENABLE_IMD 1
 #endif
@@ -387,6 +393,9 @@
 #ifndef AMS_ENABLE_SERVICE_CLI
 #define AMS_ENABLE_SERVICE_CLI 1
 #endif
+#ifndef AMS_ENABLE_CLI
+#define AMS_ENABLE_CLI 1
+#endif
 #ifndef AMS_ENABLE_IMD
 #define AMS_ENABLE_IMD 1
 #endif
@@ -424,6 +433,9 @@
 #ifndef AMS_ENABLE_SERVICE_CLI
 #define AMS_ENABLE_SERVICE_CLI 1
 #endif
+#ifndef AMS_ENABLE_CLI
+#define AMS_ENABLE_CLI 1
+#endif
 #ifndef AMS_ENABLE_IMD
 #define AMS_ENABLE_IMD 0
 #endif
@@ -460,6 +472,9 @@
 #endif
 #ifndef AMS_ENABLE_SERVICE_CLI
 #define AMS_ENABLE_SERVICE_CLI 0
+#endif
+#ifndef AMS_ENABLE_CLI
+#define AMS_ENABLE_CLI 0
 #endif
 #ifndef AMS_ENABLE_IMD
 #define AMS_ENABLE_IMD 1
@@ -702,6 +717,16 @@
 
 #if AMS_ENABLE_ADBMS_FAULT_INJECTION && !AMS_ENABLE_SERVICE_CLI
 #error "ADBMS fault injection requires the service CLI"
+#endif
+
+#if (AMS_ENABLE_CLI != 0) && (AMS_ENABLE_CLI != 1)
+#error "AMS_ENABLE_CLI must be 0 or 1"
+#endif
+#if AMS_ENABLE_SERVICE_CLI && !AMS_ENABLE_CLI
+#error "Service CLI mutation requires the diagnostic CLI task/UART"
+#endif
+#if (AMS_BUILD_PROFILE == AMS_PROFILE_VEHICLE) && AMS_ENABLE_CLI
+#error "Vehicle profile compiles out the CLI task/UART parser"
 #endif
 
 #if (AMS_VOLTAGE_MODE != AMS_VOLTAGE_MODE_REDUNDANT_CS) && \

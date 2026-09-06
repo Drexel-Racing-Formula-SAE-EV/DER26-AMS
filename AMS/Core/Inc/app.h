@@ -39,6 +39,21 @@
 #ifndef DER26_CAN_BITRATE_KBPS
 #define DER26_CAN_BITRATE_KBPS 1000u
 #endif
+
+/* Tuning/validation telemetry is a system-wide build feature used by both
+ * the estimator producer and CAN consumer. Keep the definition here rather
+ * than in a CAN-only header so all translation units compile the same path. */
+#ifndef AMS_ENABLE_TUNING_CAN
+#define AMS_ENABLE_TUNING_CAN \
+    ((DER26_CAN_BITRATE_KBPS == 1000u) || (DER26_CAN_BITRATE_KBPS == 500u))
+#endif
+#if (AMS_ENABLE_TUNING_CAN != 0) && (AMS_ENABLE_TUNING_CAN != 1)
+#error "AMS_ENABLE_TUNING_CAN must be 0 or 1"
+#endif
+#if (DER26_CAN_BITRATE_KBPS == 250u) && AMS_ENABLE_TUNING_CAN
+#error "AMS tuning CAN is prohibited at 250 kbit/s"
+#endif
+
 #if DER26_CAN_BITRATE_KBPS == 1000u
 #define DER26_CAN_PRESCALER 3u
 #elif DER26_CAN_BITRATE_KBPS == 500u
@@ -55,7 +70,7 @@
 
 
 #define AMS_BUILD_MANIFEST_MAGIC 0x414D5342u /* 'AMSB' */
-#define AMS_BUILD_MANIFEST_SCHEMA 5u
+#define AMS_BUILD_MANIFEST_SCHEMA 6u
 
 #define AMS_BUILD_FEATURE_HIL_CAN      (1u << 0u)
 #define AMS_BUILD_FEATURE_HIL_ADBMS    (1u << 1u)
@@ -67,6 +82,7 @@
 #define AMS_BUILD_FEATURE_HW_BRINGUP   (1u << 7u)
 #define AMS_BUILD_FEATURE_MISSION_CAN  (1u << 8u)
 #define AMS_BUILD_FEATURE_FUSE_MODEL   (1u << 9u)
+#define AMS_BUILD_FEATURE_CLI          (1u << 10u)
 
 #define AMS_BUILD_FEATURE_FLAGS_VALUE ( \
     (AMS_ENABLE_HIL_CAN ? AMS_BUILD_FEATURE_HIL_CAN : 0u) | \
@@ -78,7 +94,8 @@
     (AMS_ENABLE_APM_2950 ? AMS_BUILD_FEATURE_APM_2950 : 0u) | \
     (AMS_HW_BRINGUP ? AMS_BUILD_FEATURE_HW_BRINGUP : 0u) | \
     (AMS_ENABLE_MISSION_CAN ? AMS_BUILD_FEATURE_MISSION_CAN : 0u) | \
-    (AMS_FUSE_MODEL_VALIDATED ? AMS_BUILD_FEATURE_FUSE_MODEL : 0u))
+    (AMS_FUSE_MODEL_VALIDATED ? AMS_BUILD_FEATURE_FUSE_MODEL : 0u) | \
+    (AMS_ENABLE_CLI ? AMS_BUILD_FEATURE_CLI : 0u))
 
 #ifndef AMS_HW_BRINGUP
 #define AMS_HW_BRINGUP 0
@@ -300,6 +317,19 @@
 #define AMS_CAN_ECU_FAST_FREQ_HZ   10u
 #define AMS_CAN_ECU_FAST_PERIOD_MS (1000u / AMS_CAN_ECU_FAST_FREQ_HZ)
 
+/* CAN safety-policy timing. ECU torque authority must expire before the AMS
+ * opens the shutdown loop for a persistent drive-state bus-off, so the remote
+ * controller has time to command zero torque first. The AMS itself cannot
+ * enforce the ECU timeout; 300 ms is the cross-controller contract. */
+#define AMS_CAN_ECU_HEARTBEAT_TIMEOUT_MS       300u
+#define AMS_CAN_DISCHARGE_BUSOFF_HARD_FAULT_MS 500u
+#define AMS_CAN_BUSOFF_REPEAT_WINDOW_MS        10000u
+#define AMS_CAN_BUSOFF_REPEAT_LIMIT            3u
+
+#if AMS_CAN_ECU_HEARTBEAT_TIMEOUT_MS >= AMS_CAN_DISCHARGE_BUSOFF_HARD_FAULT_MS
+#error "ECU CAN authority timeout must precede AMS discharge bus-off hard fault"
+#endif
+
 #define TO_LSB16(x) ((uint16_t)x & 0xff)
 #define TO_MSB16(x) ((((uint16_t)x & 0xff00) >> 8) & 0xff)
 
@@ -317,6 +347,17 @@ typedef enum
 	STATE_BALANCE,
 	STATE_ERROR
 } state_t;
+
+typedef enum
+{
+    AMS_CAN_POLICY_LATCH_NONE = 0,
+    AMS_CAN_POLICY_LATCH_CHARGE_BUSOFF,
+    AMS_CAN_POLICY_LATCH_BALANCE_BUSOFF,
+    AMS_CAN_POLICY_LATCH_DISCHARGE_TIMEOUT,
+    AMS_CAN_POLICY_LATCH_REPEATED_BUSOFF,
+    AMS_CAN_POLICY_LATCH_TX_INHIBIT,
+    AMS_CAN_POLICY_LATCH_HIL_MEASUREMENT_LOSS
+} ams_can_policy_latch_reason_t;
 
 typedef struct
 {
@@ -573,8 +614,24 @@ struct app_data_t
 	uint32_t can_error_count;
 	uint32_t can_recover_count;
 	uint32_t can_last_error_tick;
-	bool can_busoff_fault;
-	bool can_recover_pending;
+    /* SCE bus-off handling revokes these safety states directly in ISR context;
+     * task/supervisor readers must observe those scalar writes immediately. */
+	volatile bool can_busoff_fault;
+	volatile bool can_recover_pending;
+    /* CAN authority is established only after every required frame in a fresh
+     * protected generation has completed on the wire. Queue/commit acceptance
+     * and bxCAN electrical recovery are deliberately insufficient. */
+    volatile bool can_authority_ready;
+    uint32_t can_authority_complete_generation_baseline;
+    /* Physical bus-off recovery has the discharge 500 ms safety deadline.
+     * Service authority refresh is deliberately separate: it waits for a
+     * fresh on-wire protected generation but is not itself a new bus-off. */
+    volatile bool can_busoff_recovery_active;
+    volatile uint32_t can_busoff_recovery_start_tick;
+    volatile uint8_t can_busoff_recovery_state;
+    bool can_authority_refresh_pending;
+    volatile bool can_busoff_hard_fault_latched;
+    volatile ams_can_policy_latch_reason_t can_busoff_policy_latch_reason;
 	/* Single-writer CAN-task diagnostics.  Keep safety/charger command,
 	 * compact ECU heartbeat, and best-effort detail failures distinguishable. */
 	uint32_t can_tx_critical_attempt_count;
@@ -614,7 +671,7 @@ struct app_data_t
 
 	bool fan_fault;
 	bool cli_fault;
-	bool canbus_fault;
+	volatile bool canbus_fault;
 	bool current_fault;
 	bool current_sensor_fault;
 	bool current_overcurrent_warning;
@@ -733,6 +790,7 @@ struct app_data_t
 	uint32_t adbms_aux2_diag_fail_count;
 	uint32_t adbms_aux2_next_due_tick;
 	uint8_t adbms_aux2_next_sensor;
+	bool adbms_aux2_schedule_initialized;
 	uint32_t adbms_therm_ow_diag_count;
 	uint32_t adbms_therm_ow_diag_fail_count;
 	uint32_t adbms_therm_ow_last_tick;
@@ -802,13 +860,16 @@ struct app_data_t
 	bool logger_heartbeat_fault;
 	uint16_t heartbeat_stale_mask;
 	uint16_t heartbeat_seen_mask;
-    bool bms_state;
+    volatile bool bms_state;
     bool bms_output_inhibit;
     bool bms_supervisor_ready;
     uint32_t bms_output_block_count;
 	bool balance_inhibit;
 
-	state_t state;
+    /* SCE bus-off classification samples the operating state in ISR context.
+     * State transitions are task-critical-section owned; volatile provides the
+     * corresponding ISR/task scalar visibility for the event-time snapshot. */
+    volatile state_t state;
 	state_t state_previous;
 	ams_state_transition_reason_t state_transition_reason;
 	uint32_t state_transition_count;

@@ -187,6 +187,7 @@ help:
 	@echo "  make static-allocation-gate Verify every application task uses fixed storage"
 	@echo "  make state-ownership-gate Verify state and CAN-control ownership boundaries"
 	@echo "  make target-project-gate Verify CubeIDE project identity, paths, warnings and linker scripts"
+	@echo "  make freertos-provenance-gate Pin exact bundled FreeRTOS source tree/version-label state"
 	@echo "  make system-sil    Alias for comprehensive system-level SIL/injection tests"
 	@echo "  make apm-sil       Run actual-driver ADBMS2950 unit tests plus final-ring CLI/SIL tests"
 	@echo "  make bringup-test  Run comprehensive tests with AMS_HW_BRINGUP=1"
@@ -480,14 +481,17 @@ profile-gates: check-core-root make-build-dir
 		echo "ERROR: vehicle profile compiled without reviewed temperature-threshold evidence"; \
 		exit 1; \
 	fi
-	@if $(CC) $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=1 \
+	@if $(CC) $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=1 -DAMS_EXPECTED_PROFILE=1 \
 		-DAMS_MAIN_FUSE_PLAUSIBILITY_VALIDATED=1 \
 		$(PROFILE_SRC) -o "$(BUILD_DIR)/profile_main_fuse_without_air" $(LDLIBS) \
 		>"$(BUILD_DIR)/profile_main_fuse_without_air.log" 2>&1; then \
 		echo "ERROR: main-fuse plausibility compiled as validated without AIR/current evidence"; \
 		exit 1; \
 	fi
-	@if $(CC) $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=1 \
+	@grep -q "Main-fuse plausibility validation requires authoritative AIR feedback, calibrated current and independent load-side voltage" \
+		"$(BUILD_DIR)/profile_main_fuse_without_air.log" || \
+		(echo "ERROR: main-fuse negative gate failed for an unrelated compiler reason"; exit 1)
+	@if $(CC) $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=1 -DAMS_EXPECTED_PROFILE=1 \
 		-DAMS_MAIN_FUSE_PLAUSIBILITY_VALIDATED=1 \
 		-DAMS_ENABLE_AIR_AUX_FEEDBACK=1 \
 		-DAMS_CURRENT_CALIBRATION_VALIDATED=1 \
@@ -496,13 +500,19 @@ profile-gates: check-core-root make-build-dir
 		echo "ERROR: main-fuse plausibility compiled as validated without independent load-side voltage evidence"; \
 		exit 1; \
 	fi
-	@if $(CC) $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=1 \
+	@grep -q "Main-fuse plausibility validation requires authoritative AIR feedback, calibrated current and independent load-side voltage" \
+		"$(BUILD_DIR)/profile_main_fuse_without_load_voltage.log" || \
+		(echo "ERROR: main-fuse load-voltage negative gate failed for an unrelated compiler reason"; exit 1)
+	@if $(CC) $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=1 -DAMS_EXPECTED_PROFILE=1 \
 		-DAMS_PARALLEL_CONNECTION_OBSERVER_VALIDATED=1 \
 		$(PROFILE_SRC) -o "$(BUILD_DIR)/profile_parallel_without_current" $(LDLIBS) \
 		>"$(BUILD_DIR)/profile_parallel_without_current.log" 2>&1; then \
 		echo "ERROR: parallel-connection observer compiled as validated without current evidence"; \
 		exit 1; \
 	fi
+	@grep -q "Parallel-connection observer validation requires validated current polarity and calibration" \
+		"$(BUILD_DIR)/profile_parallel_without_current.log" || \
+		(echo "ERROR: parallel-observer negative gate failed for an unrelated compiler reason"; exit 1)
 	@if $(CC) $(CFLAGS_COMMON) -Werror \
 		$(filter-out -DNSMBS=5,$(VEHICLE_PROFILE_DEFS)) \
 		-DAMS_EXPECTED_PROFILE=3 $(PROFILE_SRC) \
@@ -638,8 +648,11 @@ target-project-gate: check-core-root
 
 system-sil: test
 
-.PHONY: review-fixes-test
-review-fixes-test: target-project-gate can-irq-contract-gate
+.PHONY: freertos-provenance-gate review-fixes-test
+freertos-provenance-gate: check-core-root
+	$(PYTHON) "$(AMS_ROOT)/host_tests/tools/check_freertos_provenance.py"
+
+review-fixes-test: target-project-gate can-irq-contract-gate freertos-provenance-gate
 	$(PYTHON) "$(AMS_ROOT)/host_tests/tools/test_review_fixes.py"
 
 # Dedicated final-ring ADBMS2950 gate.  The unit binary links the real driver;
@@ -706,7 +719,7 @@ air-feedback-stub-test: compile
 		-fsyntax-only $(AMS_ROOT)/Core/Src/app.c \
 		$(AMS_ROOT)/Core/Src/tasks/air_task.c $(AIR_MONITOR_SRC)
 
-safety-test: CFLAGS_COMMON += -DAMS_ENABLE_IWDG=1
+safety-test: CFLAGS_COMMON += -DAMS_ENABLE_IWDG=1 -DAMS_FAULT_INJECTION_CLI=1
 safety-test: test
 
 stress: CFLAGS_COMMON += -DAMS_HOST_LONG_FUZZ_CYCLES=50000u -DAMS_HOST_CONCURRENT_FUZZ_CYCLES=12000u
@@ -746,10 +759,10 @@ analyze: check-core-root
 whole-source-analyze: check-core-root
 	find "$(AMS_ROOT)/Core/Src" -type f -name '*.c' -print0 | \
 		xargs -0 $(CC) $(CFLAGS_COMMON) -D_DEFAULT_SOURCE \
-		$(HOST_EXERCISE_DEFS) -fanalyzer -fsyntax-only
+		$(HOST_EXERCISE_DEFS) -Wundef -Werror=undef -fanalyzer -fsyntax-only
 	find "$(AMS_ROOT)/Core/Src" -type f -name '*.c' -print0 | \
 		xargs -0 $(CC) $(CFLAGS_COMMON) -D_DEFAULT_SOURCE \
-		$(VEHICLE_PROFILE_DEFS) -fanalyzer -fsyntax-only
+		$(VEHICLE_PROFILE_DEFS) -Wundef -Werror=undef -fanalyzer -fsyntax-only
 	@echo "PASS whole-source GCC analysis in bench and vehicle profiles"
 
 clang-analyze: CFLAGS_COMMON += $(SYSTEM_SIL_DEFS)
@@ -821,7 +834,10 @@ clean:
 
 .PHONY: measurement-integrity-test
 measurement-integrity-test: check-core-root make-build-dir
-	$(CC) $(CFLAGS_COMMON) -Werror -ffunction-sections -fdata-sections \
+	$(CC) $(CFLAGS_COMMON) -Werror -ffunction-sections -fdata-sections -DNSMBS=5 \
 		unit/measurement_integrity_test.c $(MEASUREMENT_SRC) \
+		$(AMS_ROOT)/Core/Src/sop/ams_sop.c \
+		$(AMS_ROOT)/Core/Src/soh/ams_soh.c \
+		$(AMS_ROOT)/Core/Src/estimator/ams_estimator_lut.c \
 		-Wl,--gc-sections -o "$(BUILD_DIR)/measurement_integrity_tests" $(LDLIBS)
 	"$(BUILD_DIR)/measurement_integrity_tests"

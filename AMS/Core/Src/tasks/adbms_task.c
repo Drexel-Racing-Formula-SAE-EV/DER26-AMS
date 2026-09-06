@@ -72,6 +72,23 @@ static bool adbms_tick_due(uint32_t now, uint32_t due)
     return ((uint32_t)(now - due) < 0x80000000u);
 }
 
+static uint32_t adbms_next_future_due(uint32_t now, uint32_t due,
+                                      uint32_t period_ms)
+{
+    /* Service one due diagnostic, then skip any additional elapsed slots.
+     * This preserves the long-term absolute cadence without replaying a
+     * backlog after startup delay, transport loss, debugger stops, or other
+     * long scheduling gaps. period_ms is compile-time gated nonzero. */
+    uint32_t next_due = due + period_ms;
+    if(adbms_tick_due(now, next_due))
+    {
+        const uint32_t overdue_ms = (uint32_t)(now - next_due);
+        const uint32_t skipped_periods = (overdue_ms / period_ms) + 1u;
+        next_due += skipped_periods * period_ms;
+    }
+    return next_due;
+}
+
 static void adbms_task_timing_init(void)
 {
 #if defined(AMS_HOST_TEST) && AMS_HOST_TEST
@@ -635,18 +652,28 @@ static void adbms_task_run_periodic_diagnostics(app_data_t *data)
     {
         const uint32_t aux2_period_ms =
             1000u / AMS_ADBMS_AUX2_POSITIONS_PER_SECOND;
-        uint32_t now = osKernelGetTickCount();
-        if(adbms_tick_due(now, data->adbms_aux2_next_due_tick))
+        const uint32_t now = osKernelGetTickCount();
+
+        if(!data->adbms_aux2_schedule_initialized)
         {
-            uint8_t sensor = data->adbms_aux2_next_sensor;
+            /* Do not treat boot/recovery time as missed diagnostic work. The
+             * first AUX2 position becomes due one normal period after the
+             * ring is actually ready. */
+            data->adbms_aux2_next_due_tick = now + aux2_period_ms;
+            data->adbms_aux2_schedule_initialized = true;
+        }
+        else if(adbms_tick_due(now, data->adbms_aux2_next_due_tick))
+        {
+            const uint8_t sensor = data->adbms_aux2_next_sensor;
             HAL_StatusTypeDef aux2_status =
                 adbms6830_run_aux2_redundancy(smb, sensor);
-            /* Advance the absolute due time instead of setting last=now.
-             * At the 10 Hz vehicle scan and a 250 ms target this produces a
-             * 300/200 ms cadence whose average is the requested 4 positions/s
-             * instead of quantizing permanently to 3.33 positions/s. Bench
-             * 1 Hz naturally executes at most one diagnostic per scan. */
-            data->adbms_aux2_next_due_tick += aux2_period_ms;
+
+            /* Keep an absolute deadline while skipping elapsed slots. At the
+             * 10 Hz vehicle scan and 250 ms target this still gives the desired
+             * 300/200 ms cadence in steady state, but a long pause causes only
+             * one diagnostic instead of a catch-up burst. */
+            data->adbms_aux2_next_due_tick = adbms_next_future_due(
+                now, data->adbms_aux2_next_due_tick, aux2_period_ms);
             data->adbms_aux2_next_sensor =
                 (uint8_t)((sensor + 1u) % ADBMS6830_TEMP_SENSOR_COUNT);
             if(data->adbms_aux2_diag_count != UINT32_MAX)
@@ -662,6 +689,13 @@ static void adbms_task_run_periodic_diagnostics(app_data_t *data)
                 data->adbms_aux2_diag_fail_count++;
             }
         }
+    }
+    else
+    {
+        /* Re-arm from the next genuinely ready epoch. Without this reset, a
+         * transport outage accumulates historical deadlines and can produce a
+         * prolonged diagnostic burst while the ring is recovering. */
+        data->adbms_aux2_schedule_initialized = false;
     }
 #endif
 

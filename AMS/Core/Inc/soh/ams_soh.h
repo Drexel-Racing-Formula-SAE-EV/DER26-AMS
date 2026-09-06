@@ -79,6 +79,7 @@ typedef struct
     float prior_resistance_soh_upper;
     float resistance_uncertainty_floor;
     uint32_t maximum_measurement_age_ms;
+    uint32_t maximum_temperature_age_ms;
     uint8_t minimum_capacity_observations;
     uint8_t minimum_resistance_confidence_pct;
 } ams_soh_config_t;
@@ -88,6 +89,10 @@ typedef struct
     uint32_t measurement_sequence;
     uint32_t measurement_timestamp_ms;
     uint32_t now_ms;
+    /* Effective constituent ages at now_ms. These make stale source samples
+     * visible even when the enclosing snapshot was just republished. */
+    uint32_t max_cell_age_ms;
+    uint32_t max_temperature_age_ms;
     float elapsed_s;
     float pack_current_a;
     float pack_current_uncertainty_a;

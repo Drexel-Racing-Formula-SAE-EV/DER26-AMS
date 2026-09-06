@@ -2815,6 +2815,72 @@ static void canbus_wait_next_period(app_data_t *data, uint32_t entry_tick)
     (void)osDelayUntil(entry_tick + CAN_ECU_FAST_PERIOD_MS);
 }
 
+static void canbus_update_authority_from_wire_completion(
+    app_data_t *data, canbus_device_t *canbus)
+{
+    uint32_t completed_generation;
+    uint32_t completed_tick;
+    bool hardware_busoff;
+
+    if((data == NULL) || (canbus == NULL))
+    {
+        return;
+    }
+
+    /* Authority is about observable bus delivery, not enqueue success. The
+     * complete transport-health decision and authority state update are one
+     * critical transaction with respect to CAN SCE/TX callbacks. If BOFF is
+     * already present in hardware it is rejected even before SCE bookkeeping;
+     * if BOFF arrives after the critical section, the ISR immediately revokes
+     * the authority established here. */
+    taskENTER_CRITICAL();
+    hardware_busoff =
+        (canbus->hcan != NULL) && (canbus->hcan->Instance != NULL) &&
+        ((canbus->hcan->Instance->ESR & CAN_ESR_BOFF) != 0u);
+    if((canbus->hcan == NULL) || !canbus->started ||
+       !canbus->notification_active || hardware_busoff || data->canbus_fault ||
+       data->can_busoff_fault || data->can_recover_pending ||
+       canbus->tx_latched_inhibit || canbus->tx_recovery_pending ||
+       canbus->tx_refresh_pending || canbus->tx_suspended ||
+       data->can_busoff_hard_fault_latched)
+    {
+        data->can_authority_ready = false;
+        taskEXIT_CRITICAL();
+        return;
+    }
+
+    completed_generation =
+        canbus->tx_scheduler.protected_required_last_complete_generation;
+    completed_tick =
+        canbus->tx_scheduler.protected_required_last_complete_tick;
+    if((completed_generation != 0u) &&
+       (completed_generation !=
+        data->can_authority_complete_generation_baseline))
+    {
+        /* For a physical DISCHARGE bus-off, only an on-wire completion whose
+         * event time is strictly before the 500 ms deadline can close the
+         * recovery epoch. This prevents 10/20 Hz task phasing from changing
+         * the safety decision at the 499/500/501 ms boundary. */
+        if(data->can_busoff_recovery_active &&
+           (data->can_busoff_recovery_state == (uint8_t)STATE_DISCARGE) &&
+           ((uint32_t)(completed_tick - data->can_busoff_recovery_start_tick) >=
+            AMS_CAN_DISCHARGE_BUSOFF_HARD_FAULT_MS))
+        {
+            data->can_authority_ready = false;
+            taskEXIT_CRITICAL();
+            return;
+        }
+
+        data->can_authority_complete_generation_baseline =
+            completed_generation;
+        data->can_authority_ready = true;
+        data->can_busoff_recovery_active = false;
+        data->can_busoff_recovery_state = (uint8_t)STATE_NULL;
+        data->can_authority_refresh_pending = false;
+    }
+    taskEXIT_CRITICAL();
+}
+
 TaskHandle_t canbus_task_start(app_data_t *data)
 {
     if(data == NULL)
@@ -2885,6 +2951,7 @@ void canbus_task_fn(void *arg)
         if(data->can_busoff_fault || data->can_recover_pending ||
            canbus->tx_latched_inhibit)
         {
+            data->can_authority_ready = false;
             data->canbus_fault = true;
             ams_heartbeat_kick(data, AMS_HEARTBEAT_CAN, entry);
             canbus_wait_next_period(data, entry);
@@ -3032,6 +3099,12 @@ void canbus_task_fn(void *arg)
         canbus_record_task_tx_status(data, task_status);
         data->canbus_fault = data->canbus_fault || data->can_busoff_fault ||
                              canbus->tx_latched_inhibit;
+
+        /* CAN startup/recovery authority is restored only after the complete
+         * required protected generation has completed on the wire. Electrical
+         * ABOM recovery and software publication acceptance are insufficient. */
+        canbus_update_authority_from_wire_completion(data, canbus);
+
         ams_heartbeat_kick(data, AMS_HEARTBEAT_CAN, entry);
         canbus_wait_next_period(data, entry);
     }

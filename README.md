@@ -2,11 +2,28 @@
 
 Firmware, validation infrastructure, HIL support, and engineering tools for the DER26 Accumulator Management System (AMS).
 
-Current package: **v2.6.19**, AMS source **v0.5.22**. See
-[measurement fixes and follow-up review](AMS/docs/MEASUREMENT_FIXES_2026-09-05.md).
-The [v2.6.18 review fixes](AMS/docs/REVIEW_FIXES_2026-09-05.md) and
-the preceding [CAN scheduler fixes](AMS/docs/CAN_SCHEDULER_FIXES_2026-09-04.md)
-are retained. MiL and battery algorithms are unchanged.
+Current package: **v2.6.27**, AMS source **v0.5.30**. See the
+[final software-freeze candidate](AMS/docs/PRE_ZEPHYR_FINAL_SOFTWARE_FREEZE_CANDIDATE_v2.6.27.md), the
+[final repeated-bus-off closeout](AMS/docs/PRE_ZEPHYR_FINAL_BUSOFF_CLOSEOUT_v2.6.26.md), the
+[pre-Zephyr freeze hardening](AMS/docs/PRE_ZEPHYR_FREEZE_HARDENING_v2.6.25.md), the
+[final pre-Zephyr code fixes](AMS/docs/PRE_ZEPHYR_FINAL_CODE_FIXES_v2.6.24.md), the
+[safety-policy closeout](AMS/docs/SAFETY_POLICY_CLOSEOUT_v2.6.23.md), the
+[post-closeout regression fixes](AMS/docs/POST_CLOSEOUT_REVIEW_FIXES_v2.6.22.md),
+and the [v2.6.21 migration-readiness code closeout](AMS/docs/OPEN_FINDINGS_CODE_CLOSEOUT_v2.6.21.md).
+The v2.6.19-v2.6.22 measurement, CAN, build/provenance, and freshness fixes are
+retained. v2.6.23 closes the watchdog and state-dependent CAN bus-off policies.
+v2.6.24 fixes physical bus-off event timing, 499/500/501 ms on-wire authority
+timing, service recovery state separation, and tuning-CAN producer feature gating.
+v2.6.25 additionally requires transport-epoch settlement before a protected
+completion can satisfy the discharge recovery deadline, unifies physical and bench
+bus-off event handling, refreshes repeated identical CAN soft-error age, and makes
+failed service recovery leave repeated-bus-off state intact. CAN authority is
+credited only after the required protected `0x680`–`0x687` set completes on wire,
+not when software merely queues it; battery models are not retuned.
+
+v2.6.26 closes the final repeated-CAN-bus-off event-loss defect: CAN1 SCE now owns physical BOFF identity before HAL sticky error accumulation, every event is sequenced ISR-side, the exact three-event/10-second sliding window is maintained at the event boundary, and the third genuine event hard-latches TX/BMS low without waiting for the 10 Hz CAN task. Task-side recovery consumes sequence deltas, so clustered events and a later event during pending recovery cannot be collapsed.
+
+v2.6.27 hardens the remaining ISR/task ownership edges: charger ENABLE is revalidated at the bxCAN hardware-load boundary, shared CAN/charger completion scalars have explicit ISR/task visibility, recovery settlement is tied to an unchanged BOFF sequence, and manual CAN recovery commits transport plus application safety state atomically so a new BOFF cannot be erased by post-return CLI cleanup. The focused CAN regression source now contains 19 cases. Per user request, the final v2.6.27 suites are intentionally left for the recipient to rerun before freezing the baseline.
 
 The target application runs on an STM32F767 with FreeRTOS and interfaces with the accumulator monitoring chain, pack-current sensing, charger/IMD/AIR-related inputs, and the vehicle CAN network. The repository also contains host-side verification, HIL assets, and reference tools used to develop and qualify the firmware.
 

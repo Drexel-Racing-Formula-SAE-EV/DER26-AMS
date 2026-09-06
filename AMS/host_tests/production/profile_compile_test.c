@@ -31,6 +31,7 @@ _Static_assert(AMS_VOLTAGE_MODE == AMS_VOLTAGE_MODE_REDUNDANT_CS,
 #if AMS_EXPECTED_PROFILE == AMS_PROFILE_BENCH
 _Static_assert(AMS_HW_BRINGUP == 1, "bench profile must use bring-up policy");
 _Static_assert(AMS_ENABLE_SERVICE_CLI == 1, "bench profile requires service CLI");
+_Static_assert(AMS_ENABLE_CLI == 1, "bench profile requires diagnostic CLI");
 _Static_assert(AMS_ENABLE_HIL_CAN == 0, "bench profile must not inject HIL CAN");
 _Static_assert(AMS_ENABLE_IMD == 0, "bench profile does not claim IMD validation");
 _Static_assert(AMS_ENABLE_IWDG == 0, "bench profile does not claim IWDG validation");
@@ -41,6 +42,7 @@ _Static_assert(AMS_PROFILE_BALANCE_INHIBIT_DEFAULT == 1,
 #elif AMS_EXPECTED_PROFILE == AMS_PROFILE_HIL
 _Static_assert(AMS_HW_BRINGUP == 0, "HIL is a distinct build intent");
 _Static_assert(AMS_ENABLE_SERVICE_CLI == 1, "HIL profile requires service CLI");
+_Static_assert(AMS_ENABLE_CLI == 1, "HIL profile requires diagnostic CLI");
 _Static_assert(AMS_ENABLE_HIL_CAN == 1, "HIL profile requires CAN injection");
 _Static_assert(AMS_HIL_REPLACE_ADBMS == 1, "HIL profile requires ADBMS replacement");
 _Static_assert(AMS_PROFILE_BMS_OUTPUT_INHIBIT_DEFAULT == 1,
@@ -50,6 +52,7 @@ _Static_assert(AMS_PROFILE_BALANCE_INHIBIT_DEFAULT == 1,
 #elif AMS_EXPECTED_PROFILE == AMS_PROFILE_BENCH_VALIDATION
 _Static_assert(AMS_HW_BRINGUP == 0, "bench validation must use 10 Hz acquisition");
 _Static_assert(AMS_ENABLE_SERVICE_CLI == 1, "bench validation requires service CLI");
+_Static_assert(AMS_ENABLE_CLI == 1, "bench validation requires diagnostic CLI");
 _Static_assert(AMS_ENABLE_HIL_CAN == 0, "bench validation must use physical measurements");
 _Static_assert(AMS_HIL_REPLACE_ADBMS == 0, "bench validation requires physical ADBMS");
 _Static_assert(AMS_ENABLE_IMD == 1, "bench validation enables the real IMD path");
@@ -88,6 +91,7 @@ _Static_assert(AMS_ESTIMATOR_DEFAULT_TOPOLOGY == AMS_ESTIMATOR_TOPOLOGY_SEGMENTS
 #elif AMS_EXPECTED_PROFILE == AMS_PROFILE_TESTDAY
 _Static_assert(AMS_HW_BRINGUP == 0, "test day must use 10 Hz production acquisition");
 _Static_assert(AMS_ENABLE_SERVICE_CLI == 1, "test day requires read/service CLI");
+_Static_assert(AMS_ENABLE_CLI == 1, "test day requires diagnostic CLI");
 _Static_assert(AMS_ENABLE_HIL_CAN == 0, "test day must use physical measurements");
 _Static_assert(AMS_HIL_REPLACE_ADBMS == 0, "test day requires physical ADBMS");
 _Static_assert(AMS_ENABLE_IMD == 1, "test day exercises the real IMD path");
@@ -124,6 +128,7 @@ _Static_assert(AMS_ESTIMATOR_DEFAULT_TOPOLOGY == AMS_ESTIMATOR_TOPOLOGY_SEGMENTS
 #elif AMS_EXPECTED_PROFILE == AMS_PROFILE_VEHICLE
 _Static_assert(AMS_HW_BRINGUP == 0, "vehicle profile forbids bring-up behavior");
 _Static_assert(AMS_ENABLE_SERVICE_CLI == 0, "vehicle profile forbids service mutation");
+_Static_assert(AMS_ENABLE_CLI == 0, "vehicle profile must compile out diagnostic CLI");
 _Static_assert(AMS_ENABLE_HIL_CAN == 0, "vehicle profile forbids HIL CAN");
 _Static_assert(AMS_HIL_REPLACE_ADBMS == 0, "vehicle profile requires physical ADBMS");
 _Static_assert(AMS_ENABLE_IMD == 1, "vehicle profile requires validated IMD");

@@ -21,6 +21,9 @@ The current firmware-specific contracts live with the STM32 project:
 - [`AMS/docs/AMS_LOGGER_CAN_CONTRACT_V1.md`](../AMS/docs/AMS_LOGGER_CAN_CONTRACT_V1.md)
 - [`AMS/docs/AMS_TUNING_CAN_SD_CONTRACT.md`](../AMS/docs/AMS_TUNING_CAN_SD_CONTRACT.md)
 - [`AMS/docs/AIR_CONTACTOR_MONITORING.md`](../AMS/docs/AIR_CONTACTOR_MONITORING.md)
+- [`AMS/docs/POST_CLOSEOUT_REVIEW_FIXES_v2.6.22.md`](../AMS/docs/POST_CLOSEOUT_REVIEW_FIXES_v2.6.22.md)
+- [`AMS/docs/OPEN_FINDINGS_CODE_CLOSEOUT_v2.6.21.md`](../AMS/docs/OPEN_FINDINGS_CODE_CLOSEOUT_v2.6.21.md)
+- [`AMS/docs/DER26_AMS_Codebase_Review_and_Zephyr_Migration_Plan_2026-09-05-v0.5.25.md`](../AMS/docs/DER26_AMS_Codebase_Review_and_Zephyr_Migration_Plan_2026-09-05-v0.5.25.md)
 
 ## Bring-up and validation
 

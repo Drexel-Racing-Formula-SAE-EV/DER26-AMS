@@ -14,6 +14,7 @@ version = (ROOT / "Core/Inc/ams_version.h").read_text()
 app = (ROOT / "Core/Inc/app.h").read_text()
 profile = (ROOT / "Core/Inc/ams_build_profile.h").read_text()
 ioc = (ROOT / "DER26-AMS.ioc").read_text()
+main_h = (ROOT / "Core/Inc/main.h").read_text()
 for suffix in ("MAJOR", "MINOR", "PATCH"):
     require(re.search(rf"^#define AMS_VERSION_{suffix} [0-9]+$", version, re.M),
             f"missing canonical {suffix}")
@@ -26,6 +27,10 @@ require('#define AMS_SOURCE_REVISION "DER26-AMS-v" AMS_VERSION_STRING "-" AMS_RE
         "source revision must derive from canonical semantic version")
 require(re.search(r'^ProjectManager.ProjectName=DER26-AMS$', ioc, re.M), "CubeMX project name")
 require(re.search(r'^ProjectManager.ProjectFileName=DER26-AMS.ioc$', ioc, re.M), "CubeMX project file")
+require(re.search(r'^Mcu\.Pin[0-9]+=PE4$', ioc, re.M), "CubeMX must include PE4")
+require(re.search(r'^PE4\.GPIO_Label=CS_B$', ioc, re.M), "CubeMX PE4 must be CS_B")
+require(re.search(r'^#define CS_B_Pin GPIO_PIN_4$', main_h, re.M), "firmware CS_B pin must be GPIO pin 4")
+require(re.search(r'^#define CS_B_GPIO_Port GPIOE$', main_h, re.M), "firmware CS_B port must be GPIOE/PE4")
 for path in (ROOT / "Core/Src").rglob("*.c"):
     require("__DATE__" not in path.read_text() and "__TIME__" not in path.read_text(),
             f"independent compilation timestamp in {path.name}")
@@ -35,4 +40,4 @@ require(".build_date = AMS_BUILD_DATE" in manifest and ".build_time = AMS_BUILD_
         "manifest must own build timestamp")
 require("ams_build_manifest.build_date, ams_build_manifest.build_time" in cli,
         "CLI must read manifest timestamp")
-print("PASS canonical firmware/CLI identity, shared timestamp and CubeMX project identity")
+print("PASS canonical firmware/CLI identity, shared timestamp, CubeMX identity and PE4 CS_B contract")

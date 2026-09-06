@@ -18,8 +18,9 @@ class ReviewFixTests(unittest.TestCase):
         self.root = Path(self.temp.name) / "AMS"
         for relative in (
             "Core/Inc/app.h", "Core/Inc/ams_version.h", "Core/Inc/ams_build_profile.h",
-            "Core/Inc/FreeRTOSConfig.h", "Core/Inc/stm32f7xx_it.h",
-            "Core/Src/app.c", "Core/Src/tasks/cli_task.c",
+            "Core/Inc/FreeRTOSConfig.h", "Core/Inc/stm32f7xx_it.h", "Core/Inc/main.h",
+            "Core/Src/app.c", "Core/Src/main.c", "Core/Src/board.c",
+            "Core/Src/tasks/cli_task.c",
             "Core/Src/ext_drivers/canbus.c", "Core/Src/stm32f7xx_hal_msp.c",
             "Core/Src/stm32f7xx_it.c", "DER26-AMS.ioc",
         ):
@@ -57,6 +58,11 @@ class ReviewFixTests(unittest.TestCase):
                     "ProjectManager.ProjectFileName=DER25-AMS.ioc")
         self.gate("check_release_identity.py", False)
 
+    def test_cs_b_pin_drift_rejected(self):
+        self.change("Core/Inc/main.h", "#define CS_B_GPIO_Port GPIOE",
+                    "#define CS_B_GPIO_Port GPIOF")
+        self.gate("check_release_identity.py", False)
+
     def test_independent_timestamp_rejected(self):
         self.change("Core/Src/tasks/cli_task.c", "ams_build_manifest.build_date", "__DATE__")
         self.gate("check_release_identity.py", False)
@@ -73,6 +79,77 @@ class ReviewFixTests(unittest.TestCase):
     def test_cube_irq_drift_rejected(self):
         self.change("DER26-AMS.ioc", r"NVIC.CAN1_TX_IRQn=true\:5\:0", r"NVIC.CAN1_TX_IRQn=true\:6\:0")
         self.gate("check_can_irq_contract.py", False)
+
+    def test_vehicle_cli_path_is_compiled_out(self):
+        profile = (self.root / "Core/Inc/ams_build_profile.h").read_text()
+        vehicle = profile.split("#elif AMS_BUILD_PROFILE == AMS_PROFILE_VEHICLE", 1)[1]
+        vehicle = vehicle.split("#else\n#error \"AMS_BUILD_PROFILE", 1)[0]
+        self.assertIn("#define AMS_ENABLE_CLI 0", vehicle)
+
+        app = (self.root / "Core/Src/app.c").read_text()
+        self.assertRegex(
+            app,
+            re.compile(r"#if AMS_ENABLE_CLI\s+\(void\)cli_uart_start_rx.*?"
+                       r"app\.cli_task = cli_task_start\(&app\);.*?"
+                       r"#else\s+app\.cli_task = NULL;\s+#endif", re.S),
+        )
+        main = (self.root / "Core/Src/main.c").read_text()
+        self.assertRegex(
+            main,
+            re.compile(r"#if AMS_ENABLE_CLI\s+MX_USART3_UART_Init\(\);\s+#endif", re.S),
+        )
+        board = (self.root / "Core/Src/board.c").read_text()
+        self.assertRegex(
+            board,
+            re.compile(r"#if AMS_ENABLE_CLI\s+cli_device_init\(", re.S),
+        )
+        irq = (self.root / "Core/Src/stm32f7xx_it.c").read_text()
+        self.assertIn("#if AMS_ENABLE_CLI\nvoid HAL_UART_RxCpltCallback", irq)
+        self.assertIn("#endif /* AMS_ENABLE_CLI */", irq)
+
+    def test_service_cli_cannot_exist_without_cli_transport(self):
+        compiler = shutil.which("gcc")
+        if compiler is None:
+            self.skipTest("host GCC unavailable")
+        program = '#include "ams_build_profile.h"\nint main(void){return 0;}\n'
+        result = subprocess.run(
+            [compiler, "-std=c11", "-I", str(self.root / "Core/Inc"),
+             "-DAMS_BUILD_PROFILE=1", "-DAMS_ENABLE_CLI=0",
+             "-x", "c", "-", "-fsyntax-only"],
+            input=program, text=True, capture_output=True,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Service CLI mutation requires the diagnostic CLI task/UART",
+                      result.stderr)
+
+    def test_release_build_requires_source_date_epoch(self):
+        script = AMS.parent / "ci/stm32/build_ams_headless_gcc.sh"
+        env = dict(os.environ)
+        env["AMS_BUILD_TYPE"] = "Release"
+        env.pop("SOURCE_DATE_EPOCH", None)
+        result = subprocess.run(["bash", str(script)], capture_output=True, text=True, env=env)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("Release builds require SOURCE_DATE_EPOCH", result.stderr)
+
+    def test_headless_profile_release_flags_and_provenance_match_checked_in_release(self):
+        script = (AMS.parent / "ci/stm32/build_ams_headless_gcc.sh").read_text()
+        cproject = (AMS / ".cproject").read_text()
+        self.assertIn('AMS_BUILD_PROFILE="${AMS_BUILD_PROFILE:-5}"', script)
+        self.assertIn('Release) MODE_FLAGS=(-Os -g0)', script)
+        self.assertIn('-DAMS_BUILD_PROFILE="$AMS_BUILD_PROFILE"', script)
+        self.assertIn('build_profile=$AMS_BUILD_PROFILE', script)
+        self.assertIn('build_profile_name=$AMS_BUILD_PROFILE_NAME', script)
+        self.assertIn('source_input_tree_sha256=$SOURCE_INPUT_TREE_SHA256', script)
+        self.assertNotIn('Release) MODE_FLAGS=(-O2', script)
+        self.assertGreaterEqual(cproject.count('value="AMS_BUILD_PROFILE=5"'), 4)
+        self.assertIn('optimization.level.value.os', cproject)
+
+    def test_invalid_headless_profile_is_rejected_before_toolchain_lookup(self):
+        script = AMS.parent / "ci/stm32/build_ams_headless_gcc.sh"
+        env = dict(os.environ, AMS_BUILD_TYPE="Debug", AMS_BUILD_PROFILE="99")
+        result = subprocess.run(["bash", str(script)], capture_output=True, text=True, env=env)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("AMS_BUILD_PROFILE must be one of 1,2,3,4,5", result.stderr)
 
     def test_canonical_header_compiles_with_reproducible_timestamp(self):
         compiler = shutil.which("gcc")

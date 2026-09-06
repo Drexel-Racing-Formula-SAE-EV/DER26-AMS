@@ -14,6 +14,66 @@ static uint32_t next_generation(uint32_t generation)
     return (generation == 0u) ? 1u : generation;
 }
 
+static uint32_t effective_reading_age_ms(uint32_t stored_age_ms,
+                                         uint32_t age_reference_tick,
+                                         uint32_t now_ms)
+{
+    if(stored_age_ms == UINT32_MAX)
+    {
+        return UINT32_MAX;
+    }
+
+    const uint32_t elapsed_ms = (uint32_t)(now_ms - age_reference_tick);
+    /* A reference that appears more than half a tick range in the future is
+     * not a believable fresh reading. This also keeps wrap handling explicit. */
+    if(elapsed_ms >= 0x80000000u)
+    {
+        return UINT32_MAX;
+    }
+    if(stored_age_ms > (UINT32_MAX - elapsed_ms))
+    {
+        return UINT32_MAX;
+    }
+    return stored_age_ms + elapsed_ms;
+}
+
+static void snapshot_effective_max_ages(
+    const ams_measurement_snapshot_t *measurement,
+    uint32_t now_ms,
+    uint32_t max_cell_age_ms[AMS_SOP_SEGMENTS],
+    uint32_t max_temperature_age_ms[AMS_SOP_SEGMENTS])
+{
+    for(uint8_t segment = 0u; segment < AMS_SOP_SEGMENTS; segment++)
+    {
+        uint32_t cell_max = 0u;
+        uint32_t temp_max = 0u;
+        for(uint8_t cell = 0u; cell < AMS_SOP_CELLS_PER_SEGMENT; cell++)
+        {
+            const uint32_t age = effective_reading_age_ms(
+                measurement->cell_age_ms[segment][cell],
+                measurement->voltage_complete_tick,
+                now_ms);
+            if(age > cell_max)
+            {
+                cell_max = age;
+            }
+        }
+        for(uint8_t sensor = 0u; sensor < NTEMPS; sensor++)
+        {
+            const uint32_t age = effective_reading_age_ms(
+                measurement->temp_age_ms[segment][sensor],
+                measurement->publication_tick,
+                now_ms);
+            if(age > temp_max)
+            {
+                temp_max = age;
+            }
+        }
+        max_cell_age_ms[segment] = cell_max;
+        max_temperature_age_ms[segment] = temp_max;
+    }
+}
+
 static float clampf_local(float value, float lower, float upper)
 {
     if(value < lower)
@@ -127,6 +187,24 @@ static void build_soh_input(const ams_measurement_snapshot_t *measurement,
     input->measurement_sequence = measurement->sequence;
     input->measurement_timestamp_ms = measurement->publication_tick;
     input->now_ms = now_ms;
+    uint32_t segment_cell_age_ms[AMS_SOP_SEGMENTS];
+    uint32_t segment_temperature_age_ms[AMS_SOP_SEGMENTS];
+    snapshot_effective_max_ages(measurement, now_ms,
+                                segment_cell_age_ms,
+                                segment_temperature_age_ms);
+    for(uint8_t segment = 0u; segment < AMS_SOP_SEGMENTS; segment++)
+    {
+        if(segment_cell_age_ms[segment] > input->max_cell_age_ms)
+        {
+            input->max_cell_age_ms = segment_cell_age_ms[segment];
+        }
+        if(segment_temperature_age_ms[segment] >
+           input->max_temperature_age_ms)
+        {
+            input->max_temperature_age_ms =
+                segment_temperature_age_ms[segment];
+        }
+    }
     input->elapsed_s = elapsed_s;
     input->pack_current_a = measurement->current.average_A;
     input->pack_current_uncertainty_a =
@@ -228,6 +306,11 @@ static void build_sop_input(const ams_power_state_t *state,
     input->measurement_sequence = measurement->sequence;
     input->measurement_timestamp_ms = measurement->publication_tick;
     input->now_ms = now_ms;
+    uint32_t segment_cell_age_ms[AMS_SOP_SEGMENTS];
+    uint32_t segment_temperature_age_ms[AMS_SOP_SEGMENTS];
+    snapshot_effective_max_ages(measurement, now_ms,
+                                segment_cell_age_ms,
+                                segment_temperature_age_ms);
     input->pack_current_a = measurement->current.average_A;
     input->pack_current_uncertainty_a =
         (float)measurement->current.uncertainty_mA / 1000.0f;
@@ -294,16 +377,13 @@ static void build_sop_input(const ams_power_state_t *state,
         out->cell_usable_mask = measurement->cell_usable_mask[segment];
         out->estimator_valid = instance->valid;
         out->model_domain_flags = instance->model_domain_flags;
-        out->max_cell_age_ms = 0u;
+        out->max_cell_age_ms = segment_cell_age_ms[segment];
+        out->max_temperature_age_ms =
+            segment_temperature_age_ms[segment];
         for(uint8_t cell = 0u; cell < AMS_SOP_CELLS_PER_SEGMENT; cell++)
         {
             out->cell_voltage_v[cell] =
                 (float)measurement->cell_mv[segment][cell] / 1000.0f;
-            if(measurement->cell_age_ms[segment][cell] > out->max_cell_age_ms)
-            {
-                out->max_cell_age_ms =
-                    measurement->cell_age_ms[segment][cell];
-            }
         }
         if(instance->valid == 0u)
         {

@@ -102,6 +102,15 @@ typedef struct {
     uint32_t protected_superseded;
     uint32_t protected_deadline_miss;
     uint32_t protected_required_complete_count;
+    /* Generation whose complete required protected set most recently reached
+     * the wire. Unlike the saturating diagnostic counter above, generation
+     * identity continues to wrap and therefore remains suitable for authority
+     * epoch comparison over long service life. */
+    uint32_t protected_required_last_complete_generation;
+    /* Absolute RTOS/HAL millisecond tick at which the final required frame of
+     * that generation completed on wire. Safety policy compares event time,
+     * not which task happened to observe the completion first. */
+    uint32_t protected_required_last_complete_tick;
     uint32_t protected_required_latency_last_ms;
     uint32_t protected_required_latency_max_ms;
     uint32_t protected_required_latency_over_50ms;

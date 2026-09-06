@@ -60,6 +60,9 @@ void ams_soh_default_config(ams_soh_config_t *cfg)
     cfg->prior_resistance_soh_upper = 1.25f;
     cfg->resistance_uncertainty_floor = 0.05f;
     cfg->maximum_measurement_age_ms = 250u;
+    /* Same acquisition contract as SoP: the eight-position temperature mux
+     * needs up to ~0.8 s for a complete healthy scan at the 10 Hz ADBMS rate. */
+    cfg->maximum_temperature_age_ms = 1000u;
     cfg->minimum_capacity_observations = 2u;
     cfg->minimum_resistance_confidence_pct = 50u;
 }
@@ -94,6 +97,7 @@ bool ams_soh_config_valid(const ams_soh_config_t *cfg)
         (cfg->prior_resistance_soh_upper >= 1.0f) &&
         finite_positive(cfg->resistance_uncertainty_floor) &&
         (cfg->maximum_measurement_age_ms > 0u) &&
+        (cfg->maximum_temperature_age_ms > 0u) &&
         (cfg->minimum_capacity_observations > 0u) &&
         (cfg->minimum_resistance_confidence_pct <= 100u);
 }
@@ -433,7 +437,9 @@ static uint32_t input_reasons(const ams_soh_config_t *cfg,
     uint32_t reasons = AMS_SOH_REASON_NONE;
     if((input->measurement_sequence == 0u) ||
        ((uint32_t)(input->now_ms - input->measurement_timestamp_ms) >
-        cfg->maximum_measurement_age_ms))
+        cfg->maximum_measurement_age_ms) ||
+       (input->max_cell_age_ms > cfg->maximum_measurement_age_ms) ||
+       (input->max_temperature_age_ms > cfg->maximum_temperature_age_ms))
     {
         reasons |= AMS_SOH_REASON_STALE;
     }

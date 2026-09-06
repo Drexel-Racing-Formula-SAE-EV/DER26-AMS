@@ -119,7 +119,9 @@ typedef struct
     float resistance_soh_upper;
 
     float cell_voltage_v[AMS_SOP_CELLS_PER_SEGMENT];
+    /* Effective age at solve time, not merely age at snapshot publication. */
     uint32_t max_cell_age_ms;
+    uint32_t max_temperature_age_ms;
     uint16_t cell_usable_mask;
     uint8_t estimator_valid;
     uint8_t model_domain_flags;
@@ -190,7 +192,10 @@ typedef struct
     float model_temperature_margin_c;
     float current_uncertainty_floor_a;
     float max_innovation_per_cell_v;
+    /* Snapshot/cell freshness bound. Temperature mux acquisition is slower
+     * and therefore has an explicit independent bound. */
     float max_measurement_age_ms;
+    float max_temperature_age_ms;
     float default_capacity_soh_lower;
     float default_resistance_soh_upper;
 

@@ -630,6 +630,9 @@ void ams_can_tx_mark_complete(ams_can_tx_scheduler_t *sched,
                                sched->protected_active.publish_tick;
             sched->protected_active.required_complete_recorded = true;
             sat_inc(&sched->protected_required_complete_count);
+            sched->protected_required_last_complete_generation =
+                token->generation;
+            sched->protected_required_last_complete_tick = completion_tick;
             sched->protected_required_latency_last_ms = latency;
             if(latency > sched->protected_required_latency_max_ms)
             {

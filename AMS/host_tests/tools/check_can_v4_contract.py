@@ -68,8 +68,10 @@ if macro(logger, "AMS_LOGGER_PROTOCOL_VERSION") != 4:
     raise SystemExit("FAIL logger protocol must be v4 for full-covariance/acquisition pages")
 if macro(logger, "AMS_TUNING_CAN_ACQ_PERIOD_MS") != 1000:
     raise SystemExit("FAIL acquisition tuning telemetry must remain at 1 Hz")
-if "250-kbit/s image" not in logger or "AMS tuning CAN is prohibited at 250" not in logger:
+if "250-kbit/s image" not in logger or "AMS tuning CAN is prohibited at 250" not in app:
     raise SystemExit("FAIL 250-kbit/s tuning compile exclusion is missing")
+if "AMS_ENABLE_TUNING_CAN" not in app:
+    raise SystemExit("FAIL tuning CAN feature gate must be defined in common app configuration")
 if macro(app, "AMS_LEGACY_TELEM_CAN_ID") != 0x6B1:
     raise SystemExit("FAIL legacy compatibility ID must be relocated to 0x6B1")
 if macro(canbus_h, "AMS_ECU_DIAG_FEEDBACK_CAN_ID") != 0x6F0:

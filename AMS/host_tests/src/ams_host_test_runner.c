@@ -39,6 +39,21 @@ TIM_TypeDef tim3_inst, tim4_inst, tim5_inst;
 static SPI_HandleTypeDef fake_topology_spi;
 static TIM_HandleTypeDef fake_topology_timer;
 app_data_t app;
+/* The production manifest is defined in app.c, which is intentionally not
+ * linked into this plug-in harness. Provide a stable host-only instance for
+ * CLI/version tests that include cli_task.c directly. */
+const ams_build_manifest_t ams_build_manifest = {
+    .profile_name = "host-test",
+    .git_commit = "host-test",
+    .build_date = "Sep 05 2026",
+    .build_time = "00:00:00",
+    .estimator_model_revision = "host-test",
+    .sop_model_revision = "host-test",
+    .soh_model_revision = "host-test",
+    .current_calibration_revision = "host-test",
+    .can_contract_revision = "host-test",
+    .threshold_revision = "host-test"
+};
 static uint32_t fake_tick = 0;
 static GPIO_PinState bms_pin_state = GPIO_PIN_RESET;
 static uint32_t tx_count = 0;
@@ -97,6 +112,7 @@ static HAL_StatusTypeDef fake_tim_ic_start_it_status = HAL_OK;
 static HAL_StatusTypeDef fake_tim_ic_start_status = HAL_OK;
 static uint32_t fake_tim_total_capture = 1000u;
 static uint32_t fake_tim_high_capture = 500u;
+static void (*critical_exit_hook)(void) = NULL;
 
 static uint16_t adc_count_for_mcu_voltage(float v);
 static uint16_t adc_count_for_sensor_voltage(float v);
@@ -140,7 +156,15 @@ TaskHandle_t xTaskCreateStatic(TaskFunction_t fn,
 void vTaskDelete(TaskHandle_t handle){ (void)handle; }
 
 void vPortEnterCritical(void){}
-void vPortExitCritical(void){}
+void vPortExitCritical(void)
+{
+    if(critical_exit_hook != NULL)
+    {
+        void (*hook)(void) = critical_exit_hook;
+        critical_exit_hook = NULL;
+        hook();
+    }
+}
 
 HAL_StatusTypeDef HAL_CAN_Start(CAN_HandleTypeDef *hcan){ return hcan ? fake_can_recover_status : HAL_ERROR; }
 HAL_StatusTypeDef HAL_CAN_Stop(CAN_HandleTypeDef *hcan){ return hcan ? fake_can_recover_status : HAL_ERROR; }
@@ -1648,7 +1672,7 @@ static void sil_bind_final_ring_topology(accumulator_t *acc)
     acc->apm.write_string = STRING_B;
 }
 
-static void init_fake_app(void){ fake_tick = 0u; memset(&app,0,sizeof(app)); ams_safety_host_reset_state(); ams_rtos_host_reset_state(); ams_rtos_diag_init(&app); app.state = STATE_START; app.acc.smb.num_ics = NSMBS; app.acc.smb.physical_chain_count = (uint8_t)ACCUMULATOR_PHYSICAL_CHAIN_COUNT; app.acc.smb.ics_capacity = NSMBS; app.acc.smb.ics = app.acc.smb_ics; app.acc.smb.string = ACCUMULATOR_SMB_STRING; app.acc.smb.monitored_cell_count = NCELLS; app.acc.smb.health.startup_baseline_passed = true; app.acc.smb.health.sid_valid_ic_mask = (uint16_t)((1u << NSMBS) - 1u); app.acc.delay_timer_ready = true; app.acc.delay_timer_status = HAL_OK; app.acc.smb_transport_ready = true; app.acc.smb_ready = true; app.acc.smb_init_status = HAL_OK; app.acc.apm.num_ics = NAPMS; app.acc.apm.ics_capacity = NAPMS; app.acc.apm.ics = app.acc.apm_ics; app.acc.apm.string = STRING_B; app.acc.apm_ready = true; app.acc.apm_init_status = HAL_OK; app.acc.apm.health.initialized = true; app.acc.apm.health.i1_calibrated = true; app.acc.apm.health.i1_continuous_ready = true; app.acc.apm.health.sid_valid = true; app.acc.apm.health.config_valid = true; app.acc.apm.health.device_id = ADBMS2950B_DEVICE_ID; app.acc.apm.health.sid[5] = (uint8_t)(ADBMS2950B_DEVICE_ID << 1u); sil_bind_final_ring_topology(&app.acc); current_fault_init(&app.current_fault_state); voltage_fault_init(&app.voltage_fault_state); temperature_fault_init(&app.temp_fault_state); ams_heartbeat_init(&app, fake_tick); ams_safety_watchdog_boot_arm(&app); app.current_meas_reason = CURRENT_SENSOR_REASON_ADC_READ; app.current_fault_reason = CURRENT_FAULT_REASON_SENSOR_NOT_READY; app.voltage_fault_reason = VOLTAGE_FAULT_REASON_NOT_READY; app.temp_fault = true; app.temp_read_fault = true; app.temp_fan_max = true; app.temp_fault_reason = TEMPERATURE_FAULT_REASON_NOT_READY; app.imd_valid = true; app.imd_ok = true; app.imd_fault = false; app.imd_status = IMD_NORMAL; app.balance_inhibit = (AMS_HW_BRINGUP_BALANCE_INHIBIT_DEFAULT != 0); app.acc.last_balance_mute_ok = true; app.acc.last_balance_durable_zero_verified = true; app.acc.last_balance_inhibit_reason = ACCUMULATOR_BALANCE_INHIBIT_SHUTDOWN; app.adbms_mute_asserted = true; app.adbms_balance_durable_zero_verified = true; app.adbms_balance_inhibit_reason = ACCUMULATOR_BALANCE_INHIBIT_SHUTDOWN; fake_adbms_voltage_masks_full_update(); fake_adc_read_index = 0u; fake_adbms_init_status = HAL_OK; fake_adbms_start_conversion_status = HAL_OK; fake_adbms_read_cell_status = HAL_OK; fake_apm_init_status = HAL_OK; fake_apm_sample_status = HAL_OK; fake_apm_probe_status = HAL_OK; fake_apm_i1_raw = 1234; fake_apm_vb1_raw = 18000; fake_apm_init_string = STRING_A; fake_apm_init_requested_reset = true; fake_apm_init_enabled_dividers = true; fake_adbms_wrcfgb_status = HAL_OK; fake_adbms_wrpwm_status = HAL_OK; fake_adbms_balance_verify_status = HAL_OK; fake_adbms_wrpwm_fail_after_ok = -1; fake_adbms_diag_status = HAL_OK; fake_adbms_config_mismatch_mask = 0u; fake_adbms_delay_advances_tick = false; fake_can_add_tx_status = HAL_OK; fake_can_add_tx_call_count = 0u; fake_can_fail_on_call = 0u; fake_can_advance_tick_per_tx_ms = 0u; fake_can_mutate_after_tx_count = 0u; fake_can_error = HAL_CAN_ERROR_NONE; fake_can_recover_status = HAL_OK; fake_can_notification_status = HAL_OK; fake_can_filter_status = HAL_OK; fake_can_filter_count = 0u; memset(fake_can_filter_log, 0, sizeof(fake_can_filter_log)); fake_rx_status = HAL_OK; fake_tim_base_start_status = HAL_OK; fake_tim_pwm_start_status = HAL_OK; fake_tim_ic_start_it_status = HAL_OK; fake_tim_ic_start_status = HAL_OK; fake_tim_total_capture = 1000u; fake_tim_high_capture = 500u; memset(&fake_rx_hdr, 0, sizeof(fake_rx_hdr)); memset(fake_rx_data, 0, sizeof(fake_rx_data)); bms_pin_state = GPIO_PIN_RESET; }
+static void init_fake_app(void){ critical_exit_hook = NULL; fake_tick = 0u; memset(&app,0,sizeof(app)); ams_safety_host_reset_state(); ams_rtos_host_reset_state(); ams_rtos_diag_init(&app); app.state = STATE_START; app.can_authority_ready = true; app.acc.smb.num_ics = NSMBS; app.acc.smb.physical_chain_count = (uint8_t)ACCUMULATOR_PHYSICAL_CHAIN_COUNT; app.acc.smb.ics_capacity = NSMBS; app.acc.smb.ics = app.acc.smb_ics; app.acc.smb.string = ACCUMULATOR_SMB_STRING; app.acc.smb.monitored_cell_count = NCELLS; app.acc.smb.health.startup_baseline_passed = true; app.acc.smb.health.sid_valid_ic_mask = (uint16_t)((1u << NSMBS) - 1u); app.acc.delay_timer_ready = true; app.acc.delay_timer_status = HAL_OK; app.acc.smb_transport_ready = true; app.acc.smb_ready = true; app.acc.smb_init_status = HAL_OK; app.acc.apm.num_ics = NAPMS; app.acc.apm.ics_capacity = NAPMS; app.acc.apm.ics = app.acc.apm_ics; app.acc.apm.string = STRING_B; app.acc.apm_ready = true; app.acc.apm_init_status = HAL_OK; app.acc.apm.health.initialized = true; app.acc.apm.health.i1_calibrated = true; app.acc.apm.health.i1_continuous_ready = true; app.acc.apm.health.sid_valid = true; app.acc.apm.health.config_valid = true; app.acc.apm.health.device_id = ADBMS2950B_DEVICE_ID; app.acc.apm.health.sid[5] = (uint8_t)(ADBMS2950B_DEVICE_ID << 1u); sil_bind_final_ring_topology(&app.acc); current_fault_init(&app.current_fault_state); voltage_fault_init(&app.voltage_fault_state); temperature_fault_init(&app.temp_fault_state); ams_heartbeat_init(&app, fake_tick); ams_safety_watchdog_boot_arm(&app); app.current_meas_reason = CURRENT_SENSOR_REASON_ADC_READ; app.current_fault_reason = CURRENT_FAULT_REASON_SENSOR_NOT_READY; app.voltage_fault_reason = VOLTAGE_FAULT_REASON_NOT_READY; app.temp_fault = true; app.temp_read_fault = true; app.temp_fan_max = true; app.temp_fault_reason = TEMPERATURE_FAULT_REASON_NOT_READY; app.imd_valid = true; app.imd_ok = true; app.imd_fault = false; app.imd_status = IMD_NORMAL; app.balance_inhibit = (AMS_HW_BRINGUP_BALANCE_INHIBIT_DEFAULT != 0); app.acc.last_balance_mute_ok = true; app.acc.last_balance_durable_zero_verified = true; app.acc.last_balance_inhibit_reason = ACCUMULATOR_BALANCE_INHIBIT_SHUTDOWN; app.adbms_mute_asserted = true; app.adbms_balance_durable_zero_verified = true; app.adbms_balance_inhibit_reason = ACCUMULATOR_BALANCE_INHIBIT_SHUTDOWN; fake_adbms_voltage_masks_full_update(); fake_adc_read_index = 0u; fake_adbms_init_status = HAL_OK; fake_adbms_start_conversion_status = HAL_OK; fake_adbms_read_cell_status = HAL_OK; fake_apm_init_status = HAL_OK; fake_apm_sample_status = HAL_OK; fake_apm_probe_status = HAL_OK; fake_apm_i1_raw = 1234; fake_apm_vb1_raw = 18000; fake_apm_init_string = STRING_A; fake_apm_init_requested_reset = true; fake_apm_init_enabled_dividers = true; fake_adbms_wrcfgb_status = HAL_OK; fake_adbms_wrpwm_status = HAL_OK; fake_adbms_balance_verify_status = HAL_OK; fake_adbms_wrpwm_fail_after_ok = -1; fake_adbms_diag_status = HAL_OK; fake_adbms_config_mismatch_mask = 0u; fake_adbms_delay_advances_tick = false; fake_can_add_tx_status = HAL_OK; fake_can_add_tx_call_count = 0u; fake_can_fail_on_call = 0u; fake_can_advance_tick_per_tx_ms = 0u; fake_can_mutate_after_tx_count = 0u; fake_can_error = HAL_CAN_ERROR_NONE; fake_can_recover_status = HAL_OK; fake_can_notification_status = HAL_OK; fake_can_filter_status = HAL_OK; fake_can_filter_count = 0u; memset(fake_can_filter_log, 0, sizeof(fake_can_filter_log)); fake_rx_status = HAL_OK; fake_tim_base_start_status = HAL_OK; fake_tim_pwm_start_status = HAL_OK; fake_tim_ic_start_it_status = HAL_OK; fake_tim_ic_start_status = HAL_OK; fake_tim_total_capture = 1000u; fake_tim_high_capture = 500u; memset(&fake_rx_hdr, 0, sizeof(fake_rx_hdr)); memset(fake_rx_data, 0, sizeof(fake_rx_data)); bms_pin_state = GPIO_PIN_RESET; }
 
 static void host_mark_updated_cells(app_data_t *d)
 {
@@ -2362,6 +2386,7 @@ static void test_logger_can_contract_packets(void){
 #endif
 
     tx_count=0; tx_free_level=3; fake_tick=12345u;
+    app.current_sample_tick = fake_tick;
     CHECK(send_logger_telemetry(&app.board.canbus, &app) == HAL_OK);
     CHECK(tx_count == HOST_LOGGER_FRAME_COUNT);
 
@@ -4439,6 +4464,7 @@ static void test_watchdog_feed_gate(void)
     fake_tick = AMS_HEARTBEAT_STARTUP_GRACE_MS + 100u;
     app.heartbeat.boot_tick = 0u;
     ams_safety_watchdog_enable_runtime(&app, true);
+    (void)ams_heartbeat_update(&app, fake_tick);
     ams_safety_watchdog_task_update(&app);
 
 #if AMS_ENABLE_IWDG
@@ -4453,16 +4479,39 @@ static void test_watchdog_feed_gate(void)
     CHECK(app.watchdog_feed_count == 1u);
     CHECK(app.watchdog_last_block_reason == AMS_WATCHDOG_BLOCK_NONE);
 
+    /* External/process faults fail BMS_OK through their own safety paths but
+     * must not turn the software-liveness watchdog into a reset loop. */
     app.fuse_fault = true;
+    app.voltage_fault = true;
+    app.temp_fault = true;
+    app.current_fault = true;
+    app.charger_fault = true;
+    app.adbms_diag_fault = true;
+    app.can_busoff_hard_fault_latched = true;
     ams_safety_watchdog_task_update(&app);
-    CHECK(app.watchdog_feed_count == 1u);
-    CHECK(app.watchdog_last_block_reason == AMS_WATCHDOG_BLOCK_HARD_FAULT);
+    CHECK(app.watchdog_feed_count == 2u);
+    CHECK(app.watchdog_last_block_reason == AMS_WATCHDOG_BLOCK_NONE);
+    CHECK(ams_safety_watchdog_ok(&app) == true);
     app.fuse_fault = false;
+    app.voltage_fault = false;
+    app.temp_fault = false;
+    app.current_fault = false;
+    app.charger_fault = false;
+    app.adbms_diag_fault = false;
+    app.can_busoff_hard_fault_latched = false;
+
+    /* Internal RTOS integrity/resource failures remain reset-worthy. */
+    app.rtos_fault = true;
+    ams_safety_watchdog_task_update(&app);
+    CHECK(app.watchdog_feed_count == 2u);
+    CHECK(app.watchdog_last_block_reason == AMS_WATCHDOG_BLOCK_RTOS_INTEGRITY);
+    CHECK(ams_safety_watchdog_ok(&app) == false);
+    app.rtos_fault = false;
 
     app.task_heartbeat_fault = true;
     app.heartbeat.safety_stale_mask = AMS_HEARTBEAT_BIT(AMS_HEARTBEAT_ADBMS);
     ams_safety_watchdog_task_update(&app);
-    CHECK(app.watchdog_feed_count == 1u);
+    CHECK(app.watchdog_feed_count == 2u);
     CHECK(app.watchdog_block_count >= 1u);
     CHECK(app.watchdog_last_block_reason == AMS_WATCHDOG_BLOCK_HEARTBEAT);
 #else
@@ -4488,10 +4537,12 @@ static void test_watchdog_boot_arm_and_startup_grace(void)
     CHECK(app.watchdog_last_block_reason == AMS_WATCHDOG_BLOCK_STARTUP_GRACE);
 
     fake_tick += AMS_HEARTBEAT_STARTUP_GRACE_MS + 1u;
+    sil_mark_all_heartbeats_alive(&app);
+    (void)ams_heartbeat_update(&app, fake_tick);
     app.hard_fault = true;
     ams_safety_watchdog_task_update(&app);
-    CHECK(app.watchdog_feed_count == 1u);
-    CHECK(app.watchdog_last_block_reason == AMS_WATCHDOG_BLOCK_HARD_FAULT);
+    CHECK(app.watchdog_feed_count == 2u);
+    CHECK(app.watchdog_last_block_reason == AMS_WATCHDOG_BLOCK_NONE);
 #else
     CHECK(app.watchdog_runtime_enabled == false);
     CHECK(app.watchdog_hw_started == false);
@@ -4634,15 +4685,39 @@ static void test_can_busoff_sets_fault_and_recovers(void)
     fake_can_error = HAL_CAN_ERROR_BOF;
 
     uint32_t epoch_before = app.board.canbus.tx_scheduler.controller_epoch;
+    HAL_CAN_ErrorCallback(&hcan);
+    CHECK(app.can_authority_ready == false);
+    CHECK(app.can_busoff_recovery_active == true);
+    CHECK(app.can_busoff_recovery_start_tick == 100u);
+    CHECK(app.can_busoff_recovery_state == (uint8_t)STATE_CHARGE);
+    CHECK(app.can_busoff_hard_fault_latched == true);
+    CHECK(app.can_busoff_policy_latch_reason ==
+          AMS_CAN_POLICY_LATCH_CHARGE_BUSOFF);
+    CHECK(app.bms_state == false);
+    CHECK(bms_pin_state == GPIO_PIN_RESET);
+
+    /* Task observation may be nearly one CAN period later, but the safety
+     * epoch and state classification remain those of the physical BOFF ISR. */
+    fake_tick = 190u;
+    app.state = STATE_DISCARGE;
     canbus_poll_errors(&app.board.canbus, &app);
+    CHECK(app.can_busoff_recovery_start_tick == 100u);
+    CHECK(app.can_busoff_recovery_state == (uint8_t)STATE_CHARGE);
     CHECK(app.canbus_fault == true);
     CHECK(app.can_busoff_fault == true);
     CHECK(app.can_recover_pending == true);
     CHECK(app.can_busoff_count == 1u);
     CHECK(app.board.canbus.tx_suspended == true);
-    CHECK(app.board.canbus.tx_scheduler.controller_epoch != epoch_before);
+    /* Bus-off first suspends/aborts owned mailboxes. The scheduler epoch is
+     * reset only after ABOM recovery and mailbox settlement completes. */
+    CHECK(app.board.canbus.tx_scheduler.controller_epoch == epoch_before);
     CHECK(app.charger_fault == true);
     CHECK(app.board.charger.communication_fail == true);
+    CHECK(app.can_busoff_recovery_active == true);
+    CHECK(app.can_authority_ready == false);
+    CHECK(app.can_busoff_hard_fault_latched == true);
+    CHECK(app.can_busoff_policy_latch_reason ==
+          AMS_CAN_POLICY_LATCH_CHARGE_BUSOFF);
     CHECK(app.bms_state == false);
     CHECK(bms_pin_state == GPIO_PIN_RESET);
 
@@ -4653,10 +4728,15 @@ static void test_can_busoff_sets_fault_and_recovers(void)
     CHECK(app.can_busoff_fault == false);
     CHECK(app.can_recover_pending == false);
     CHECK(app.can_recover_count == 1u);
+    CHECK(app.board.canbus.tx_scheduler.controller_epoch != epoch_before);
     CHECK(app.can_error_code == HAL_CAN_ERROR_NONE);
     CHECK(app.canbus_fault == false);
     CHECK(fake_can_error == HAL_CAN_ERROR_NONE);
-    CHECK(app.board.canbus.tx_suspended == false);
+    CHECK(app.board.canbus.tx_suspended == true);
+    CHECK(app.board.canbus.tx_refresh_pending == true);
+    CHECK(app.can_busoff_recovery_active == true);
+    CHECK(app.can_authority_ready == false);
+    CHECK(app.can_busoff_hard_fault_latched == true);
 
     /* If clearing the historical HAL error fails, transport stays faulted but
      * the driver does not stop/restart the controller from ISR context. */
@@ -4714,6 +4794,9 @@ static void test_can_busoff_sets_fault_and_recovers(void)
     CHECK(app.can_busoff_fault == true);
     CHECK(app.can_recover_pending == false);
     CHECK(app.canbus_fault == true);
+    CHECK(app.can_busoff_hard_fault_latched == true);
+    CHECK(app.can_busoff_policy_latch_reason ==
+          AMS_CAN_POLICY_LATCH_REPEATED_BUSOFF);
 
     init_fake_app();
     app.board.canbus.hcan = &hcan;
@@ -4723,13 +4806,485 @@ static void test_can_busoff_sets_fault_and_recovers(void)
     CHECK(app.canbus_fault == true);
     CHECK(app.can_error_code == HAL_CAN_ERROR_ACK);
     CHECK(app.can_error_count == 1u);
+    CHECK(app.can_last_error_tick == 5000u);
     CHECK(fake_can_error == HAL_CAN_ERROR_NONE);
-    fake_tick += (AMS_CAN_ERROR_SOFT_HOLD_MS / 2u);
+
+    /* A second, identical controller error is still a new occurrence. Its
+     * event must refresh the soft-fault age even though the error bits did not
+     * change from ACK to a different code. */
+    fake_tick = 5000u + (AMS_CAN_ERROR_SOFT_HOLD_MS / 2u);
+    fake_can_error = HAL_CAN_ERROR_ACK;
+    HAL_CAN_ErrorCallback(&hcan);
+    canbus_poll_errors(&app.board.canbus, &app);
+    CHECK(app.can_error_code == HAL_CAN_ERROR_ACK);
+    CHECK(app.can_error_count == 2u);
+    CHECK(app.can_last_error_tick == fake_tick);
+    CHECK(fake_can_error == HAL_CAN_ERROR_NONE);
+
+    /* The first event's original hold deadline is no longer sufficient. */
+    fake_tick = 5000u + AMS_CAN_ERROR_SOFT_HOLD_MS + 1u;
     canbus_poll_errors(&app.board.canbus, &app);
     CHECK(app.canbus_fault == true);
-    fake_tick += AMS_CAN_ERROR_SOFT_HOLD_MS + 1u;
+
+    fake_tick = 5000u + (AMS_CAN_ERROR_SOFT_HOLD_MS / 2u) +
+                AMS_CAN_ERROR_SOFT_HOLD_MS + 1u;
     canbus_poll_errors(&app.board.canbus, &app);
     CHECK(app.canbus_fault == false);
+}
+
+static void sil_prepare_can_policy_ready(app_data_t *d)
+{
+    sil_make_measurement_gates_ready(d);
+    d->adbms_balance_active = false;
+    d->adbms_balance_durable_zero_verified = true;
+    d->current_fault_mode = CURRENT_FAULT_MODE_DRIVE;
+    d->board.canbus.started = true;
+    d->board.canbus.notification_active = true;
+    d->can_authority_ready = true;
+    sil_mark_all_heartbeats_alive(d);
+    (void)ams_heartbeat_update(d, fake_tick);
+}
+
+static void sil_inject_busoff_after_authority_decision(void)
+{
+    canbus_record_busoff_event(&app.board.canbus, &app, fake_tick,
+                               (uint8_t)app.state);
+}
+
+static void sil_mark_can_transport_settled_after_busoff(app_data_t *d)
+{
+    d->board.canbus.started = true;
+    d->board.canbus.notification_active = true;
+    d->canbus_fault = false;
+    d->can_busoff_fault = false;
+    d->can_recover_pending = false;
+    d->board.canbus.busoff_event_pending = false;
+    d->board.canbus.tx_recovery_pending = false;
+    d->board.canbus.tx_refresh_pending = false;
+    d->board.canbus.tx_suspended = false;
+    d->board.canbus.tx_latched_inhibit = false;
+}
+
+static void test_can_state_dependent_safety_policy(void)
+{
+    static CAN_HandleTypeDef hcan;
+
+    /* Software acceptance of a protected generation is not proof of bus
+     * delivery. Authority remains false until the scheduler's required-set
+     * completion generation advances after real mailbox completion. */
+    init_fake_app();
+    app.board.canbus.hcan = &hcan;
+    app.board.canbus.started = true;
+    app.board.canbus.notification_active = true;
+    app.can_authority_ready = false;
+    app.can_busoff_recovery_active = true;
+    app.can_authority_complete_generation_baseline = 7u;
+    app.board.canbus.tx_scheduler.
+        protected_required_last_complete_generation = 7u;
+    canbus_update_authority_from_wire_completion(&app, &app.board.canbus);
+    CHECK(app.can_authority_ready == false);
+    CHECK(app.can_busoff_recovery_active == true);
+    app.board.canbus.tx_scheduler.
+        protected_required_last_complete_generation = 8u;
+    canbus_update_authority_from_wire_completion(&app, &app.board.canbus);
+    CHECK(app.can_authority_ready == true);
+    CHECK(app.can_busoff_recovery_active == false);
+    CHECK(app.can_authority_complete_generation_baseline == 8u);
+
+    /* A BOFF ISR arriving at the authority decision boundary must win over
+     * the task's on-wire completion observation. The task may establish
+     * authority while interrupts are masked, but the pending event must revoke
+     * it before the critical section returns to normal execution. */
+    init_fake_app();
+    app.board.canbus.hcan = &hcan;
+    app.board.canbus.started = true;
+    app.board.canbus.notification_active = true;
+    app.state = STATE_DISCARGE;
+    app.can_authority_ready = false;
+    app.can_authority_complete_generation_baseline = 10u;
+    app.board.canbus.tx_scheduler.
+        protected_required_last_complete_generation = 11u;
+    app.board.canbus.tx_scheduler.protected_required_last_complete_tick = 100u;
+    fake_tick = 101u;
+    critical_exit_hook = sil_inject_busoff_after_authority_decision;
+    canbus_update_authority_from_wire_completion(&app, &app.board.canbus);
+    CHECK(app.board.canbus.busoff_event_sequence == 1u);
+    CHECK(app.can_authority_ready == false);
+    CHECK(app.can_busoff_fault == true);
+    CHECK(app.canbus_fault == true);
+
+    /* START cannot transition into an authority-capable state until one fresh
+     * required protected generation has completed on the wire. */
+    init_fake_app();
+    fake_tick = AMS_HEARTBEAT_STARTUP_GRACE_MS + 100u;
+    sil_prepare_can_policy_ready(&app);
+    app.state = STATE_START;
+    app.can_authority_ready = false;
+    app.bms_state = true;
+    bms_pin_state = GPIO_PIN_SET;
+    error_task_update(&app, fake_tick);
+    CHECK(app.state == STATE_START);
+    CHECK(app.bms_state == false);
+
+    app.board.canbus.hcan = &hcan;
+    tx_count = 0u;
+    tx_free_level = 3u;
+    run_one_canbus_task_iteration(&app);
+    CHECK(app.can_authority_ready == true);
+    sil_mark_all_heartbeats_alive(&app);
+    (void)ams_heartbeat_update(&app, fake_tick);
+    error_task_update(&app, fake_tick);
+    CHECK(app.state == STATE_DISCARGE);
+    CHECK(app.bms_state == false); /* transition cycle is deliberately fail-low */
+
+    /* A transient drive-state bus-off gets a bounded grace interval. The CAN
+     * task is still alive, so software heartbeats remain fresh and BMS_OK may
+     * stay asserted until the 500 ms communication deadline. */
+    init_fake_app();
+    app.board.canbus.hcan = &hcan;
+    app.board.canbus.started = true;
+    app.board.canbus.notification_active = true;
+    fake_tick = AMS_HEARTBEAT_STARTUP_GRACE_MS + 1000u;
+    sil_prepare_can_policy_ready(&app);
+    app.state = STATE_DISCARGE;
+    app.bms_state = true;
+    bms_pin_state = GPIO_PIN_SET;
+    fake_can_error = HAL_CAN_ERROR_BOF;
+    const uint32_t drive_busoff_tick = fake_tick;
+    HAL_CAN_ErrorCallback(&hcan);
+    CHECK(app.can_busoff_recovery_active == true);
+    CHECK(app.can_busoff_recovery_start_tick == drive_busoff_tick);
+    CHECK(app.can_busoff_recovery_state == (uint8_t)STATE_DISCARGE);
+    CHECK(app.can_busoff_hard_fault_latched == false);
+    CHECK(app.bms_state == true);
+
+    /* Poll 90 ms later to prove the 500 ms policy remains anchored to ISR
+     * event time rather than the 10 Hz task-observation time. */
+    fake_tick = drive_busoff_tick + 90u;
+    canbus_poll_errors(&app.board.canbus, &app);
+    CHECK(app.can_busoff_recovery_start_tick == drive_busoff_tick);
+
+    fake_tick = drive_busoff_tick +
+                AMS_CAN_DISCHARGE_BUSOFF_HARD_FAULT_MS - 1u;
+    sil_mark_all_heartbeats_alive(&app);
+    (void)ams_heartbeat_update(&app, fake_tick);
+    error_task_update(&app, fake_tick);
+    CHECK(app.can_busoff_hard_fault_latched == false);
+    CHECK(app.hard_fault == false);
+    CHECK(app.bms_state == true);
+
+    fake_tick++;
+    sil_mark_all_heartbeats_alive(&app);
+    (void)ams_heartbeat_update(&app, fake_tick);
+    error_task_update(&app, fake_tick);
+    CHECK(app.can_busoff_hard_fault_latched == true);
+    CHECK(app.can_busoff_policy_latch_reason ==
+          AMS_CAN_POLICY_LATCH_DISCHARGE_TIMEOUT);
+    CHECK(app.hard_fault == true);
+    CHECK(app.bms_state == false);
+    CHECK(bms_pin_state == GPIO_PIN_RESET);
+
+#if AMS_ENABLE_IWDG
+    /* The CAN/process hard fault does not stop IWDG feeding while software is
+     * alive; heartbeat loss remains the reset-worthy condition. */
+    uint32_t feeds_before = app.watchdog_feed_count;
+    ams_safety_watchdog_task_update(&app);
+    CHECK(app.watchdog_feed_count == feeds_before + 1u);
+    CHECK(app.watchdog_last_block_reason == AMS_WATCHDOG_BLOCK_NONE);
+#endif
+
+    /* The 500 ms drive grace uses unsigned elapsed time and therefore must
+     * retain its exact boundary across the 32-bit RTOS tick wrap. */
+    init_fake_app();
+    app.state = STATE_DISCARGE;
+    app.can_busoff_recovery_active = true;
+    app.can_busoff_recovery_state = (uint8_t)STATE_DISCARGE;
+    app.can_busoff_recovery_start_tick = UINT32_MAX - 199u;
+    error_task_update_can_policy(&app,
+        app.can_busoff_recovery_start_tick +
+        AMS_CAN_DISCHARGE_BUSOFF_HARD_FAULT_MS - 1u);
+    CHECK(app.can_busoff_hard_fault_latched == false);
+    error_task_update_can_policy(&app,
+        app.can_busoff_recovery_start_tick +
+        AMS_CAN_DISCHARGE_BUSOFF_HARD_FAULT_MS);
+    CHECK(app.can_busoff_hard_fault_latched == true);
+    CHECK(app.can_busoff_policy_latch_reason ==
+          AMS_CAN_POLICY_LATCH_DISCHARGE_TIMEOUT);
+
+    /* A completion timestamp alone is not recovery proof. Model a delayed
+     * pre-bus-off completion arriving after the physical BOFF while the CAN
+     * task has not yet settled the old controller epoch. At the 500 ms safety
+     * decision this MUST fail low rather than accepting generation 11. */
+    init_fake_app();
+    app.board.canbus.hcan = &hcan;
+    app.state = STATE_DISCARGE;
+    app.can_busoff_recovery_active = true;
+    app.can_busoff_recovery_state = (uint8_t)STATE_DISCARGE;
+    app.can_busoff_recovery_start_tick = 1000u;
+    app.can_authority_complete_generation_baseline = 10u;
+    app.board.canbus.tx_scheduler.protected_required_last_complete_generation = 11u;
+    app.board.canbus.tx_scheduler.protected_required_last_complete_tick = 1001u;
+    app.canbus_fault = true;
+    app.can_busoff_fault = true;
+    app.can_recover_pending = true;
+    app.board.canbus.busoff_event_pending = true;
+    app.board.canbus.tx_suspended = true;
+    error_task_update_can_policy(
+        &app, 1000u + AMS_CAN_DISCHARGE_BUSOFF_HARD_FAULT_MS);
+    CHECK(app.can_busoff_hard_fault_latched == true);
+    CHECK(app.can_busoff_policy_latch_reason ==
+          AMS_CAN_POLICY_LATCH_DISCHARGE_TIMEOUT);
+
+    /* After transport recovery settlement moves the authority baseline beyond
+     * old-controller completions, a genuinely fresh 499 ms on-wire completion
+     * is accepted even if the 10 Hz CAN authority observer has not run yet. */
+    init_fake_app();
+    app.board.canbus.hcan = &hcan;
+    app.state = STATE_DISCARGE;
+    app.can_busoff_recovery_active = true;
+    app.can_busoff_recovery_state = (uint8_t)STATE_DISCARGE;
+    app.can_busoff_recovery_start_tick = 2000u;
+    app.can_authority_complete_generation_baseline = 20u;
+    sil_mark_can_transport_settled_after_busoff(&app);
+    app.board.canbus.tx_scheduler.protected_required_last_complete_generation = 21u;
+    app.board.canbus.tx_scheduler.protected_required_last_complete_tick =
+        2000u + AMS_CAN_DISCHARGE_BUSOFF_HARD_FAULT_MS - 1u;
+    error_task_update_can_policy(
+        &app, 2000u + AMS_CAN_DISCHARGE_BUSOFF_HARD_FAULT_MS);
+    CHECK(app.can_busoff_hard_fault_latched == false);
+
+    /* The lower-priority CAN observer may consume that same 499 ms completion
+     * later and close the epoch. */
+    canbus_update_authority_from_wire_completion(&app, &app.board.canbus);
+    CHECK(app.can_authority_ready == true);
+    CHECK(app.can_busoff_recovery_active == false);
+
+    /* Exactly 500 ms is outside the strict recovery window. */
+    init_fake_app();
+    app.board.canbus.hcan = &hcan;
+    app.state = STATE_DISCARGE;
+    app.can_busoff_recovery_active = true;
+    app.can_busoff_recovery_state = (uint8_t)STATE_DISCARGE;
+    app.can_busoff_recovery_start_tick = 3000u;
+    app.can_authority_complete_generation_baseline = 30u;
+    sil_mark_can_transport_settled_after_busoff(&app);
+    app.board.canbus.tx_scheduler.protected_required_last_complete_generation = 31u;
+    app.board.canbus.tx_scheduler.protected_required_last_complete_tick =
+        3000u + AMS_CAN_DISCHARGE_BUSOFF_HARD_FAULT_MS;
+    error_task_update_can_policy(
+        &app, 3000u + AMS_CAN_DISCHARGE_BUSOFF_HARD_FAULT_MS);
+    CHECK(app.can_busoff_hard_fault_latched == true);
+
+    /* 501 ms likewise fails and cannot be consumed later for authority. */
+    init_fake_app();
+    app.board.canbus.hcan = &hcan;
+    app.state = STATE_DISCARGE;
+    app.can_busoff_recovery_active = true;
+    app.can_busoff_recovery_state = (uint8_t)STATE_DISCARGE;
+    app.can_busoff_recovery_start_tick = 4000u;
+    app.can_authority_complete_generation_baseline = 40u;
+    sil_mark_can_transport_settled_after_busoff(&app);
+    app.board.canbus.tx_scheduler.protected_required_last_complete_generation = 41u;
+    app.board.canbus.tx_scheduler.protected_required_last_complete_tick =
+        4000u + AMS_CAN_DISCHARGE_BUSOFF_HARD_FAULT_MS + 1u;
+    canbus_update_authority_from_wire_completion(&app, &app.board.canbus);
+    CHECK(app.can_authority_ready == false);
+    CHECK(app.can_busoff_recovery_active == true);
+    error_task_update_can_policy(
+        &app, 4000u + AMS_CAN_DISCHARGE_BUSOFF_HARD_FAULT_MS + 1u);
+    CHECK(app.can_busoff_hard_fault_latched == true);
+
+    /* Same 499 ms event-time acceptance across 32-bit tick wrap, once the
+     * transport recovery epoch has been settled. */
+    init_fake_app();
+    app.board.canbus.hcan = &hcan;
+    app.state = STATE_DISCARGE;
+    app.can_busoff_recovery_active = true;
+    app.can_busoff_recovery_state = (uint8_t)STATE_DISCARGE;
+    app.can_busoff_recovery_start_tick = UINT32_MAX - 100u;
+    app.can_authority_complete_generation_baseline = 50u;
+    sil_mark_can_transport_settled_after_busoff(&app);
+    app.board.canbus.tx_scheduler.protected_required_last_complete_generation = 51u;
+    app.board.canbus.tx_scheduler.protected_required_last_complete_tick =
+        app.can_busoff_recovery_start_tick +
+        AMS_CAN_DISCHARGE_BUSOFF_HARD_FAULT_MS - 1u;
+    error_task_update_can_policy(
+        &app, app.can_busoff_recovery_start_tick +
+              AMS_CAN_DISCHARGE_BUSOFF_HARD_FAULT_MS);
+    CHECK(app.can_busoff_hard_fault_latched == false);
+
+    /* Electrical ABOM recovery is not enough. Recovery remains active until a
+     * fresh required protected generation completes on the wire, then the
+     * transient epoch closes. */
+    init_fake_app();
+    app.board.canbus.hcan = &hcan;
+    app.board.canbus.started = true;
+    app.board.canbus.notification_active = true;
+    fake_tick = 2000u;
+    sil_prepare_can_policy_ready(&app);
+    app.state = STATE_DISCARGE;
+    fake_can_error = HAL_CAN_ERROR_BOF;
+    app.board.canbus.tx_scheduler.
+        protected_required_last_complete_generation = 33u;
+    canbus_poll_errors(&app.board.canbus, &app);
+    CHECK(app.can_authority_complete_generation_baseline == 33u);
+    /* Model an old mailbox completion that wins the abort race before recovery
+     * settlement. Recovery must snapshot it so it cannot masquerade as fresh. */
+    app.board.canbus.tx_scheduler.
+        protected_required_last_complete_generation = 34u;
+    fake_tick += 5u;
+    canbus_poll_errors(&app.board.canbus, &app);
+    CHECK(app.can_authority_complete_generation_baseline == 34u);
+    CHECK(app.can_busoff_fault == false);
+    CHECK(app.can_recover_pending == false);
+    CHECK(app.can_busoff_recovery_active == true);
+    CHECK(app.can_authority_ready == false);
+    tx_count = 0u;
+    tx_free_level = 3u;
+    run_one_canbus_task_iteration(&app);
+    CHECK(app.can_authority_ready == true);
+    CHECK(app.can_busoff_recovery_active == false);
+    CHECK(app.can_busoff_hard_fault_latched == false);
+
+    /* Explicit bench/service recovery may clear a sticky policy latch, but it
+     * must not grant authority by itself. A fresh required protected generation
+     * must still complete on the wire; until then the recovery epoch is bounded. */
+#if AMS_ENABLE_SERVICE_CLI
+    init_fake_app();
+    app.board.canbus.hcan = &hcan;
+    app.board.canbus.started = true;
+    app.board.canbus.notification_active = true;
+    app.state = STATE_DISCARGE;
+    app.can_busoff_hard_fault_latched = true;
+    app.can_busoff_policy_latch_reason = AMS_CAN_POLICY_LATCH_DISCHARGE_TIMEOUT;
+    app.board.canbus.tx_scheduler.
+        protected_required_last_complete_generation = 77u;
+    app.board.canbus.tx_latched_inhibit = true;
+    app.board.canbus.tx_suspended = true;
+    app.can_authority_ready = false;
+    fake_tick = 2500u;
+    sil_prepare_cli_capture();
+    {
+        char *recover_argv[] = {(char *)"can", (char *)"recover"};
+        CHECK(get_can_diag(2, recover_argv) == 0);
+    }
+    CHECK(app.can_busoff_hard_fault_latched == false);
+    CHECK(app.can_busoff_policy_latch_reason == AMS_CAN_POLICY_LATCH_NONE);
+    CHECK(app.can_authority_ready == false);
+    CHECK(app.can_authority_complete_generation_baseline == 77u);
+    CHECK(app.can_busoff_recovery_active == false);
+    CHECK(app.can_authority_refresh_pending == true);
+    CHECK(app.can_busoff_recovery_state == (uint8_t)STATE_NULL);
+    CHECK(strstr(cli_capture, "CAN recover: OK") != NULL);
+    /* In CHARGE/BALANCE the service refresh marker must not masquerade as a
+     * new physical BOFF epoch and immediately re-latch the safety policy. */
+    app.state = STATE_CHARGE;
+    error_task_update_can_policy(&app, fake_tick);
+    CHECK(app.can_busoff_hard_fault_latched == false);
+    app.state = STATE_DISCARGE;
+    tx_count = 0u;
+    tx_free_level = 3u;
+    run_one_canbus_task_iteration(&app);
+    CHECK(app.can_authority_ready == true);
+    CHECK(app.can_busoff_recovery_active == false);
+    CHECK(app.can_authority_refresh_pending == false);
+
+    /* If service recovery cannot settle the controller, the repeated-bus-off
+     * latch/window must remain intact. It is unsafe and diagnostically
+     * misleading to partially clear those fields before settlement succeeds. */
+    {
+        static CAN_TypeDef stuck_can_regs;
+        init_fake_app();
+        memset(&stuck_can_regs, 0, sizeof(stuck_can_regs));
+        stuck_can_regs.ESR = CAN_ESR_BOFF;
+        app.board.canbus.hcan = &hcan;
+        hcan.Instance = &stuck_can_regs;
+        app.board.canbus.tx_latched_inhibit = true;
+        app.board.canbus.busoff_window_start_tick = 1234u;
+        app.board.canbus.busoff_window_count = AMS_CAN_BUSOFF_REPEAT_LIMIT;
+        CHECK(canbus_recover(&app.board.canbus, &app) == HAL_BUSY);
+        CHECK(app.board.canbus.tx_latched_inhibit == true);
+        CHECK(app.board.canbus.busoff_window_start_tick == 1234u);
+        CHECK(app.board.canbus.busoff_window_count ==
+              AMS_CAN_BUSOFF_REPEAT_LIMIT);
+        hcan.Instance = NULL;
+    }
+#endif
+
+#if AMS_FAULT_INJECTION_CLI && AMS_ENABLE_SERVICE_CLI
+    /* Bench CAN-bus-off injection must exercise the same event/state policy as
+     * the real HAL BOFF callback, not a reduced approximation. */
+    init_fake_app();
+    app.board.canbus.hcan = &hcan;
+    app.board.canbus.started = true;
+    app.board.canbus.notification_active = true;
+    app.state = STATE_CHARGE;
+    app.bms_state = true;
+    bms_pin_state = GPIO_PIN_SET;
+    fake_tick = 2750u;
+    sil_prepare_cli_capture();
+    {
+        char *inject_argv[] = {(char *)"fault", (char *)"inject",
+                               (char *)"canbusoff"};
+        CHECK(get_faults(3, inject_argv) == 0);
+    }
+    CHECK(app.can_busoff_recovery_active == true);
+    CHECK(app.can_busoff_recovery_start_tick == 2750u);
+    CHECK(app.can_busoff_recovery_state == (uint8_t)STATE_CHARGE);
+    CHECK(app.board.canbus.busoff_event_pending == true);
+    CHECK(app.board.canbus.error_isr_pending == true);
+    CHECK((app.board.canbus.error_isr_code & HAL_CAN_ERROR_BOF) != 0u);
+    CHECK(app.can_busoff_hard_fault_latched == true);
+    CHECK(app.can_busoff_policy_latch_reason ==
+          AMS_CAN_POLICY_LATCH_CHARGE_BUSOFF);
+    CHECK(app.bms_state == false);
+    CHECK(bms_pin_state == GPIO_PIN_RESET);
+
+    init_fake_app();
+    app.board.canbus.hcan = &hcan;
+    app.board.canbus.started = true;
+    app.board.canbus.notification_active = true;
+    app.state = STATE_DISCARGE;
+    app.bms_state = true;
+    bms_pin_state = GPIO_PIN_SET;
+    fake_tick = 2800u;
+    sil_prepare_cli_capture();
+    {
+        char *inject_argv[] = {(char *)"fault", (char *)"inject",
+                               (char *)"canbusoff"};
+        CHECK(get_faults(3, inject_argv) == 0);
+    }
+    CHECK(app.can_busoff_recovery_state == (uint8_t)STATE_DISCARGE);
+    CHECK(app.can_busoff_hard_fault_latched == false);
+    CHECK(app.bms_state == true);
+    error_task_update_can_policy(
+        &app, 2800u + AMS_CAN_DISCHARGE_BUSOFF_HARD_FAULT_MS);
+    CHECK(app.can_busoff_hard_fault_latched == true);
+    CHECK(app.can_busoff_policy_latch_reason ==
+          AMS_CAN_POLICY_LATCH_DISCHARGE_TIMEOUT);
+#endif
+
+    /* BALANCE has no drive-continuity exception: bus-off is immediate fail-low
+
+     * and sticky until power cycle or explicit service recovery. */
+    init_fake_app();
+    app.board.canbus.hcan = &hcan;
+    app.board.canbus.started = true;
+    app.board.canbus.notification_active = true;
+    app.state = STATE_BALANCE;
+    app.bms_state = true;
+    bms_pin_state = GPIO_PIN_SET;
+    fake_tick = 3000u;
+    fake_can_error = HAL_CAN_ERROR_BOF;
+    HAL_CAN_ErrorCallback(&hcan);
+    CHECK(app.can_busoff_hard_fault_latched == true);
+    CHECK(app.bms_state == false);
+    CHECK(bms_pin_state == GPIO_PIN_RESET);
+    canbus_poll_errors(&app.board.canbus, &app);
+    CHECK(app.can_busoff_hard_fault_latched == true);
+    CHECK(app.can_busoff_policy_latch_reason ==
+          AMS_CAN_POLICY_LATCH_BALANCE_BUSOFF);
+    CHECK(app.bms_state == false);
 }
 
 static void test_fault_matrix_extra(void){
@@ -8151,6 +8706,51 @@ static void test_system_sil_concurrent_heartbeat_starvation_and_recovery(void)
     sil_assert_safety_invariants(&app, "logger_heartbeat_starved_only");
 }
 
+static void sil_transition_out_of_charge_after_charger_commit(void)
+{
+    taskENTER_CRITICAL();
+    set_bms(false);
+    CHECK(ams_state_transition_begin(&app,
+                                     STATE_DISCARGE,
+                                     AMS_STATE_TRANSITION_SERVICE_COMMAND,
+                                     fake_tick) == AMS_STATE_TRANSITION_APPLIED);
+    ams_state_transition_finish(&app);
+    taskEXIT_CRITICAL();
+}
+
+static void test_system_sil_charger_enable_revalidated_at_hw_load(void)
+{
+    static CAN_HandleTypeDef hcan;
+
+    init_fake_app();
+    charger_init(&app.board.charger, &app.board.canbus);
+    app.board.canbus.hcan = &hcan;
+    app.state = STATE_CHARGE;
+    app.bms_state = true;
+    bms_pin_state = GPIO_PIN_SET;
+    tx_count = 0u;
+    tx_free_level = 3u;
+
+    /* Reproduce a higher-priority supervisor transition after the charger
+     * generation is committed but before canbus_tx_kick() loads it into bxCAN.
+     * A stale CHARGE decision must be converted into a zero-demand disable at
+     * the actual hardware-load boundary. */
+    critical_exit_hook = sil_transition_out_of_charge_after_charger_commit;
+    CHECK(canbus_publish_charger_command(
+              &app.board.canbus, 0u, CANBUS_TX_TAG_CHARGER_NORMAL,
+              (uint16_t)(CHARGE_MAX_VOLTAGE * 10.0f),
+              (uint16_t)(CHARGE_MAX_CURRENT * 10.0f), false) == HAL_OK);
+
+    CHECK(app.state == STATE_DISCARGE);
+    CHECK(app.board.charger.shutdown_pending == true);
+    CHECK(tx_count >= 1u);
+    CHECK(tx_log[0].extid == CCS_CANBUS_ID);
+    CHECK(word_at(0u, 0u) == 0u);
+    CHECK(word_at(0u, 1u) == 0u);
+    CHECK(tx_log[0].data[4] == CHARGER_CMD_DISABLE);
+    CHECK(app.bms_state == false);
+}
+
 static void test_system_sil_concurrent_charger_tx_recovery_ordering(void)
 {
     static CAN_HandleTypeDef hcan;
@@ -9760,6 +10360,26 @@ static void test_estimator_status_packet_edges(void){
 }
 
 #if AMS_ENABLE_TUNING_CAN
+static void test_estimator_tuning_producer_enabled(void)
+{
+    init_fake_app();
+    ams_measurement_snapshot_t measurement;
+    memset(&measurement, 0, sizeof(measurement));
+    measurement.sequence = 0xA5u;
+    measurement.publication_tick = 100u;
+    measurement.current.latest_sample_tick = 100u;
+    app.estimator.instance_count = 1u;
+    app.tuning_store.published = false;
+    app.tuning_store.next_sequence = 9u;
+
+    estimator_publish_tuning_snapshot(&app, &measurement, 125u);
+    CHECK(app.tuning_store.published == true);
+    CHECK(app.tuning_store.buffer[app.tuning_store.published_index].
+          measurement_sequence == 0xA5u);
+    CHECK(app.tuning_store.buffer[app.tuning_store.published_index].
+          snapshot_sequence == 9u);
+}
+
 static void test_passive_tuning_packet_contract(void)
 {
     static CAN_HandleTypeDef hcan;
@@ -10035,6 +10655,27 @@ static void test_hil_adbms_image_replaces_raw_reads(void)
     CHECK(app.acc.valid_temp_count == 0u);
 
 #if AMS_HIL_REPLACE_ADBMS
+    static CAN_HandleTypeDef hcan;
+
+    /* When CAN is the measurement source, bus-off is an immediate hard
+     * fail-low condition even in DISCHARGE; there is no 500 ms continuity
+     * exception because measurement authority disappeared with the bus. */
+    init_fake_app();
+    fake_tick = 1900u;
+    app.board.canbus.hcan = &hcan;
+    app.board.canbus.started = true;
+    app.board.canbus.notification_active = true;
+    app.state = STATE_DISCARGE;
+    app.bms_state = true;
+    bms_pin_state = GPIO_PIN_SET;
+    fake_can_error = HAL_CAN_ERROR_BOF;
+    canbus_poll_errors(&app.board.canbus, &app);
+    CHECK(app.can_busoff_hard_fault_latched == true);
+    CHECK(app.can_busoff_policy_latch_reason ==
+          AMS_CAN_POLICY_LATCH_HIL_MEASUREMENT_LOSS);
+    CHECK(app.bms_state == false);
+    CHECK(bms_pin_state == GPIO_PIN_RESET);
+
     init_fake_app();
     fake_tick = 2000u;
     fake_adbms_lock_depth = 0u;
@@ -11295,6 +11936,7 @@ int main(void){
     test_system_sil_startup_garbage_never_enables_bms(); puts("PASS system SIL startup garbage never enables BMS_OK");
     test_system_sil_long_run_seeded_fuzz_invariants(); puts("PASS system SIL seeded fuzz invariants");
     test_system_sil_concurrent_heartbeat_starvation_and_recovery(); puts("PASS system SIL concurrent heartbeat starvation/recovery");
+    test_system_sil_charger_enable_revalidated_at_hw_load(); puts("PASS system SIL charger enable revalidated at HW load");
     test_system_sil_concurrent_charger_tx_recovery_ordering(); puts("PASS system SIL concurrent charger TX recovery ordering");
     test_system_sil_concurrent_seeded_scheduler_abuse(); puts("PASS system SIL concurrent seeded scheduler abuse");
     test_temp_stats(); puts("PASS temp stats");
@@ -11326,6 +11968,9 @@ int main(void){
     test_estimator_task_hil_and_hardware_paths(); puts("PASS estimator task HIL/hardware paths");
     test_estimator_rejects_invalid_hardware_inputs(); puts("PASS estimator rejects invalid hardware inputs");
     test_estimator_status_packet_edges(); puts("PASS estimator status packet edges");
+#if AMS_ENABLE_TUNING_CAN
+    test_estimator_tuning_producer_enabled(); puts("PASS estimator tuning CAN producer compile/runtime gate");
+#endif
     test_can_rx_filter_matrix(); puts("PASS CAN RX filter matrix");
     test_can_rx_isr_queue_ownership_and_overflow(); puts("PASS CAN RX ISR queue ownership/overflow");
     test_charge_state_disable_matrix(); puts("PASS charge-state disable matrix");
@@ -11352,6 +11997,7 @@ int main(void){
     test_watchdog_start_failure_is_fail_closed(); puts("PASS watchdog start-failure fail-closed gate");
     test_rtos_stack_heap_diag_and_faults(); puts("PASS RTOS stack/heap diagnostics");
     test_can_busoff_sets_fault_and_recovers(); puts("PASS CAN bus-off fault/recovery");
+    test_can_state_dependent_safety_policy(); puts("PASS CAN state-dependent safety policy");
     test_fault_matrix_extra(); puts("PASS fault matrix extra");
     puts("ALL COMPREHENSIVE HOST INJECTION TESTS PASSED");
     return 0;

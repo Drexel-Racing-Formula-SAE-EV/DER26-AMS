@@ -160,5 +160,60 @@ int main(void)
         CHECK(soh_input.current_calibrated==(n==0));
     }
     puts("PASS SoP and SoH reject unknown/zero uncertainty as calibrated");
+
+    /* Constituent freshness is evaluated at solve time. Cell ages are stored
+     * relative to voltage_complete_tick; temperature ages are stored relative
+     * to publication_tick. A fresh publication must not hide older source
+     * readings, and normal ~0.8 s mux temperature age remains admissible. */
+    memset(&s,0,sizeof(s));
+    s.sequence=1u;
+    s.publication_tick=1000u;
+    s.voltage_complete_tick=900u;
+    s.current.uncertainty_mA=500u;
+    s.cell_age_ms[2][4]=150u;
+    s.temp_age_ms[3][7]=700u;
+    tick=1100u;
+    build_sop_input(&power,&s,&est,&policy,temperatures,tick,&sop_input);
+    build_soh_input(&s,&est,&policy,tick,0.1f,3.7f,3.8f,25,&soh_input);
+    CHECK(sop_input.segment[2].max_cell_age_ms==350u);
+    CHECK(sop_input.segment[3].max_temperature_age_ms==800u);
+    CHECK(soh_input.max_cell_age_ms==350u);
+    CHECK(soh_input.max_temperature_age_ms==800u);
+
+    ams_sop_config_t sop_cfg;
+    ams_sop_default_config(&sop_cfg);
+    CHECK((ams_sop_input_reason_flags(&sop_input,&sop_cfg) &
+           AMS_SOP_REASON_MEASUREMENT_STALE)!=0u);
+
+    /* Restore cell freshness: 800 ms temperature data is expected during the
+     * healthy eight-position mux scan and must not trip the 1 s thermal bound. */
+    s.voltage_complete_tick=1000u;
+    s.cell_age_ms[2][4]=0u;
+    build_sop_input(&power,&s,&est,&policy,temperatures,tick,&sop_input);
+    build_soh_input(&s,&est,&policy,tick,0.1f,3.7f,3.8f,25,&soh_input);
+    CHECK((ams_sop_input_reason_flags(&sop_input,&sop_cfg) &
+           AMS_SOP_REASON_MEASUREMENT_STALE)==0u);
+
+    ams_soh_config_t soh_cfg;
+    ams_soh_estimator_t soh_estimator;
+    ams_soh_default_config(&soh_cfg);
+    ams_soh_init(&soh_estimator,&soh_cfg);
+    (void)ams_soh_update(&soh_estimator,&soh_cfg,&soh_input);
+    CHECK((soh_estimator.result.last_reason_flags & AMS_SOH_REASON_STALE)==0u);
+
+    s.temp_age_ms[3][7]=950u; /* +100 ms to solve time => 1050 ms */
+    build_sop_input(&power,&s,&est,&policy,temperatures,tick,&sop_input);
+    build_soh_input(&s,&est,&policy,tick,0.1f,3.7f,3.8f,25,&soh_input);
+    CHECK(sop_input.segment[3].max_temperature_age_ms==1050u);
+    CHECK((ams_sop_input_reason_flags(&sop_input,&sop_cfg) &
+           AMS_SOP_REASON_MEASUREMENT_STALE)!=0u);
+    ams_soh_init(&soh_estimator,&soh_cfg);
+    (void)ams_soh_update(&soh_estimator,&soh_cfg,&soh_input);
+    CHECK((soh_estimator.result.last_reason_flags & AMS_SOH_REASON_STALE)!=0u);
+
+    CHECK(effective_reading_age_ms(100u,UINT32_MAX-50u,25u)==176u);
+    CHECK(effective_reading_age_ms(UINT32_MAX,1000u,1100u)==UINT32_MAX);
+    CHECK(effective_reading_age_ms(100u,1200u,1100u)==UINT32_MAX);
+    puts("PASS SoP/SoH effective cell/temperature freshness, mux cadence and tick wrap");
     return 0;
 }
