@@ -76,3 +76,12 @@ host_tests/
 ```
 
 The harness intentionally leaves the STM32CubeIDE target project untouched.
+
+Focused current-window and CAN provenance regressions (no battery campaign):
+
+```sh
+make measurement-integrity-test
+```
+
+This target is included in `firmware-ci`. It covers ordering, carry-over,
+range mixing, stale/gapped samples, tick wrap, and CAN quality/age/sequence.

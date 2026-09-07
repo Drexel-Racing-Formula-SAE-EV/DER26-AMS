@@ -156,6 +156,10 @@ void ams_sop_default_config(ams_sop_config_t *cfg)
     cfg->current_uncertainty_floor_a = 0.50f;
     cfg->max_innovation_per_cell_v = 0.100f;
     cfg->max_measurement_age_ms = 250.0f;
+    /* The 24 thermistors are sampled three at a time across eight 10 Hz mux
+     * positions. One second admits a complete healthy scan plus scheduler
+     * quantization while still rejecting materially stale thermal state. */
+    cfg->max_temperature_age_ms = 1000.0f;
     cfg->default_capacity_soh_lower = 0.80f;
     cfg->default_resistance_soh_upper = 1.25f;
 
@@ -210,6 +214,7 @@ bool ams_sop_config_valid(const ams_sop_config_t *cfg)
        !finite_nonnegative(cfg->current_uncertainty_floor_a) ||
        !finite_positive(cfg->max_innovation_per_cell_v) ||
        !finite_positive(cfg->max_measurement_age_ms) ||
+       !finite_positive(cfg->max_temperature_age_ms) ||
        !isfinite(cfg->default_capacity_soh_lower) ||
        (cfg->default_capacity_soh_lower < 0.50f) ||
        (cfg->default_capacity_soh_lower > 1.05f) ||
@@ -270,6 +275,10 @@ uint32_t ams_sop_input_reason_flags(const ams_sop_input_t *input,
     {
         reasons |= AMS_SOP_REASON_ESTIMATOR_INVALID;
     }
+    if(input->estimator_acquired == 0u)
+    {
+        reasons |= AMS_SOP_REASON_ESTIMATOR_UNACQUIRED;
+    }
     if(input->current_calibrated == 0u)
     {
         reasons |= AMS_SOP_REASON_CURRENT_UNCALIBRATED;
@@ -322,7 +331,9 @@ uint32_t ams_sop_input_reason_flags(const ams_sop_input_t *input,
         {
             reasons |= AMS_SOP_REASON_MODEL_DOMAIN;
         }
-        if(in->max_cell_age_ms > (uint32_t)cfg->max_measurement_age_ms)
+        if((in->max_cell_age_ms > (uint32_t)cfg->max_measurement_age_ms) ||
+           (in->max_temperature_age_ms >
+            (uint32_t)cfg->max_temperature_age_ms))
         {
             reasons |= AMS_SOP_REASON_MEASUREMENT_STALE;
         }
@@ -392,6 +403,7 @@ static uint32_t fatal_input_reasons(void)
 {
     return AMS_SOP_REASON_MEASUREMENT_INVALID |
            AMS_SOP_REASON_ESTIMATOR_INVALID |
+           AMS_SOP_REASON_ESTIMATOR_UNACQUIRED |
            AMS_SOP_REASON_CURRENT_UNCALIBRATED |
            AMS_SOP_REASON_CURRENT_POLARITY |
            AMS_SOP_REASON_MEASUREMENT_STALE |

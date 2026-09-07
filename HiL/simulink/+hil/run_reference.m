@@ -42,7 +42,9 @@ stored_count = numel(stored_indices);
 store_lookup = zeros(numel(time), 1);
 store_lookup(stored_indices) = 1:stored_count;
 
-result = allocate_result(stored_count, Ns, pack_cfg);
+store_group_truth = isfield(sim_cfg, 'store_group_truth') && ...
+    logical(sim_cfg.store_group_truth);
+result = allocate_result(stored_count, Ns, pack_cfg, store_group_truth);
 previous_pack_voltage = pack_cfg.nominal_voltage_V;
 
 for step_index = 1:numel(time)
@@ -84,7 +86,7 @@ for step_index = 1:numel(time)
     storage_index = store_lookup(step_index);
     if storage_index > 0
         result = store_output(result, storage_index, time(step_index), ...
-            pack_current, ambient(step_index), output);
+            pack_current, ambient(step_index), output, physical, store_group_truth);
     end
 
     generated_heat = cell_current .^ 2 .* r0 + ...
@@ -146,7 +148,7 @@ values = interp2(double(params.temp_bp_ocv(:).'), ...
     temperature, soc, 'linear');
 end
 
-function result = allocate_result(count, Ns, pack_cfg)
+function result = allocate_result(count, Ns, pack_cfg, store_group_truth)
 result = struct();
 result.time_s = zeros(count, 1);
 result.I_pack = zeros(count, 1);
@@ -165,9 +167,15 @@ result.V_min = zeros(count, 1);
 result.V_max = zeros(count, 1);
 result.T_max = zeros(count, 1);
 result.T_avg = zeros(count, 1);
+if store_group_truth
+    result.Vp1_group = zeros(count, Ns);
+    result.Vp2_group = zeros(count, Ns);
+    result.T_core_group = zeros(count, Ns);
+    result.T_surf_group = zeros(count, Ns);
+end
 end
 
-function result = store_output(result, index, time, current, ambient, output)
+function result = store_output(result, index, time, current, ambient, output, physical, store_group_truth)
 result.time_s(index) = time;
 result.I_pack(index) = current;
 result.T_ambient(index) = ambient;
@@ -185,6 +193,12 @@ result.V_min(index) = output.V_min;
 result.V_max(index) = output.V_max;
 result.T_max(index) = output.T_max;
 result.T_avg(index) = output.T_avg;
+if store_group_truth
+    result.Vp1_group(index, :) = double(physical.Vp1_group(:)).';
+    result.Vp2_group(index, :) = double(physical.Vp2_group(:)).';
+    result.T_core_group(index, :) = double(physical.T_core_group(:)).';
+    result.T_surf_group(index, :) = double(physical.T_surf_group(:)).';
+end
 end
 
 function measured = add_measurement_effects(result, sim_cfg)

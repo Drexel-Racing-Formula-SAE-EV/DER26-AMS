@@ -17,6 +17,9 @@
 /* CAN1 owns filter banks 0..13. CAN2, if ever enabled, starts at bank 14. */
 #define CANBUS_SLAVE_FILTER_START 14u
 #define CANBUS_RX_QUEUE_DEPTH 96u
+/* Keep the physical BOFF sliding-window storage explicit in the transport
+ * header; canbus.c compile-checks this against the application policy limit. */
+#define CANBUS_BUSOFF_WINDOW_SLOTS 3u
 
 #if CANBUS_RX_QUEUE_DEPTH < 2u
 #error "CANBUS_RX_QUEUE_DEPTH must be at least 2"
@@ -55,7 +58,8 @@ typedef enum {
     CANBUS_TX_BUILD_NONE = 0,
     CANBUS_TX_BUILD_CRITICAL,
     CANBUS_TX_BUILD_PROTECTED,
-    CANBUS_TX_BUILD_DETAIL
+    CANBUS_TX_BUILD_DETAIL,
+    CANBUS_TX_BUILD_TUNING
 } canbus_tx_build_kind_t;
 
 typedef enum {
@@ -82,6 +86,7 @@ typedef struct {
     uint32_t loaded_tick;
     ams_can_tx_class_t tx_class;
     uint16_t source_tag;
+    uint32_t request_id;
     uint32_t controller_epoch;
 } canbus_tx_mailbox_meta_t;
 
@@ -92,6 +97,7 @@ typedef struct {
     uint32_t publish_tick;
     uint16_t required_count;
     uint16_t source_tag;
+    uint32_t request_id;
     uint16_t frame_count;
     ams_can_tx_frame_t frames[CANBUS_TX_BUILD_MAX_FRAMES];
 } canbus_tx_builder_t;
@@ -133,33 +139,51 @@ typedef struct {
     volatile bool tx_pump_busy;
     volatile bool tx_kick_pending;
     volatile bool tx_suspended;
+    volatile bool tx_recovery_pending;
+    volatile bool tx_refresh_pending;
     volatile bool tx_latched_inhibit;
     volatile bool error_isr_pending;
     volatile uint32_t error_isr_code;
+    /* First physical BOFF event is timestamped and state-classified in the
+     * ISR. Task-side polling consumes this metadata; it must never invent the
+     * safety deadline from a later 10 Hz observation time. */
+    /* Physical BOFF events are sequenced at the SCE interrupt boundary.
+     * Task code consumes the sequence delta, so clustered BOFF transitions
+     * cannot collapse into one pending boolean. */
+    volatile uint32_t busoff_event_sequence;
+    uint32_t busoff_event_consumed_sequence;
+    /* Compatibility/observability flag only; event identity is the sequence. */
+    volatile bool busoff_event_pending;
+    volatile uint32_t busoff_event_tick;
+    volatile uint8_t busoff_event_state;
+    volatile uint32_t busoff_recent_ticks[CANBUS_BUSOFF_WINDOW_SLOTS];
     uint32_t tx_generation_counter;
-    uint32_t tx_hal_load_error_count;
+    /* Completion callbacks and the ISR-side TX pump update these counters while
+     * CAN task/CLI code observes them. Keep ISR-written scalar diagnostics
+     * volatile; scheduler/mailbox compound state remains critical-section owned. */
+    volatile uint32_t tx_hal_load_error_count;
     uint32_t tx_hal_load_error_reported;
-    uint32_t tx_hal_load_error_critical_count;
+    volatile uint32_t tx_hal_load_error_critical_count;
     uint32_t tx_hal_load_error_critical_reported;
-    uint32_t tx_hal_load_error_protected_count;
+    volatile uint32_t tx_hal_load_error_protected_count;
     uint32_t tx_hal_load_error_protected_reported;
-    uint32_t tx_hal_load_error_detail_count;
+    volatile uint32_t tx_hal_load_error_detail_count;
     uint32_t tx_hal_load_error_detail_reported;
-    uint32_t tx_charger_normal_load_error_count;
+    volatile uint32_t tx_charger_normal_load_error_count;
     uint32_t tx_charger_normal_load_error_reported;
-    uint32_t tx_charger_shutdown_load_error_count;
+    volatile uint32_t tx_charger_shutdown_load_error_count;
     uint32_t tx_charger_shutdown_load_error_reported;
-    uint16_t tx_last_hal_load_error_source_tag;
-    ams_can_tx_class_t tx_last_hal_load_error_class;
-    uint32_t tx_complete_count;
-    uint32_t tx_abort_request_count;
-    uint32_t tx_abort_complete_count;
-    uint32_t tx_abort_race_complete_count;
-    uint32_t tx_abort_request_fail_count;
-    uint32_t tx_unexpected_callback_count;
-    uint32_t tx_pump_kick_count;
-    uint32_t tx_pump_deferred_kick_count;
-    uint32_t tx_irq_mask_error_count;
+    volatile uint16_t tx_last_hal_load_error_source_tag;
+    volatile ams_can_tx_class_t tx_last_hal_load_error_class;
+    volatile uint32_t tx_complete_count;
+    volatile uint32_t tx_abort_request_count;
+    volatile uint32_t tx_abort_complete_count;
+    volatile uint32_t tx_abort_race_complete_count;
+    volatile uint32_t tx_abort_request_fail_count;
+    volatile uint32_t tx_unexpected_callback_count;
+    volatile uint32_t tx_pump_kick_count;
+    volatile uint32_t tx_pump_deferred_kick_count;
+    volatile uint32_t tx_irq_mask_error_count;
     uint32_t tx_irq_mask_error_reported;
 
     /* Publication/build failures are separate from bus congestion. A full
@@ -171,8 +195,8 @@ typedef struct {
     uint32_t tx_build_commit_reject_count;
 
     uint32_t tx_recovery_epoch_count;
-    uint32_t busoff_window_start_tick;
-    uint8_t busoff_window_count;
+    volatile uint32_t busoff_window_start_tick;
+    volatile uint8_t busoff_window_count;
 
     HAL_StatusTypeDef init_status;
     HAL_StatusTypeDef start_status;
@@ -186,7 +210,21 @@ HAL_StatusTypeDef canbus_configure_rx_filters(CAN_HandleTypeDef *hcan);
 uint16_t canbus_rx_queue_count(const canbus_device_t *dev);
 uint32_t canbus_process_rx_queue(canbus_device_t *dev, app_data_t *data, uint32_t max_frames);
 void canbus_poll_errors(canbus_device_t *dev, app_data_t *data);
-HAL_StatusTypeDef canbus_recover(canbus_device_t *dev);
+/* Record one physical-equivalent bus-off safety event. The HAL error ISR and
+ * controlled bench fault injection share this path so event tick/state,
+ * authority revocation, immediate fail-low policy, and TX suspension cannot
+ * drift apart. Task-context poll/recovery still performs counters/logging and
+ * controller-epoch settlement. */
+void canbus_record_busoff_event(canbus_device_t *dev, app_data_t *data,
+                                uint32_t event_tick, uint8_t event_state);
+/* Called directly from CAN1_SCE_IRQHandler before the HAL handler. This is
+ * the physical BOFF identity source; HAL ErrorCode is sticky and is therefore
+ * not used to decide whether a new bus-off transition occurred. */
+void canbus_sce_irq_note(CAN_HandleTypeDef *hcan);
+/* Service recovery commits transport and application CAN-safety state in one
+ * critical transaction. Passing app data prevents a post-return CLI cleanup
+ * from erasing a newly arrived physical BOFF event. */
+HAL_StatusTypeDef canbus_recover(canbus_device_t *dev, app_data_t *data);
 const char *canbus_error_str(uint32_t err);
 
 /* Task-context asynchronous TX publication API. No function below waits for
@@ -205,10 +243,14 @@ HAL_StatusTypeDef canbus_tx_build_commit(canbus_device_t *dev,
                                          uint16_t required_count);
 void canbus_tx_build_cancel(canbus_device_t *dev);
 void canbus_tx_kick(canbus_device_t *dev);
-void canbus_tx_abort_protected_generation(canbus_device_t *dev,
-                                          uint32_t generation);
+void canbus_irq_handler(CAN_HandleTypeDef *hcan);
 void canbus_tx_note_busoff(canbus_device_t *dev);
-void canbus_tx_note_recovered(canbus_device_t *dev);
+/* Returns false until hardware bus-off and old mailbox ownership have settled.
+ * On success, TX stays suspended for a fresh task-side publication. */
+bool canbus_tx_note_recovered(canbus_device_t *dev);
+/* CAN task only, after fresh charger/protected state is rebuilt; this resumes
+ * transport but does not itself establish CAN safety authority. */
+void canbus_tx_resume_after_refresh(canbus_device_t *dev);
 uint32_t canbus_tx_next_generation(canbus_device_t *dev);
 
 #endif /* __CANBUS_H_ */

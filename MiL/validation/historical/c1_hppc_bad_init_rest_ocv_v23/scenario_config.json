@@ -1,0 +1,202 @@
+{
+  "schema_version": 1,
+  "id": "c1_hppc_bad_init",
+  "description": "C1: 120 s HPPC with +20 percentage-point initial SoC error and rest-OCV acquisition",
+  "requirements": [
+    "C1-HPPC",
+    "EKF-CONVERGENCE",
+    "EKF-R0",
+    "EKF-NIS",
+    "NUMERIC"
+  ],
+  "seed": 260826,
+  "cell_id": "p42a",
+  "pack_id": "der26_75s6p",
+  "simulation_id": "hppc_validation",
+  "initial_soc": 0.6,
+  "initial_temperature_C": 25,
+  "ambient_temperature_C": 25,
+  "stop_time_s": 120,
+  "output_decimation": 1,
+  "plant": {
+    "variation_mode": "parameter_distributed",
+    "seed": 260826,
+    "overrides": [],
+    "cooling_Rsa_multiplier": 1
+  },
+  "sensor": {
+    "seed": 260827,
+    "voltage_noise_std_V": 0.0015,
+    "voltage_bias_V": 0,
+    "voltage_quantization_V": 0.001,
+    "temperature_noise_std_C": 0.25,
+    "temperature_bias_C": 0,
+    "temperature_quantization_C": 0.1,
+    "timestamp_jitter_std_s": 0,
+    "default_cell_age_ms": 0,
+    "default_temp_age_ms": 0,
+    "max_cell_age_ms": 250,
+    "max_temp_age_ms": 250,
+    "faults": [],
+    "current": {
+      "sample_time_s": 0.02,
+      "adc_vref_V": 3.3,
+      "sensor_supply_V": 5,
+      "noise_50A_std_A": 0.05,
+      "noise_800A_std_A": 0.5,
+      "bias_50A_A": 0,
+      "bias_800A_A": 0,
+      "gain_50A": 1,
+      "gain_800A": 1,
+      "zero_cal_offset_50A_A": 0,
+      "zero_cal_offset_800A_A": 0,
+      "polarity": 1,
+      "force_range": "auto",
+      "calibrated": true,
+      "polarity_validated": true,
+      "channel_50A_enabled": true,
+      "channel_800A_enabled": true,
+      "faults": []
+    }
+  },
+  "production": {
+    "estimator": {
+      "enabled": true
+    },
+    "sop": {
+      "enabled": false
+    },
+    "soh": {
+      "enabled": false
+    }
+  },
+  "reference_ekf": {
+    "enabled": false,
+    "initial_soc_offset": 0.2,
+    "initial_soc": 0.8,
+    "initial_vp1_V": 0,
+    "initial_vp2_V": 0,
+    "q_diag": [
+      5E-7,
+      1E-5,
+      1E-6
+    ],
+    "p0_diag": [
+      0.01,
+      0.001,
+      0.001
+    ],
+    "measurement_R_V2": 0.0025,
+    "innovation_gate_sigma": 8,
+    "temperature_lut_bounds_C": [
+      5,
+      40
+    ],
+    "acquisition": {
+      "enabled": true,
+      "rest_current_max_A": 1,
+      "rest_time_s": 2,
+      "max_wait_s": 15,
+      "max_soc_correction_per_anchor": 0.3,
+      "soc_sigma_floor": 0.02,
+      "soc_sigma_ceiling": 0.08
+    }
+  },
+  "sop_oracle": {
+    "enabled": false,
+    "checkpoint_times_s": [
+      10,
+      30,
+      60
+    ],
+    "horizons_s": [
+      0.1,
+      1,
+      10,
+      30
+    ],
+    "discharge_current_caps_A": [
+      118,
+      80,
+      70,
+      70
+    ],
+    "charge_current_caps_A": [
+      11.5,
+      10,
+      10,
+      10
+    ],
+    "cell_uv_V": 2.8,
+    "cell_ov_V": 4.15,
+    "soc_min": 0.05,
+    "soc_max": 0.98,
+    "discharge_temp_max_C": 55,
+    "charge_temp_max_C": 42,
+    "charge_temp_min_C": 3,
+    "integration_step_s": 0.02,
+    "bisection_iterations": 24
+  },
+  "fuse": {
+    "enabled": false,
+    "startup_policy": "cold-soak",
+    "current_uncertainty_A": 0.5,
+    "temperature_measured_at_fuse": false,
+    "model_validated": false
+  },
+  "acceptance": {
+    "ekf": {
+      "acquisition_mode": true,
+      "soc_rmse_max": 0.02,
+      "soc_p95_abs_max": 0.04,
+      "soc_worst_abs_max": 0.075,
+      "convergence_band": 0.03,
+      "convergence_hold_s": 10,
+      "convergence_time_max_s": 60,
+      "r0_relative_error_p95_max": 0.15,
+      "r0_unobservable_step_drift_max_ohm": 1E-5,
+      "nis_mean_alpha": 0.01,
+      "nees_mean_alpha": 0.01,
+      "max_reject_fraction": 0.05
+    },
+    "sop": {
+      "numeric_tolerance_A": 0.25,
+      "unsafe_overprediction_max_A": 2,
+      "unsafe_overprediction_max_fraction": 0.02,
+      "minimum_oracle_self_margin_V": -1E-6
+    },
+    "soh": {
+      "capacity_abs_error_max": 0.05,
+      "capacity_lower_overconfidence_max": 0.02,
+      "resistance_upper_underestimate_max": 0.05,
+      "resistance_abs_error_max": 0.1,
+      "false_aging_growth_max": 0.1
+    },
+    "fuse": {
+      "state_nonconservative_tolerance": 1E-8,
+      "cap_nonconservative_tolerance_A": 1E-6
+    },
+    "global": {
+      "allow_nan": false,
+      "allow_inf": false,
+      "deterministic_repeat_tolerance": 0
+    }
+  },
+  "gates": {
+    "ekf": true,
+    "soh": false,
+    "soh_capacity": true,
+    "soh_resistance": false,
+    "soh_false_aging": false,
+    "sop": true,
+    "numeric": true,
+    "fault_boundary": true
+  },
+  "reporting": {
+    "export_mat": true,
+    "export_json": true,
+    "export_csv": true,
+    "make_plots": false
+  },
+  "tier": "pr"
+}

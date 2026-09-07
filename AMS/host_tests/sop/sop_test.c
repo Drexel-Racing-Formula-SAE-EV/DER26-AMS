@@ -28,6 +28,7 @@ static ams_sop_input_t nominal_sop_input(void)
     input.operating_mode = AMS_SOP_MODE_DRIVE;
     input.measurement_valid = 1u;
     input.estimator_valid = 1u;
+    input.estimator_acquired = 1u;
     input.estimator_segment_topology = 1u;
     input.current_calibrated = 1u;
     input.current_polarity_validated = 1u;
@@ -136,6 +137,16 @@ static bool test_input_and_config_fail_closed(void)
     input.estimator_segment_topology = 0u;
     TEST_ASSERT(ams_sop_solve(&input, &cfg, &result) ==
                 AMS_SOP_INVALID_INPUT);
+    input = nominal_sop_input();
+    input.estimator_acquired = 0u;
+    TEST_ASSERT(ams_sop_solve(&input, &cfg, &result) ==
+                AMS_SOP_INVALID_INPUT);
+    TEST_ASSERT(result.fallback_active && !result.valid &&
+                !result.authority_valid);
+    TEST_ASSERT(result.discharge_current_a[0] == 0.0f);
+    TEST_ASSERT(result.charge_current_a[0] == 0.0f);
+    TEST_ASSERT((result.reason_flags &
+                 AMS_SOP_REASON_ESTIMATOR_UNACQUIRED) != 0u);
     input = nominal_sop_input();
     input.balance_recovered = 0u;
     TEST_ASSERT(ams_sop_solve(&input, &cfg, &result) ==
@@ -451,7 +462,7 @@ static bool test_fuse_observer(void)
     ams_fuse_observer_result_t result;
     ams_fuse_observer_default_config(&cfg);
     ams_sop_default_config(&sop_cfg);
-    ams_fuse_observer_init(&observer);
+    TEST_ASSERT(ams_fuse_observer_init_conservative(&observer, &cfg));
     memset(&input, 0, sizeof(input));
     input.current_uncertainty_a = 0.5f;
     input.temperature_proxy_c = 25.0f;
@@ -463,7 +474,24 @@ static bool test_fuse_observer(void)
 
     TEST_ASSERT(ams_fuse_observer_config_valid(&cfg));
     TEST_ASSERT(ams_fuse_temperature_derating(25.0f, 0.75f) == 1.0f);
-    for(uint16_t i = 0u; i < 300u; i++)
+    TEST_ASSERT(observer.thermal_state_initialized);
+    TEST_ASSERT(observer.budget_exhausted);
+    TEST_ASSERT(observer.initial_state_conservative);
+    TEST_ASSERT(fabsf(observer.thermal_utilization -
+                      cfg.maximum_state_multiple) < 0.001f);
+
+    /* Unknown startup/reset state is immediately bounded and authoritative
+     * when the model validation gate is enabled, but it remains fail-closed
+     * until the conservative overload debt decays through hysteresis. */
+    TEST_ASSERT(ams_fuse_observer_update(&observer, &cfg, &sop_cfg,
+                                         &input, &result));
+    TEST_ASSERT(result.valid && result.authority_valid);
+    TEST_ASSERT(result.budget_exhausted);
+    TEST_ASSERT((result.reason_flags &
+                 AMS_FUSE_REASON_INITIAL_STATE_UNKNOWN) != 0u);
+    TEST_ASSERT(result.discharge_current_cap_a[0] == 0.0f);
+    TEST_ASSERT(result.charge_current_cap_a[0] == 0.0f);
+    for(uint16_t i = 0u; i < 700u; i++)
     {
         TEST_ASSERT(ams_fuse_observer_update(&observer, &cfg, &sop_cfg,
                                              &input, &result));
@@ -475,7 +503,28 @@ static bool test_fuse_observer(void)
     {
         TEST_ASSERT(result.discharge_current_cap_a[h] <=
                     sop_cfg.discharge_current_max_a[h]);
+        TEST_ASSERT(result.charge_current_cap_a[h] <=
+                    sop_cfg.charge_current_max_a[h]);
     }
+    TEST_ASSERT(!result.budget_exhausted);
+    TEST_ASSERT(!observer.initial_state_conservative);
+    TEST_ASSERT((result.reason_flags &
+                 AMS_FUSE_REASON_INITIAL_STATE_UNKNOWN) == 0u);
+
+    /* A separately established cold-soak path may begin uninitialized, but
+     * completing its soak must never erase utilization accumulated earlier. */
+    ams_fuse_observer_t soaking;
+    ams_fuse_observer_init(&soaking);
+    soaking.thermal_utilization = 2.0f;
+    soaking.budget_exhausted = 1u;
+    for(uint16_t i = 0u; i < 300u; i++)
+    {
+        TEST_ASSERT(ams_fuse_observer_update(&soaking, &cfg, &sop_cfg,
+                                             &input, &result));
+    }
+    TEST_ASSERT(soaking.thermal_state_initialized);
+    TEST_ASSERT(soaking.thermal_utilization > 0.70f);
+    TEST_ASSERT(soaking.budget_exhausted);
 
     /* The curve model no longer treats 118 A as consuming a fixed 8020 A^2s
      * bucket in seconds.  It accumulates slowly according to the time-current
@@ -498,6 +547,7 @@ static bool test_fuse_observer(void)
                                          &input, &result));
     TEST_ASSERT(result.budget_exhausted);
     TEST_ASSERT(result.discharge_current_cap_a[0] == 0.0f);
+    TEST_ASSERT(result.charge_current_cap_a[0] == 0.0f);
 
     input.pack_current_a = 0.0f;
     input.model_validated = 0u;
@@ -571,6 +621,34 @@ static bool test_mission_strategy_and_request(void)
     TEST_ASSERT(result.active_profile == AMS_MISSION_QUALIFY);
     TEST_ASSERT(fabsf(limited.discharge_current_a[1] -
                       hard.discharge_current_a[1]) < 0.01f);
+
+    ams_fuse_observer_result_t fuse;
+    memset(&fuse, 0, sizeof(fuse));
+    fuse.valid = 1u;
+    fuse.authority_valid = 1u;
+    fuse.utilization = 0.90f;
+    for(uint8_t h = 0u; h < AMS_SOP_HORIZONS; h++)
+    {
+        fuse.discharge_current_cap_a[h] =
+            hard.discharge_current_a[h];
+        fuse.charge_current_cap_a[h] = 1.0f;
+    }
+    TEST_ASSERT(ams_power_strategy_update(&state, &cfg, &input, &fuse,
+                                          &hard, &limited, &result));
+    for(uint8_t h = 0u; h < AMS_SOP_HORIZONS; h++)
+    {
+        TEST_ASSERT(fabsf(limited.charge_current_a[h] + 1.0f) < 0.01f);
+        TEST_ASSERT(limited.charge_binding[h] ==
+                    AMS_SOP_BIND_FUSE_THERMAL);
+        TEST_ASSERT(limited.charge_limiting_segment[h] ==
+                    AMS_SOP_INVALID_INDEX);
+        TEST_ASSERT(limited.charge_limiting_cell[h] ==
+                    AMS_SOP_INVALID_INDEX);
+    }
+    TEST_ASSERT((limited.reason_flags &
+                 AMS_SOP_REASON_FUSE_DERATED) != 0u);
+    TEST_ASSERT((result.reason_flags &
+                 AMS_STRATEGY_REASON_FUSE_DERATED) != 0u);
 
     input.minimum_segment_soc_lower = 0.299f;
     TEST_ASSERT(ams_power_strategy_update(&state, &cfg, &input, NULL,
@@ -652,6 +730,10 @@ static bool test_strategy_fuse_randomized_invariants(void)
             TEST_ASSERT(fuse_result.discharge_current_cap_a[h] >= 0.0f);
             TEST_ASSERT(fuse_result.discharge_current_cap_a[h] <=
                         sop_cfg.discharge_current_max_a[h] + 0.001f);
+            TEST_ASSERT(isfinite(fuse_result.charge_current_cap_a[h]));
+            TEST_ASSERT(fuse_result.charge_current_cap_a[h] >= 0.0f);
+            TEST_ASSERT(fuse_result.charge_current_cap_a[h] <=
+                        sop_cfg.charge_current_max_a[h] + 0.001f);
         }
     }
 
@@ -687,7 +769,7 @@ static bool test_strategy_fuse_randomized_invariants(void)
                 lcg_range(&seed, 0.008f, 0.030f);
         }
         TEST_ASSERT(ams_power_strategy_update(
-            &strategy_state, &strategy_cfg, &strategy_input, NULL,
+            &strategy_state, &strategy_cfg, &strategy_input, &fuse_result,
             &hard, &limited, &strategy_result));
         TEST_ASSERT(strategy_result.active_profile <=
                     AMS_MISSION_LIMP_HOME);
@@ -699,6 +781,12 @@ static bool test_strategy_fuse_randomized_invariants(void)
                         hard.discharge_current_a[h] + 0.001f);
             TEST_ASSERT(limited.model_discharge_current_a[h] ==
                         hard.model_discharge_current_a[h]);
+            TEST_ASSERT(isfinite(limited.charge_current_a[h]));
+            TEST_ASSERT(limited.charge_current_a[h] <= 0.0f);
+            TEST_ASSERT(fabsf(limited.charge_current_a[h]) <=
+                        fabsf(hard.charge_current_a[h]) + 0.001f);
+            TEST_ASSERT(limited.model_charge_current_a[h] ==
+                        hard.model_charge_current_a[h]);
         }
     }
     return true;
@@ -783,6 +871,20 @@ static void soh_advance(ams_soh_estimator_t *estimator,
     }
 }
 
+static void soh_close_resistance_episode(ams_soh_estimator_t *estimator,
+                                         const ams_soh_config_t *cfg,
+                                         ams_soh_input_t *input)
+{
+    uint8_t valid[AMS_SOH_SEGMENTS];
+    memcpy(valid, input->segment_resistance_valid, sizeof(valid));
+    memset(input->segment_resistance_valid, 0,
+           sizeof(input->segment_resistance_valid));
+    const uint32_t gap_s =
+        (AMS_SOH_RESISTANCE_EPISODE_GAP_MS + 999u) / 1000u;
+    soh_advance(estimator, cfg, input, gap_s);
+    memcpy(input->segment_resistance_valid, valid, sizeof(valid));
+}
+
 static bool test_capacity_soh_observability(void)
 {
     ams_soh_config_t cfg;
@@ -821,6 +923,7 @@ static bool test_capacity_soh_observability(void)
     TEST_ASSERT(estimator.result.capacity_valid);
     TEST_ASSERT(estimator.result.capacity_confidence_pct == 50u);
     TEST_ASSERT(estimator.result.capacity_soh_lower > 0.90f);
+    soh_close_resistance_episode(&estimator, &cfg, &input);
     TEST_ASSERT(estimator.result.resistance_valid);
     TEST_ASSERT(estimator.result.resistance_growth_upper > 1.05f);
     return true;
@@ -939,21 +1042,23 @@ static bool test_resistance_soh_retention(void)
         input.segment_resistance_confidence_pct[segment] = 80u;
         input.segment_resistance_valid[segment] = 1u;
     }
-    TEST_ASSERT(ams_soh_update(&estimator, &cfg, &input));
+    soh_advance(&estimator, &cfg, &input,
+                AMS_SOH_RESISTANCE_EPISODE_MIN_OBSERVATIONS);
+    TEST_ASSERT(!estimator.result.resistance_valid);
+    soh_close_resistance_episode(&estimator, &cfg, &input);
     TEST_ASSERT(estimator.result.resistance_valid);
     const float retained = estimator.result.resistance_growth_upper;
     TEST_ASSERT(retained > 1.50f);
 
-    input.now_ms += 100u;
-    input.measurement_timestamp_ms = input.now_ms;
-    input.measurement_sequence++;
     for(uint8_t segment = 0u; segment < AMS_SOH_SEGMENTS; segment++)
     {
         input.segment_resistance_growth_ratio[segment] = 1.05f;
         input.segment_resistance_confidence_pct[segment] = 80u;
         input.segment_resistance_valid[segment] = 1u;
     }
-    TEST_ASSERT(ams_soh_update(&estimator, &cfg, &input));
+    soh_advance(&estimator, &cfg, &input,
+                AMS_SOH_RESISTANCE_EPISODE_MIN_OBSERVATIONS);
+    soh_close_resistance_episode(&estimator, &cfg, &input);
     TEST_ASSERT(estimator.result.resistance_growth_upper >= retained);
 
     memset(input.segment_resistance_valid, 0,
@@ -977,6 +1082,96 @@ static bool test_resistance_soh_retention(void)
     TEST_ASSERT(restored.result.capacity_soh_lower ==
                 cfg.prior_capacity_soh_lower);
     TEST_ASSERT(restored.result.resistance_growth_upper >= retained);
+    return true;
+}
+
+static bool test_resistance_soh_transient_spike_rejection(void)
+{
+    ams_soh_config_t cfg;
+    ams_soh_default_config(&cfg);
+    ams_soh_estimator_t estimator;
+    ams_soh_init(&estimator, &cfg);
+    ams_soh_input_t input = nominal_soh_input();
+
+    /* A single qualified-but-bad R0 observation must not become permanent
+     * battery ageing. Eight healthy observations plus one 60% spike have a
+     * healthy median and should establish a healthy retained value. */
+    for(uint8_t n = 0u; n < AMS_SOH_RESISTANCE_EPISODE_MIN_OBSERVATIONS; n++)
+    {
+        const float ratio = (n == 4u) ? 1.60f : 1.02f;
+        for(uint8_t segment = 0u; segment < AMS_SOH_SEGMENTS; segment++)
+        {
+            input.segment_resistance_growth_ratio[segment] = ratio;
+            input.segment_resistance_confidence_pct[segment] = 100u;
+            input.segment_resistance_valid[segment] = 1u;
+        }
+        input.now_ms += 100u;
+        input.measurement_timestamp_ms = input.now_ms;
+        input.measurement_sequence++;
+        TEST_ASSERT(ams_soh_update(&estimator, &cfg, &input));
+    }
+    TEST_ASSERT(!estimator.result.resistance_valid);
+    soh_close_resistance_episode(&estimator, &cfg, &input);
+    TEST_ASSERT(estimator.result.resistance_valid);
+    TEST_ASSERT(estimator.result.resistance_growth_ratio < 1.05f);
+    TEST_ASSERT(estimator.result.resistance_growth_upper < 1.10f);
+    const float healthy_retained = estimator.result.resistance_growth_upper;
+
+    /* Sustained ageing still has to move the monotonic retained state. */
+    for(uint8_t n = 0u; n < AMS_SOH_RESISTANCE_EPISODE_MIN_OBSERVATIONS; n++)
+    {
+        for(uint8_t segment = 0u; segment < AMS_SOH_SEGMENTS; segment++)
+        {
+            input.segment_resistance_growth_ratio[segment] = 1.40f;
+            input.segment_resistance_confidence_pct[segment] = 100u;
+            input.segment_resistance_valid[segment] = 1u;
+        }
+        input.now_ms += 100u;
+        input.measurement_timestamp_ms = input.now_ms;
+        input.measurement_sequence++;
+        TEST_ASSERT(ams_soh_update(&estimator, &cfg, &input));
+    }
+    soh_close_resistance_episode(&estimator, &cfg, &input);
+    TEST_ASSERT(estimator.result.resistance_growth_ratio > 1.39f);
+    TEST_ASSERT(estimator.result.resistance_growth_upper > healthy_retained);
+    return true;
+}
+
+static bool test_resistance_soh_correlated_episode_rejection(void)
+{
+    ams_soh_config_t cfg;
+    ams_soh_default_config(&cfg);
+    ams_soh_estimator_t estimator;
+    ams_soh_init(&estimator, &cfg);
+    ams_soh_input_t input = nominal_soh_input();
+
+    /* Reproduce the licensed C5 failure shape: a fresh-R0 episode begins high
+     * and decays as the polarization state settles.  The old nine-sample
+     * confirmation latched the first 8 s of this correlated burst at ~1.14.
+     * Episode-level confirmation must wait for the burst to close and summarize
+     * the whole bounded episode instead. */
+    const uint8_t observations = 32u;
+    for(uint8_t n = 0u; n < observations; n++)
+    {
+        const float ratio = 1.14f - (0.08f * (float)n /
+            (float)(observations - 1u));
+        for(uint8_t segment = 0u; segment < AMS_SOH_SEGMENTS; segment++)
+        {
+            input.segment_resistance_growth_ratio[segment] = ratio;
+            input.segment_resistance_confidence_pct[segment] = 100u;
+            input.segment_resistance_valid[segment] = 1u;
+        }
+        input.now_ms += 1000u;
+        input.measurement_timestamp_ms = input.now_ms;
+        input.measurement_sequence++;
+        TEST_ASSERT(ams_soh_update(&estimator, &cfg, &input));
+        TEST_ASSERT(!estimator.result.resistance_valid);
+    }
+
+    soh_close_resistance_episode(&estimator, &cfg, &input);
+    TEST_ASSERT(estimator.result.resistance_valid);
+    TEST_ASSERT(estimator.result.resistance_growth_ratio < 1.11f);
+    TEST_ASSERT(estimator.result.resistance_growth_ratio > 1.08f);
     return true;
 }
 
@@ -1159,6 +1354,8 @@ static bool test_power_state_integration(void)
         instance->p_vp2 = 1.0e-7f;
         instance->p_r0 = 1.0e-9f;
         instance->valid = 1u;
+        instance->acquisition.state = AMS_EKF_ACQ_COMPLETE;
+        instance->acquisition.anchor_count = 1u;
         estimator.resistance_soh[segment].resistance_growth_ratio = 1.05f;
         estimator.resistance_soh[segment].observation_confidence_pct = 80u;
         estimator.resistance_soh[segment].status_flags =
@@ -1254,6 +1451,8 @@ int main(void)
         {"capacity SoH observability", test_capacity_soh_observability},
         {"capacity SoH rejection/persistence", test_capacity_soh_rejections_and_persistence},
         {"resistance SoH retention/persistence", test_resistance_soh_retention},
+        {"resistance SoH transient-spike rejection", test_resistance_soh_transient_spike_rejection},
+        {"resistance SoH correlated-episode rejection", test_resistance_soh_correlated_episode_rejection},
         {"power CAN CRC/freshness contract", test_power_can_contract},
         {"measurement-to-DADEKF-to-power integration", test_power_state_integration},
     };

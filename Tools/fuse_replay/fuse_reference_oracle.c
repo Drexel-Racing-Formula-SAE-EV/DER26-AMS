@@ -5,315 +5,165 @@
 #include <stddef.h>
 #include <string.h>
 
-static long double clamp_ld(long double value,
-                            long double lower,
-                            long double upper)
+typedef struct { long double current_a; long double time_s; } curve_point_t;
+static const curve_point_t curve[] = {
+    {154.0L,100.0L},{168.0L,50.0L},{180.9L,30.0L},{192.8L,20.0L},
+    {219.2L,10.0L},{249.2L,5.0L},{274.9L,3.0L},{300.8L,2.0L},
+    {350.9L,1.0L},{411.1L,0.5L},{458.9L,0.3L},{500.2L,0.2L},
+    {576.6L,0.1L},{652.8L,0.05L},{705.8L,0.03L},{752.5L,0.02L},
+    {800.0L,0.01253125L},{850.0L,0.01078L}
+};
+#define CURVE_COUNT ((uint32_t)(sizeof(curve)/sizeof(curve[0])))
+
+static long double clamp_ld(long double x,long double lo,long double hi)
+{ return x<lo?lo:(x>hi?hi:x); }
+static long double lerp(long double x,long double x0,long double y0,long double x1,long double y1)
+{ if(x1<=x0)return y0; long double f=clamp_ld((x-x0)/(x1-x0),0,1); return y0+f*(y1-y0); }
+static long double loglerp(long double x,long double x0,long double y0,long double x1,long double y1)
 {
-    if(value < lower)
-    {
-        return lower;
-    }
-    if(value > upper)
-    {
-        return upper;
-    }
-    return value;
+    if(x<=0||x0<=0||x1<=x0||y0<=0||y1<=0)return y0;
+    long double f=clamp_ld((logl(x)-logl(x0))/(logl(x1)-logl(x0)),0,1);
+    return expl(logl(y0)+f*(logl(y1)-logl(y0)));
 }
 
-static long double interp_ld(long double x,
-                             long double x0,
-                             long double y0,
-                             long double x1,
-                             long double y1)
+bool fuse_ref_config_valid(const fuse_ref_config_t *c)
 {
-    if(x1 <= x0)
-    {
-        return y0;
-    }
-    const long double f = clamp_ld((x - x0) / (x1 - x0), 0.0L, 1.0L);
-    return y0 + f * (y1 - y0);
-}
-
-static void result_invalid(fuse_ref_result_t *result)
-{
-    if(result != NULL)
-    {
-        memset(result, 0, sizeof(*result));
-        result->utilization = 1.0L;
-        result->reason_flags = FUSE_REF_REASON_INPUT_INVALID;
-    }
-}
-
-bool fuse_ref_config_valid(const fuse_ref_config_t *cfg)
-{
-    if((cfg == NULL) || !isfinite(cfg->rated_current_a) ||
-       (cfg->rated_current_a <= 0.0L) ||
-       !isfinite(cfg->typical_melting_i2t_a2s) ||
-       (cfg->typical_melting_i2t_a2s <= 0.0L) ||
-       !isfinite(cfg->usable_i2t_fraction) ||
-       (cfg->usable_i2t_fraction <= 0.0L) ||
-       (cfg->usable_i2t_fraction > 1.0L) ||
-       !isfinite(cfg->cooling_time_constant_s) ||
-       (cfg->cooling_time_constant_s <= 0.0L) ||
-       !isfinite(cfg->initialization_soak_s) ||
-       (cfg->initialization_soak_s < 0.0L) ||
-       !isfinite(cfg->quiescent_current_a) ||
-       (cfg->quiescent_current_a < 0.0L) ||
-       !isfinite(cfg->fuse_temperature_margin_c) ||
-       (cfg->fuse_temperature_margin_c < 0.0L) ||
-       !isfinite(cfg->minimum_temperature_derating) ||
-       (cfg->minimum_temperature_derating <= 0.0L) ||
-       (cfg->minimum_temperature_derating > 1.0L) ||
-       !isfinite(cfg->maximum_state_multiple) ||
-       (cfg->maximum_state_multiple < 1.0L))
-    {
-        return false;
-    }
-
-    for(uint32_t i = 0u; i < FUSE_REF_HORIZON_COUNT; ++i)
-    {
-        if(!isfinite(cfg->horizons_s[i]) || (cfg->horizons_s[i] <= 0.0L) ||
-           !isfinite(cfg->discharge_static_cap_a[i]) ||
-           (cfg->discharge_static_cap_a[i] < 0.0L))
-        {
-            return false;
-        }
-    }
+    if(c==NULL)return false;
+    if(!isfinite(c->rated_current_a)||fabsl(c->rated_current_a-80.0L)>1e-9L)return false;
+    if(!isfinite(c->curve_time_fraction)||c->curve_time_fraction<=0||c->curve_time_fraction>1)return false;
+    if(!isfinite(c->cooling_time_constant_s)||c->cooling_time_constant_s<=0)return false;
+    if(!isfinite(c->initialization_soak_s)||c->initialization_soak_s<0)return false;
+    if(!isfinite(c->quiescent_current_a)||c->quiescent_current_a<0)return false;
+    if(!isfinite(c->fuse_temperature_margin_c)||c->fuse_temperature_margin_c<0)return false;
+    if(!isfinite(c->minimum_temperature_derating)||c->minimum_temperature_derating<=0||c->minimum_temperature_derating>1)return false;
+    if(!isfinite(c->maximum_state_multiple)||c->maximum_state_multiple<1)return false;
+    if(!isfinite(c->low_current_fit_scale_s)||c->low_current_fit_scale_s<=0)return false;
+    if(!isfinite(c->low_current_fit_exponent)||c->low_current_fit_exponent<=0)return false;
+    if(!isfinite(c->maximum_curve_time_s)||c->maximum_curve_time_s<=0)return false;
+    if(!isfinite(c->minimum_curve_time_s)||c->minimum_curve_time_s<=0||c->minimum_curve_time_s>=c->maximum_curve_time_s)return false;
+    for(uint32_t h=0;h<FUSE_REF_HORIZON_COUNT;++h)
+        if(!isfinite(c->horizons_s[h])||c->horizons_s[h]<=0||!isfinite(c->discharge_static_cap_a[h])||c->discharge_static_cap_a[h]<0||!isfinite(c->charge_static_cap_a[h])||c->charge_static_cap_a[h]<0)return false;
     return true;
 }
-
-void fuse_ref_state_init(fuse_ref_state_t *state)
+void fuse_ref_state_init(fuse_ref_state_t *s){if(s!=NULL)memset(s,0,sizeof(*s));}
+bool fuse_ref_state_seed_utilization(fuse_ref_state_t *s,const fuse_ref_config_t *c,long double u)
 {
-    if(state != NULL)
-    {
-        memset(state, 0, sizeof(*state));
-    }
+    if(s==NULL||!fuse_ref_config_valid(c)||!isfinite(u)||u<0||u>c->maximum_state_multiple)return false;
+    s->thermal_utilization=u;s->quiescent_time_s=c->initialization_soak_s;s->thermal_state_initialized=1u;s->budget_exhausted=(u>=1)?1u:0u;return true;
 }
-
-bool fuse_ref_state_seed_utilization(fuse_ref_state_t *state,
-                                     const fuse_ref_config_t *cfg,
-                                     long double utilization)
+long double fuse_ref_temperature_derating(long double temp,long double min_d)
 {
-    if((state == NULL) || !fuse_ref_config_valid(cfg) ||
-       !isfinite(utilization) || (utilization < 0.0L) ||
-       (utilization > cfg->maximum_state_multiple))
-    {
-        return false;
-    }
-
-    const long double budget = cfg->typical_melting_i2t_a2s *
-                               cfg->usable_i2t_fraction;
-    state->excess_i2t_a2s = utilization * budget;
-    state->quiescent_time_s = cfg->initialization_soak_s;
-    state->thermal_state_initialized = 1u;
-    state->budget_exhausted = (utilization >= 1.0L) ? 1u : 0u;
-    return true;
+    static const long double tc[]={-40,0,25,40,60,80,100,125};
+    static const long double f[]={1.15L,1.06L,1.00L,0.97L,0.93L,0.89L,0.85L,0.80L};
+    if(!isfinite(temp)||!isfinite(min_d)||min_d<=0||min_d>1)return 0;
+    long double d=f[7];
+    if(temp<=tc[0])d=f[0]; else for(uint32_t i=1;i<8;++i){if(temp<=tc[i]){d=lerp(temp,tc[i-1],f[i-1],tc[i],f[i]);break;}}
+    return clamp_ld(d,min_d,1.0L);
 }
-
-long double fuse_ref_temperature_derating(long double fuse_temperature_c,
-                                          long double minimum_derating)
+long double fuse_ref_typical_melt_time_s(const fuse_ref_config_t *c,long double I,uint8_t *ex)
 {
-    if(!isfinite(fuse_temperature_c) || !isfinite(minimum_derating) ||
-       (minimum_derating <= 0.0L) || (minimum_derating > 1.0L))
+    if(ex!=NULL)*ex=0u;
+    if(!fuse_ref_config_valid(c)||!isfinite(I)||I<0)return NAN;
+    if(I<=c->rated_current_a)return INFINITY;
+    if(I<curve[0].current_a){if(ex!=NULL)*ex=1u; long double over=I/c->rated_current_a-1; if(over<=0)return INFINITY; return clamp_ld(c->low_current_fit_scale_s*powl(over,-c->low_current_fit_exponent),c->minimum_curve_time_s,c->maximum_curve_time_s);}
+    for(uint32_t i=1;i<CURVE_COUNT;++i)if(I<=curve[i].current_a)return loglerp(I,curve[i-1].current_a,curve[i-1].time_s,curve[i].current_a,curve[i].time_s);
+    if(ex!=NULL)*ex=1u;
+    const curve_point_t *a=&curve[CURVE_COUNT-2],*b=&curve[CURVE_COUNT-1];
+    long double slope=(logl(b->time_s)-logl(a->time_s))/(logl(b->current_a)-logl(a->current_a));
+    return clamp_ld(expl(logl(b->time_s)+slope*(logl(I)-logl(b->current_a))),c->minimum_curve_time_s,c->maximum_curve_time_s);
+}
+static long double source_rate(const fuse_ref_config_t *c,long double I,uint8_t *ex,long double *typ,long double *usable)
+{
+    long double t=fuse_ref_typical_melt_time_s(c,I,ex);if(typ)*typ=t;
+    if(!isfinite(t)){if(usable)*usable=INFINITY;return 0;}
+    long double u=clamp_ld(t*c->curve_time_fraction,c->minimum_curve_time_s,c->maximum_curve_time_s);if(usable)*usable=u;
+    long double kernel=-c->cooling_time_constant_s*expm1l(-u/c->cooling_time_constant_s);
+    if(!isfinite(kernel)||kernel<=LDBL_MIN)return 1/c->minimum_curve_time_s;
+    return 1/kernel;
+}
+static long double predict_exact(const fuse_ref_state_t *s,const fuse_ref_config_t *c,long double candidate,long double uncertainty,long double derating,long double horizon,uint8_t *ex)
+{
+    long double eff=fmaxl(0,candidate)+uncertainty;long double eq=eff/derating;long double q=source_rate(c,eq,ex,NULL,NULL);long double d=expl(-horizon/c->cooling_time_constant_s);return s->thermal_utilization*d+q*c->cooling_time_constant_s*(1-d);
+}
+static long double solve_cap(const fuse_ref_state_t *s,
+                             const fuse_ref_config_t *c,
+                             long double cap,
+                             long double uncertainty,
+                             long double derating,
+                             long double h,
+                             uint8_t *ex)
+{
+    if((s->budget_exhausted != 0u) || (cap <= 0.0L))
     {
         return 0.0L;
     }
-
-    long double derating;
-    if(fuse_temperature_c <= 0.0L)
+    uint8_t e = 0u;
+    const long double at = predict_exact(s,c,cap,uncertainty,derating,h,&e);
+    if((e != 0u) && (ex != NULL))
     {
-        derating = 1.03L;
+        *ex = 1u;
     }
-    else if(fuse_temperature_c <= 25.0L)
+    if(at <= 1.0L)
     {
-        derating = interp_ld(fuse_temperature_c,
-                             0.0L, 1.03L, 25.0L, 1.00L);
+        return cap;
     }
-    else if(fuse_temperature_c <= 80.0L)
+    long double lo = 0.0L;
+    long double hi = cap;
+    for(uint32_t k = 0u; k < 64u; ++k)
     {
-        derating = interp_ld(fuse_temperature_c,
-                             25.0L, 1.00L, 80.0L, 0.90L);
-    }
-    else if(fuse_temperature_c <= 125.0L)
-    {
-        derating = interp_ld(fuse_temperature_c,
-                             80.0L, 0.90L, 125.0L, 0.80L);
-    }
-    else
-    {
-        derating = 0.80L;
-    }
-    return clamp_ld(derating, minimum_derating, 1.0L);
-}
-
-bool fuse_ref_step_exact_zoh(fuse_ref_state_t *state,
-                             const fuse_ref_config_t *cfg,
-                             const fuse_ref_input_t *input,
-                             fuse_ref_result_t *result)
-{
-    if((state == NULL) || (result == NULL))
-    {
-        return false;
-    }
-    result_invalid(result);
-
-    const bool valid = fuse_ref_config_valid(cfg) && (input != NULL) &&
-        isfinite(input->pack_current_a) &&
-        isfinite(input->current_uncertainty_a) &&
-        (input->current_uncertainty_a >= 0.0L) &&
-        isfinite(input->temperature_proxy_c) &&
-        isfinite(input->elapsed_s) && (input->elapsed_s > 0.0L) &&
-        (input->measurement_valid != 0u) &&
-        (input->current_calibrated != 0u) &&
-        (input->current_polarity_validated != 0u);
-    if(!valid)
-    {
-        if(state->invalid_count != UINT64_MAX)
+        const long double mid = (lo + hi) / 2.0L;
+        e = 0u;
+        const long double predicted = predict_exact(
+            s,c,mid,uncertainty,derating,h,&e);
+        if((e != 0u) && (ex != NULL))
         {
-            ++state->invalid_count;
+            *ex = 1u;
         }
-        return false;
-    }
-
-    if(state->update_count != UINT64_MAX)
-    {
-        ++state->update_count;
-    }
-    result->reason_flags = FUSE_REF_REASON_NONE;
-
-    const long double effective_current_a = fabsl(input->pack_current_a) +
-                                            input->current_uncertainty_a;
-    if(state->thermal_state_initialized == 0u)
-    {
-        if(effective_current_a <= cfg->quiescent_current_a)
+        if(predicted <= 1.0L)
         {
-            state->quiescent_time_s += input->elapsed_s;
-            if(state->quiescent_time_s >= cfg->initialization_soak_s)
-            {
-                state->thermal_state_initialized = 1u;
-                state->excess_i2t_a2s = 0.0L;
-                state->budget_exhausted = 0u;
-            }
+            lo = mid;
         }
         else
         {
-            state->quiescent_time_s = 0.0L;
+            hi = mid;
         }
     }
-
-    result->estimated_fuse_temperature_c = input->temperature_proxy_c;
-    if(input->temperature_measured_at_fuse == 0u)
-    {
-        result->estimated_fuse_temperature_c +=
-            cfg->fuse_temperature_margin_c;
-        result->reason_flags |= FUSE_REF_REASON_TEMPERATURE_PROXY;
-    }
-
-    result->temperature_derating = fuse_ref_temperature_derating(
-        result->estimated_fuse_temperature_c,
-        cfg->minimum_temperature_derating);
-    result->continuous_current_a = cfg->rated_current_a *
-                                   result->temperature_derating;
-    result->usable_i2t_a2s = cfg->typical_melting_i2t_a2s *
-                             cfg->usable_i2t_fraction;
-
-    const long double ratio = input->elapsed_s /
-                              cfg->cooling_time_constant_s;
-    const long double decay = expl(-ratio);
-    const long double kernel_s = -cfg->cooling_time_constant_s *
-                                 expm1l(-ratio);
-    const long double excess_rate_a2 = fmaxl(
-        0.0L,
-        effective_current_a * effective_current_a -
-        result->continuous_current_a * result->continuous_current_a);
-
-    state->excess_i2t_a2s = state->excess_i2t_a2s * decay +
-                            excess_rate_a2 * kernel_s;
-    state->excess_i2t_a2s = clamp_ld(
-        state->excess_i2t_a2s,
-        0.0L,
-        result->usable_i2t_a2s * cfg->maximum_state_multiple);
-
-    result->utilization = state->excess_i2t_a2s /
-                          result->usable_i2t_a2s;
-    result->remaining_i2t_a2s = fmaxl(
-        0.0L,
-        result->usable_i2t_a2s - state->excess_i2t_a2s);
-
-    if(result->utilization >= 1.0L)
-    {
-        state->budget_exhausted = 1u;
-    }
-    else if(result->utilization <= 0.50L)
-    {
-        state->budget_exhausted = 0u;
-    }
-
-    for(uint32_t h = 0u; h < FUSE_REF_HORIZON_COUNT; ++h)
-    {
-        long double cap_a = 0.0L;
-        if(state->budget_exhausted == 0u)
-        {
-            cap_a = sqrtl(
-                result->continuous_current_a * result->continuous_current_a +
-                result->remaining_i2t_a2s / cfg->horizons_s[h]);
-        }
-        result->discharge_current_cap_a[h] = fminl(
-            cfg->discharge_static_cap_a[h], cap_a);
-        if(result->discharge_current_cap_a[h] + 1.0e-3L <
-           cfg->discharge_static_cap_a[h])
-        {
-            result->reason_flags |= FUSE_REF_REASON_BUDGET_DERATED;
-        }
-    }
-
-    result->valid = 1u;
-    result->budget_exhausted = state->budget_exhausted;
-    if(input->model_validated == 0u)
-    {
-        result->reason_flags |= FUSE_REF_REASON_MODEL_UNVALIDATED;
-    }
-    if(state->thermal_state_initialized == 0u)
-    {
-        result->reason_flags |= FUSE_REF_REASON_INITIAL_STATE_UNKNOWN;
-    }
-    if(state->budget_exhausted != 0u)
-    {
-        result->reason_flags |= FUSE_REF_REASON_BUDGET_EXHAUSTED;
-    }
-    result->authority_valid = ((input->model_validated != 0u) &&
-        (state->thermal_state_initialized != 0u)) ? 1u : 0u;
-    return true;
+    return lo;
 }
-
-long double fuse_ref_integrate_trapezoidal(long double initial_i2t_a2s,
-                                           long double excess_rate_a2,
-                                           long double elapsed_s,
-                                           long double cooling_tau_s,
-                                           uint32_t subdivisions)
+static void invalid_result(fuse_ref_result_t *r){if(r){memset(r,0,sizeof(*r));r->utilization=1;r->reason_flags=FUSE_REF_REASON_INPUT_INVALID;}}
+bool fuse_ref_step_exact_zoh(fuse_ref_state_t *s,const fuse_ref_config_t *c,const fuse_ref_input_t *in,fuse_ref_result_t *r)
 {
-    if(!isfinite(initial_i2t_a2s) || (initial_i2t_a2s < 0.0L) ||
-       !isfinite(excess_rate_a2) || (excess_rate_a2 < 0.0L) ||
-       !isfinite(elapsed_s) || (elapsed_s < 0.0L) ||
-       !isfinite(cooling_tau_s) || (cooling_tau_s <= 0.0L) ||
-       (subdivisions == 0u))
+    if((s == NULL) || (r == NULL))
     {
-        return NAN;
+        return false;
     }
-
-    const long double h = elapsed_s / (long double)subdivisions;
-    long double x = initial_i2t_a2s;
-    for(uint32_t i = 0u; i < subdivisions; ++i)
+    invalid_result(r);
+    const bool valid=fuse_ref_config_valid(c)&&in!=NULL&&isfinite(in->pack_current_a)&&isfinite(in->current_uncertainty_a)&&in->current_uncertainty_a>=0&&isfinite(in->temperature_proxy_c)&&isfinite(in->elapsed_s)&&in->elapsed_s>0&&in->measurement_valid&&in->current_calibrated&&in->current_polarity_validated;
+    if(!valid)
     {
-        const long double slope0 = -x / cooling_tau_s + excess_rate_a2;
-        const long double predicted = x + h * slope0;
-        const long double slope1 = -predicted / cooling_tau_s +
-                                   excess_rate_a2;
-        x += 0.5L * h * (slope0 + slope1);
-        if(x < 0.0L && x > -64.0L * LDBL_EPSILON)
+        if(s->invalid_count != UINT64_MAX)
         {
-            x = 0.0L;
+            ++s->invalid_count;
         }
+        return false;
     }
-    return x;
+    if(s->update_count != UINT64_MAX)
+    {
+        ++s->update_count;
+    }
+    r->reason_flags=FUSE_REF_REASON_NONE;
+    r->effective_current_a=fabsl(in->pack_current_a)+in->current_uncertainty_a;
+    if(!s->thermal_state_initialized){if(r->effective_current_a<=c->quiescent_current_a){s->quiescent_time_s+=in->elapsed_s;if(s->quiescent_time_s>=c->initialization_soak_s){s->thermal_state_initialized=1;}}else s->quiescent_time_s=0;}
+    r->estimated_fuse_temperature_c=in->temperature_proxy_c;if(!in->temperature_measured_at_fuse){r->estimated_fuse_temperature_c+=c->fuse_temperature_margin_c;r->reason_flags|=FUSE_REF_REASON_TEMPERATURE_PROXY;}
+    r->temperature_derating=fuse_ref_temperature_derating(r->estimated_fuse_temperature_c,c->minimum_temperature_derating);r->continuous_current_a=c->rated_current_a*r->temperature_derating;r->equivalent_25c_current_a=r->effective_current_a/r->temperature_derating;
+    uint8_t ex=0;long double q=source_rate(c,r->equivalent_25c_current_a,&ex,&r->typical_melt_time_s,&r->usable_melt_time_s);if(ex){r->curve_extrapolated=1;r->reason_flags|=FUSE_REF_REASON_CURVE_EXTRAPOLATED;}
+    long double d=expl(-in->elapsed_s/c->cooling_time_constant_s);s->thermal_utilization=s->thermal_utilization*d+q*c->cooling_time_constant_s*(1-d);s->thermal_utilization=clamp_ld(s->thermal_utilization,0,c->maximum_state_multiple);
+    r->utilization=s->thermal_utilization;r->remaining_utilization=fmaxl(0,1-s->thermal_utilization);if(r->utilization>=1)s->budget_exhausted=1;else if(r->utilization<=0.5L){s->budget_exhausted=0;s->initial_state_conservative=0;}
+    for(uint32_t h=0;h<FUSE_REF_HORIZON_COUNT;++h){uint8_t ce=0;r->discharge_current_cap_a[h]=solve_cap(s,c,c->discharge_static_cap_a[h],in->current_uncertainty_a,r->temperature_derating,c->horizons_s[h],&ce);if(ce){r->curve_extrapolated=1;r->reason_flags|=FUSE_REF_REASON_CURVE_EXTRAPOLATED;}if(r->discharge_current_cap_a[h]+1e-9L<c->discharge_static_cap_a[h])r->reason_flags|=FUSE_REF_REASON_CURVE_DERATED;ce=0;r->charge_current_cap_a[h]=solve_cap(s,c,c->charge_static_cap_a[h],in->current_uncertainty_a,r->temperature_derating,c->horizons_s[h],&ce);if(ce){r->curve_extrapolated=1;r->reason_flags|=FUSE_REF_REASON_CURVE_EXTRAPOLATED;}if(r->charge_current_cap_a[h]+1e-9L<c->charge_static_cap_a[h])r->reason_flags|=FUSE_REF_REASON_CURVE_DERATED;}
+    r->valid=1;r->budget_exhausted=s->budget_exhausted;if(!in->model_validated)r->reason_flags|=FUSE_REF_REASON_MODEL_UNVALIDATED;if(!s->thermal_state_initialized||s->initial_state_conservative)r->reason_flags|=FUSE_REF_REASON_INITIAL_STATE_UNKNOWN;if(s->budget_exhausted)r->reason_flags|=FUSE_REF_REASON_BUDGET_EXHAUSTED;r->authority_valid=(in->model_validated&&s->thermal_state_initialized)?1u:0u;return true;
+}
+long double fuse_ref_integrate_trapezoidal(long double x0,long double q,long double dt,long double tau,uint32_t n)
+{
+    if(!isfinite(x0)||x0<0||!isfinite(q)||q<0||!isfinite(dt)||dt<0||!isfinite(tau)||tau<=0||n==0)return NAN;
+    long double h=dt/(long double)n,x=x0;for(uint32_t k=0;k<n;++k){long double f0=-x/tau+q;long double pred=x+h*f0;long double f1=-pred/tau+q;x+=0.5L*h*(f0+f1);}return x;
 }

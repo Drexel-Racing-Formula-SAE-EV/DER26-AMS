@@ -57,6 +57,7 @@ extern "C" {
 #define AMS_EKF_FAULT_EPOCH_TIMING  0x00000100UL
 #define AMS_EKF_FAULT_INNOVATION_REJECT 0x00000200UL
 #define AMS_EKF_FAULT_DT_CLAMPED     0x00000400UL
+#define AMS_EKF_FAULT_COVARIANCE      0x00000800UL
 
 #define AMS_EKF_MODEL_DOMAIN_NONE       0x00U
 #define AMS_EKF_MODEL_DOMAIN_TEMP_LOW   0x01U
@@ -75,6 +76,65 @@ extern "C" {
 #define AMS_SOH_MAX_INNOVATION_PER_CELL_V       0.10f
 #define AMS_EKF_BOOTSTRAP_MAX_INNOVATION_PER_CELL_V 0.75f
 #define AMS_EKF_ACQUISITION_STEPS                  8u
+
+/* Startup acquisition policy.
+ *
+ * These values are provisional MiL-screened acquisition parameters, not
+ * claimed electrochemical time constants.  The fixed 10 s / 35 s basis over
+ * a 20 s low-current record was selected because it robustly extrapolated the
+ * asymptotic OCV in the directed warm-discharge / warm-charge cases while
+ * keeping the implementation small enough for the target MCU.  Hardware
+ * correlation is still required before these become qualification constants.
+ */
+#define AMS_EKF_ACQ_CURRENT_ENTER_A               0.50f
+#define AMS_EKF_ACQ_CURRENT_ABORT_A               1.00f
+#define AMS_EKF_ACQ_WINDOW_MS                    20000u
+#define AMS_EKF_ACQ_SAMPLE_PERIOD_MS              1000u
+#define AMS_EKF_ACQ_MIN_FIT_SAMPLES                 15u
+#define AMS_EKF_ACQ_TAU1_S                         10.0f
+#define AMS_EKF_ACQ_TAU2_S                         35.0f
+#define AMS_EKF_ACQ_MIN_FIT_RCOND                1.0e-5f
+#define AMS_EKF_ACQ_MAX_FIT_RMSE_MV_CELL          5.0f
+#define AMS_EKF_ACQ_MAX_ABS_VP_STATE_V             0.15f
+#define AMS_EKF_ACQ_MAX_ABS_TOTAL_POLARIZATION_V   0.20f
+#define AMS_EKF_ACQ_CONSENSUS_SOC_DEVIATION        0.015f
+#define AMS_EKF_ACQ_MIN_CONSENSUS_SEGMENTS           3u
+#define AMS_EKF_ACQ_MAX_SOC_CORRECTION              0.30f
+
+/* While startup acquisition is unresolved, terminal voltage may correct SoC
+ * only.  Vp1/Vp2 continue to evolve from the RC/current model and are treated
+ * as nuisance uncertainty.  This prevents one scalar residual from inventing
+ * arbitrary polarization states during an unknown-history restart. */
+#define AMS_EKF_ACQ_DYNAMIC_SOC_SIGMA_FLOOR         0.030f
+#define AMS_EKF_ACQ_DYNAMIC_VP_SIGMA_FLOOR_V        0.020f
+#define AMS_EKF_ACQ_DYNAMIC_MAX_SOC_STEP             0.030f
+#define AMS_EKF_ACQ_DYNAMIC_GATE_SIGMA                8.0f
+
+/* A successful acquisition starts normal estimation with deliberately honest
+ * uncertainty.  These are floors, not uncertainty inferred from fit RMSE. */
+#define AMS_EKF_ACQ_SOC_SIGMA_INIT                   0.030f
+#define AMS_EKF_ACQ_VP1_SIGMA_INIT_V                 0.020f
+#define AMS_EKF_ACQ_VP2_SIGMA_INIT_V                 0.020f
+
+/* Normal-operation covariance floors.  The startup work showed that the old
+ * diagonal-only covariance could become materially overconfident even while
+ * the state estimate was still biased.  The full 3x3 covariance below keeps
+ * the measurement-induced SoC/Vp correlations, while these deliberately small
+ * floors prevent numerical or model-mismatch confidence collapse.  The edge
+ * floor is larger near the reviewed 5 C / 40 C LUT limits because MiL showed
+ * the strongest consistency error there.  Values remain provisional until
+ * hardware/log correlation freezes the estimator noise model. */
+#define AMS_EKF_SOC_SIGMA_FLOOR_NOMINAL               0.0025f
+#define AMS_EKF_SOC_SIGMA_FLOOR_TEMP_EDGE              0.0050f
+#define AMS_EKF_VP_SIGMA_FLOOR_NOMINAL_V               0.0015f
+#define AMS_EKF_VP_SIGMA_FLOOR_TEMP_EDGE_V             0.0030f
+
+/* Adaptive measurement covariance is a segment-voltage quantity, so its
+ * minimum must scale with the number of series groups.  Expressing the floor
+ * per cell avoids topology-dependent confidence. */
+#define AMS_EKF_R_INIT_SIGMA_PER_CELL_V                0.006666667f
+#define AMS_EKF_R_SIGMA_FLOOR_PER_CELL_V               0.0020f
+#define AMS_EKF_R_SIGMA_FLOOR_TEMP_EDGE_PER_CELL_V     0.0030f
 #define AMS_SOH_MIN_ACCEPTED_OBSERVATIONS       50u
 #define AMS_SOH_MAX_R0_VARIANCE_OHM2            5.0e-5f
 #define AMS_SOH_MAX_ACCEPT_AGE_MS             300000u
@@ -90,6 +150,7 @@ extern "C" {
 #define AMS_SOH_REJECT_R0_CLAMP             0x0080u
 #define AMS_SOH_REJECT_NUMERIC              0x0100u
 #define AMS_SOH_REJECT_ESTIMATOR            0x0200u
+#define AMS_SOH_REJECT_ACQUISITION          0x0400u
 
 #define AMS_SOH_STATUS_CALIBRATION_CONFIDENT 0x01u
 #define AMS_SOH_STATUS_LAST_OBSERVABLE        0x02u
@@ -115,6 +176,70 @@ typedef enum
     AMS_EKF_R0_UPDATE_CLAMPED
 } ams_ekf_r0_update_result_t;
 
+typedef enum
+{
+    AMS_EKF_ACQ_WAITING = 0,
+    AMS_EKF_ACQ_COLLECTING,
+    AMS_EKF_ACQ_COMPLETE
+} ams_ekf_acquisition_state_t;
+
+typedef enum
+{
+    AMS_EKF_ACQ_REASON_WAITING_FOR_LOW_CURRENT = 0,
+    AMS_EKF_ACQ_REASON_COLLECTING_RELAXATION,
+    AMS_EKF_ACQ_REASON_RELAXATION_INTERRUPTED_RETRY,
+    AMS_EKF_ACQ_REASON_INSUFFICIENT_SAMPLES_RETRY,
+    AMS_EKF_ACQ_REASON_FIT_CONDITIONING_RETRY,
+    AMS_EKF_ACQ_REASON_FIT_RESIDUAL_RETRY,
+    AMS_EKF_ACQ_REASON_OCV_RANGE_RETRY,
+    AMS_EKF_ACQ_REASON_POLARIZATION_RETRY,
+    AMS_EKF_ACQ_REASON_INSUFFICIENT_CONSENSUS_RETRY,
+    AMS_EKF_ACQ_REASON_SEGMENT_CONSENSUS_RETRY,
+    AMS_EKF_ACQ_REASON_FIXED_BASIS_ANCHOR
+} ams_ekf_acquisition_reason_t;
+
+typedef struct
+{
+    uint8_t state;
+    uint8_t reason;
+    uint8_t sample_count;
+    uint8_t reject_count;
+    uint8_t candidate_ready;
+    uint8_t reserved0;
+    uint16_t reserved1;
+    uint32_t start_tick;
+    uint32_t last_sample_tick;
+    uint32_t dynamic_step_count;
+    uint32_t dynamic_update_count;
+    uint32_t anchor_count;
+
+    /* Sufficient statistics for y = b0 + b1*exp(-t/tau1) +
+     * b2*exp(-t/tau2).  No 20-second voltage history buffer is required. */
+    float xtx00;
+    float xtx01;
+    float xtx02;
+    float xtx11;
+    float xtx12;
+    float xtx22;
+    float xty0;
+    float xty1;
+    float xty2;
+    float y2_sum;
+    float temperature_sum_C;
+    /* First per-cell voltage in the window. The regression response is
+     * centered around this value so float32 sufficient-statistic residuals
+     * do not lose millivolt-scale information to y^2 cancellation. */
+    float voltage_reference_cell_V;
+
+    float candidate_soc;
+    float candidate_ocv_cell_V;
+    float candidate_vp1_finish_V;
+    float candidate_vp2_finish_V;
+    float fit_rmse_mV_cell;
+    float fit_rcond;
+    float consensus_soc;
+} ams_ekf_acquisition_t;
+
 typedef struct
 {
     uint32_t accepted_count;
@@ -129,6 +254,7 @@ typedef struct
     uint32_t reject_r0_clamp_count;
     uint32_t reject_numeric_count;
     uint32_t reject_estimator_count;
+    uint32_t reject_acquisition_count;
     uint32_t last_measurement_sequence;
     uint32_t last_observation_tick;
     uint32_t last_accept_tick;
@@ -174,7 +300,10 @@ typedef struct
     float t_core_C;     /* estimated representative core temperature */
 
     float p_soc;
+    float p_soc_vp1;
+    float p_soc_vp2;
     float p_vp1;
+    float p_vp1_vp2;
     float p_vp2;
     float p_r0;
 
@@ -184,17 +313,24 @@ typedef struct
 
     float v_pred_V;
     float innovation_V;
+    /* Prior scalar innovation variance S = H P- H' + R for the most
+     * recent measurement attempt. Exposed so production NIS can be scored
+     * without reconstructing hidden prior covariance offline. */
+    float innovation_variance_V2;
     float last_i_pack_A;
     float last_v_meas_V;
     float last_t_surf_C;
     uint32_t step_count;
     uint32_t innovation_reject_count;
     uint32_t dt_clamp_count;
+    uint32_t covariance_repair_count;
     uint32_t fault_flags;
     uint32_t last_measurement_sequence;
     uint32_t last_voltage_tick;
     uint8_t model_domain_flags;
     uint8_t valid;
+
+    ams_ekf_acquisition_t acquisition;
 } ams_ekf_instance_t;
 
 typedef struct
@@ -309,6 +445,27 @@ bool ams_ekf_step_gated(ams_ekf_instance_t *ekf,
                         float dt_s,
                         bool allow_r0_update,
                         ams_ekf_r0_update_result_t *r0_result);
+
+/* Production startup policy wrapper.  While acquisition is unresolved this
+ * executes the constrained SoC-only measurement update; once fixed-basis
+ * acquisition completes callers should return to ams_ekf_step_gated(). */
+bool ams_ekf_step_acquiring_gated(ams_ekf_instance_t *ekf,
+                                  float i_pack_A,
+                                  float v_meas_V,
+                                  float t_surf_C,
+                                  float dt_s,
+                                  ams_ekf_r0_update_result_t *r0_result);
+
+void ams_ekf_acquisition_observe(ams_ekf_instance_t *ekf,
+                                 float i_pack_A,
+                                 float current_uncertainty_A,
+                                 float v_meas_V,
+                                 float t_surf_C,
+                                 uint32_t measurement_tick,
+                                 bool current_trusted,
+                                 bool measurement_valid);
+void ams_estimator_acquisition_resolve(ams_estimator_t *est);
+bool ams_ekf_acquisition_complete(const ams_ekf_instance_t *ekf);
 
 uint32_t ams_resistance_soh_gate(const ams_ekf_instance_t *ekf,
                                  float i_pack_A,

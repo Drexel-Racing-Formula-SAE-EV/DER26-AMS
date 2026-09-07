@@ -14,6 +14,66 @@ static uint32_t next_generation(uint32_t generation)
     return (generation == 0u) ? 1u : generation;
 }
 
+static uint32_t effective_reading_age_ms(uint32_t stored_age_ms,
+                                         uint32_t age_reference_tick,
+                                         uint32_t now_ms)
+{
+    if(stored_age_ms == UINT32_MAX)
+    {
+        return UINT32_MAX;
+    }
+
+    const uint32_t elapsed_ms = (uint32_t)(now_ms - age_reference_tick);
+    /* A reference that appears more than half a tick range in the future is
+     * not a believable fresh reading. This also keeps wrap handling explicit. */
+    if(elapsed_ms >= 0x80000000u)
+    {
+        return UINT32_MAX;
+    }
+    if(stored_age_ms > (UINT32_MAX - elapsed_ms))
+    {
+        return UINT32_MAX;
+    }
+    return stored_age_ms + elapsed_ms;
+}
+
+static void snapshot_effective_max_ages(
+    const ams_measurement_snapshot_t *measurement,
+    uint32_t now_ms,
+    uint32_t max_cell_age_ms[AMS_SOP_SEGMENTS],
+    uint32_t max_temperature_age_ms[AMS_SOP_SEGMENTS])
+{
+    for(uint8_t segment = 0u; segment < AMS_SOP_SEGMENTS; segment++)
+    {
+        uint32_t cell_max = 0u;
+        uint32_t temp_max = 0u;
+        for(uint8_t cell = 0u; cell < AMS_SOP_CELLS_PER_SEGMENT; cell++)
+        {
+            const uint32_t age = effective_reading_age_ms(
+                measurement->cell_age_ms[segment][cell],
+                measurement->voltage_complete_tick,
+                now_ms);
+            if(age > cell_max)
+            {
+                cell_max = age;
+            }
+        }
+        for(uint8_t sensor = 0u; sensor < NTEMPS; sensor++)
+        {
+            const uint32_t age = effective_reading_age_ms(
+                measurement->temp_age_ms[segment][sensor],
+                measurement->publication_tick,
+                now_ms);
+            if(age > temp_max)
+            {
+                temp_max = age;
+            }
+        }
+        max_cell_age_ms[segment] = cell_max;
+        max_temperature_age_ms[segment] = temp_max;
+    }
+}
+
 static float clampf_local(float value, float lower, float upper)
 {
     if(value < lower)
@@ -127,6 +187,24 @@ static void build_soh_input(const ams_measurement_snapshot_t *measurement,
     input->measurement_sequence = measurement->sequence;
     input->measurement_timestamp_ms = measurement->publication_tick;
     input->now_ms = now_ms;
+    uint32_t segment_cell_age_ms[AMS_SOP_SEGMENTS];
+    uint32_t segment_temperature_age_ms[AMS_SOP_SEGMENTS];
+    snapshot_effective_max_ages(measurement, now_ms,
+                                segment_cell_age_ms,
+                                segment_temperature_age_ms);
+    for(uint8_t segment = 0u; segment < AMS_SOP_SEGMENTS; segment++)
+    {
+        if(segment_cell_age_ms[segment] > input->max_cell_age_ms)
+        {
+            input->max_cell_age_ms = segment_cell_age_ms[segment];
+        }
+        if(segment_temperature_age_ms[segment] >
+           input->max_temperature_age_ms)
+        {
+            input->max_temperature_age_ms =
+                segment_temperature_age_ms[segment];
+        }
+    }
     input->elapsed_s = elapsed_s;
     input->pack_current_a = measurement->current.average_A;
     input->pack_current_uncertainty_a =
@@ -144,7 +222,8 @@ static void build_soh_input(const ams_measurement_snapshot_t *measurement,
     input->current_calibrated = policy->current_calibrated &&
         measurement->current.calibration_record_confident &&
         (measurement->current.calibration_id != 0u) &&
-        (measurement->current.uncertainty_mA != 0u);
+        (measurement->current.uncertainty_mA != 0u) &&
+        (measurement->current.uncertainty_mA != UINT16_MAX);
     input->current_polarity_validated = policy->current_polarity_validated;
     input->balance_recovered =
         ((measurement->validity_flags & AMS_MEAS_BALANCE_RECOVERED) != 0u) ?
@@ -185,7 +264,8 @@ static void build_soh_input(const ams_measurement_snapshot_t *measurement,
         input->segment_resistance_confidence_pct[segment] =
             resistance->observation_confidence_pct;
         input->segment_resistance_valid[segment] =
-            ((resistance->status_flags & AMS_SOH_STATUS_ADVISORY_VALID) != 0u) ?
+            (((resistance->status_flags & AMS_SOH_STATUS_ADVISORY_VALID) != 0u) &&
+             ((resistance->status_flags & AMS_SOH_STATUS_LAST_OBSERVABLE) != 0u)) ?
             1u : 0u;
         if(instance->valid == 0u)
         {
@@ -226,6 +306,11 @@ static void build_sop_input(const ams_power_state_t *state,
     input->measurement_sequence = measurement->sequence;
     input->measurement_timestamp_ms = measurement->publication_tick;
     input->now_ms = now_ms;
+    uint32_t segment_cell_age_ms[AMS_SOP_SEGMENTS];
+    uint32_t segment_temperature_age_ms[AMS_SOP_SEGMENTS];
+    snapshot_effective_max_ages(measurement, now_ms,
+                                segment_cell_age_ms,
+                                segment_temperature_age_ms);
     input->pack_current_a = measurement->current.average_A;
     input->pack_current_uncertainty_a =
         (float)measurement->current.uncertainty_mA / 1000.0f;
@@ -242,10 +327,12 @@ static void build_sop_input(const ams_power_state_t *state,
     input->estimator_valid =
         (input->estimator_segment_topology != 0u) &&
         (estimator->fault_flags == 0u);
+    input->estimator_acquired = input->estimator_segment_topology;
     input->current_calibrated = policy->current_calibrated &&
         measurement->current.calibration_record_confident &&
         (measurement->current.calibration_id != 0u) &&
-        (measurement->current.uncertainty_mA != 0u);
+        (measurement->current.uncertainty_mA != 0u) &&
+        (measurement->current.uncertainty_mA != UINT16_MAX);
     input->current_polarity_validated = policy->current_polarity_validated;
     input->balance_recovered =
         ((measurement->validity_flags & AMS_MEAS_BALANCE_RECOVERED) != 0u) ?
@@ -290,20 +377,21 @@ static void build_sop_input(const ams_power_state_t *state,
         out->cell_usable_mask = measurement->cell_usable_mask[segment];
         out->estimator_valid = instance->valid;
         out->model_domain_flags = instance->model_domain_flags;
-        out->max_cell_age_ms = 0u;
+        out->max_cell_age_ms = segment_cell_age_ms[segment];
+        out->max_temperature_age_ms =
+            segment_temperature_age_ms[segment];
         for(uint8_t cell = 0u; cell < AMS_SOP_CELLS_PER_SEGMENT; cell++)
         {
             out->cell_voltage_v[cell] =
                 (float)measurement->cell_mv[segment][cell] / 1000.0f;
-            if(measurement->cell_age_ms[segment][cell] > out->max_cell_age_ms)
-            {
-                out->max_cell_age_ms =
-                    measurement->cell_age_ms[segment][cell];
-            }
         }
         if(instance->valid == 0u)
         {
             input->estimator_valid = 0u;
+        }
+        if(instance->acquisition.state != AMS_EKF_ACQ_COMPLETE)
+        {
+            input->estimator_acquired = 0u;
         }
     }
 }
@@ -376,7 +464,13 @@ void ams_power_state_init(ams_power_state_t *state)
     ams_fuse_observer_default_config(&state->fuse_config);
     ams_power_strategy_default_config(&state->strategy_config);
     ams_soh_init(&state->soh, &state->soh_config);
-    ams_fuse_observer_init(&state->fuse);
+    if(!ams_fuse_observer_init_conservative(&state->fuse,
+                                            &state->fuse_config))
+    {
+        /* Defensive fallback.  The default configuration is compile-time
+         * constant and valid, but a failed seed must never create authority. */
+        ams_fuse_observer_init(&state->fuse);
+    }
     ams_power_strategy_init(&state->strategy);
     ams_power_state_invalidate(state, 0u,
                                AMS_SOP_REASON_MEASUREMENT_INVALID);

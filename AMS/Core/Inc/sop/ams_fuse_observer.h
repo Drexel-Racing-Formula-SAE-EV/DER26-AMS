@@ -48,6 +48,9 @@ typedef struct
     float quiescent_current_a;
     float fuse_temperature_margin_c;
     float minimum_temperature_derating;
+    /* Overload-memory headroom above the 1.0 exhaustion threshold.  Keeping
+     * severe overload debt (instead of saturating at 1.0) prevents an
+     * unrealistically short recovery after a large pulse. */
     float maximum_state_multiple;
 
     /* Low-current asymptote used below the lowest digitized point:
@@ -68,6 +71,10 @@ typedef struct
     uint32_t invalid_count;
     uint8_t thermal_state_initialized;
     uint8_t budget_exhausted;
+    /* Set when startup/reset used the authoritative worst-case bound rather
+     * than externally established cold state.  Clears only after the bound
+     * cools through the 0.50 release threshold. */
+    uint8_t initial_state_conservative;
 } ams_fuse_observer_t;
 
 typedef struct
@@ -95,6 +102,9 @@ typedef struct
     float typical_melt_time_s;
     float usable_melt_time_s;
     float discharge_current_cap_a[AMS_SOP_HORIZONS];
+    /* Positive magnitudes.  ams_sop_result_t publishes charge current with a
+     * negative sign, so the strategy layer applies -charge_current_cap_a. */
+    float charge_current_cap_a[AMS_SOP_HORIZONS];
     uint16_t reason_flags;
     uint8_t valid;
     uint8_t authority_valid;
@@ -104,7 +114,16 @@ typedef struct
 
 void ams_fuse_observer_default_config(ams_fuse_observer_config_t *cfg);
 bool ams_fuse_observer_config_valid(const ams_fuse_observer_config_t *cfg);
+/* Zero-state initialization is only suitable when a cold fuse is established
+ * by external evidence.  Until the configured soak completes, authority is
+ * withheld and accumulated utilization is retained. */
 void ams_fuse_observer_init(ams_fuse_observer_t *observer);
+/* Production/reset initialization for an unknown prior fuse state.  Seeds the
+ * configured upper bound, latches exhaustion, and makes the bound immediately
+ * usable once the separately gated model is validated. */
+bool ams_fuse_observer_init_conservative(
+    ams_fuse_observer_t *observer,
+    const ams_fuse_observer_config_t *cfg);
 float ams_fuse_temperature_derating(float fuse_temperature_c,
                                      float minimum_derating);
 

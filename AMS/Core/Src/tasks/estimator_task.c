@@ -299,7 +299,9 @@ static bool estimator_step_with_soh(ams_estimator_t *est,
                                     uint32_t measurement_tick,
                                     bool epoch_coherent,
                                     bool balance_recovered,
-                                    bool current_calibration_confident)
+                                    bool current_calibration_confident,
+                                    bool acquisition_current_trusted,
+                                    float acquisition_current_uncertainty_A)
 {
     if((est == NULL) || (instance_index >= est->instance_count) ||
        (instance_index >= AMS_EKF_MAX_INSTANCES))
@@ -315,15 +317,41 @@ static bool estimator_step_with_soh(ams_estimator_t *est,
         epoch_coherent,
         balance_recovered,
         current_calibration_confident);
+    const bool acquisition_pending = !ams_ekf_acquisition_complete(inst);
+    if(acquisition_pending)
+    {
+        reject_flags |= AMS_SOH_REJECT_ACQUISITION;
+    }
     ams_ekf_r0_update_result_t r0_result =
         AMS_EKF_R0_UPDATE_NOT_REQUESTED;
-    bool step_ok = ams_ekf_step_gated(inst,
-                                      i_pack_A,
-                                      v_meas_V,
-                                      t_surf_C,
-                                      dt_s,
-                                      reject_flags == AMS_SOH_REJECT_NONE,
-                                      &r0_result);
+    bool step_ok;
+    if(acquisition_pending)
+    {
+        step_ok = ams_ekf_step_acquiring_gated(inst,
+                                               i_pack_A,
+                                               v_meas_V,
+                                               t_surf_C,
+                                               dt_s,
+                                               &r0_result);
+    }
+    else
+    {
+        step_ok = ams_ekf_step_gated(inst,
+                                     i_pack_A,
+                                     v_meas_V,
+                                     t_surf_C,
+                                     dt_s,
+                                     reject_flags == AMS_SOH_REJECT_NONE,
+                                     &r0_result);
+    }
+    ams_ekf_acquisition_observe(inst,
+                                i_pack_A,
+                                acquisition_current_uncertainty_A,
+                                v_meas_V,
+                                t_surf_C,
+                                measurement_tick,
+                                acquisition_current_trusted,
+                                step_ok);
     ams_resistance_soh_record(soh,
                               inst,
                               measurement_sequence,
@@ -365,6 +393,14 @@ static void estimator_record_unusable_soh_epoch(
                               reject_flags,
                               AMS_EKF_R0_UPDATE_NOT_REQUESTED,
                               false);
+    ams_ekf_acquisition_observe(inst,
+                                i_pack_A,
+                                0.0f,
+                                NAN,
+                                NAN,
+                                measurement_tick,
+                                current_calibration_confident,
+                                false);
 }
 
 static void estimator_publish_power_snapshot(app_data_t *data)
@@ -448,18 +484,23 @@ static void estimator_publish_tuning_snapshot(
         seg->r0_ohm = ekf->r0_ohm;
         seg->t_core_c = ekf->t_core_C;
         seg->p_soc = ekf->p_soc;
+        seg->p_soc_vp1 = ekf->p_soc_vp1;
+        seg->p_soc_vp2 = ekf->p_soc_vp2;
         seg->p_vp1 = ekf->p_vp1;
+        seg->p_vp1_vp2 = ekf->p_vp1_vp2;
         seg->p_vp2 = ekf->p_vp2;
         seg->p_r0 = ekf->p_r0;
         seg->r_meas_v2 = ekf->r_meas_V2;
         seg->v_pred_v = ekf->v_pred_V;
         seg->innovation_v = ekf->innovation_V;
+        seg->innovation_variance_v2 = ekf->innovation_variance_V2;
         seg->measured_v = ekf->last_v_meas_V;
         seg->current_a = ekf->last_i_pack_A;
         seg->surface_temp_c = ekf->last_t_surf_C;
         seg->step_count = ekf->step_count;
         seg->innovation_reject_count = ekf->innovation_reject_count;
         seg->dt_clamp_count = ekf->dt_clamp_count;
+        seg->covariance_repair_count = ekf->covariance_repair_count;
         seg->fault_flags = ekf->fault_flags;
         seg->measurement_sequence = ekf->last_measurement_sequence;
         seg->current_sequence = measurement->current.sequence;
@@ -467,6 +508,22 @@ static void estimator_publish_tuning_snapshot(
         seg->current_age_ms = now - measurement->current.latest_sample_tick;
         seg->model_domain_flags = ekf->model_domain_flags;
         seg->valid = ekf->valid;
+
+        const ams_ekf_acquisition_t *acq = &ekf->acquisition;
+        seg->acquisition_candidate_soc = acq->candidate_soc;
+        seg->acquisition_ocv_cell_v = acq->candidate_ocv_cell_V;
+        seg->acquisition_vp1_finish_v = acq->candidate_vp1_finish_V;
+        seg->acquisition_vp2_finish_v = acq->candidate_vp2_finish_V;
+        seg->acquisition_fit_rmse_mv_cell = acq->fit_rmse_mV_cell;
+        seg->acquisition_fit_rcond = acq->fit_rcond;
+        seg->acquisition_consensus_soc = acq->consensus_soc;
+        seg->acquisition_dynamic_step_count = acq->dynamic_step_count;
+        seg->acquisition_dynamic_update_count = acq->dynamic_update_count;
+        seg->acquisition_anchor_count = acq->anchor_count;
+        seg->acquisition_state = acq->state;
+        seg->acquisition_reason = acq->reason;
+        seg->acquisition_sample_count = acq->sample_count;
+        seg->acquisition_reject_count = acq->reject_count;
 
         const uint16_t bit = (uint16_t)(1u << i);
         if((data->estimator.voltage_raw_valid_mask & bit) != 0u)
@@ -803,7 +860,9 @@ bool estimator_task_update(app_data_t *data, uint32_t now, float cc_dt_s)
                         hil_measurement.last_rx_tick,
                         true,
                         true,
-                        true);
+                        true,
+                        true,
+                        0.0f);
                     inst->last_measurement_sequence =
                         (uint32_t)hil_measurement.counter;
                     inst->last_voltage_tick = hil_measurement.last_rx_tick;
@@ -822,6 +881,7 @@ bool estimator_task_update(app_data_t *data, uint32_t now, float cc_dt_s)
                         true);
                 }
             }
+            ams_estimator_acquisition_resolve(&data->estimator);
         }
 
         ams_estimator_refresh_summary(&data->estimator,
@@ -910,6 +970,15 @@ bool estimator_task_update(app_data_t *data, uint32_t now, float cc_dt_s)
 
     bool current_contiguous = measurement.current.valid;
     double charge_delta_As = measurement.current.charge_As;
+#if AMS_ENABLE_BENCH_PASSIVE_RING_ESTIMATOR
+    /* The five-SMB passive ring has no pack-current path.  Keep this
+     * assumption local to the advisory EKF: the measurement snapshot remains
+     * invalid for current, so SoH, SoP and every authority consumer still
+     * fail closed. */
+    const bool passive_ring_current_fallback = !measurement.current.valid;
+#else
+    const bool passive_ring_current_fallback = false;
+#endif
     if(data->estimator.current_total_initialized != 0u)
     {
         charge_delta_As = measurement.current.total_charge_As -
@@ -918,12 +987,18 @@ bool estimator_task_update(app_data_t *data, uint32_t now, float cc_dt_s)
             (measurement.current.total_invalid_sample_count ==
              data->estimator.last_current_total_invalid_sample_count);
     }
+    if(passive_ring_current_fallback)
+    {
+        current_contiguous = true;
+        charge_delta_As = 0.0;
+    }
 
     data->estimator.last_current_total_charge_As =
         measurement.current.total_charge_As;
     data->estimator.last_current_total_invalid_sample_count =
         measurement.current.total_invalid_sample_count;
-    data->estimator.current_total_initialized = 1u;
+    data->estimator.current_total_initialized =
+        passive_ring_current_fallback ? 0u : 1u;
 
     bool charge_valid = current_contiguous && isfinite(charge_delta_As);
     if(charge_valid)
@@ -933,16 +1008,26 @@ bool estimator_task_update(app_data_t *data, uint32_t now, float cc_dt_s)
     }
 
     float i_pack_A = measurement.current.average_A;
+    if(passive_ring_current_fallback)
+    {
+        i_pack_A = 0.0f;
+    }
     if((data->estimator.last_consumed_measurement_sequence != 0u) &&
-       dt_valid && isfinite(charge_delta_As))
+       dt_valid && isfinite(charge_delta_As) &&
+       !passive_ring_current_fallback)
     {
         i_pack_A = (float)(charge_delta_As / (double)dt_s);
     }
 
+    /* Estimator continuity is segment-local for voltage/temperature. A bad
+     * cell/temperature in one segment must not force healthy segment EKFs to
+     * throw away a coherent current epoch. Raw-cell safety and SoP authority
+     * still consume the global validity flags independently; this only keeps
+     * the advisory estimator partitioned. estimator_selected_voltage() and
+     * collect_group_temp() below remain the per-segment validity gates. */
     bool hardware_inputs_ready =
-        ((measurement.validity_flags & AMS_MEAS_VALID_VOLTAGE) != 0u) &&
-        ((measurement.validity_flags & AMS_MEAS_VALID_TEMPERATURE) != 0u) &&
-        ((measurement.validity_flags & AMS_MEAS_VALID_CURRENT) != 0u) &&
+        (((measurement.validity_flags & AMS_MEAS_VALID_CURRENT) != 0u) ||
+         passive_ring_current_fallback) &&
         ((measurement.validity_flags & AMS_MEAS_BALANCE_RECOVERED) != 0u) &&
         dt_valid && charge_valid && isfinite(i_pack_A);
     const bool balance_recovered =
@@ -952,6 +1037,20 @@ bool estimator_task_update(app_data_t *data, uint32_t now, float cc_dt_s)
         (AMS_CURRENT_CALIBRATION_VALIDATED != 0) &&
         measurement.current.calibration_record_confident &&
         (measurement.current.calibration_id != 0u);
+#if AMS_ENABLE_BENCH_PASSIVE_RING_ESTIMATOR
+    const bool acquisition_current_trusted = true;
+    const float acquisition_current_uncertainty_A =
+        AMS_BENCH_PASSIVE_RING_CURRENT_UNCERTAINTY_A;
+#else
+    const bool acquisition_current_trusted =
+        measurement.current.valid &&
+        measurement.current.calibration_record_confident &&
+        (measurement.current.calibration_id != 0u) &&
+        (measurement.current.uncertainty_mA != UINT16_MAX);
+    const float acquisition_current_uncertainty_A =
+        (acquisition_current_trusted ?
+         ((float)measurement.current.uncertainty_mA / 1000.0f) : 0.0f);
+#endif
 
     if(!dt_valid)
     {
@@ -983,6 +1082,18 @@ bool estimator_task_update(app_data_t *data, uint32_t now, float cc_dt_s)
         bool temp_ok = collect_group_temp(&measurement,
                                           &inst->cfg,
                                           &t_surf_C);
+#if AMS_ENABLE_BENCH_PASSIVE_RING_ESTIMATOR
+        if(!temp_ok)
+        {
+            /* The Rev5 100-ohm GPIO4/GPIO5 pull-ups are still under hardware
+             * review, so BENCH_VALIDATION deliberately does not run the mux
+             * bus periodically.  A room-temperature fallback is adequate for
+             * passive OCV observation, but it is never published as a valid
+             * temperature measurement or consumed by SoH/SoP. */
+            t_surf_C = AMS_BENCH_PASSIVE_RING_TEMP_C;
+            temp_ok = true;
+        }
+#endif
 
         if(hardware_inputs_ready && voltage_ok && temp_ok)
         {
@@ -997,7 +1108,9 @@ bool estimator_task_update(app_data_t *data, uint32_t now, float cc_dt_s)
                 measurement.voltage_complete_tick,
                 true,
                 balance_recovered,
-                current_calibration_confident);
+                current_calibration_confident,
+                acquisition_current_trusted,
+                acquisition_current_uncertainty_A);
         }
         else
         {
@@ -1016,6 +1129,8 @@ bool estimator_task_update(app_data_t *data, uint32_t now, float cc_dt_s)
         inst->last_measurement_sequence = measurement.sequence;
         inst->last_voltage_tick = measurement.voltage_complete_tick;
     }
+
+    ams_estimator_acquisition_resolve(&data->estimator);
 
     data->estimator.last_consumed_measurement_sequence = measurement.sequence;
     data->estimator.last_voltage_tick = measurement.voltage_complete_tick;

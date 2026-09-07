@@ -91,6 +91,11 @@ typedef enum
 #define AMS_SOP_REASON_RECOVERY_THERMAL          0x02000000u
 #define AMS_SOP_REASON_RECOVERY_SOC_HOLD         0x04000000u
 #define AMS_SOP_REASON_RECOVERY_CURRENT_PATH     0x08000000u
+/* State-estimator acquisition is an explicit authority prerequisite. The
+ * constrained dynamic estimator may continue tracking while this bit is set,
+ * but SoP must fail zero until startup state ambiguity has been resolved by a
+ * qualified acquisition. */
+#define AMS_SOP_REASON_ESTIMATOR_UNACQUIRED       0x10000000u
 
 typedef struct
 {
@@ -114,7 +119,9 @@ typedef struct
     float resistance_soh_upper;
 
     float cell_voltage_v[AMS_SOP_CELLS_PER_SEGMENT];
+    /* Effective age at solve time, not merely age at snapshot publication. */
     uint32_t max_cell_age_ms;
+    uint32_t max_temperature_age_ms;
     uint16_t cell_usable_mask;
     uint8_t estimator_valid;
     uint8_t model_domain_flags;
@@ -136,6 +143,7 @@ typedef struct
     ams_sop_operating_mode_t operating_mode;
     uint8_t measurement_valid;
     uint8_t estimator_valid;
+    uint8_t estimator_acquired;
     uint8_t estimator_segment_topology;
     uint8_t current_calibrated;
     uint8_t current_polarity_validated;
@@ -184,7 +192,10 @@ typedef struct
     float model_temperature_margin_c;
     float current_uncertainty_floor_a;
     float max_innovation_per_cell_v;
+    /* Snapshot/cell freshness bound. Temperature mux acquisition is slower
+     * and therefore has an explicit independent bound. */
     float max_measurement_age_ms;
+    float max_temperature_age_ms;
     float default_capacity_soh_lower;
     float default_resistance_soh_upper;
 

@@ -165,6 +165,17 @@ void DebugMon_Handler(void)
 /******************************************************************************/
 
 /**
+  * @brief This function handles CAN1 TX interrupts.
+  */
+void CAN1_TX_IRQHandler(void)
+{
+  /* TX-mailbox-empty notifications are enabled by canbus.c so the
+   * asynchronous scheduler can retire mailbox tokens and pump the next
+   * protected/detail frame without polling. */
+  canbus_irq_handler(&hcan1);
+}
+
+/**
   * @brief This function handles CAN1 RX0 interrupts.
   */
 void CAN1_RX0_IRQHandler(void)
@@ -172,10 +183,21 @@ void CAN1_RX0_IRQHandler(void)
   /* USER CODE BEGIN CAN1_RX0_IRQn 0 */
 
   /* USER CODE END CAN1_RX0_IRQn 0 */
-  HAL_CAN_IRQHandler(&hcan1);
+  canbus_irq_handler(&hcan1);
   /* USER CODE BEGIN CAN1_RX0_IRQn 1 */
 
   /* USER CODE END CAN1_RX0_IRQn 1 */
+}
+
+/**
+  * @brief This function handles CAN1 status/error interrupts.
+  */
+void CAN1_SCE_IRQHandler(void)
+{
+  /* Capture physical BOFF identity before HAL mutates/accumulates its sticky
+   * ErrorCode. Generic error decoding and flag clearing still belong to HAL. */
+  canbus_sce_irq_note(&hcan1);
+  canbus_irq_handler(&hcan1);
 }
 
 /**
@@ -200,7 +222,9 @@ void USART3_IRQHandler(void)
   /* USER CODE BEGIN USART3_IRQn 0 */
 
   /* USER CODE END USART3_IRQn 0 */
+#if AMS_ENABLE_CLI
   HAL_UART_IRQHandler(&huart3);
+#endif
   /* USER CODE BEGIN USART3_IRQn 1 */
 
   /* USER CODE END USART3_IRQn 1 */
@@ -221,6 +245,7 @@ void TIM7_IRQHandler(void)
 }
 
 /* USER CODE BEGIN 1 */
+#if AMS_ENABLE_CLI
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
     cli_device_t *cli = &app.board.cli;
@@ -315,4 +340,5 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
         }
     }
 }
+#endif /* AMS_ENABLE_CLI */
 /* USER CODE END 1 */
