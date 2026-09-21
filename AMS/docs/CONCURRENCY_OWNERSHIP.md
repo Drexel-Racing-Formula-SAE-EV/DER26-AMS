@@ -43,10 +43,14 @@ particular is not intended to be portable standard-C lock-free code.
 - Head is written only by the ISR and tail only by the task. Adding another
   producer or consumer invalidates this design and requires a FreeRTOS queue or
   another reviewed synchronization mechanism.
-- The ISR does not call FreeRTOS and therefore does not depend on the
-  `configMAX_SYSCALL_INTERRUPT_PRIORITY` API restriction. Its NVIC priority
-  must nevertheless remain documented and must not permit two producers for
-  the same ring.
+- The CAN ISR uses `taskENTER_CRITICAL_FROM_ISR()` and
+  `xTaskGetTickCountFromISR()`. RX0, TX and SCE run at NVIC preemption priority
+  5, subpriority 0. Their numerical priority must be at least
+  `configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY` (currently 5), and no greater
+  than `configLIBRARY_LOWEST_INTERRUPT_PRIORITY`. The CAN IRQ contract gate
+  checks these limits and agreement with CubeMX. Raising an IRQ above the
+  syscall ceiling is forbidden while it calls FreeRTOS APIs. Do not add a
+  second producer to the same ring.
 - `volatile` prevents compiler elision of the indices; `__DMB()` supplies the
   target ordering. This is a single-core Cortex-M contract, not a claim of C11
   atomic portability.

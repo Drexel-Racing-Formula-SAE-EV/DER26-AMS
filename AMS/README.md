@@ -40,7 +40,7 @@ See:
 
 The current architecture includes segment/pack estimation, SoP/SoH logic, fuse observation, and CAN publication of battery power authority. Unvalidated current sign/calibration, stale measurement state, incomplete topology, or other required-invalid conditions are designed to fail closed rather than create battery authority.
 
-Deep passive telemetry for estimator/SoP/fuse tuning is documented in [`docs/AMS_TUNING_CAN_SD_CONTRACT.md`](docs/AMS_TUNING_CAN_SD_CONTRACT.md).
+Deep passive telemetry for estimator/SoP/fuse tuning is documented in [`docs/AMS_TUNING_CAN_SD_CONTRACT.md`](docs/AMS_TUNING_CAN_SD_CONTRACT.md). The live passive logger schema is protocol v4 and includes full estimator covariance plus acquisition diagnostics.
 
 ## CAN contracts
 

@@ -1,0 +1,85 @@
+# DER26 AMS MiL Requirements Traceability
+
+Generated deterministically from `MiL/requirements/requirements.csv` and the checked-in scenario metadata.
+This is implementation traceability, not executed qualification evidence.
+
+- Requirements: 62
+- Scenarios: 40
+- Scenario-linked requirements: 61
+
+| ID | Requirement | Scenario coverage | Tier | Fixed evidence |
+|---|---|---|---|---|
+| `ADBMS-PEC` | A whole-segment PEC-invalid image shall invalidate that segment and pack authority | `segment_pec_dropout` | pr | `AMS/Core/Src/tasks/adbms_task.c` |
+| `C0-CURRENT-BOOTSTRAP` | The current path shall handle bootstrap precharge zero and sign stimuli without stale state | `c0_bootstrap_current` | pr | `MiL/matlab/configs/scenarios/c0_bootstrap_current.m` |
+| `C1-HPPC` | HPPC excitation shall qualify estimator convergence polarization and R0 behavior | `c1_hppc_bad_init` | pr | `MiL/matlab/configs/scenarios/c1_hppc_bad_init.m` |
+| `C2-LOW-SOC-SOP` | Low-SoC discharge qualification shall exercise UV and SoC bindings | `c2_low_soc_sop` | pr | `MiL/matlab/configs/scenarios/c2_low_soc_sop.m` |
+| `C3-HIGH-SOC-SOP` | High-SoC charge qualification shall exercise OV SoC and sign bindings | `c3_high_soc_charge_sop` | pr | `MiL/matlab/configs/scenarios/c3_high_soc_charge_sop.m` |
+| `C4-HOT-WEAK` | Hot weak-group qualification shall preserve the limiting-group response | `c4_hot_weak_group` | pr | `MiL/matlab/configs/scenarios/c4_hot_weak_group.m` |
+| `C5-SOH` | SoH qualification shall include rest-excursion-rest capacity and resistance evidence | `c5_soh_capacity_resistance` | release | `MiL/matlab/configs/scenarios/c5_soh_capacity_resistance.m` |
+| `C6-FUSE` | Fuse qualification shall replay a deterministic transient through production and reference models | `c6_fuse_transient` | pr | `Tools/fuse_replay/fuse_reference_oracle.c` |
+| `C7-MEAS-FAULTS` | Measurement qualification shall cover stale dropout frozen-value and sequence faults | `c7_measurement_faults` | pr | `MiL/matlab/configs/scenarios/c7_measurement_faults.m` |
+| `C8-DYNAMIC` | Dynamic qualification shall retain a reproducible 600 s profile | `c8_dynamic_replay` | pr | `MiL/matlab/configs/scenarios/c8_dynamic_replay.m` |
+| `CURRENT-BIAS` | Current bias shall be bounded and its estimator effect reported | `current_bias_negative`, `current_bias_positive` | nightly | `MiL/matlab/+mil/current_sensor_model.m` |
+| `CURRENT-DROPOUT` | Loss of either required current channel shall invalidate the current measurement | `current_dual_dropout` | pr | `MiL/matlab/+mil/current_window_model.m` |
+| `CURRENT-DUAL-RANGE` | Dual-range disagreement shall be detected rather than silently selecting authority | `dual_range_disagreement` | pr | `AMS/Core/Src/ext_drivers/current_sensor.c` |
+| `CURRENT-GAIN` | Current gain error shall be injected deterministically and scored | `current_gain_error` | nightly | `MiL/matlab/+mil/current_sensor_model.m` |
+| `CURRENT-IMPLAUSIBLE` | ADC rail or implausible current data shall fail closed | `current_50a_stuck_high`, `current_800a_stuck_high`, `current_800a_stuck_low`, `current_dual_dropout` | pr | `AMS/Core/Src/ext_drivers/current_sensor.c` |
+| `CURRENT-POLARITY` | Positive discharge and negative charge polarity shall remain consistent end to end | `c0_bootstrap_current`, `c3_high_soc_charge_sop`, `current_polarity_reversed` | pr, release | `AMS/Core/Src/ext_drivers/current_sensor.c` |
+| `CURRENT-SATURATION` | Hall or ADC saturation shall not produce a valid unrestricted current value | `current_50a_stuck_high`, `current_800a_stuck_high` | pr | `MiL/matlab/+mil/current_sensor_model.m` |
+| `CURRENT-ZERO-INVALID` | Invalid current measurements shall never be accepted as zero calibration | `c0_bootstrap_current` | pr | `AMS/host_tests/unit/ams_unit_test_runner.c` |
+| `EKF-ACQ-FAULT-RECOVERY` | A coherently biased segment shall be rejected by acquisition consensus without blocking healthy peers and shall reacquire after clean data returns without relaxing the clean convergence gate | `ekf_acquisition_segment_bias_recovery` | pr | `MiL/matlab/+mil/+metrics/production_acquisition_fault_recovery.m` |
+| `EKF-ACQUISITION` | Production startup estimation shall prevent unconstrained SoC/polarization allocation and use retryable consensus-gated fixed-basis relaxation acquisition when a qualified low-current window is available | `c1_hppc_bad_init` | pr | `AMS/Core/Src/estimator/ams_soc_ekf.c` |
+| `EKF-CONVERGENCE` | Each of five segment EKFs shall converge from directed initial SoC error | `c1_hppc_bad_init`, `ekf_acquisition_segment_bias_recovery`, `ekf_init_minus20`, `ekf_init_plus20` | pr | `MiL/matlab/+mil/+metrics/ekf.m` |
+| `EKF-COVARIANCE` | Production estimation shall retain the full symmetric SoC Vp1 Vp2 covariance fail closed on invalid covariance and expose prior innovation variance for production NIS and state NEES scoring | `c1_hppc_bad_init`, `ekf_acquisition_segment_bias_recovery` | pr | `AMS/Core/Src/estimator/ams_soc_ekf.c` |
+| `EKF-CURRENT-ROBUSTNESS` | Estimator behavior under current uncertainty shall be bounded and reported | `current_bias_negative`, `current_bias_positive`, `current_gain_error` | nightly | `MiL/matlab/+mil/+metrics/ekf.m` |
+| `EKF-DT` | Estimator behavior under bounded timing jitter shall remain numerically valid | `timestamp_jitter` | nightly | `MiL/matlab/+mil/+reference/run_segment_ekf.m` |
+| `EKF-HIGH-SOC` | High-SoC estimation shall remain bounded through charge transitions | `c3_high_soc_charge_sop`, `high_soc_regen` | nightly, pr | `MiL/matlab/+mil/+metrics/ekf.m` |
+| `EKF-IMBALANCE` | Five segment estimators shall preserve segment isolation under group imbalance | `c4_hot_weak_group`, `weak_group_capacity` | nightly, pr | `MiL/matlab/+mil/build_truth_bus.m` |
+| `EKF-INNOVATION` | Innovation bias rejection and variance shall be reported for every segment | `cell_voltage_bias` | nightly | `MiL/matlab/+mil/+metrics/ekf.m` |
+| `EKF-LONG-DURATION` | Long-duration estimator execution shall have zero numerical divergence | `endurance_replay` | release | `MiL/matlab/+mil/+metrics/numeric_health.m` |
+| `EKF-LOW-SOC` | Low-SoC estimation shall remain bounded near the discharge limit | `c2_low_soc_sop`, `low_soc_dynamic` | nightly, pr | `MiL/matlab/+mil/+metrics/ekf.m` |
+| `EKF-NIS` | Scalar normalized innovation squared shall use the estimator innovation variance | `c1_hppc_bad_init` | pr | `MiL/matlab/+mil/+metrics/ekf.m` |
+| `EKF-NOMINAL` | Nominal five-segment SoC error shall meet frozen RMSE p95 and maximum gates | `c8_dynamic_replay`, `smoke_nominal_us06` | pr | `MiL/matlab/+mil/+metrics/ekf.m` |
+| `EKF-R0` | R0 adaptation shall be scored while observable and checked for drift while unobservable | `c1_hppc_bad_init`, `c5_soh_capacity_resistance`, `weak_group_resistance` | nightly, pr, release | `MiL/matlab/+mil/+metrics/production_ekf.m` |
+| `EKF-TEMP` | Estimator behavior shall be qualified at directed temperature corners | `cold_5c`, `hot_40c` | nightly | `MiL/matlab/configs/scenarios/cold_5c.m` |
+| `EKF-TEMP-CONFIDENCE` | Estimator confidence floors shall react conservatively to measured temperature near the characterized electrical LUT edges and temperature cases shall report production NIS and state NEES | `cold_5c`, `hot_40c` | nightly | `AMS/Core/Src/estimator/ams_soc_ekf.c` |
+| `ENDURANCE` | Endurance replay shall retain deterministic provenance and numerical health | `endurance_replay` | release | `MiL/matlab/configs/scenarios/endurance_replay.m` |
+| `FAIL-CLOSED` | Invalid stale or untrusted measurement images shall not create additional authority | `c0_bootstrap_current`, `c7_measurement_faults`, `current_50a_stuck_high`, `current_800a_stuck_high`, `current_800a_stuck_low`, `current_dual_dropout`, `dual_range_disagreement`, `segment_pec_dropout`, `stale_cell_measurement`, `stale_temperature_measurement` | nightly, pr | `MiL/matlab/+mil/+metrics/fault_behavior.m` |
+| `FUSE-CONSERVATIVE` | Production fuse utilization shall not understate the independent exact-ZOH reference | `c6_fuse_transient`, `c8_dynamic_replay` | pr | `Tools/fuse_replay/fuse_reference_oracle.c` |
+| `MEAS-STALE` | Stale acquisition shall retain its last value while age and freshness invalidate it | `c7_measurement_faults`, `stale_cell_measurement` | pr | `MiL/matlab/+mil/apply_sensor_faults.m` |
+| `MEAS-VALIDITY` | Usable masks ages and validity shall control the published measurement image | `c7_measurement_faults`, `segment_pec_dropout` | pr | `MiL/matlab/+mil/build_measurement_bus.m` |
+| `NUMERIC` | Valid operation shall contain no NaN Inf negative variance or divergent state | `c1_hppc_bad_init`, `ekf_acquisition_segment_bias_recovery`, `smoke_nominal_us06` | pr | `MiL/matlab/+mil/+metrics/numeric_health.m` |
+| `QUALIFY-BURST` | Short qualifying-style current bursts shall exercise transient power behavior | `qualifying_bursts` | nightly | `MiL/matlab/configs/scenarios/qualifying_bursts.m` |
+| `SOH-CAPACITY` | Capacity SoH shall be scored independently from resistance growth | `soh_capacity_only`, `weak_group_capacity` | nightly, release | `MiL/matlab/+mil/+metrics/production_soh.m` |
+| `SOH-CAPACITY-OBSERVABILITY` | Capacity SoH shall remain invalid until rest excursion throughput and confidence requirements are met | `c5_soh_capacity_resistance`, `soh_capacity_window` | release | `AMS/Core/Src/soh/ams_soh.c` |
+| `SOH-FALSE-AGING` | Temperature-only resistance change shall not create persistent material aging | `c5_soh_capacity_resistance`, `soh_temperature_confound` | release | `MiL/matlab/+mil/+metrics/production_soh.m` |
+| `SOH-INDEPENDENCE` | Capacity fade and resistance growth shall be varied and scored independently | `soh_capacity_only`, `soh_resistance_only` | release | `MiL/matlab/configs/scenarios/soh_resistance_only.m` |
+| `SOH-RESISTANCE` | Resistance growth and conservative upper bound shall be scored when observable | `c5_soh_capacity_resistance`, `soh_resistance_only`, `weak_group_resistance` | nightly, release | `MiL/matlab/+mil/+metrics/production_soh.m` |
+| `SOH-TEMPERATURE-CONFOUND` | Temperature-dependent resistance shall be distinguished from irreversible aging | `soh_temperature_confound` | release | `MiL/matlab/configs/scenarios/soh_temperature_confound.m` |
+| `SOP-0P1S` | The 0.1 s SoP horizon shall be scored against the distributed oracle | `qualifying_bursts` | nightly | `MiL/matlab/+mil/+oracle/sop_snapshot.m` |
+| `SOP-1S` | The 1 s SoP horizon shall be scored against the distributed oracle | `qualifying_bursts` | nightly | `MiL/matlab/+mil/+oracle/sop_snapshot.m` |
+| `SOP-ACQUISITION-AUTHORITY` | Production SoP authority shall fail closed while any enabled segment estimator has not completed qualified acquisition | host/static evidence | host | `AMS/Core/Src/sop/ams_sop.c` |
+| `SOP-CHARGE` | Charge SoP shall use negative current convention and magnitude-safe comparison | `c3_high_soc_charge_sop`, `high_soc_regen` | nightly, pr | `MiL/matlab/+mil/+metrics/sop.m` |
+| `SOP-CHARGE-TEMP` | Charge SoP shall enforce minimum and maximum temperature limits | `cold_5c` | nightly | `MiL/matlab/+mil/+oracle/sop_snapshot.m` |
+| `SOP-FUSE-ENVELOPE` | The truth discharge envelope shall report electrothermal fuse and combined limits | `c6_fuse_transient` | pr | `MiL/matlab/+mil/+oracle/sop_campaign.m` |
+| `SOP-HORIZONS` | SoP shall cover 0.1 1 10 and 30 s horizons with monotonic diagnostics | `c2_low_soc_sop`, `c8_dynamic_replay` | pr | `MiL/matlab/+mil/+oracle/sop_snapshot.m` |
+| `SOP-OV` | Charge SoP shall bind before any group exceeds the frozen overvoltage limit | `c3_high_soc_charge_sop`, `high_soc_regen` | nightly, pr | `MiL/matlab/+mil/+oracle/sop_snapshot.m` |
+| `SOP-THERMAL` | SoP shall bind before any group exceeds its charge or discharge thermal limit | `c4_hot_weak_group`, `endurance_replay`, `hot_40c`, `temperature_bias` | nightly, pr, release | `MiL/matlab/+mil/+oracle/sop_snapshot.m` |
+| `SOP-UV` | Discharge SoP shall bind before any group falls below the frozen undervoltage limit | `c2_low_soc_sop`, `low_soc_dynamic` | nightly, pr | `MiL/matlab/+mil/+oracle/sop_snapshot.m` |
+| `SOP-WEAK-CELL` | Distributed SoP shall retain the actual limiting weak group | `c4_hot_weak_group`, `weak_group_capacity`, `weak_group_resistance` | nightly, pr | `MiL/matlab/+mil/+oracle/sop_snapshot.m` |
+| `TEMP-BIAS` | Temperature bias shall be injected deterministically and scored | `temperature_bias` | nightly | `MiL/matlab/+mil/build_measurement_bus.m` |
+| `TEMP-STALE` | Stale temperature shall not be treated as a fresh thermal authority input | `stale_temperature_measurement` | nightly | `MiL/matlab/+mil/+metrics/fault_behavior.m` |
+| `TIMING-JITTER` | Timestamp jitter and repeated sequence behavior shall be reproducible and bounded | `c7_measurement_faults`, `timestamp_jitter` | nightly, pr | `MiL/matlab/+mil/apply_sensor_faults.m` |
+| `VOLTAGE-BIAS` | Cell-voltage bias shall be injected per measurement image and reflected in innovation | `cell_voltage_bias` | nightly | `MiL/matlab/+mil/build_measurement_bus.m` |
+
+## Compact C0-C8 campaign
+
+- C0: `c0_bootstrap_current` - `MiL/matlab/configs/scenarios/c0_bootstrap_current.m`
+- C1: `c1_hppc_bad_init` - `MiL/matlab/configs/scenarios/c1_hppc_bad_init.m`
+- C2: `c2_low_soc_sop` - `MiL/matlab/configs/scenarios/c2_low_soc_sop.m`
+- C3: `c3_high_soc_charge_sop` - `MiL/matlab/configs/scenarios/c3_high_soc_charge_sop.m`
+- C4: `c4_hot_weak_group` - `MiL/matlab/configs/scenarios/c4_hot_weak_group.m`
+- C5: `c5_soh_capacity_resistance` - `MiL/matlab/configs/scenarios/c5_soh_capacity_resistance.m`
+- C6: `c6_fuse_transient` - `MiL/matlab/configs/scenarios/c6_fuse_transient.m`
+- C7: `c7_measurement_faults` - `MiL/matlab/configs/scenarios/c7_measurement_faults.m`
+- C8: `c8_dynamic_replay` - `MiL/matlab/configs/scenarios/c8_dynamic_replay.m`

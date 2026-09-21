@@ -61,18 +61,23 @@ typedef struct {
     bool input_volt_fail;
     bool voltage_sense_fail;
     bool communication_fail;
-    bool tx_fail;
-    bool shutdown_pending;
-    uint8_t shutdown_frames_remaining;
-    HAL_StatusTypeDef last_tx_status;
-    HAL_StatusTypeDef last_shutdown_status;
+    /* CAN TX completion runs in ISR context. These scalar status/identity
+     * fields are therefore explicitly volatile for ISR/task visibility.
+     * Compound shutdown-request invariants are protected by the task critical
+     * section that owns state transitions plus the CAN mailbox ISR critical
+     * section and request_id identity checks. */
+    volatile bool tx_fail;
+    volatile bool shutdown_pending;
+    volatile uint8_t shutdown_frames_remaining;
+    volatile HAL_StatusTypeDef last_tx_status;
+    volatile HAL_StatusTypeDef last_shutdown_status;
     uint16_t disable_reason_mask;
     uint32_t last_rx_tick;
-    uint32_t tx_count;
+    volatile uint32_t tx_count;
     uint32_t rx_count;
     uint32_t tx_fail_count;
-    uint32_t shutdown_request_count;
-    uint32_t shutdown_tx_count;
+    volatile uint32_t shutdown_request_count;
+    volatile uint32_t shutdown_tx_count;
     uint32_t shutdown_tx_fail_count;
 } charger_t;
 

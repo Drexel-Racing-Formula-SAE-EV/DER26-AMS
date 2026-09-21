@@ -11,6 +11,8 @@
 #ifndef INC_AMS_BUILD_PROFILE_H_
 #define INC_AMS_BUILD_PROFILE_H_
 
+#include "ams_version.h"
+
 #define AMS_PROFILE_BENCH   1
 #define AMS_PROFILE_HIL     2
 #define AMS_PROFILE_VEHICLE 3
@@ -48,6 +50,24 @@
 #ifndef AMS_BUILD_PROFILE
 #define AMS_BUILD_PROFILE AMS_PROFILE_BENCH
 #endif
+
+/* Passive five-SMB ring observer used for LV bench characterization when the
+ * accumulator DHAB and the thermistor mux bus are not connected.  This only
+ * permits the segment EKFs to acquire an OCV-based advisory SoC using an
+ * explicit zero-current/open-ring assumption and a 25 C temperature fallback.
+ * It does not change measurement-valid bits, SoH/SoP authority, BMS_OK, or
+ * balancing.  Disable it for any bench setup that can carry pack current. */
+#ifndef AMS_ENABLE_BENCH_PASSIVE_RING_ESTIMATOR
+#if (AMS_BUILD_PROFILE == AMS_PROFILE_BENCH_VALIDATION) && \
+    !AMS_BENCH_VALIDATION_SINGLE_SMB
+#define AMS_ENABLE_BENCH_PASSIVE_RING_ESTIMATOR 1
+#else
+#define AMS_ENABLE_BENCH_PASSIVE_RING_ESTIMATOR 0
+#endif
+#endif
+
+#define AMS_BENCH_PASSIVE_RING_TEMP_C 25.0f
+#define AMS_BENCH_PASSIVE_RING_CURRENT_UNCERTAINTY_A 0.25f
 
 #define AMS_ESTIMATOR_TOPOLOGY_PACK     1
 #define AMS_ESTIMATOR_TOPOLOGY_SEGMENTS 2
@@ -285,6 +305,9 @@
 #ifndef AMS_ENABLE_SERVICE_CLI
 #define AMS_ENABLE_SERVICE_CLI 1
 #endif
+#ifndef AMS_ENABLE_CLI
+#define AMS_ENABLE_CLI 1
+#endif
 #ifndef AMS_ENABLE_IMD
 #define AMS_ENABLE_IMD 0
 #endif
@@ -327,6 +350,9 @@
 #ifndef AMS_ENABLE_SERVICE_CLI
 #define AMS_ENABLE_SERVICE_CLI 1
 #endif
+#ifndef AMS_ENABLE_CLI
+#define AMS_ENABLE_CLI 1
+#endif
 #ifndef AMS_ENABLE_IMD
 #define AMS_ENABLE_IMD 1
 #endif
@@ -367,6 +393,9 @@
 #ifndef AMS_ENABLE_SERVICE_CLI
 #define AMS_ENABLE_SERVICE_CLI 1
 #endif
+#ifndef AMS_ENABLE_CLI
+#define AMS_ENABLE_CLI 1
+#endif
 #ifndef AMS_ENABLE_IMD
 #define AMS_ENABLE_IMD 1
 #endif
@@ -404,6 +433,9 @@
 #ifndef AMS_ENABLE_SERVICE_CLI
 #define AMS_ENABLE_SERVICE_CLI 1
 #endif
+#ifndef AMS_ENABLE_CLI
+#define AMS_ENABLE_CLI 1
+#endif
 #ifndef AMS_ENABLE_IMD
 #define AMS_ENABLE_IMD 0
 #endif
@@ -440,6 +472,9 @@
 #endif
 #ifndef AMS_ENABLE_SERVICE_CLI
 #define AMS_ENABLE_SERVICE_CLI 0
+#endif
+#ifndef AMS_ENABLE_CLI
+#define AMS_ENABLE_CLI 0
 #endif
 #ifndef AMS_ENABLE_IMD
 #define AMS_ENABLE_IMD 1
@@ -614,6 +649,17 @@
 #error "AMS_ENABLE_AUTO_TEMP_MUX_SCAN must be 0 or 1"
 #endif
 
+#if (AMS_ENABLE_BENCH_PASSIVE_RING_ESTIMATOR != 0) && \
+    (AMS_ENABLE_BENCH_PASSIVE_RING_ESTIMATOR != 1)
+#error "AMS_ENABLE_BENCH_PASSIVE_RING_ESTIMATOR must be 0 or 1"
+#endif
+
+#if AMS_ENABLE_BENCH_PASSIVE_RING_ESTIMATOR && \
+    ((AMS_BUILD_PROFILE != AMS_PROFILE_BENCH_VALIDATION) || \
+     AMS_BENCH_VALIDATION_SINGLE_SMB)
+#error "Passive ring estimator is restricted to the five-SMB BENCH_VALIDATION profile"
+#endif
+
 #if (AMS_ENABLE_ADBMS_FAULT_INJECTION != 0) && \
     (AMS_ENABLE_ADBMS_FAULT_INJECTION != 1)
 #error "AMS_ENABLE_ADBMS_FAULT_INJECTION must be 0 or 1"
@@ -673,6 +719,16 @@
 #error "ADBMS fault injection requires the service CLI"
 #endif
 
+#if (AMS_ENABLE_CLI != 0) && (AMS_ENABLE_CLI != 1)
+#error "AMS_ENABLE_CLI must be 0 or 1"
+#endif
+#if AMS_ENABLE_SERVICE_CLI && !AMS_ENABLE_CLI
+#error "Service CLI mutation requires the diagnostic CLI task/UART"
+#endif
+#if (AMS_BUILD_PROFILE == AMS_PROFILE_VEHICLE) && AMS_ENABLE_CLI
+#error "Vehicle profile compiles out the CLI task/UART parser"
+#endif
+
 #if (AMS_VOLTAGE_MODE != AMS_VOLTAGE_MODE_REDUNDANT_CS) && \
     (AMS_VOLTAGE_MODE != AMS_VOLTAGE_MODE_C_ONLY_MVP)
 #error "AMS_VOLTAGE_MODE must be REDUNDANT_CS or C_ONLY_MVP"
@@ -711,9 +767,6 @@
 #error "HIL profile requires CAN injection and ADBMS replacement"
 #endif
 
-#ifndef AMS_SOURCE_REVISION
-#define AMS_SOURCE_REVISION "DER26-AMS-v0.5.15-20260826"
-#endif
 #ifndef AMS_BUILD_GIT_COMMIT
 #define AMS_BUILD_GIT_COMMIT AMS_SOURCE_REVISION
 #endif
@@ -721,7 +774,7 @@
 #define AMS_CURRENT_CALIBRATION_REVISION "DHAB-unvalidated-v0"
 #endif
 #ifndef AMS_CAN_CONTRACT_REVISION
-#define AMS_CAN_CONTRACT_REVISION "DER26-CAN-V4-500K-TXSCHED1-LOGGER3-POWER2"
+#define AMS_CAN_CONTRACT_REVISION "DER26-CAN-V4-1M-TXSCHED1-LOGGER3-POWER2-CURRENT2"
 #endif
 #ifndef AMS_THRESHOLD_REVISION
 #define AMS_THRESHOLD_REVISION "DER26-SOP-system-v2"

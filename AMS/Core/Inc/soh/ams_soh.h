@@ -22,6 +22,15 @@ extern "C" {
 #define AMS_SOH_PERSIST_SCHEMA 3u
 #define AMS_SOH_ALL_SEGMENTS_MASK ((1u << AMS_SOH_SEGMENTS) - 1u)
 
+/* Resistance ageing is deliberately slow state.  Fresh R0 estimates often
+ * arrive as a correlated burst during one excitation episode.  Do not commit
+ * the leading edge of that burst as permanent ageing: collect a bounded episode
+ * and only evaluate its robust median after qualified R0 observations have
+ * stopped for a short gap. */
+#define AMS_SOH_RESISTANCE_EPISODE_MIN_OBSERVATIONS 9u
+#define AMS_SOH_RESISTANCE_EPISODE_MAX_OBSERVATIONS 33u
+#define AMS_SOH_RESISTANCE_EPISODE_GAP_MS 2500u
+
 #define AMS_SOH_PERSIST_CAPACITY_VALID   (1u << 0u)
 #define AMS_SOH_PERSIST_RESISTANCE_VALID (1u << 1u)
 
@@ -70,6 +79,7 @@ typedef struct
     float prior_resistance_soh_upper;
     float resistance_uncertainty_floor;
     uint32_t maximum_measurement_age_ms;
+    uint32_t maximum_temperature_age_ms;
     uint8_t minimum_capacity_observations;
     uint8_t minimum_resistance_confidence_pct;
 } ams_soh_config_t;
@@ -79,6 +89,10 @@ typedef struct
     uint32_t measurement_sequence;
     uint32_t measurement_timestamp_ms;
     uint32_t now_ms;
+    /* Effective constituent ages at now_ms. These make stale source samples
+     * visible even when the enclosing snapshot was just republished. */
+    uint32_t max_cell_age_ms;
+    uint32_t max_temperature_age_ms;
     float elapsed_s;
     float pack_current_a;
     float pack_current_uncertainty_a;
@@ -129,6 +143,11 @@ typedef struct
     float segment_resistance_growth_upper[AMS_SOH_SEGMENTS];
     uint8_t segment_resistance_confidence_pct[AMS_SOH_SEGMENTS];
     uint8_t segment_resistance_valid_mask;
+    float segment_resistance_episode_ratio[AMS_SOH_SEGMENTS][AMS_SOH_RESISTANCE_EPISODE_MAX_OBSERVATIONS];
+    uint32_t segment_resistance_episode_last_fresh_ms[AMS_SOH_SEGMENTS];
+    uint8_t segment_resistance_episode_count[AMS_SOH_SEGMENTS];
+    uint8_t segment_resistance_episode_write_index[AMS_SOH_SEGMENTS];
+    uint8_t segment_resistance_episode_min_confidence[AMS_SOH_SEGMENTS];
     float rest_elapsed_s;
     float anchor_soc;
     float anchor_temp_c;

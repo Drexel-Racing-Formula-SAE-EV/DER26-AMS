@@ -1,5 +1,5 @@
 /*
- * stm32f407g.c
+ * stm32f767z.c
  *
  *  Created on: Jan 29, 2024
  *      Author: cole

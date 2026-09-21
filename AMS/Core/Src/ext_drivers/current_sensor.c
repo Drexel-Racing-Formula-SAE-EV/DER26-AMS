@@ -682,6 +682,8 @@ bool current_sensor_zero_calibrate(current_sensor_t *dev)
     if((!dev->last_read_ok) ||
        (!dev->count_high_fresh) ||
        (!dev->count_low_fresh) ||
+       (!dev->current_valid) ||
+       (dev->reason != CURRENT_SENSOR_REASON_OK) ||
        !isfinite(dev->current_50a_raw) ||
        !isfinite(dev->current_800a_raw))
     {

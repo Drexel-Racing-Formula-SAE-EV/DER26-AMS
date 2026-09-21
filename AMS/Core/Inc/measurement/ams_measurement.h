@@ -68,10 +68,15 @@ typedef struct
     uint32_t total_invalid_sample_count;
     double active_current_squared_A2s;
     uint32_t last_calibration_id;
+    uint16_t last_uncertainty_mA;
+    uint8_t last_selected_range;
+    uint16_t sample_uncertainty_mA;
+    uint8_t sample_selected_range;
     bool initialized;
     bool last_sample_valid;
     bool last_calibration_record_confident;
     bool active_calibration_provenance_initialized;
+    bool active_sensor_metadata_initialized;
 } ams_current_window_accumulator_t;
 
 typedef struct
@@ -126,7 +131,9 @@ void ams_current_window_update(ams_current_window_accumulator_t *acc,
                                uint32_t calibration_id);
 /* Merge the calibrated uncertainty of the selected DHAB range into the active
  * immutable epoch. A range change retains the worst uncertainty and marks the
- * range as mixed/unknown (zero). Call while owning the current-window mutex. */
+ * range as mixed/unknown (zero) until rotation. Also retain the most recent
+ * sample's metadata for the current value carried across rotation. Call while
+ * owning the current-window mutex, immediately before the sample update. */
 void ams_current_window_set_sensor_metadata(
     ams_current_window_accumulator_t *acc,
     uint16_t uncertainty_mA,

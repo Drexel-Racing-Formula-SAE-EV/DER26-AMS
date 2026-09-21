@@ -70,6 +70,148 @@ static bool error_task_air_feedback_fault(const app_data_t *data,
 #endif
 }
 
+static void error_task_latch_can_policy(app_data_t *data,
+                                        ams_can_policy_latch_reason_t reason)
+{
+    if(data == NULL)
+    {
+        return;
+    }
+
+    data->can_authority_ready = false;
+    if(!data->can_busoff_hard_fault_latched)
+    {
+        data->can_busoff_hard_fault_latched = true;
+        data->can_busoff_policy_latch_reason = reason;
+    }
+    set_bms(false);
+}
+
+
+static bool error_task_can_recovered_before_discharge_deadline(
+    const app_data_t *data)
+{
+    const canbus_device_t *canbus;
+    const ams_can_tx_scheduler_t *sched;
+    uint32_t generation;
+    uint32_t completion_tick;
+    uint32_t baseline;
+    bool transport_settled;
+
+    if(data == NULL)
+    {
+        return false;
+    }
+
+    canbus = &data->board.canbus;
+    sched = &canbus->tx_scheduler;
+
+    /* A mailbox completion is eligible only after task-context recovery has
+     * fully settled the old controller epoch and moved the authority baseline
+     * past every pre-bus-off completion. Without this gate, a delayed callback
+     * from the old epoch could be mistaken for a 499 ms post-recovery delivery
+     * when the lower-priority CAN task itself is delayed beyond 500 ms.
+     *
+     * Snapshot flags and scheduler markers under one interrupt mask so a new
+     * CAN error callback cannot race this safety decision. The lower-priority
+     * CAN task cannot preempt the error supervisor. */
+    taskENTER_CRITICAL();
+    transport_settled = canbus->started && canbus->notification_active &&
+                        !data->canbus_fault &&
+                        !data->can_busoff_fault &&
+                        !data->can_recover_pending &&
+                        (canbus->busoff_event_sequence ==
+                         canbus->busoff_event_consumed_sequence) &&
+                        !canbus->tx_recovery_pending &&
+                        !canbus->tx_refresh_pending &&
+                        !canbus->tx_suspended &&
+                        !canbus->tx_latched_inhibit &&
+                        !data->can_busoff_hard_fault_latched;
+    baseline = data->can_authority_complete_generation_baseline;
+    generation = sched->protected_required_last_complete_generation;
+    completion_tick = sched->protected_required_last_complete_tick;
+    taskEXIT_CRITICAL();
+
+    if(!transport_settled)
+    {
+        return false;
+    }
+
+    return (generation != 0u) &&
+           (generation != baseline) &&
+           ((uint32_t)(completion_tick -
+                       data->can_busoff_recovery_start_tick) <
+            AMS_CAN_DISCHARGE_BUSOFF_HARD_FAULT_MS);
+}
+
+static void error_task_update_can_policy(app_data_t *data, uint32_t now)
+{
+    if(data == NULL)
+    {
+        return;
+    }
+
+    /* A repeated-bus-off TX inhibit is always a hard, service-resettable
+     * communication fault regardless of the current operating state. */
+    if(data->board.canbus.tx_latched_inhibit)
+    {
+        error_task_latch_can_policy(data, AMS_CAN_POLICY_LATCH_TX_INHIBIT);
+    }
+
+    if(!data->can_busoff_recovery_active)
+    {
+        return;
+    }
+
+    switch((state_t)data->can_busoff_recovery_state)
+    {
+    case STATE_CHARGE:
+        error_task_latch_can_policy(data, AMS_CAN_POLICY_LATCH_CHARGE_BUSOFF);
+        break;
+    case STATE_BALANCE:
+        error_task_latch_can_policy(data, AMS_CAN_POLICY_LATCH_BALANCE_BUSOFF);
+        break;
+    case STATE_DISCARGE:
+        /* Drive-state continuity gets one bounded recovery interval. The ECU
+         * contract expires torque authority at 300 ms; AMS fail-low follows
+         * at 500 ms if a fresh required protected generation has not completed
+         * on the wire. Unsigned subtraction preserves tick-wrap behavior. */
+        if((uint32_t)(now - data->can_busoff_recovery_start_tick) >=
+           AMS_CAN_DISCHARGE_BUSOFF_HARD_FAULT_MS)
+        {
+            /* Decide from actual wire-completion time, not whether the lower
+             * priority CAN task has already observed that completion. */
+            if(!error_task_can_recovered_before_discharge_deadline(data))
+            {
+                error_task_latch_can_policy(
+                    data, AMS_CAN_POLICY_LATCH_DISCHARGE_TIMEOUT);
+            }
+        }
+        break;
+    case STATE_START:
+    case STATE_NULL:
+    case STATE_ERROR:
+    default:
+        break;
+    }
+}
+
+static bool error_task_can_startup_ready(const app_data_t *data)
+{
+    if(data == NULL)
+    {
+        return false;
+    }
+
+    return data->can_authority_ready &&
+           !data->can_busoff_recovery_active &&
+           !data->can_authority_refresh_pending &&
+           !data->can_busoff_fault &&
+           !data->can_recover_pending &&
+           !data->board.canbus.tx_latched_inhibit &&
+           !data->can_busoff_hard_fault_latched;
+}
+
 static bool error_task_operating_inputs_ready(const app_data_t *data,
                                               uint32_t now)
 {
@@ -143,6 +285,7 @@ static bool error_task_bms_ready(const app_data_t *data, uint32_t now)
     /* Caller holds the short safety critical section. */
     return ams_state_allows_bms_ok(data->state) &&
            !data->state_transition_in_progress &&
+           !data->can_authority_refresh_pending &&
            error_task_current_policy_matches_state(data) &&
            error_task_operating_inputs_ready(data, now) &&
            ((data->state != STATE_CHARGE) || !data->temp_charge_stop) &&
@@ -221,7 +364,10 @@ void error_task_update(app_data_t *data, uint32_t now)
         ams_state_transition_finish(data);
     }
 
+    error_task_update_can_policy(data, now);
+
     data->hard_fault = (data->fuse_fault ||
+                        data->can_busoff_hard_fault_latched ||
                         error_task_air_feedback_fault(data, now) ||
                         data->temp_fault ||
                         data->voltage_fault ||
@@ -255,6 +401,7 @@ void error_task_update(app_data_t *data, uint32_t now)
      * both the old permanent 1.2 A startup limit and a mode-transition window
      * evaluated with stale current thresholds. */
     if((data->state == STATE_START) &&
+       error_task_can_startup_ready(data) &&
        error_task_operating_inputs_ready(data, now))
     {
         set_bms(false);

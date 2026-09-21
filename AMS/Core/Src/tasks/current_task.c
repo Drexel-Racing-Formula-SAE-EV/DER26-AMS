@@ -41,7 +41,7 @@ static uint16_t current_task_selected_uncertainty_mA(
 {
     if((sensor == NULL) || !current_sensor_calibration_confident(sensor))
     {
-        return 0u;
+        return UINT16_MAX;
     }
 
     switch(sensor->selected_range)
@@ -52,7 +52,7 @@ static uint16_t current_task_selected_uncertainty_mA(
         return sensor->calibration_uncertainty_800a_mA;
     case CURRENT_SENSOR_RANGE_UNKNOWN:
     default:
-        return 0u;
+        return UINT16_MAX;
     }
 }
 
@@ -181,6 +181,8 @@ void current_task_fn(void *argument)
         {
             (void)current_sensor_convert(current_sensor);
         }
+        /* Sample completion, not task release before waiting on the mutex. */
+        uint32_t sample_tick = osKernelGetTickCount();
 
         bool current_was_latched = app_data->current_fault_latched;
         current_fault_reason_t current_prev_latched_reason = app_data->current_fault_latched_reason;
@@ -198,7 +200,7 @@ void current_task_fn(void *argument)
                                          &next_fault,
                                          current_sensor,
                                          published_current,
-                                         entry);
+                                         sample_tick);
         ams_current_window_unlock();
 
         if(app_data->current_fault_latched &&

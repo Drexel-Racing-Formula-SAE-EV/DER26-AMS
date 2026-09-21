@@ -14,7 +14,7 @@
 
 #include <stdint.h>
 
-#define AMS_LOGGER_PROTOCOL_VERSION       3u
+#define AMS_LOGGER_PROTOCOL_VERSION       4u
 
 #define AMS_LOGGER_CAN_ID_HEARTBEAT       0x690u
 #define AMS_LOGGER_CAN_ID_FAULT_REASONS   0x691u
@@ -68,20 +68,12 @@
 #define AMS_LOGGER_CAN_ID_LAST            AMS_LOGGER_CAN_ID_SOP_META
 
 /* Test/tuning telemetry is observational and is intentionally absent from a
- * 250-kbit/s image. It is always scheduled as disposable DETAIL traffic. */
-#ifndef AMS_ENABLE_TUNING_CAN
-#define AMS_ENABLE_TUNING_CAN (DER26_CAN_BITRATE_KBPS == 500u)
-#endif
-
-#if (AMS_ENABLE_TUNING_CAN != 0) && (AMS_ENABLE_TUNING_CAN != 1)
-#error "AMS_ENABLE_TUNING_CAN must be 0 or 1"
-#endif
-#if (DER26_CAN_BITRATE_KBPS == 250u) && AMS_ENABLE_TUNING_CAN
-#error "AMS tuning CAN is prohibited at 250 kbit/s"
-#endif
+ * 250-kbit/s image. AMS_ENABLE_TUNING_CAN is defined centrally in app.h so
+ * the estimator producer and CAN consumer cannot diverge at compile time. */
 
 #define AMS_TUNING_CAN_FAST_PERIOD_MS 100u
 #define AMS_TUNING_CAN_SOP_PERIOD_MS  200u
+#define AMS_TUNING_CAN_ACQ_PERIOD_MS 1000u
 
 #define AMS_TUNING_SUPPRESS_PROTECTED_DEADLINE (1u << 0u)
 #define AMS_TUNING_SUPPRESS_PROTECTED_LATENCY  (1u << 1u)

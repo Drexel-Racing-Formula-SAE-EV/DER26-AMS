@@ -67,12 +67,18 @@ typedef enum
     AMS_WATCHDOG_BLOCK_PANIC,
     AMS_WATCHDOG_BLOCK_STARTUP_GRACE,
     AMS_WATCHDOG_BLOCK_HEARTBEAT,
+    /* Legacy telemetry values retained for log/schema compatibility. The
+     * software-liveness policy no longer blocks IWDG feed on these external
+     * process-health conditions. */
     AMS_WATCHDOG_BLOCK_ADBMS_STALE,
     AMS_WATCHDOG_BLOCK_CURRENT_STALE,
     AMS_WATCHDOG_BLOCK_TEMP_STALE,
     AMS_WATCHDOG_BLOCK_HARD_FAULT,
     AMS_WATCHDOG_BLOCK_STOP_FEED_TEST,
     AMS_WATCHDOG_BLOCK_START_FAILED,
+    /* Internal software-resource/integrity failure. Added at the end so
+     * existing retained/logger numeric values remain stable. */
+    AMS_WATCHDOG_BLOCK_RTOS_INTEGRITY,
 } ams_watchdog_block_reason_t;
 
 typedef enum

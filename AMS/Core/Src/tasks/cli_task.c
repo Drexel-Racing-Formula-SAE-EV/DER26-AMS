@@ -400,6 +400,10 @@ void cli_task_fn(void *arg)
              AMS_ENABLE_APM_2950,
              data->bms_output_inhibit);
     cli_printline(local_cli, outline);
+#if AMS_ENABLE_BENCH_PASSIVE_RING_ESTIMATOR
+    cli_printline(local_cli,
+        "PASSIVE RING OBSERVER: open-ring zero-current/25C fallback; SoH/SoP authority disabled");
+#endif
     /* Keep provenance fields on bounded independent lines.  Revision strings
      * are build inputs and may grow; combining all of them in one 128-byte CLI
      * buffer silently truncated exactly the metadata needed to identify a
@@ -805,13 +809,22 @@ int get_faults(int argc, char *argv[])
             }
             if(!strcmp(argv[2], "canbusoff"))
             {
-                data->can_error_code = HAL_CAN_ERROR_BOF;
-                data->can_busoff_fault = true;
-                data->can_recover_pending = true;
-                data->canbus_fault = true;
-                data->can_last_error_tick = osKernelGetTickCount();
-                data->can_busoff_count++;
-                ams_fault_log_event(AMS_FAULT_LOG_CAN_BUS_OFF, 0u, HAL_CAN_ERROR_BOF, data->can_busoff_count);
+                canbus_device_t *canbus = &data->board.canbus;
+                uint32_t event_tick = osKernelGetTickCount();
+
+                /* Inject the same physical-equivalent event consumed by the
+                 * real HAL BOFF callback. Task polling performs normal count,
+                 * logging, and recovery settlement on the next CAN cycle. */
+                /* Keep the injected event atomic with physical SCE handling.
+                 * CAN1 SCE uses a FreeRTOS-compatible IRQ priority, so this
+                 * task critical section prevents a real BOFF from interleaving
+                 * the shared sequence/sliding-window update. */
+                taskENTER_CRITICAL();
+                canbus->error_isr_code |= HAL_CAN_ERROR_BOF;
+                canbus->error_isr_pending = true;
+                canbus_record_busoff_event(canbus, data, event_tick,
+                                           (uint8_t)data->state);
+                taskEXIT_CRITICAL();
                 return cli_printline(cli, "fault injection CAN bus-off recorded");
             }
         }
@@ -6302,6 +6315,32 @@ int get_estimator_diag(int argc, char *argv[])
              (double)inst->p_r0);
     ret |= cli_printline(cli, outline);
 
+#if AMS_ENABLE_BENCH_PASSIVE_RING_ESTIMATOR
+    snprintf(outline, CLI_LINESZ,
+             "Passive ring current:%s temperature:%s; advisory SoC only",
+             data->current_valid ? "DHAB" : "assumed_zero",
+             data->temp_valid ? "measured" : "fixed_25C");
+    ret |= cli_printline(cli, outline);
+#endif
+
+    for(uint8_t segment = 0u;
+        (segment < data->estimator.instance_count) &&
+        (segment < AMS_EKF_MAX_INSTANCES);
+        segment++)
+    {
+        const ams_ekf_instance_t *segment_inst =
+            &data->estimator.inst[segment];
+        snprintf(outline, CLI_LINESZ,
+                 "Segment %u SoC:%.4f valid:%u acq:%u reason:%u samples:%u",
+                 (unsigned)segment,
+                 (double)segment_inst->soc,
+                 (unsigned)segment_inst->valid,
+                 (unsigned)segment_inst->acquisition.state,
+                 (unsigned)segment_inst->acquisition.reason,
+                 (unsigned)segment_inst->acquisition.sample_count);
+        ret |= cli_printline(cli, outline);
+    }
+
     {
         const uint16_t compare_bit = (uint16_t)(1u << active);
         const bool raw_ok =
@@ -6507,16 +6546,11 @@ int get_can_diag(int argc, char *argv[])
     if((argc >= 2) && (argv[1] != NULL) && !strcmp(argv[1], "recover"))
     {
 #if AMS_ENABLE_SERVICE_CLI
-        HAL_StatusTypeDef status = canbus_recover(&data->board.canbus);
-        if(status == HAL_OK)
-        {
-            data->can_recover_count++;
-            data->can_busoff_fault = false;
-            data->can_recover_pending = false;
-            data->can_error_code = HAL_CAN_ERROR_NONE;
-            data->canbus_fault = false;
-            ams_fault_log_event(AMS_FAULT_LOG_CAN_RECOVERED, 0u, data->can_recover_count, 0u);
-        }
+        /* canbus_recover() owns the atomic transport + application safety
+         * commit. The CLI must not clear CAN fault/latch fields after return:
+         * a physical BOFF could arrive in that gap and be erased. */
+        HAL_StatusTypeDef status =
+            canbus_recover(&data->board.canbus, data);
         snprintf(outline, CLI_LINESZ, "CAN recover: %s", cli_hal_status_str(status));
         ret |= cli_printline(cli, outline);
 #else
@@ -6530,15 +6564,24 @@ int get_can_diag(int argc, char *argv[])
     }
 
     snprintf(outline, CLI_LINESZ,
-             "CAN err:0x%08lX %s busoff:%d pending:%d counts err:%lu busoff:%lu recover:%lu last_tick:%lu",
+             "CAN err:0x%08lX %s busoff:%d pending:%d auth:%d recovery:%d refresh:%d hard_latch:%d reason:%u",
              (unsigned long)data->can_error_code,
              canbus_error_str(data->can_error_code),
              data->can_busoff_fault,
              data->can_recover_pending,
+             data->can_authority_ready,
+             data->can_busoff_recovery_active,
+             data->can_authority_refresh_pending,
+             data->can_busoff_hard_fault_latched,
+             (unsigned)data->can_busoff_policy_latch_reason);
+    ret |= cli_printline(cli, outline);
+    snprintf(outline, CLI_LINESZ,
+             "CAN counts err:%lu busoff:%lu recover:%lu last_tick:%lu recovery_start:%lu",
              (unsigned long)data->can_error_count,
              (unsigned long)data->can_busoff_count,
              (unsigned long)data->can_recover_count,
-             (unsigned long)data->can_last_error_tick);
+             (unsigned long)data->can_last_error_tick,
+             (unsigned long)data->can_busoff_recovery_start_tick);
     ret |= cli_printline(cli, outline);
 
     canbus_device_t *cdev = &data->board.canbus;
@@ -6588,9 +6631,19 @@ int get_can_diag(int argc, char *argv[])
              (unsigned long)sched->detail_superseded);
     ret |= cli_printline(cli, outline);
 
+    snprintf(outline, CLI_LINESZ, "CAN tuning shed:%lu recovery_wait:%d refresh_wait:%d",
+             (unsigned long)sched->detail_tuning_shed,
+             cdev->tx_recovery_pending, cdev->tx_refresh_pending);
+    ret |= cli_printline(cli, outline);
+
     snprintf(outline, CLI_LINESZ,
-             "CAN protected required complete:%lu latency_ms last:%lu max:%lu over50:%lu",
+             "CAN protected required complete:%lu gen:%lu auth_base:%lu",
              (unsigned long)sched->protected_required_complete_count,
+             (unsigned long)sched->protected_required_last_complete_generation,
+             (unsigned long)data->can_authority_complete_generation_baseline);
+    ret |= cli_printline(cli, outline);
+    snprintf(outline, CLI_LINESZ,
+             "CAN protected required latency_ms last:%lu max:%lu over50:%lu",
              (unsigned long)sched->protected_required_latency_last_ms,
              (unsigned long)sched->protected_required_latency_max_ms,
              (unsigned long)sched->protected_required_latency_over_50ms);
@@ -7374,7 +7427,7 @@ int get_version(int argc, char *argv[])
 	ret |= cli_printline(cli, outline);
     snprintf(outline, CLI_LINESZ,
              "build date:%s time:%s voltage_mode:%s topology:%u SMB cells:%u string:%u",
-             __DATE__, __TIME__, cli_voltage_mode_str(),
+             ams_build_manifest.build_date, ams_build_manifest.build_time, cli_voltage_mode_str(),
              (unsigned)NSMBS,
              (unsigned)data->acc.smb.monitored_cell_count,
              (unsigned)data->acc.smb.string);

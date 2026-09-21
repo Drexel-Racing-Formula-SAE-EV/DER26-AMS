@@ -34,6 +34,7 @@ ECU consumes it as physical feedback.
 - Byte order for 16-bit fields: big-endian, MSB first
 - Send rate: 10 Hz target
 - ECU freshness check: use the rolling sequence byte in frame `0x680`
+- ECU safety timeout: if no fresh changing `0x680` sequence is received for **300 ms**, remove nonzero torque/inverter authority
 
 Firmware freezes all four compact-frame inputs before sending a bundle, so a
 mid-bundle task update cannot mix old and new thermal/fan/fault state. Only
@@ -45,6 +46,27 @@ future authoritative SoP interface.
 The ECU should treat these compact frames as the high-priority AMS heartbeat. The older
 paged telemetry and logger frames may still be transmitted, but ECU torque gating should
 not require parsing those slower bulk frames.
+
+### Bus-off / heartbeat safety timing
+
+The 300 ms ECU timeout is part of the cross-controller safety contract, not merely a
+diagnostic recommendation. The ECU must command zero torque and remove inverter-enable
+authority no later than 300 ms after the last accepted fresh/changing `0x680` heartbeat.
+A repeated copy of the same sequence does not refresh this timer.
+
+AMS v0.5.30 intentionally orders its discharge bus-off policy after that remote action:
+a discharge-state bus-off starts one continuous recovery epoch at the physical
+BOFF ISR timestamp, and AMS hard-fails BMS_OK at 500 ms if a fresh required
+protected `0x680`–`0x687` generation did not complete on the wire strictly before
+that deadline. Task-observation order does not change the 499/500/501 ms result. A completion
+marker is eligible only after CAN task-context recovery has settled the old controller
+epoch and moved the authority baseline past all pre-bus-off completions; if transport
+settlement itself is still pending at 500 ms, AMS fails low rather than crediting a
+late old-epoch callback.
+CHARGE, BALANCE, and HIL configurations where CAN replaces ADBMS measurements fail low
+immediately on bus-off. Three bus-off events in 10 seconds or the AMS application TX
+inhibit latch also hard-fail immediately. Electrical controller recovery alone does not
+restore AMS CAN authority; queue/commit success is insufficient, and every required frame in a fresh protected `0x680`–`0x687` generation must complete on the wire.
 
 ## Frame 0x680: AMS status and fault summary
 
@@ -156,7 +178,7 @@ ECU rules:
 
 Before ECU sends nonzero torque or inverter enable, it should require:
 
-- `0x680` is fresh; sequence must be changing at the expected rate.
+- `0x680` is fresh; sequence must be changing at the expected rate, and any 300 ms gap/lack of sequence advance removes torque/inverter authority.
 - `BMS_OK == 1`.
 - `HARD_FAULT == 0`.
 - `VOLTAGE_VALID == 1`, `CURRENT_VALID == 1`, and `TEMP_VALID == 1`.
@@ -175,10 +197,10 @@ observability data and does not independently grant ECU torque authority.
 | Byte | Field | Meaning |
 |---:|---|---|
 | 0 | Current source | `0` unavailable, `1` DHAB/current-sensor path, `2` ADBMS2950/APM path |
-| 1 | Current quality | `0` invalid, `2` calibrated primary, `3` calibrated primary plus valid redundant sample |
+| 1 | Current quality | `0` invalid, `1` valid without proven calibration, `2` calibrated primary, `3` calibrated primary plus valid redundant sample |
 | 2 | Physical boundary valid | `1` only when the selected source is current-valid and fresh |
 | 3 | Source epoch | Boot/source epoch; currently `1` |
-| 4-5 | Sample sequence | Unsigned rolling source-sample sequence, big-endian |
+| 4-5 | Sample sequence | Unsigned rolling current-window sequence for canonical DHAB data; source-sample sequence for live fallback/APM, big-endian |
 | 6-7 | Sample age | Unsigned milliseconds, saturated at 65535, big-endian |
 
 For the standalone ADBMS2950 evaluation image, source `2` is selected only after
@@ -187,6 +209,14 @@ sample is transmitted as source `0`, quality `0`, and boundary-valid `0`.
 
 The ECU records this frame in decoded and raw logs. It must continue to use
 `0x680` current validity and the authoritative power bundle for torque gating.
+
+From firmware v0.5.22 / contract suffix CURRENT2, canonical DHAB quality, age and
+sequence all come from the same immutable current window as the electrical
+frame. Valid DHAB data without a confident calibration record has quality 1.
+Canonical data expires when its latest sample exceeds 100 ms, independently
+of the slower whole-measurement cache timeout. Live fallback without snapshot
+provenance never claims calibration. IDs, payload size and power authority are
+unchanged; log decoders should display quality 1 as valid/unproven calibration.
 
 ## Passive logger/diagnostic stream 0x690-0x6C0
 

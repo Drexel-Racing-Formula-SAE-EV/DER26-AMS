@@ -135,8 +135,13 @@ assert "RDCVALL" not in adbms_c and "RDACALL" not in adbms_c and "RDFCALL" not i
     "single-IC Read-All commands must not be used on the daisy-chain driver")
 assert "accumulator_final_ring_topology_valid(acc)" in adbms_task_c, (
     "periodic ADBMS diagnostics must be gated by final-ring transport/topology readiness")
-assert "adbms_aux2_next_due_tick" in adbms_task_c and "+= aux2_period_ms" in adbms_task_c, (
-    "AUX2 cadence must use an absolute next-due schedule instead of last=now quantization")
+assert "adbms_aux2_next_due_tick" in adbms_task_c and "adbms_next_future_due" in adbms_task_c, (
+    "AUX2 cadence must use an absolute next-due schedule")
+assert ("adbms_aux2_schedule_initialized" in adbms_task_c and
+        "data->adbms_aux2_schedule_initialized = false" in adbms_task_c), (
+    "AUX2 schedule must re-arm after transport/topology loss instead of replaying backlog")
+assert "data->adbms_aux2_next_due_tick += aux2_period_ms" not in adbms_task_c, (
+    "AUX2 must not replay one missed absolute deadline per ADBMS scan")
 
 # Durable zero, not transient MUTE alone, is the BMS_OK balance-safe proof.
 error_c = read("Core/Src/tasks/error_task.c")

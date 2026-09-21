@@ -346,12 +346,17 @@ void ams_rtos_diag_update(app_data_t *data)
 void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName)
 {
     (void)pcTaskName;
-    ams_rtos_task_id_t id = ams_rtos_task_id_from_handle(xTask);
-    ams_rtos_set_fault(&app, AMS_RTOS_FAULT_STACK_OVERFLOW, id, 0u);
 #if !AMS_HOST_TEST
     taskDISABLE_INTERRUPTS();
 #endif
+    /* A stack-overflow hook is already running with potentially corrupted
+     * task state. Make the physical safety action the first operation that
+     * can affect the application: ams_safety_panic() forces BMS_OK low
+     * before touching retained diagnostics. Task attribution below is only
+     * best-effort observability after the fail-low action. */
     ams_safety_panic(AMS_PANIC_RTOS_STACK_OVERFLOW);
+    ams_rtos_task_id_t id = ams_rtos_task_id_from_handle(xTask);
+    ams_rtos_set_fault(&app, AMS_RTOS_FAULT_STACK_OVERFLOW, id, 0u);
     for(;;)
     {
 #if !AMS_HOST_TEST
@@ -362,12 +367,14 @@ void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName)
 
 void vApplicationMallocFailedHook(void)
 {
-    ams_rtos_set_fault(&app, AMS_RTOS_FAULT_MALLOC_FAILED, AMS_RTOS_TASK_COUNT, 0u);
-    ams_fault_log_event(AMS_FAULT_LOG_RTOS_MALLOC_FAILED, 0u, app.rtos_malloc_fail_count, 0u);
 #if !AMS_HOST_TEST
     taskDISABLE_INTERRUPTS();
 #endif
+    /* Treat fatal RTOS allocation failure like the stack-overflow path: make
+     * BMS_OK fail-low before diagnostic bookkeeping. */
     ams_safety_panic(AMS_PANIC_RTOS_MALLOC_FAILED);
+    ams_rtos_set_fault(&app, AMS_RTOS_FAULT_MALLOC_FAILED, AMS_RTOS_TASK_COUNT, 0u);
+    ams_fault_log_event(AMS_FAULT_LOG_RTOS_MALLOC_FAILED, 0u, app.rtos_malloc_fail_count, 0u);
     for(;;)
     {
 #if !AMS_HOST_TEST
@@ -379,6 +386,7 @@ void vApplicationMallocFailedHook(void)
 void ams_rtos_assert_failed(const char *file, int line)
 {
     (void)file;
+    ams_safety_panic(AMS_PANIC_RTOS_ASSERT_FAILED);
     ams_rtos_set_fault(&app,
                        AMS_RTOS_FAULT_ASSERT_FAILED,
                        AMS_RTOS_TASK_COUNT,
@@ -387,7 +395,6 @@ void ams_rtos_assert_failed(const char *file, int line)
                         0u,
                         (uint32_t)line,
                         app.rtos_assert_fail_count);
-    ams_safety_panic(AMS_PANIC_RTOS_ASSERT_FAILED);
 }
 
 #if AMS_HOST_TEST

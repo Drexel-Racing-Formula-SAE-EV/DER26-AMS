@@ -12,14 +12,29 @@ typedef struct
 {
     float soc, vp1_v, vp2_v, r0_ohm, t_core_c;
     float p_soc, p_vp1, p_vp2, p_r0, r_meas_v2;
-    float v_pred_v, innovation_v, measured_v, current_a, surface_temp_c;
+    /* Full [SoC,Vp1,Vp2] covariance cross terms. SoP deliberately keeps
+     * its existing L1 sigma margin, which remains conservative for any
+     * admissible correlation, while these terms support estimator
+     * consistency diagnostics and offline NEES. */
+    float p_soc_vp1, p_soc_vp2, p_vp1_vp2;
+    float v_pred_v, innovation_v, innovation_variance_v2;
+    float measured_v, current_a, surface_temp_c;
     float voltage_raw_v, voltage_avg8_v, voltage_iir_v;
     float reference_r0_ohm, resistance_growth_ratio, r0_variance_ohm2;
+    float acquisition_candidate_soc, acquisition_ocv_cell_v;
+    float acquisition_vp1_finish_v, acquisition_vp2_finish_v;
+    float acquisition_fit_rmse_mv_cell, acquisition_fit_rcond;
+    float acquisition_consensus_soc;
     uint32_t step_count, innovation_reject_count, dt_clamp_count;
+    uint32_t covariance_repair_count;
+    uint32_t acquisition_dynamic_step_count, acquisition_dynamic_update_count;
+    uint32_t acquisition_anchor_count;
     uint32_t fault_flags, measurement_sequence, current_sequence;
     uint32_t measurement_age_ms, current_age_ms, soh_reject_flags;
     uint16_t fresh_temp_count;
     uint8_t voltage_valid_flags, model_domain_flags, valid;
+    uint8_t acquisition_state, acquisition_reason;
+    uint8_t acquisition_sample_count, acquisition_reject_count;
     uint8_t soh_confidence_pct, soh_status_flags;
     uint8_t soh_accepted_count, soh_rejected_count;
 } ams_tuning_segment_t;

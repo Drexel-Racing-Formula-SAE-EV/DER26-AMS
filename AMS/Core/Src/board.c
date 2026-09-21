@@ -7,6 +7,7 @@
  */
 
 #include "board.h"
+#include "ams_build_profile.h"
 
 #include "main.h"
 #include "ext_drivers/charger.h"
@@ -51,7 +52,9 @@ void board_init(board_t *board)
 
 	canbus_device_init(&board->canbus, board->stm32f767z.hcan1);
 	charger_init(&board->charger, &board->canbus);
+#if AMS_ENABLE_CLI
 	cli_device_init(&board->cli, board->stm32f767z.huart3);
+#endif
 	current_sensor_init(&board->current_sensor,
 						board->stm32f767z.hadc2,
 						board->stm32f767z.hadc1,

@@ -181,6 +181,8 @@ static void test_protected_required_latency_metrics(void)
     ams_can_tx_mark_loaded(&s, &tok);
     ams_can_tx_mark_complete(&s, &tok, true, 120u);
     CHECK(s.protected_required_complete_count == 1u);
+    CHECK(s.protected_required_last_complete_generation == 1u);
+    CHECK(s.protected_required_last_complete_tick == 120u);
     CHECK(s.protected_required_latency_last_ms == 20u);
     CHECK(s.protected_required_latency_max_ms == 20u);
     CHECK(s.protected_required_latency_over_50ms == 0u);
@@ -193,6 +195,8 @@ static void test_protected_required_latency_metrics(void)
     ams_can_tx_mark_loaded(&s, &tok);
     ams_can_tx_mark_complete(&s, &tok, true, 260u);
     CHECK(s.protected_required_complete_count == 2u);
+    CHECK(s.protected_required_last_complete_generation == 2u);
+    CHECK(s.protected_required_last_complete_tick == 260u);
     CHECK(s.protected_required_latency_last_ms == 60u);
     CHECK(s.protected_required_latency_max_ms == 60u);
     CHECK(s.protected_required_latency_over_50ms == 1u);

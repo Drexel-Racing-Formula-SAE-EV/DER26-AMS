@@ -15,6 +15,10 @@
 #include "ext_drivers/canbus.h"
 #include "ext_drivers/charger.h"
 #include "app.h"
+
+#if AMS_CAN_BUSOFF_REPEAT_LIMIT != 3u
+#error "CAN bus-off recent-event storage assumes repeat limit 3"
+#endif
 #include "task.h"
 
 #if AMS_HOST_TEST
@@ -25,6 +29,10 @@
 #define CANBUS_ISR_ENTER_CRITICAL() taskENTER_CRITICAL_FROM_ISR()
 #define CANBUS_ISR_EXIT_CRITICAL(mask) taskEXIT_CRITICAL_FROM_ISR(mask)
 #define CANBUS_ISR_TICK() ((uint32_t)xTaskGetTickCountFromISR())
+#endif
+
+#if CANBUS_BUSOFF_WINDOW_SLOTS != AMS_CAN_BUSOFF_REPEAT_LIMIT
+#error "CAN bus-off sliding-window storage must match repeat policy limit"
 #endif
 
 extern app_data_t app;
@@ -505,6 +513,7 @@ static void canbus_parse_hil_frame(app_data_t *data, const canbus_rx_frame_t *fr
 
 static void canbus_tx_note_charger_complete_from_isr(
     const canbus_tx_mailbox_meta_t *meta);
+static void canbus_tx_abort_stale(canbus_device_t *dev);
 
 static uint8_t canbus_mailbox_index_from_mask(uint32_t mailbox)
 {
@@ -594,7 +603,8 @@ HAL_StatusTypeDef canbus_tx_build_append(canbus_device_t *dev,
     if(dev->tx_builder.frame_count >= build_limit)
     {
         canbus_increment_u32_sat(&dev->tx_build_overflow_count);
-        if(dev->tx_builder.kind == CANBUS_TX_BUILD_DETAIL)
+        if((dev->tx_builder.kind == CANBUS_TX_BUILD_DETAIL) ||
+           (dev->tx_builder.kind == CANBUS_TX_BUILD_TUNING))
         {
             canbus_increment_u32_sat(&dev->tx_build_detail_overflow_count);
         }
@@ -607,7 +617,8 @@ HAL_StatusTypeDef canbus_tx_build_append(canbus_device_t *dev,
        ((dev->tx_builder.kind == CANBUS_TX_BUILD_PROTECTED) &&
         (tx_class != AMS_CAN_TX_CLASS_PROTECTED_REQUIRED) &&
         (tx_class != AMS_CAN_TX_CLASS_PROTECTED_ADVISORY)) ||
-       ((dev->tx_builder.kind == CANBUS_TX_BUILD_DETAIL) &&
+       (((dev->tx_builder.kind == CANBUS_TX_BUILD_DETAIL) ||
+         (dev->tx_builder.kind == CANBUS_TX_BUILD_TUNING)) &&
         (tx_class != AMS_CAN_TX_CLASS_DETAIL)))
     {
         canbus_increment_u32_sat(&dev->tx_build_class_reject_count);
@@ -621,6 +632,7 @@ HAL_StatusTypeDef canbus_tx_build_append(canbus_device_t *dev,
     frame->dlc = DATALEN;
     frame->tx_class = tx_class;
     frame->source_tag = dev->tx_builder.source_tag;
+    frame->request_id = dev->tx_builder.request_id;
     memcpy(frame->data, payload, DATALEN);
     return HAL_OK;
 }
@@ -637,6 +649,7 @@ static bool canbus_tx_claim_task(canbus_device_t *dev)
 {
     bool claimed = false;
     taskENTER_CRITICAL();
+    canbus_increment_u32_sat(&dev->tx_pump_kick_count);
     if(dev->tx_pump_busy)
     {
         dev->tx_kick_pending = true;
@@ -655,6 +668,7 @@ static bool canbus_tx_claim_isr(canbus_device_t *dev)
 {
     bool claimed = false;
     UBaseType_t mask = CANBUS_ISR_ENTER_CRITICAL();
+    canbus_increment_u32_sat(&dev->tx_pump_kick_count);
     if(dev->tx_pump_busy)
     {
         dev->tx_kick_pending = true;
@@ -762,17 +776,112 @@ static void canbus_tx_load_failed_locked(canbus_device_t *dev,
     canbus_note_hal_load_error_locked(dev, frame);
 }
 
-/* Load one already-reserved scheduler frame without globally masking
- * interrupts. Only the bxCAN TX-mailbox-empty notification is masked across
- * HAL_CAN_AddTxMessage() and metadata commit. This closes the otherwise
- * possible "TX completes before mailbox metadata exists" race while leaving
- * RX, timer, ADC, and control-loop interrupts fully serviceable. */
+static bool canbus_hardware_busoff(const canbus_device_t *dev)
+{
+#if AMS_HOST_TEST
+    /* The existing synchronous host harness has no register instance. */
+    if(dev->hcan->Instance == NULL)
+    {
+        return false; /* Synchronous legacy harness has no hardware BOFF. */
+    }
+#endif
+    return (dev->hcan->Instance->ESR & CAN_ESR_BOFF) != 0u;
+}
+
+/* HAL_CAN_AddTxMessage chooses from hardware-empty mailboxes alone. A mailbox
+ * can become empty before its completion callback retires the old token, even
+ * between a task-side check and HAL's TSR read. Select one fixed mailbox using
+ * BOTH hardware flags and software ownership, then write that exact mailbox.
+ * The register encoding is the same as the bundled STM32F7 HAL. */
+static HAL_StatusTypeDef canbus_tx_add_owned(canbus_device_t *dev,
+                                            const CAN_TxHeaderTypeDef *header,
+                                            const uint8_t data[8],
+                                            uint32_t *mailbox)
+{
+#if AMS_HOST_TEST
+    if(dev->hcan->Instance == NULL)
+    {
+        return HAL_CAN_AddTxMessage(dev->hcan, header, data, mailbox);
+    }
+#endif
+    if(HAL_CAN_GetState(dev->hcan) != HAL_CAN_STATE_LISTENING)
+    {
+        return HAL_ERROR;
+    }
+    if(dev->tx_suspended || canbus_hardware_busoff(dev))
+    {
+        return HAL_BUSY;
+    }
+    uint32_t tsr = dev->hcan->Instance->TSR;
+    for(uint8_t i = 0u; i < 3u; i++)
+    {
+        if((dev->tx_mailbox_meta[i].state != CANBUS_TX_MB_FREE) ||
+           ((tsr & (CAN_TSR_TME0 << i)) == 0u) ||
+           ((tsr & (CAN_TSR_RQCP0 << (8u * i))) != 0u))
+        {
+            continue;
+        }
+        CAN_TxMailBox_TypeDef *mb = &dev->hcan->Instance->sTxMailBox[i];
+        mb->TIR = (header->IDE == CAN_ID_STD) ?
+            (header->StdId << CAN_TI0R_STID_Pos) :
+            ((header->ExtId << CAN_TI0R_EXID_Pos) | CAN_ID_EXT);
+        mb->TDTR = header->DLC;
+        mb->TDLR = (uint32_t)data[0] | ((uint32_t)data[1] << 8u) |
+                   ((uint32_t)data[2] << 16u) | ((uint32_t)data[3] << 24u);
+        mb->TDHR = (uint32_t)data[4] | ((uint32_t)data[5] << 8u) |
+                   ((uint32_t)data[6] << 16u) | ((uint32_t)data[7] << 24u);
+        *mailbox = CAN_TX_MAILBOX0 << i;
+        mb->TIR |= CAN_TI0R_TXRQ;
+        return HAL_OK;
+    }
+    return HAL_BUSY; /* Pending completions are congestion, not a load fault. */
+}
+
+/* Load one already-reserved scheduler frame. Ordinary traffic masks only the
+ * bxCAN TX-mailbox-empty notification across the fixed-mailbox write and
+ * metadata commit, closing the "TX completes before mailbox metadata exists"
+ * race while leaving unrelated interrupts serviceable. A task-context charger
+ * frame adds one short FreeRTOS critical section around its final fail-safe
+ * revalidation and TXRQ write so a higher-priority state transition cannot
+ * make a just-built ENABLE command stale at the hardware-load boundary. */
+static void canbus_charger_fail_safe_at_load(ams_can_tx_frame_t *frame)
+{
+    if((frame == NULL) ||
+       (frame->source_tag != CANBUS_TX_TAG_CHARGER_NORMAL) ||
+       (frame->data[4] != CHARGER_CMD_ENABLE))
+    {
+        return;
+    }
+
+    /* A charger enable decision is built in task context, but the higher-
+     * priority safety supervisor can change state after the scheduler commit
+     * and before the frame reaches bxCAN. Revalidate at the actual hardware
+     * load boundary. State transitions and BMS fail-low updates are serialized
+     * with this check by the task critical section below; ISR pump execution
+     * cannot be preempted by a task.
+     *
+     * An already-loaded frame can still win the unavoidable hardware abort/
+     * transmit race, which is why state exit also sends the repeated zero-
+     * demand shutdown burst. This guard prevents software from loading a new
+     * stale enable after the transition has become visible. */
+    if((app.state != STATE_CHARGE) || !app.bms_state ||
+       app.board.charger.shutdown_pending || app.board.charger.tx_fail)
+    {
+        frame->data[0] = 0u;
+        frame->data[1] = 0u;
+        frame->data[2] = 0u;
+        frame->data[3] = 0u;
+        frame->data[4] = CHARGER_CMD_DISABLE;
+    }
+}
+
 static bool canbus_tx_load_reserved(canbus_device_t *dev,
                                     bool from_isr,
                                     const ams_can_tx_token_t *token,
                                     const ams_can_tx_frame_t *frame)
 {
     CAN_TxHeaderTypeDef header;
+    ams_can_tx_frame_t load_frame;
     uint32_t mailbox = 0u;
     HAL_StatusTypeDef status;
 
@@ -798,42 +907,65 @@ static bool canbus_tx_load_reserved(canbus_device_t *dev,
         return false;
     }
 
-    canbus_tx_fill_header(&header, frame);
-    status = HAL_CAN_AddTxMessage(dev->hcan, &header, (uint8_t *)frame->data,
-                                 &mailbox);
+    load_frame = *frame;
+    if(from_isr)
+    {
+        /* Task-owned state is stable for the duration of this ISR. */
+        canbus_charger_fail_safe_at_load(&load_frame);
+        canbus_tx_fill_header(&header, &load_frame);
+        status = canbus_tx_add_owned(dev, &header, load_frame.data, &mailbox);
+    }
+    else
+    {
+        /* Keep the final charger-authority check and bxCAN mailbox load in one
+         * task critical section so the higher-priority safety supervisor cannot
+         * transition out of CHARGE between those two operations. HAL CAN load
+         * is bounded register work and TME callbacks are already masked here. */
+        taskENTER_CRITICAL();
+        canbus_charger_fail_safe_at_load(&load_frame);
+        canbus_tx_fill_header(&header, &load_frame);
+        status = canbus_tx_add_owned(dev, &header, load_frame.data, &mailbox);
+        taskEXIT_CRITICAL();
+    }
     if(status != HAL_OK)
     {
         (void)canbus_tx_tme_irq_restore(dev);
         if(from_isr)
         {
             UBaseType_t mask = CANBUS_ISR_ENTER_CRITICAL();
-            canbus_tx_load_failed_locked(dev, token, frame);
+            ams_can_tx_load_failed(&dev->tx_scheduler, token);
+            if(status != HAL_BUSY) canbus_note_hal_load_error_locked(dev, frame);
             CANBUS_ISR_EXIT_CRITICAL(mask);
         }
         else
         {
             taskENTER_CRITICAL();
-            canbus_tx_load_failed_locked(dev, token, frame);
+            ams_can_tx_load_failed(&dev->tx_scheduler, token);
+            if(status != HAL_BUSY) canbus_note_hal_load_error_locked(dev, frame);
             taskEXIT_CRITICAL();
         }
         return false;
     }
 
 #if AMS_HOST_TEST
-    /* Host HAL accepts synchronously. Dedicated scheduler tests exercise
-     * completion/abort races; broad SIL does not need artificial mailboxes. */
-    taskENTER_CRITICAL();
-    ams_can_tx_mark_loaded(&dev->tx_scheduler, token);
-    ams_can_tx_mark_complete(&dev->tx_scheduler, token, true, osKernelGetTickCount());
-    taskEXIT_CRITICAL();
-    canbus_tx_mailbox_meta_t host_meta = {0};
-    host_meta.source_tag = frame->source_tag;
-    host_meta.token = *token;
-    canbus_tx_note_charger_complete_from_isr(&host_meta);
-    canbus_increment_u32_sat(&dev->tx_complete_count);
-    (void)canbus_tx_tme_irq_restore(dev);
-    return true;
-#else
+    if(dev->hcan->Instance == NULL)
+    {
+        /* Legacy synchronous host mode. Register-backed tests use the target
+         * ownership and callback path below. */
+        taskENTER_CRITICAL();
+        ams_can_tx_mark_loaded(&dev->tx_scheduler, token);
+        ams_can_tx_mark_complete(&dev->tx_scheduler, token, true, osKernelGetTickCount());
+        taskEXIT_CRITICAL();
+        canbus_tx_mailbox_meta_t host_meta = {0};
+        host_meta.source_tag = frame->source_tag;
+        host_meta.request_id = frame->request_id;
+        host_meta.token = *token;
+        canbus_tx_note_charger_complete_from_isr(&host_meta);
+        canbus_increment_u32_sat(&dev->tx_complete_count);
+        (void)canbus_tx_tme_irq_restore(dev);
+        return true;
+    }
+#endif
     bool abort_after_load = false;
     bool epoch_valid = false;
     uint8_t index = canbus_mailbox_index_from_mask(mailbox);
@@ -853,8 +985,7 @@ static bool canbus_tx_load_reserved(canbus_device_t *dev,
     if(from_isr)
     {
         UBaseType_t mask = CANBUS_ISR_ENTER_CRITICAL();
-        epoch_valid = (token->controller_epoch == dev->tx_scheduler.controller_epoch) &&
-                      !dev->tx_suspended;
+        epoch_valid = (token->controller_epoch == dev->tx_scheduler.controller_epoch);
         if(epoch_valid)
         {
             /* RESERVED is a brief metadata transition while TME callbacks are
@@ -865,11 +996,12 @@ static bool canbus_tx_load_reserved(canbus_device_t *dev,
             dev->tx_mailbox_meta[index].loaded_tick = loaded_tick;
             dev->tx_mailbox_meta[index].tx_class = frame->tx_class;
             dev->tx_mailbox_meta[index].source_tag = frame->source_tag;
+            dev->tx_mailbox_meta[index].request_id = frame->request_id;
             dev->tx_mailbox_meta[index].controller_epoch =
                 dev->tx_scheduler.controller_epoch;
             ams_can_tx_mark_loaded(&dev->tx_scheduler, token);
             dev->tx_mailbox_meta[index].state = CANBUS_TX_MB_LOADED;
-            abort_after_load = ams_can_tx_token_requires_abort(
+            abort_after_load = dev->tx_suspended || ams_can_tx_token_requires_abort(
                 &dev->tx_scheduler, token);
             if(abort_after_load)
             {
@@ -883,8 +1015,7 @@ static bool canbus_tx_load_reserved(canbus_device_t *dev,
     else
     {
         taskENTER_CRITICAL();
-        epoch_valid = (token->controller_epoch == dev->tx_scheduler.controller_epoch) &&
-                      !dev->tx_suspended;
+        epoch_valid = (token->controller_epoch == dev->tx_scheduler.controller_epoch);
         if(epoch_valid)
         {
             dev->tx_mailbox_meta[index].state = CANBUS_TX_MB_RESERVED;
@@ -893,11 +1024,12 @@ static bool canbus_tx_load_reserved(canbus_device_t *dev,
             dev->tx_mailbox_meta[index].loaded_tick = loaded_tick;
             dev->tx_mailbox_meta[index].tx_class = frame->tx_class;
             dev->tx_mailbox_meta[index].source_tag = frame->source_tag;
+            dev->tx_mailbox_meta[index].request_id = frame->request_id;
             dev->tx_mailbox_meta[index].controller_epoch =
                 dev->tx_scheduler.controller_epoch;
             ams_can_tx_mark_loaded(&dev->tx_scheduler, token);
             dev->tx_mailbox_meta[index].state = CANBUS_TX_MB_LOADED;
-            abort_after_load = ams_can_tx_token_requires_abort(
+            abort_after_load = dev->tx_suspended || ams_can_tx_token_requires_abort(
                 &dev->tx_scheduler, token);
             if(abort_after_load)
             {
@@ -911,16 +1043,15 @@ static bool canbus_tx_load_reserved(canbus_device_t *dev,
 
     if(!epoch_valid)
     {
-        /* Controller state changed while HAL was loading. Epoch reset already
-         * restored the newest protected/critical generation to PENDING. The
-         * old hardware request belongs to the prior epoch and any delayed
-         * callback is ignored by epoch metadata. */
+        /* A changed epoch must not leave an unowned hardware request alive. */
+        (void)HAL_CAN_AbortTxRequest(dev->hcan, mailbox);
+        dev->tx_recovery_pending = true;
         (void)canbus_tx_tme_irq_restore(dev);
         return false;
     }
 
-    /* If the protected generation crossed its pathological 100 ms boundary
-     * while this frame was RESERVED, request abort before re-enabling TME
+    /* If this generation became stale or TX was suspended while the frame was
+     * RESERVED, request abort before re-enabling TME
      * callbacks. This prevents a completion callback from freeing/reusing the
      * mailbox between our stale check and the abort request. */
     if(abort_after_load)
@@ -955,7 +1086,6 @@ static bool canbus_tx_load_reserved(canbus_device_t *dev,
 
     (void)canbus_tx_tme_irq_restore(dev);
     return true;
-#endif
 }
 
 static void canbus_tx_pump_owned(canbus_device_t *dev, bool from_isr)
@@ -963,6 +1093,7 @@ static void canbus_tx_pump_owned(canbus_device_t *dev, bool from_isr)
     for(;;)
     {
         while(!dev->tx_suspended && !dev->tx_latched_inhibit &&
+              !canbus_hardware_busoff(dev) &&
               (HAL_CAN_GetTxMailboxesFreeLevel(dev->hcan) > 0u))
         {
             ams_can_tx_token_t token;
@@ -1017,7 +1148,6 @@ void canbus_tx_kick(canbus_device_t *dev)
     {
         return;
     }
-    canbus_increment_u32_sat(&dev->tx_pump_kick_count);
     if(canbus_tx_claim_task(dev))
     {
         canbus_tx_pump_owned(dev, false);
@@ -1030,7 +1160,6 @@ static void canbus_tx_kick_from_isr(canbus_device_t *dev)
     {
         return;
     }
-    canbus_increment_u32_sat(&dev->tx_pump_kick_count);
     if(canbus_tx_claim_isr(dev))
     {
         canbus_tx_pump_owned(dev, true);
@@ -1075,6 +1204,13 @@ HAL_StatusTypeDef canbus_tx_build_commit(canbus_device_t *dev,
                                        dev->tx_builder.frames,
                                        dev->tx_builder.frame_count);
         break;
+    case CANBUS_TX_BUILD_TUNING:
+        ok = ams_can_tx_publish_tuning(&dev->tx_scheduler,
+                                       dev->tx_builder.generation,
+                                       dev->tx_builder.publish_tick,
+                                       dev->tx_builder.frames,
+                                       dev->tx_builder.frame_count);
+        break;
     default:
         break;
     }
@@ -1087,20 +1223,16 @@ HAL_StatusTypeDef canbus_tx_build_commit(canbus_device_t *dev,
         return HAL_ERROR;
     }
 
-    if(stale_generation != 0u)
-    {
-        canbus_tx_abort_protected_generation(dev, stale_generation);
-    }
+    canbus_tx_abort_stale(dev);
     canbus_tx_kick(dev);
     return HAL_OK;
 }
 
-void canbus_tx_abort_protected_generation(canbus_device_t *dev,
-                                          uint32_t generation)
+static void canbus_tx_abort_stale(canbus_device_t *dev)
 {
     uint32_t abort_mask = 0u;
 
-    if((dev == NULL) || (dev->hcan == NULL) || (generation == 0u))
+    if((dev == NULL) || (dev->hcan == NULL))
     {
         return;
     }
@@ -1118,8 +1250,7 @@ void canbus_tx_abort_protected_generation(canbus_device_t *dev,
     {
         canbus_tx_mailbox_meta_t *meta = &dev->tx_mailbox_meta[i];
         if((meta->state == CANBUS_TX_MB_LOADED) &&
-           (meta->token.stream == AMS_CAN_TX_STREAM_PROTECTED) &&
-           (meta->token.generation == generation) &&
+           ams_can_tx_token_requires_abort(&dev->tx_scheduler, &meta->token) &&
            (meta->controller_epoch == dev->tx_scheduler.controller_epoch))
         {
             meta->state = CANBUS_TX_MB_ABORT_REQUESTED;
@@ -1140,8 +1271,7 @@ void canbus_tx_abort_protected_generation(canbus_device_t *dev,
             {
                 canbus_tx_mailbox_meta_t *meta = &dev->tx_mailbox_meta[i];
                 if((meta->state == CANBUS_TX_MB_ABORT_REQUESTED) &&
-                   (meta->token.stream == AMS_CAN_TX_STREAM_PROTECTED) &&
-                   (meta->token.generation == generation) &&
+                   ((abort_mask & (CAN_TX_MAILBOX0 << i)) != 0u) &&
                    (meta->controller_epoch == dev->tx_scheduler.controller_epoch))
                 {
                     meta->state = CANBUS_TX_MB_LOADED;
@@ -1168,32 +1298,124 @@ static void canbus_tx_reset_mailbox_metadata(canbus_device_t *dev)
 
 void canbus_tx_note_busoff(canbus_device_t *dev)
 {
-    if(dev == NULL)
+    if((dev == NULL) || (dev->hcan == NULL))
     {
         return;
     }
     taskENTER_CRITICAL();
     dev->tx_suspended = true;
-    ams_can_tx_controller_epoch_reset(&dev->tx_scheduler);
-    canbus_tx_reset_mailbox_metadata(dev);
-    dev->tx_recovery_epoch_count++;
+    dev->tx_recovery_pending = true;
     taskEXIT_CRITICAL();
+    /* Keep tokens until hardware completes/aborts. ABOM must never retry an
+     * old enable command after software has forgotten its mailbox owner. */
+    (void)HAL_CAN_AbortTxRequest(dev->hcan,
+        CAN_TX_MAILBOX0 | CAN_TX_MAILBOX1 | CAN_TX_MAILBOX2);
 }
 
-void canbus_tx_note_recovered(canbus_device_t *dev)
+static bool canbus_tx_mailboxes_settled(const canbus_device_t *dev)
 {
-    if(dev == NULL)
+    if(dev->tx_pump_busy)
     {
-        return;
+        return false;
     }
+#if AMS_HOST_TEST
+    if(dev->hcan->Instance == NULL) return true;
+#endif
+    uint32_t tsr = dev->hcan->Instance->TSR;
+    const uint32_t empty = CAN_TSR_TME0 | CAN_TSR_TME1 | CAN_TSR_TME2;
+    if(((tsr & empty) != empty) ||
+       ((tsr & (CAN_TSR_RQCP0 | CAN_TSR_RQCP1 | CAN_TSR_RQCP2)) != 0u))
+    {
+        return false;
+    }
+    for(uint8_t i = 0u; i < 3u; i++)
+    {
+        if((dev->tx_mailbox_meta[i].state != CANBUS_TX_MB_FREE) ||
+           ((dev->hcan->Instance->sTxMailBox[i].TIR & CAN_TI0R_TXRQ) != 0u))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool canbus_tx_note_recovered_for_sequence(canbus_device_t *dev,
+                                                     uint32_t expected_sequence)
+{
+    bool mailboxes_settled;
+    bool transport_ready;
+
+    if((dev == NULL) || (dev->hcan == NULL))
+    {
+        return false;
+    }
+
+    /* Recovery settlement and controller-epoch reset are one transaction with
+     * respect to physical BOFF identity. The sequence is checked after the HAL
+     * state read as well as the hardware BOFF bit so a new SCE event cannot be
+     * erased even if ABOM has already cleared the electrical BOFF condition. */
     taskENTER_CRITICAL();
-    dev->tx_suspended = false;
-    canbus_tx_reset_mailbox_metadata(dev);
-    taskEXIT_CRITICAL();
-    if(!dev->tx_latched_inhibit)
+    transport_ready =
+        (HAL_CAN_GetState(dev->hcan) == HAL_CAN_STATE_LISTENING) &&
+        !canbus_hardware_busoff(dev) &&
+        (dev->busoff_event_sequence == expected_sequence);
+    mailboxes_settled = transport_ready && canbus_tx_mailboxes_settled(dev);
+    if(!mailboxes_settled ||
+       (dev->busoff_event_sequence != expected_sequence) ||
+       canbus_hardware_busoff(dev))
     {
-        canbus_tx_kick(dev);
+        taskEXIT_CRITICAL();
+        if(!mailboxes_settled)
+        {
+            (void)HAL_CAN_AbortTxRequest(dev->hcan,
+                CAN_TX_MAILBOX0 | CAN_TX_MAILBOX1 | CAN_TX_MAILBOX2);
+        }
+        return false;
     }
+
+    ams_can_tx_controller_epoch_reset(&dev->tx_scheduler);
+    canbus_tx_reset_mailbox_metadata(dev);
+    /* Recovery is a freshness boundary. The task republishes current charger
+     * decisions and a complete protected bundle before TX resumes. */
+    memset(&dev->tx_scheduler.critical_active, 0,
+           sizeof(dev->tx_scheduler.critical_active));
+    memset(&dev->tx_scheduler.protected_active, 0,
+           sizeof(dev->tx_scheduler.protected_active));
+    dev->tx_recovery_pending = false;
+    dev->tx_refresh_pending = true;
+    dev->tx_suspended = true;
+    canbus_increment_u32_sat(&dev->tx_recovery_epoch_count);
+    taskEXIT_CRITICAL();
+    return true;
+}
+
+bool canbus_tx_note_recovered(canbus_device_t *dev)
+{
+    uint32_t sequence;
+
+    if((dev == NULL) || (dev->hcan == NULL))
+    {
+        return false;
+    }
+
+    taskENTER_CRITICAL();
+    sequence = dev->busoff_event_sequence;
+    taskEXIT_CRITICAL();
+    return canbus_tx_note_recovered_for_sequence(dev, sequence);
+}
+
+void canbus_tx_resume_after_refresh(canbus_device_t *dev)
+{
+    if((dev == NULL) || (dev->hcan == NULL)) return;
+    taskENTER_CRITICAL();
+    if(dev->tx_refresh_pending && !dev->tx_recovery_pending &&
+       !dev->tx_latched_inhibit && !canbus_hardware_busoff(dev))
+    {
+        dev->tx_refresh_pending = false;
+        dev->tx_suspended = false;
+    }
+    taskEXIT_CRITICAL();
+    canbus_tx_kick(dev);
 }
 
 static void canbus_tx_note_charger_complete_from_isr(const canbus_tx_mailbox_meta_t *meta)
@@ -1213,7 +1435,7 @@ static void canbus_tx_note_charger_complete_from_isr(const canbus_tx_mailbox_met
         canbus_increment_u32_sat(&ccs->tx_count);
         canbus_increment_u32_sat(&ccs->shutdown_tx_count);
         if(ccs->shutdown_pending &&
-           (ccs->shutdown_request_count == meta->token.generation))
+           (ccs->shutdown_request_count == meta->request_id))
         {
             if(ccs->shutdown_frames_remaining > 0u)
             {
@@ -1246,7 +1468,6 @@ static void canbus_tx_complete_callback(canbus_device_t *dev,
     {
         canbus_increment_u32_sat(&dev->tx_unexpected_callback_count);
         CANBUS_ISR_EXIT_CRITICAL(mask);
-        canbus_tx_kick_from_isr(dev);
         return;
     }
 
@@ -1257,7 +1478,6 @@ static void canbus_tx_complete_callback(canbus_device_t *dev,
                sizeof(dev->tx_mailbox_meta[mailbox_index]));
         dev->tx_mailbox_meta[mailbox_index].state = CANBUS_TX_MB_FREE;
         CANBUS_ISR_EXIT_CRITICAL(mask);
-        canbus_tx_kick_from_isr(dev);
         return;
     }
 
@@ -1280,7 +1500,37 @@ static void canbus_tx_complete_callback(canbus_device_t *dev,
     dev->tx_mailbox_meta[mailbox_index].state = CANBUS_TX_MB_FREE;
     CANBUS_ISR_EXIT_CRITICAL(mask);
 
-    canbus_tx_kick_from_isr(dev);
+    /* Refill only after the HAL has dispatched its entire TSR snapshot. */
+}
+
+void canbus_irq_handler(CAN_HandleTypeDef *hcan)
+{
+    canbus_device_t *dev = &app.board.canbus;
+    bool tx_enabled = (hcan->Instance->IER & CAN_IT_TX_MAILBOX_EMPTY) != 0u;
+    HAL_CAN_IRQHandler(hcan);
+    if(dev->hcan != hcan) return;
+
+    /* HAL clears TERR/ALST without issuing a mailbox callback. With refill
+     * deferred, an owned mailbox that is empty with RQCP already cleared is
+     * exactly such a terminal failure. Newly arrived completions still have
+     * RQCP set and belong to the next HAL dispatch. */
+    if(tx_enabled)
+    {
+        uint32_t tsr = hcan->Instance->TSR;
+        for(uint8_t i = 0u; i < 3u; i++)
+        {
+            if(((tsr & (CAN_TSR_TME0 << i)) != 0u) &&
+               ((tsr & (CAN_TSR_RQCP0 << (8u * i))) == 0u) &&
+               ((dev->tx_mailbox_meta[i].state == CANBUS_TX_MB_LOADED) ||
+                (dev->tx_mailbox_meta[i].state == CANBUS_TX_MB_ABORT_REQUESTED)))
+            {
+                canbus_tx_complete_callback(dev, i, true);
+            }
+        }
+    }
+    /* RX/SCE may interrupt a task while it masks TME around a load or abort.
+     * Do not start a new pump or re-enable TME inside that transaction. */
+    if(tx_enabled) canbus_tx_kick_from_isr(dev);
 }
 
 void HAL_CAN_TxMailbox0CompleteCallback(CAN_HandleTypeDef *hcan)
@@ -1331,15 +1581,189 @@ void HAL_CAN_TxMailbox2AbortCallback(CAN_HandleTypeDef *hcan)
     }
 }
 
+static void canbus_force_bms_low_from_isr(app_data_t *data)
+{
+    if(data == NULL)
+    {
+        return;
+    }
+
+    /* ISR-safe fail-low path: only primitive state/flag writes plus one GPIO
+     * reset. Retained logging and normal balance-mute accounting remain task
+     * context work. This same primitive is safe from controlled bench fault
+     * injection running in task context. */
+    data->bms_state = false;
+    data->adbms_urgent_mute_requested = true;
+    HAL_GPIO_WritePin(BMS_OK_GPIO_Port, BMS_OK_Pin, GPIO_PIN_RESET);
+}
+
+void canbus_record_busoff_event(canbus_device_t *dev, app_data_t *data,
+                                uint32_t event_tick, uint8_t event_state)
+{
+    uint8_t count;
+
+    if((dev == NULL) || (data == NULL))
+    {
+        return;
+    }
+
+    /* Every genuine physical-equivalent BOFF transition gets a sequence
+     * number immediately. The 10 Hz CAN task later consumes the sequence
+     * delta; it is not allowed to collapse clustered events. */
+    dev->busoff_event_tick = event_tick;
+    dev->busoff_event_state = event_state;
+    dev->busoff_event_sequence++;
+    dev->busoff_event_pending = true;
+
+    /* Maintain the exact sliding window in ISR-owned state. Only the most
+     * recent AMS_CAN_BUSOFF_REPEAT_LIMIT events are needed to decide whether
+     * the repeat threshold has been reached. Unsigned subtraction preserves
+     * the 32-bit tick-wrap contract. */
+    count = dev->busoff_window_count;
+    while((count > 0u) &&
+          ((uint32_t)(event_tick - dev->busoff_recent_ticks[0]) >
+           AMS_CAN_BUSOFF_REPEAT_WINDOW_MS))
+    {
+        for(uint8_t i = 1u; i < count; i++)
+        {
+            dev->busoff_recent_ticks[i - 1u] = dev->busoff_recent_ticks[i];
+        }
+        count--;
+    }
+    if(count < AMS_CAN_BUSOFF_REPEAT_LIMIT)
+    {
+        dev->busoff_recent_ticks[count++] = event_tick;
+    }
+    else
+    {
+        for(uint8_t i = 1u; i < AMS_CAN_BUSOFF_REPEAT_LIMIT; i++)
+        {
+            dev->busoff_recent_ticks[i - 1u] = dev->busoff_recent_ticks[i];
+        }
+        dev->busoff_recent_ticks[AMS_CAN_BUSOFF_REPEAT_LIMIT - 1u] = event_tick;
+    }
+    dev->busoff_window_count = count;
+    dev->busoff_window_start_tick =
+        (count > 0u) ? dev->busoff_recent_ticks[0] : event_tick;
+
+    /* Revoke authority immediately and expose the physical-equivalent fault
+     * to the higher-priority supervisor before task-context accounting runs.
+     * The first event owns the 500 ms discharge epoch; later BOFFs do not
+     * move that safety deadline. */
+    data->can_authority_ready = false;
+    data->can_busoff_fault = true;
+    data->canbus_fault = true;
+    if(!data->can_busoff_recovery_active)
+    {
+        data->can_busoff_recovery_start_tick = event_tick;
+        data->can_busoff_recovery_state = event_state;
+        data->can_busoff_recovery_active = true;
+    }
+
+    /* CHARGE/BALANCE and CAN-backed HIL have no continuity grace. */
+    if(!data->can_busoff_hard_fault_latched)
+    {
+        ams_can_policy_latch_reason_t reason = AMS_CAN_POLICY_LATCH_NONE;
+        if(event_state == (uint8_t)STATE_CHARGE)
+        {
+            reason = AMS_CAN_POLICY_LATCH_CHARGE_BUSOFF;
+        }
+        else if(event_state == (uint8_t)STATE_BALANCE)
+        {
+            reason = AMS_CAN_POLICY_LATCH_BALANCE_BUSOFF;
+        }
+#if AMS_HIL_REPLACE_ADBMS
+        else
+        {
+            reason = AMS_CAN_POLICY_LATCH_HIL_MEASUREMENT_LOSS;
+        }
+#endif
+        if(reason != AMS_CAN_POLICY_LATCH_NONE)
+        {
+            data->can_busoff_hard_fault_latched = true;
+            data->can_busoff_policy_latch_reason = reason;
+            canbus_force_bms_low_from_isr(data);
+        }
+    }
+
+    /* The third genuine event in the sliding 10-second window is itself the
+     * safety boundary. Latch in ISR context rather than waiting for the CAN
+     * task, otherwise three clustered BOFFs could be hidden by task latency. */
+    if(count >= AMS_CAN_BUSOFF_REPEAT_LIMIT)
+    {
+        dev->tx_latched_inhibit = true;
+        data->can_authority_ready = false;
+        if(!data->can_busoff_hard_fault_latched)
+        {
+            data->can_busoff_hard_fault_latched = true;
+            data->can_busoff_policy_latch_reason =
+                AMS_CAN_POLICY_LATCH_REPEATED_BUSOFF;
+        }
+        canbus_force_bms_low_from_isr(data);
+    }
+
+    /* Suspend/abort at each event boundary. A later event during pending
+     * recovery is preserved by the sequence even though recovery state is
+     * already active. */
+    dev->tx_suspended = true;
+    if(dev->hcan != NULL)
+    {
+        (void)HAL_CAN_AbortTxRequest(dev->hcan,
+            CAN_TX_MAILBOX0 | CAN_TX_MAILBOX1 | CAN_TX_MAILBOX2);
+    }
+}
+
+void canbus_sce_irq_note(CAN_HandleTypeDef *hcan)
+{
+    canbus_device_t *dev = &app.board.canbus;
+
+    if((hcan == NULL) || (dev->hcan != hcan) || (hcan->Instance == NULL))
+    {
+        return;
+    }
+
+    /* SCE/ERRI is the event source. HAL_CAN_GetError() is intentionally not
+     * used here because HAL ErrorCode accumulates BOF until reset and could
+     * make a later unrelated error callback look like another bus-off. */
+    if(((hcan->Instance->MSR & CAN_MSR_ERRI) != 0u) &&
+       ((hcan->Instance->ESR & CAN_ESR_BOFF) != 0u))
+    {
+        canbus_record_busoff_event(dev, &app, CANBUS_ISR_TICK(),
+                                   (uint8_t)app.state);
+    }
+}
+
 void HAL_CAN_ErrorCallback(CAN_HandleTypeDef *hcan)
 {
     canbus_device_t *dev = &app.board.canbus;
+    uint32_t isr_error;
+
     if((hcan == NULL) || (dev->hcan != hcan))
     {
         return;
     }
-    dev->error_isr_code = HAL_CAN_GetError(hcan);
-    if((dev->error_isr_code & HAL_CAN_ERROR_RX_FOV0) != 0u)
+
+    isr_error = HAL_CAN_GetError(hcan);
+    dev->error_isr_code |= isr_error;
+#if AMS_HOST_TEST
+    if(((isr_error & HAL_CAN_ERROR_BOF) != 0u) &&
+       (dev->hcan->Instance == NULL))
+    {
+        /* Legacy host harness has no SCE register instance; treat the direct
+         * callback as one physical-equivalent event for regression parity. */
+        canbus_record_busoff_event(dev, &app, CANBUS_ISR_TICK(),
+                                   (uint8_t)app.state);
+    }
+#endif
+    if((isr_error & HAL_CAN_ERROR_BOF) != 0u)
+    {
+        /* Sticky HAL BOF is not physical event identity, but it remains safe
+         * to keep TX suspended while task/SCE bookkeeping settles. */
+        dev->tx_suspended = true;
+        (void)HAL_CAN_AbortTxRequest(dev->hcan,
+            CAN_TX_MAILBOX0 | CAN_TX_MAILBOX1 | CAN_TX_MAILBOX2);
+    }
+    if((isr_error & HAL_CAN_ERROR_RX_FOV0) != 0u)
     {
         canbus_increment_u32_sat(&dev->rx_fifo_overrun_count);
     }
@@ -1362,9 +1786,20 @@ HAL_StatusTypeDef canbus_device_init(canbus_device_t *dev, CAN_HandleTypeDef *hc
     dev->tx_pump_busy = false;
     dev->tx_kick_pending = false;
     dev->tx_suspended = false;
+    dev->tx_recovery_pending = false;
+    dev->tx_refresh_pending = false;
     dev->tx_latched_inhibit = false;
     dev->error_isr_pending = false;
     dev->error_isr_code = HAL_CAN_ERROR_NONE;
+    dev->busoff_event_sequence = 0u;
+    dev->busoff_event_consumed_sequence = 0u;
+    dev->busoff_event_pending = false;
+    dev->busoff_event_tick = 0u;
+    dev->busoff_event_state = (uint8_t)STATE_NULL;
+    for(uint8_t i = 0u; i < CANBUS_BUSOFF_WINDOW_SLOTS; i++)
+    {
+        dev->busoff_recent_ticks[i] = 0u;
+    }
     dev->tx_generation_counter = 0u;
     dev->tx_hal_load_error_count = 0u;
     dev->tx_hal_load_error_reported = 0u;
@@ -1607,70 +2042,173 @@ uint32_t canbus_process_rx_queue(canbus_device_t *dev, app_data_t *data, uint32_
     return processed;
 }
 
-HAL_StatusTypeDef canbus_recover(canbus_device_t *dev)
+HAL_StatusTypeDef canbus_recover(canbus_device_t *dev, app_data_t *data)
 {
-	HAL_StatusTypeDef reset_status;
+    HAL_StatusTypeDef reset_status;
+    uint32_t service_sequence;
+    bool recovery_settled = false;
+    bool service_commit = false;
 
-    if((dev == NULL) || (dev->hcan == NULL))
+    if((dev == NULL) || (dev->hcan == NULL) || (data == NULL))
     {
         return HAL_ERROR;
     }
 
-    /* Manual/service recovery is the only path that clears the repeated
-     * bus-off application-TX latch. Preserve newest protected state across
-     * the controller epoch change and discard incomplete detail. */
-    canbus_tx_note_busoff(dev);
-	/* Stopping an already-stopped controller can itself return an error.  The
-	 * recovery result is therefore based on reset, restart, and notification
-	 * activation, while still making the best-effort stop first. */
-	(void)HAL_CAN_Stop(dev->hcan);
-	reset_status = HAL_CAN_ResetError(dev->hcan);
-	dev->start_status = HAL_CAN_Start(dev->hcan);
-	dev->started = (dev->start_status == HAL_OK);
+    taskENTER_CRITICAL();
+    if(dev->tx_pump_busy)
+    {
+        taskEXIT_CRITICAL();
+        return HAL_BUSY;
+    }
+    /* Explicit service recovery may clear events that existed when service was
+     * requested, but a BOFF arriving after this snapshot belongs to a new fault
+     * epoch and must survive the recovery attempt. */
+    service_sequence = dev->busoff_event_sequence;
+    dev->tx_suspended = true;
+    taskEXIT_CRITICAL();
 
-	if(dev->started)
-	{
-		dev->notification_status = HAL_CAN_ActivateNotification(
-			dev->hcan, CAN_IT_RX_FIFO0_MSG_PENDING |
+    /* Manual/service recovery is the only path that clears the repeated
+     * bus-off application-TX latch. Settle hardware ownership and require
+     * fresh task publications before resuming transmission. */
+    canbus_tx_note_busoff(dev);
+    /* Stopping an already-stopped controller can itself return an error. The
+     * recovery result is therefore based on reset, restart, and notification
+     * activation, while still making the best-effort stop first. */
+    (void)HAL_CAN_Stop(dev->hcan);
+    reset_status = HAL_CAN_ResetError(dev->hcan);
+    dev->start_status = HAL_CAN_Start(dev->hcan);
+    dev->started = (dev->start_status == HAL_OK);
+
+    if(dev->started)
+    {
+        dev->notification_status = HAL_CAN_ActivateNotification(
+            dev->hcan, CAN_IT_RX_FIFO0_MSG_PENDING |
             CAN_IT_RX_FIFO0_OVERRUN |
             CAN_IT_TX_MAILBOX_EMPTY |
             CAN_IT_BUSOFF | CAN_IT_ERROR);
-	}
-	else
-	{
-		dev->notification_status = HAL_ERROR;
-	}
-	dev->notification_active = (dev->notification_status == HAL_OK);
+    }
+    else
+    {
+        dev->notification_status = HAL_ERROR;
+    }
+    dev->notification_active = (dev->notification_status == HAL_OK);
 
-	if(reset_status != HAL_OK)
-	{
-		dev->init_status = reset_status;
-	}
-	else if(dev->start_status != HAL_OK)
-	{
-		dev->init_status = dev->start_status;
-	}
-	else
-	{
-		dev->init_status = dev->notification_status;
-	}
+    if(reset_status != HAL_OK)
+    {
+        dev->init_status = reset_status;
+    }
+    else if(dev->start_status != HAL_OK)
+    {
+        dev->init_status = dev->start_status;
+    }
+    else
+    {
+        dev->init_status = dev->notification_status;
+    }
 
     if(dev->init_status == HAL_OK)
     {
-        dev->tx_latched_inhibit = false;
-        dev->busoff_window_start_tick = 0u;
-        dev->busoff_window_count = 0u;
-        canbus_tx_note_recovered(dev);
+        recovery_settled =
+            canbus_tx_note_recovered_for_sequence(dev, service_sequence);
+        if(!recovery_settled)
+        {
+            dev->init_status = HAL_BUSY; /* Task polling finishes settlement. */
+        }
+        else
+        {
+            /* Do not split the new-event check from either transport OR
+             * application safety-state clearing. A BOFF after controller
+             * settlement must win over the administrative recovery command;
+             * otherwise a CLI-side post-return cleanup could erase that event
+             * before the 10 Hz CAN task observes it. */
+            taskENTER_CRITICAL();
+            if((dev->busoff_event_sequence == service_sequence) &&
+               !canbus_hardware_busoff(dev))
+            {
+                dev->tx_latched_inhibit = false;
+                dev->busoff_window_start_tick = 0u;
+                dev->busoff_window_count = 0u;
+                for(uint8_t i = 0u; i < CANBUS_BUSOFF_WINDOW_SLOTS; i++)
+                {
+                    dev->busoff_recent_ticks[i] = 0u;
+                }
+
+                data->can_busoff_fault = false;
+                data->can_recover_pending = false;
+                data->can_error_code = HAL_CAN_ERROR_NONE;
+                data->canbus_fault = false;
+                data->can_authority_ready = false;
+                data->can_authority_complete_generation_baseline =
+                    dev->tx_scheduler.
+                        protected_required_last_complete_generation;
+                data->can_busoff_recovery_active = false;
+                data->can_busoff_recovery_start_tick = 0u;
+                data->can_busoff_recovery_state = (uint8_t)STATE_NULL;
+                data->can_authority_refresh_pending = true;
+                data->can_busoff_hard_fault_latched = false;
+                data->can_busoff_policy_latch_reason =
+                    AMS_CAN_POLICY_LATCH_NONE;
+                canbus_increment_u32_sat(&data->can_recover_count);
+                service_commit = true;
+            }
+            taskEXIT_CRITICAL();
+
+            if(!service_commit)
+            {
+                dev->init_status = HAL_BUSY;
+                /* canbus_tx_note_recovered_for_sequence() already created a
+                 * fresh controller epoch. Restore pending-recovery state for
+                 * the newer event rather than leaving transport refreshable. */
+                canbus_tx_note_busoff(dev);
+            }
+            else
+            {
+                ams_fault_log_event(AMS_FAULT_LOG_CAN_RECOVERED, 0u,
+                                    data->can_recover_count, 0u);
+            }
+        }
     }
 
-	return dev->init_status;
+    return dev->init_status;
+}
+
+static void canbus_latch_policy_fault(app_data_t *data,
+                                      ams_can_policy_latch_reason_t reason)
+{
+    if(data == NULL)
+    {
+        return;
+    }
+
+    data->can_authority_ready = false;
+    if(!data->can_busoff_hard_fault_latched)
+    {
+        data->can_busoff_hard_fault_latched = true;
+        data->can_busoff_policy_latch_reason = reason;
+    }
+
+    /* Immediate physical fail-low. The high-priority supervisor subsequently
+     * incorporates the sticky CAN policy latch into hard_fault. */
+    set_bms(false);
 }
 
 void canbus_poll_errors(canbus_device_t *dev, app_data_t *data)
 {
     uint32_t err;
     uint32_t now;
+    uint32_t busoff_event_tick;
+    uint8_t busoff_event_state;
+    uint32_t busoff_event_sequence;
+    uint32_t new_busoff_events = 0u;
+    uint32_t tx_irq_mask_new = 0u;
+    uint32_t tx_hal_load_new = 0u;
+    uint32_t charger_normal_load_new = 0u;
+    uint32_t charger_shutdown_load_new = 0u;
+    bool have_busoff_event = false;
     bool had_new_hal_load_error = false;
+    bool had_new_critical_load_error = false;
+    bool had_new_detail_load_error = false;
+    bool had_new_isr_error = false;
 
     if((dev == NULL) || (dev->hcan == NULL) || (data == NULL))
     {
@@ -1678,79 +2216,136 @@ void canbus_poll_errors(canbus_device_t *dev, app_data_t *data)
     }
 
     now = osKernelGetTickCount();
+    taskENTER_CRITICAL();
     err = HAL_CAN_GetError(dev->hcan);
     if(dev->error_isr_pending)
     {
         err |= dev->error_isr_code;
         dev->error_isr_pending = false;
         dev->error_isr_code = HAL_CAN_ERROR_NONE;
+        had_new_isr_error = true;
+    }
+    busoff_event_tick = now;
+    busoff_event_state = (uint8_t)data->state;
+    busoff_event_sequence = dev->busoff_event_sequence;
+    new_busoff_events =
+        busoff_event_sequence - dev->busoff_event_consumed_sequence;
+    if(new_busoff_events != 0u)
+    {
+        busoff_event_tick = dev->busoff_event_tick;
+        busoff_event_state = dev->busoff_event_state;
+        dev->busoff_event_consumed_sequence = busoff_event_sequence;
+        dev->busoff_event_pending = false;
+        have_busoff_event = true;
     }
 
-    if(dev->tx_irq_mask_error_count != dev->tx_irq_mask_error_reported)
+    /* ISR-written TX diagnostics use snapshot-and-ack semantics. Update each
+     * reported watermark to exactly the value used for this poll while the CAN
+     * ISR is masked; increments after this snapshot remain visible next poll
+     * instead of being accidentally acknowledged without processing. */
+    tx_irq_mask_new =
+        dev->tx_irq_mask_error_count - dev->tx_irq_mask_error_reported;
+    dev->tx_irq_mask_error_reported = dev->tx_irq_mask_error_count;
+
+    tx_hal_load_new =
+        dev->tx_hal_load_error_count - dev->tx_hal_load_error_reported;
+    dev->tx_hal_load_error_reported = dev->tx_hal_load_error_count;
+
+    had_new_critical_load_error =
+        (dev->tx_hal_load_error_critical_count !=
+         dev->tx_hal_load_error_critical_reported) ||
+        (dev->tx_hal_load_error_protected_count !=
+         dev->tx_hal_load_error_protected_reported);
+    dev->tx_hal_load_error_critical_reported =
+        dev->tx_hal_load_error_critical_count;
+    dev->tx_hal_load_error_protected_reported =
+        dev->tx_hal_load_error_protected_count;
+
+    had_new_detail_load_error =
+        dev->tx_hal_load_error_detail_count !=
+        dev->tx_hal_load_error_detail_reported;
+    dev->tx_hal_load_error_detail_reported =
+        dev->tx_hal_load_error_detail_count;
+
+    charger_normal_load_new =
+        dev->tx_charger_normal_load_error_count -
+        dev->tx_charger_normal_load_error_reported;
+    dev->tx_charger_normal_load_error_reported =
+        dev->tx_charger_normal_load_error_count;
+    charger_shutdown_load_new =
+        dev->tx_charger_shutdown_load_error_count -
+        dev->tx_charger_shutdown_load_error_reported;
+    dev->tx_charger_shutdown_load_error_reported =
+        dev->tx_charger_shutdown_load_error_count;
+    taskEXIT_CRITICAL();
+    if(canbus_hardware_busoff(dev)) err |= HAL_CAN_ERROR_BOF;
+
+#if AMS_HOST_TEST
+    /* Compatibility only for legacy host harnesses with no register-backed
+     * CAN instance. On target, SCE/ERRI is the sole physical BOFF identity.
+     * Never synthesize from a hardware/sticky BOF observation here: a real SCE
+     * can arrive just after the task snapshot and would otherwise be counted a
+     * second time by this fallback. */
+    if((dev->hcan->Instance == NULL) && !have_busoff_event &&
+       ((err & HAL_CAN_ERROR_BOF) != 0u) &&
+       !data->can_recover_pending && !dev->tx_recovery_pending)
     {
-        uint32_t new_errors = dev->tx_irq_mask_error_count -
-                              dev->tx_irq_mask_error_reported;
-        dev->tx_irq_mask_error_reported = dev->tx_irq_mask_error_count;
-        canbus_add_u32_sat(&data->can_error_count, new_errors);
+        canbus_record_busoff_event(dev, data, now, (uint8_t)data->state);
+        taskENTER_CRITICAL();
+        busoff_event_sequence = dev->busoff_event_sequence;
+        new_busoff_events =
+            busoff_event_sequence - dev->busoff_event_consumed_sequence;
+        busoff_event_tick = dev->busoff_event_tick;
+        busoff_event_state = dev->busoff_event_state;
+        dev->busoff_event_consumed_sequence = busoff_event_sequence;
+        dev->busoff_event_pending = false;
+        taskEXIT_CRITICAL();
+        have_busoff_event = (new_busoff_events != 0u);
+    }
+#endif
+
+    if(tx_irq_mask_new != 0u)
+    {
+        canbus_add_u32_sat(&data->can_error_count, tx_irq_mask_new);
         data->can_last_error_tick = now;
         data->canbus_fault = true;
     }
 
-    if(dev->tx_hal_load_error_count != dev->tx_hal_load_error_reported)
+    if(tx_hal_load_new != 0u)
     {
-        uint32_t new_errors =
-            dev->tx_hal_load_error_count - dev->tx_hal_load_error_reported;
-        dev->tx_hal_load_error_reported = dev->tx_hal_load_error_count;
         had_new_hal_load_error = true;
-        canbus_add_u32_sat(&data->can_error_count, new_errors);
+        canbus_add_u32_sat(&data->can_error_count, tx_hal_load_new);
         data->can_last_error_tick = now;
     }
 
-    if((dev->tx_hal_load_error_critical_count !=
-        dev->tx_hal_load_error_critical_reported) ||
-       (dev->tx_hal_load_error_protected_count !=
-        dev->tx_hal_load_error_protected_reported))
+    if(had_new_critical_load_error)
     {
-        dev->tx_hal_load_error_critical_reported =
-            dev->tx_hal_load_error_critical_count;
-        dev->tx_hal_load_error_protected_reported =
-            dev->tx_hal_load_error_protected_count;
         /* Critical/protected HAL-load failures are transport-health relevant.
          * The source frame remains pending; a full mailbox alone never reaches
          * this path because the pump calls HAL only with a reported free slot. */
         data->canbus_fault = true;
     }
 
-    if(dev->tx_hal_load_error_detail_count !=
-       dev->tx_hal_load_error_detail_reported)
+    if(had_new_detail_load_error)
     {
         /* Detail loss is observable but never grants/revokes authority by
          * itself. A genuine controller error is handled separately below. */
-        dev->tx_hal_load_error_detail_reported =
-            dev->tx_hal_load_error_detail_count;
     }
 
-    if((dev->tx_charger_normal_load_error_count !=
-        dev->tx_charger_normal_load_error_reported) ||
-       (dev->tx_charger_shutdown_load_error_count !=
-        dev->tx_charger_shutdown_load_error_reported))
+    if((charger_normal_load_new != 0u) ||
+       (charger_shutdown_load_new != 0u))
     {
         charger_t *ccs = &data->board.charger;
-        uint32_t normal_new = dev->tx_charger_normal_load_error_count -
-                              dev->tx_charger_normal_load_error_reported;
-        uint32_t shutdown_new = dev->tx_charger_shutdown_load_error_count -
-                                dev->tx_charger_shutdown_load_error_reported;
-        dev->tx_charger_normal_load_error_reported =
-            dev->tx_charger_normal_load_error_count;
-        dev->tx_charger_shutdown_load_error_reported =
-            dev->tx_charger_shutdown_load_error_count;
 
         ccs->tx_fail = true;
         ccs->last_tx_status = HAL_ERROR;
         ccs->disable_reason_mask |= CHARGER_DISABLE_REASON_TX_FAIL;
-        canbus_add_u32_sat(&ccs->tx_fail_count, normal_new + shutdown_new);
-        canbus_add_u32_sat(&ccs->shutdown_tx_fail_count, shutdown_new);
-        if(shutdown_new != 0u)
+        canbus_add_u32_sat(&ccs->tx_fail_count,
+                           charger_normal_load_new +
+                           charger_shutdown_load_new);
+        canbus_add_u32_sat(&ccs->shutdown_tx_fail_count,
+                           charger_shutdown_load_new);
+        if(charger_shutdown_load_new != 0u)
         {
             ccs->last_shutdown_status = HAL_ERROR;
         }
@@ -1759,38 +2354,115 @@ void canbus_poll_errors(canbus_device_t *dev, app_data_t *data)
         set_bms(false);
     }
 
-    /* Once bus-off has been observed, the CAN task owns supervised ABOM
-     * recovery. HAL's ErrorCode can retain the historical BOF bit after bxCAN
-     * has already returned to LISTENING, so service the recovery state before
-     * re-interpreting that latched bit as a new bus-off event. */
-    if(data->can_busoff_fault || data->can_recover_pending)
+    if(have_busoff_event)
     {
-        if(HAL_CAN_GetState(dev->hcan) == HAL_CAN_STATE_LISTENING)
-        {
-            HAL_StatusTypeDef reset_status = HAL_CAN_ResetError(dev->hcan);
-            if(reset_status == HAL_OK)
-            {
-                data->can_error_code = HAL_CAN_ERROR_NONE;
-                data->can_recover_pending = false;
-                canbus_tx_note_recovered(dev);
-                canbus_increment_u32_sat(&data->can_recover_count);
-                ams_fault_log_event(AMS_FAULT_LOG_CAN_RECOVERED, 0u,
-                                    data->can_recover_count,
-                                    dev->tx_latched_inhibit ? 1u : 0u);
+        /* Event multiplicity comes from the ISR sequence delta. This is the
+         * critical distinction from the old single pending boolean: three BOFF
+         * transitions before one 10 Hz poll are accounted as three events. */
+        canbus_add_u32_sat(&data->can_busoff_count, new_busoff_events);
+        canbus_add_u32_sat(&data->can_error_count, new_busoff_events);
+        data->can_last_error_tick = busoff_event_tick;
+        data->can_error_code = err | HAL_CAN_ERROR_BOF;
+        data->can_busoff_fault = true;
+        data->can_recover_pending = true;
+        data->canbus_fault = true;
+        data->can_authority_ready = false;
+        data->can_authority_refresh_pending = false;
+        taskENTER_CRITICAL();
+        data->can_authority_complete_generation_baseline =
+            dev->tx_scheduler.protected_required_last_complete_generation;
+        taskEXIT_CRITICAL();
+        canbus_tx_note_busoff(dev);
+        ams_fault_log_event(AMS_FAULT_LOG_CAN_BUS_OFF,
+                            (new_busoff_events > UINT16_MAX) ? UINT16_MAX :
+                                (uint16_t)new_busoff_events,
+                            data->can_error_code, data->can_busoff_count);
 
-                if(dev->tx_latched_inhibit)
+        /* The ISR already owns immediate policy latching. Repeat these task
+         * state side-effects only where they carry non-GPIO diagnostic state. */
+        if(busoff_event_state == (uint8_t)STATE_CHARGE)
+        {
+            data->charger_fault = true;
+            data->board.charger.communication_fail = true;
+        }
+#if AMS_HIL_REPLACE_ADBMS
+        data->adbms_diag_fault = true;
+#endif
+        /* A newly observed BOFF event and recovery settlement are distinct
+         * task iterations. This preserves the event boundary and prevents a
+         * host/fast-recovery path from clearing the fault in the same poll. */
+        return;
+    }
+
+    /* HAL LISTENING is only software state. Hardware BOFF, outstanding TXRQ,
+     * completion flags and software ownership must all settle before reset. */
+    if(data->can_recover_pending ||
+       (dev->tx_recovery_pending && ((err & HAL_CAN_ERROR_BOF) == 0u)))
+    {
+        uint32_t recovery_sequence;
+
+        data->can_recover_pending = true;
+        /* Snapshot physical event identity before any potentially long HAL or
+         * mailbox-settlement observations. A bus-off arriving during those
+         * checks belongs to a newer recovery transaction. */
+        taskENTER_CRITICAL();
+        recovery_sequence = dev->busoff_event_sequence;
+        taskEXIT_CRITICAL();
+        if(!canbus_hardware_busoff(dev) &&
+           canbus_tx_mailboxes_settled(dev) &&
+           (HAL_CAN_GetState(dev->hcan) == HAL_CAN_STATE_LISTENING))
+        {
+            HAL_StatusTypeDef reset_status;
+            bool recovery_commit = false;
+
+            reset_status = HAL_CAN_ResetError(dev->hcan);
+            if((reset_status == HAL_OK) &&
+               canbus_tx_note_recovered_for_sequence(dev, recovery_sequence))
+            {
+                /* Mailbox/controller settlement and the task-visible recovery
+                 * commit are separate only for the HAL operation itself. The
+                 * final sequence/hardware check and all fault clearing occur
+                 * atomically so a newly arrived SCE event cannot be erased. */
+                taskENTER_CRITICAL();
+                if((dev->busoff_event_sequence == recovery_sequence) &&
+                   !canbus_hardware_busoff(dev))
                 {
-                    /* ABOM has electrically rejoined the bus, but repeated
-                     * bus-off policy intentionally suppresses application TX.
-                     * Keep the transport fault latched until explicit service
-                     * recovery clears tx_latched_inhibit. */
-                    data->can_busoff_fault = true;
-                    data->canbus_fault = true;
+                    data->can_authority_complete_generation_baseline =
+                        dev->tx_scheduler.
+                            protected_required_last_complete_generation;
+                    data->can_error_code = HAL_CAN_ERROR_NONE;
+                    data->can_recover_pending = false;
+                    canbus_increment_u32_sat(&data->can_recover_count);
+                    if(dev->tx_latched_inhibit)
+                    {
+                        data->can_busoff_fault = true;
+                        data->canbus_fault = true;
+                    }
+                    else
+                    {
+                        data->can_busoff_fault = false;
+                        data->canbus_fault = false;
+                    }
+                    recovery_commit = true;
+                }
+                taskEXIT_CRITICAL();
+
+                if(recovery_commit)
+                {
+                    ams_fault_log_event(AMS_FAULT_LOG_CAN_RECOVERED, 0u,
+                                        data->can_recover_count,
+                                        dev->tx_latched_inhibit ? 1u : 0u);
                 }
                 else
                 {
-                    data->can_busoff_fault = false;
-                    data->canbus_fault = false;
+                    /* A newer event won the race after controller settlement.
+                     * Preserve it as pending recovery and never clear its fault. */
+                    data->can_last_error_tick = now;
+                    data->can_busoff_fault = true;
+                    data->can_recover_pending = true;
+                    data->canbus_fault = true;
+                    data->can_authority_ready = false;
+                    canbus_tx_note_busoff(dev);
                 }
             }
             else
@@ -1802,58 +2474,23 @@ void canbus_poll_errors(canbus_device_t *dev, app_data_t *data)
         else
         {
             data->canbus_fault = true;
+            (void)HAL_CAN_AbortTxRequest(dev->hcan,
+                CAN_TX_MAILBOX0 | CAN_TX_MAILBOX1 | CAN_TX_MAILBOX2);
         }
         return;
     }
 
-    if((err & HAL_CAN_ERROR_BOF) != 0u)
+
+    if(dev->tx_latched_inhibit)
     {
-        canbus_increment_u32_sat(&data->can_busoff_count);
-        ams_fault_log_event(AMS_FAULT_LOG_CAN_BUS_OFF, 0u, err,
-                            data->can_busoff_count);
-
-        if((dev->busoff_window_start_tick == 0u) ||
-           ((uint32_t)(now - dev->busoff_window_start_tick) > 10000u))
-        {
-            dev->busoff_window_start_tick = now;
-            dev->busoff_window_count = 1u;
-        }
-        else if(dev->busoff_window_count < UINT8_MAX)
-        {
-            dev->busoff_window_count++;
-        }
-
-        /* ABOM remains enabled: bxCAN may electrically rejoin after the
-         * standard 128x11 recessive-bit recovery. At the third bus-off inside
-         * the 10 s window firmware latches APPLICATION TX off; it does not
-         * pretend to suppress hardware ABOM recovery. */
-        if(dev->busoff_window_count >= 3u)
-        {
-            dev->tx_latched_inhibit = true;
-        }
-        canbus_tx_note_busoff(dev);
-
-        canbus_increment_u32_sat(&data->can_error_count);
-        data->can_last_error_tick = now;
-        data->can_error_code = err;
         data->can_busoff_fault = true;
-        data->can_recover_pending = true;
         data->canbus_fault = true;
-
-        if(data->state == STATE_CHARGE)
-        {
-            data->charger_fault = true;
-            data->board.charger.communication_fail = true;
-            set_bms(false);
-        }
-#if AMS_HIL_REPLACE_ADBMS
-        data->adbms_diag_fault = true;
-        set_bms(false);
-#endif
+        canbus_latch_policy_fault(data, AMS_CAN_POLICY_LATCH_TX_INHIBIT);
         return;
     }
 
-    if(had_new_hal_load_error && (err == HAL_CAN_ERROR_NONE))
+    if(had_new_hal_load_error && (err == HAL_CAN_ERROR_NONE) &&
+       !dev->tx_refresh_pending && !dev->tx_recovery_pending)
     {
         /* Resume eligibility for the next publication/kick. Do not kick here:
          * limiting recovery to the next CAN-task publication prevents a
@@ -1864,12 +2501,18 @@ void canbus_poll_errors(canbus_device_t *dev, app_data_t *data)
 
     if(err != HAL_CAN_ERROR_NONE)
     {
-        bool new_error = (err != data->can_error_code);
-        if(new_error)
+        bool new_error_code = (err != data->can_error_code);
+        if(new_error_code || had_new_isr_error)
         {
+            /* One ISR observation may coalesce multiple controller events, but
+             * it is still a new occurrence for diagnostics even when the HAL
+             * error bits match the previous occurrence. */
             canbus_increment_u32_sat(&data->can_error_count);
-            data->can_last_error_tick = now;
         }
+        /* Refresh the hold timer whenever the controller still presents an
+         * error. Repeated identical ACK/bit errors must age from the most
+         * recent observation, not the first code transition. */
+        data->can_last_error_tick = now;
         data->can_error_code = err;
         data->canbus_fault = true;
         (void)HAL_CAN_ResetError(dev->hcan);

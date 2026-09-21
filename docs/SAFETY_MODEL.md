@@ -32,6 +32,30 @@ Validation macros are evidence gates, not evidence by themselves. Enabling a val
 
 Panic and fatal fault paths are expected to prioritize the physical fail-low action and preserve diagnostic information only to the extent that the runtime state remains trustworthy.
 
+## Watchdog policy
+
+IWDG is a software-liveness/integrity watchdog. External/process faults such as
+voltage, temperature, current, charger, CAN, ADBMS, and fuse faults must force
+BMS_OK low through their own safety paths, but do not stop IWDG feed while the
+critical software heartbeat set remains healthy. IWDG feed stops for panic/fatal
+paths, missed critical-task/safety heartbeats, RTOS integrity faults or critical
+stack margin, explicit test stop-feed, or failed watchdog start. This avoids
+reset loops that cannot repair a persistent physical fault while retaining a reset
+mechanism for failures where reboot can plausibly restore execution.
+
+## CAN bus-off authority policy
+
+CAN authority begins false at START and is established only after every required
+frame in a fresh protected `0x680`–`0x687` generation completes on the wire in a
+controller-clean cycle; queue/commit success alone is insufficient. CHARGE, BALANCE,
+and HIL builds that replace ADBMS measurements with CAN treat bus-off as immediate
+hard fail-low. DISCHARGE allows one bounded continuity interval: the ECU must remove
+torque/inverter authority after 300 ms without a fresh changing `0x680` heartbeat,
+and AMS hard-fails BMS_OK at 500 ms if a fresh required protected generation has
+not completed on the wire. Three bus-off events within 10 seconds or the application
+TX inhibit latch hard-latch the CAN policy immediately. ABOM/controller recovery
+alone does not restore authority.
+
 ## What host tests cannot prove
 
 Host tests cannot establish:

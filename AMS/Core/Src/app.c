@@ -33,8 +33,8 @@ const ams_build_manifest_t ams_build_manifest = {
     .config_fingerprint = AMS_BUILD_CONFIG_FINGERPRINT,
     .profile_name = AMS_BUILD_PROFILE_NAME,
     .git_commit = AMS_BUILD_GIT_COMMIT,
-    .build_date = __DATE__,
-    .build_time = __TIME__,
+    .build_date = AMS_BUILD_DATE,
+    .build_time = AMS_BUILD_TIME,
 	.estimator_model_revision = AMS_ESTIMATOR_MODEL_REVISION,
 	.sop_model_revision = AMS_SOP_MODEL_REVISION,
 	.soh_model_revision = AMS_SOH_MODEL_REVISION,
@@ -439,6 +439,14 @@ void app_create(void)
 	app.can_last_error_tick = 0u;
 	app.can_busoff_fault = false;
 	app.can_recover_pending = false;
+    app.can_authority_ready = false;
+    app.can_authority_complete_generation_baseline = 0u;
+    app.can_busoff_recovery_active = false;
+    app.can_busoff_recovery_start_tick = 0u;
+    app.can_busoff_recovery_state = (uint8_t)STATE_NULL;
+    app.can_authority_refresh_pending = false;
+    app.can_busoff_hard_fault_latched = false;
+    app.can_busoff_policy_latch_reason = AMS_CAN_POLICY_LATCH_NONE;
     ams_rtos_diag_init(&app);
 	app.fan_fault = false;
 	app.cli_fault = false;
@@ -543,6 +551,7 @@ void app_create(void)
     app.adbms_aux2_diag_fail_count = 0u;
     app.adbms_aux2_next_due_tick = 0u;
     app.adbms_aux2_next_sensor = 0u;
+    app.adbms_aux2_schedule_initialized = false;
     app.adbms_therm_ow_diag_count = 0u;
     app.adbms_therm_ow_diag_fail_count = 0u;
     app.adbms_therm_ow_last_tick = 0u;
@@ -686,9 +695,10 @@ void app_create(void)
 		}
 	}
 	ams_heartbeat_init(&app, osKernelGetTickCount());
-	/* A compile-enabled IWDG must protect startup as well as steady state.  It
-	 * is fed during the bounded heartbeat grace period, then only while the
-	 * safety supervisor's complete health gate remains satisfied. */
+	/* A compile-enabled IWDG protects software execution integrity during
+	 * startup and steady state. It is fed through external/process faults while
+	 * the supervisor and required task heartbeats remain alive; those faults
+	 * independently force BMS_OK low instead of creating watchdog reset loops. */
 	ams_safety_watchdog_boot_arm(&app);
 	ams_safety_sync_app(&app);
 	ams_fault_log_event(AMS_FAULT_LOG_BOOT, 0u, app.reset_flags, app.last_panic_reason);
@@ -771,9 +781,12 @@ void app_create(void)
 		app.adbms_last_diag_status = HAL_OK;
 	}
 #endif
+#if AMS_ENABLE_CLI
 	(void)cli_uart_start_rx(&app.board.cli);
-
 	app.cli_task = cli_task_start(&app);
+#else
+	app.cli_task = NULL;
+#endif
 	app.fan_task = fan_task_start(&app);
 	app.error_task = error_task_start(&app);
 	app.canbus_task = canbus_task_start(&app);
@@ -793,7 +806,10 @@ void app_create(void)
 	app.adbms_task = adbms_task_start(&app);
 	app.estimator_task = estimator_task_start(&app);
 
-	if((app.cli_task == NULL) ||
+	if(
+#if AMS_ENABLE_CLI
+	   (app.cli_task == NULL) ||
+#endif
 	   (app.fan_task == NULL) ||
 	   (app.error_task == NULL) ||
 	   (app.canbus_task == NULL) ||

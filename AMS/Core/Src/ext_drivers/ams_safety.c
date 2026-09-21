@@ -743,6 +743,7 @@ const char *ams_safety_watchdog_block_reason_str(uint32_t reason)
     case AMS_WATCHDOG_BLOCK_HARD_FAULT: return "hard_fault";
     case AMS_WATCHDOG_BLOCK_STOP_FEED_TEST: return "stop_feed_test";
     case AMS_WATCHDOG_BLOCK_START_FAILED: return "start_failed";
+    case AMS_WATCHDOG_BLOCK_RTOS_INTEGRITY: return "rtos_integrity";
     default: return "unknown";
     }
 }
@@ -886,27 +887,19 @@ bool ams_safety_watchdog_ok(const app_data_t *data)
         return false;
     }
 #endif
-    if(data->hard_fault || data->charger_fault || data->adbms_diag_fault || data->fuse_fault)
-    {
-        return false;
-    }
     if(startup_grace)
     {
         return false;
     }
+    /* IWDG is a software-liveness watchdog. Battery, sensor, charger, CAN,
+     * ADBMS and other external/process faults independently force BMS_OK low,
+     * but a healthy supervisor must remain alive to preserve diagnostics and
+     * avoid reset loops that cannot repair the physical fault. */
     if(data->task_heartbeat_fault || (data->heartbeat.safety_stale_mask != 0u))
     {
         return false;
     }
-    if(!data->voltage_valid || data->voltage_read_fault || data->voltage_fault)
-    {
-        return false;
-    }
-    if(!data->current_valid || data->current_fault || data->current_sensor_fault)
-    {
-        return false;
-    }
-    if(!data->temp_valid || data->temp_read_fault || data->temp_fault)
+    if(data->rtos_fault || data->rtos_stack_critical)
     {
         return false;
     }
@@ -946,25 +939,13 @@ void ams_safety_watchdog_task_update(app_data_t *data)
     {
         reason = AMS_WATCHDOG_BLOCK_STARTUP_GRACE;
     }
-    else if(data->hard_fault || data->charger_fault || data->adbms_diag_fault || data->fuse_fault)
-    {
-        reason = AMS_WATCHDOG_BLOCK_HARD_FAULT;
-    }
     else if(data->task_heartbeat_fault || (data->heartbeat.safety_stale_mask != 0u))
     {
         reason = AMS_WATCHDOG_BLOCK_HEARTBEAT;
     }
-    else if(!data->voltage_valid || data->voltage_read_fault || data->voltage_fault)
+    else if(data->rtos_fault || data->rtos_stack_critical)
     {
-        reason = AMS_WATCHDOG_BLOCK_ADBMS_STALE;
-    }
-    else if(!data->current_valid || data->current_fault || data->current_sensor_fault)
-    {
-        reason = AMS_WATCHDOG_BLOCK_CURRENT_STALE;
-    }
-    else if(!data->temp_valid || data->temp_read_fault || data->temp_fault)
-    {
-        reason = AMS_WATCHDOG_BLOCK_TEMP_STALE;
+        reason = AMS_WATCHDOG_BLOCK_RTOS_INTEGRITY;
     }
 
     if((reason == AMS_WATCHDOG_BLOCK_NONE) ||

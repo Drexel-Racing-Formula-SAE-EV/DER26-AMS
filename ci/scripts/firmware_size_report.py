@@ -5,13 +5,34 @@ import subprocess
 from pathlib import Path
 
 
+def resolve_elf(requested: Path) -> Path:
+    """Resolve the headless build's unique Debug.* / Release.* ELF path."""
+    if requested.is_file():
+        return requested
+
+    # The headless builder intentionally preserves every build under a unique
+    # AMS/build/<type>.<suffix>/ directory. CI historically passed the stable
+    # AMS/build/DER26-AMS.elf path, so fall back to the newest matching artifact
+    # when that compatibility link is absent (for example on older runners).
+    parent = requested.parent
+    candidates = [p for p in parent.glob(f"*/{requested.name}") if p.is_file()]
+    if not candidates:
+        raise FileNotFoundError(
+            f"ELF not found at {requested} and no {parent}/*/{requested.name} exists"
+        )
+
+    resolved = max(candidates, key=lambda p: p.stat().st_mtime_ns)
+    print(f"Resolved ELF: {requested} -> {resolved}")
+    return resolved
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--elf", required=True)
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
 
-    elf = Path(args.elf)
+    elf = resolve_elf(Path(args.elf))
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
 

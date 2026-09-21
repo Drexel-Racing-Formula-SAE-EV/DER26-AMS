@@ -156,7 +156,7 @@ WARN := \
 CFLAGS_COMMON := -std=c11 -g -O0 $(WARN) $(COMMON_DEFS) $(INC)
 LDLIBS := -lm
 
-.PHONY: help check-root check-core-root compile unit can-tx-scheduler-test temp-ack-decoder-test apm-hardening-test apm-cli-test can-logger-contract-test can-logger-contract-5s-test testday-lock-test bench-validation-lock-test apm-bench-gates firmware-asan can-load-budget can-v4-contract-gate can-clock-contract-gate adbms-v05-contract-gate adbms-v05-variant-gates firmware-ci prevehicle-ci power-core power-metamorphic power-sensitivity power-oracle power-consumer power-resources fuse-oracle fuse-replay dashboard-decoder thermistor-validate test profile-gates estimator-topology-gates production-gates static-allocation-gate state-ownership-gate target-project-gate whole-source-analyze system-sil apm-sil bringup-test hil-adbms-test adbms-resilience-test imd-test air-feedback-stub-test safety-test stress ci asan ubsan analyze clang-analyze clean list make-build-dir
+.PHONY: help check-root check-core-root compile unit can-tx-scheduler-test temp-ack-decoder-test apm-hardening-test apm-cli-test can-logger-contract-test can-logger-contract-5s-test testday-lock-test bench-validation-lock-test apm-bench-gates firmware-asan can-load-budget can-v4-contract-gate can-irq-contract-gate rtos-fail-low-order-gate can-clock-contract-gate adbms-v05-contract-gate adbms-v05-variant-gates firmware-ci prevehicle-ci power-core power-metamorphic power-sensitivity power-oracle power-consumer power-resources fuse-oracle fuse-replay dashboard-decoder thermistor-validate test profile-gates estimator-topology-gates production-gates static-allocation-gate state-ownership-gate target-project-gate whole-source-analyze system-sil apm-sil bringup-test hil-adbms-test adbms-resilience-test imd-test air-feedback-stub-test safety-test stress ci asan ubsan analyze clang-analyze clean list make-build-dir
 
 help:
 	@echo "DER26 AMS host test harness"
@@ -187,6 +187,7 @@ help:
 	@echo "  make static-allocation-gate Verify every application task uses fixed storage"
 	@echo "  make state-ownership-gate Verify state and CAN-control ownership boundaries"
 	@echo "  make target-project-gate Verify CubeIDE project identity, paths, warnings and linker scripts"
+	@echo "  make freertos-provenance-gate Pin exact bundled FreeRTOS source tree/version-label state"
 	@echo "  make system-sil    Alias for comprehensive system-level SIL/injection tests"
 	@echo "  make apm-sil       Run actual-driver ADBMS2950 unit tests plus final-ring CLI/SIL tests"
 	@echo "  make bringup-test  Run comprehensive tests with AMS_HW_BRINGUP=1"
@@ -201,6 +202,8 @@ help:
 	@echo "  make prevehicle-ci Add sanitizers and extended seeded stress to firmware CI"
 	@echo "  make can-load-budget Check conservative DER26-CAN-V4 utilization budget"
 	@echo "  make can-v4-contract-gate Verify V4 ID priority/scheduler contract"
+	@echo "  make can-irq-contract-gate Verify CAN1 RX0/TX/SCE vector coverage for enabled notifications"
+	@echo "  make rtos-fail-low-order-gate Verify fatal RTOS hooks fail BMS_OK low before diagnostics"
 	@echo "  make can-clock-contract-gate Verify 500k/250k timing and HSE clock contract"
 	@echo "  make adbms-v05-contract-gate Verify ADBMS session/fault/filter/balance cross-module contract"
 	@echo "  make adbms-v05-variant-gates Compile /128,/64, AVG8/IIR and post-S-ECO feature variants"
@@ -257,6 +260,13 @@ can-tx-scheduler-test: check-core-root make-build-dir
 	$(CC) $(CFLAGS_COMMON) -Werror $(CAN_TX_SCHED_UNIT_SRC) $(CAN_TX_SCHED_SRC) \
 		-o "$(CAN_TX_SCHED_UNIT_BIN)" $(LDLIBS)
 	"$(CAN_TX_SCHED_UNIT_BIN)"
+
+.PHONY: can-tx-regression-test
+can-tx-regression-test: check-core-root make-build-dir
+	$(CC) $(CFLAGS_COMMON) -Werror -ffunction-sections -fdata-sections \
+		unit/can_tx_regression_test.c $(CAN_TX_SCHED_SRC) \
+		-Wl,--gc-sections -o "$(BUILD_DIR)/can_tx_regression_tests" $(LDLIBS)
+	"$(BUILD_DIR)/can_tx_regression_tests"
 
 temp-ack-decoder-test: check-core-root make-build-dir
 	$(CC) $(CFLAGS_COMMON) -Werror $(TEMP_ACK_DECODER_UNIT_SRC) \
@@ -471,14 +481,17 @@ profile-gates: check-core-root make-build-dir
 		echo "ERROR: vehicle profile compiled without reviewed temperature-threshold evidence"; \
 		exit 1; \
 	fi
-	@if $(CC) $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=1 \
+	@if $(CC) $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=1 -DAMS_EXPECTED_PROFILE=1 \
 		-DAMS_MAIN_FUSE_PLAUSIBILITY_VALIDATED=1 \
 		$(PROFILE_SRC) -o "$(BUILD_DIR)/profile_main_fuse_without_air" $(LDLIBS) \
 		>"$(BUILD_DIR)/profile_main_fuse_without_air.log" 2>&1; then \
 		echo "ERROR: main-fuse plausibility compiled as validated without AIR/current evidence"; \
 		exit 1; \
 	fi
-	@if $(CC) $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=1 \
+	@grep -q "Main-fuse plausibility validation requires authoritative AIR feedback, calibrated current and independent load-side voltage" \
+		"$(BUILD_DIR)/profile_main_fuse_without_air.log" || \
+		(echo "ERROR: main-fuse negative gate failed for an unrelated compiler reason"; exit 1)
+	@if $(CC) $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=1 -DAMS_EXPECTED_PROFILE=1 \
 		-DAMS_MAIN_FUSE_PLAUSIBILITY_VALIDATED=1 \
 		-DAMS_ENABLE_AIR_AUX_FEEDBACK=1 \
 		-DAMS_CURRENT_CALIBRATION_VALIDATED=1 \
@@ -487,13 +500,19 @@ profile-gates: check-core-root make-build-dir
 		echo "ERROR: main-fuse plausibility compiled as validated without independent load-side voltage evidence"; \
 		exit 1; \
 	fi
-	@if $(CC) $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=1 \
+	@grep -q "Main-fuse plausibility validation requires authoritative AIR feedback, calibrated current and independent load-side voltage" \
+		"$(BUILD_DIR)/profile_main_fuse_without_load_voltage.log" || \
+		(echo "ERROR: main-fuse load-voltage negative gate failed for an unrelated compiler reason"; exit 1)
+	@if $(CC) $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=1 -DAMS_EXPECTED_PROFILE=1 \
 		-DAMS_PARALLEL_CONNECTION_OBSERVER_VALIDATED=1 \
 		$(PROFILE_SRC) -o "$(BUILD_DIR)/profile_parallel_without_current" $(LDLIBS) \
 		>"$(BUILD_DIR)/profile_parallel_without_current.log" 2>&1; then \
 		echo "ERROR: parallel-connection observer compiled as validated without current evidence"; \
 		exit 1; \
 	fi
+	@grep -q "Parallel-connection observer validation requires validated current polarity and calibration" \
+		"$(BUILD_DIR)/profile_parallel_without_current.log" || \
+		(echo "ERROR: parallel-observer negative gate failed for an unrelated compiler reason"; exit 1)
 	@if $(CC) $(CFLAGS_COMMON) -Werror \
 		$(filter-out -DNSMBS=5,$(VEHICLE_PROFILE_DEFS)) \
 		-DAMS_EXPECTED_PROFILE=3 $(PROFILE_SRC) \
@@ -605,10 +624,11 @@ state-ownership-gate: check-core-root
 	@echo "PASS centralized state writers and CAN control ownership gate"
 
 target-project-gate: check-core-root
+	@$(PYTHON) "$(AMS_ROOT)/host_tests/tools/check_release_identity.py" "$(AMS_ROOT)"
 	@$(PYTHON) -c 'import xml.etree.ElementTree as E; E.parse("$(AMS_ROOT)/.project"); E.parse("$(AMS_ROOT)/.cproject")'
 	@grep -q '<name>DER26-AMS</name>' "$(AMS_ROOT)/.project"
 	@grep -q 'project id="DER26-AMS' "$(AMS_ROOT)/.cproject"
-	@if grep -q 'DER25-AMS' "$(AMS_ROOT)/.cproject" "$(AMS_ROOT)/.project"; then \
+	@if grep -q 'DER25-AMS' "$(AMS_ROOT)/.cproject" "$(AMS_ROOT)/.project" "$(AMS_ROOT)/DER26-AMS.ioc"; then \
 		echo "ERROR: stale DER25 CubeIDE project metadata remains"; exit 1; \
 	fi
 	@grep -Fq 'buildPath="$${workspace_loc:/$${ProjName}/Bench5_Debug}"' "$(AMS_ROOT)/.cproject"
@@ -623,10 +643,17 @@ target-project-gate: check-core-root
 	@test "$$(grep -c 'name="BENCH Validation 1-SMB Release"' "$(AMS_ROOT)/.cproject")" -ge 1
 	@test "$$(grep -c 'value="AMS_BENCH_VALIDATION_SINGLE_SMB=1"' "$(AMS_ROOT)/.cproject")" -eq 2
 	@test "$$(grep -c 'value="AMS_BUILD_PROFILE=5"' "$(AMS_ROOT)/.cproject")" -eq 4
-	@test "$$(grep -c 'value="DER26_CAN_BITRATE_KBPS=500"' "$(AMS_ROOT)/.cproject")" -eq 4
+	@test "$$(grep -c 'value="DER26_CAN_BITRATE_KBPS=1000"' "$(AMS_ROOT)/.cproject")" -eq 4
 	@echo "PASS CubeIDE BENCH Validation 5-SMB/1-SMB identity/profile/bitrate, build paths, warning flags, XML and linker-script metadata"
 
 system-sil: test
+
+.PHONY: freertos-provenance-gate review-fixes-test
+freertos-provenance-gate: check-core-root
+	$(PYTHON) "$(AMS_ROOT)/host_tests/tools/check_freertos_provenance.py"
+
+review-fixes-test: target-project-gate can-irq-contract-gate freertos-provenance-gate
+	$(PYTHON) "$(AMS_ROOT)/host_tests/tools/test_review_fixes.py"
 
 # Dedicated final-ring ADBMS2950 gate.  The unit binary links the real driver;
 # the system binary exercises topology ownership, advisory fault behavior and
@@ -692,7 +719,7 @@ air-feedback-stub-test: compile
 		-fsyntax-only $(AMS_ROOT)/Core/Src/app.c \
 		$(AMS_ROOT)/Core/Src/tasks/air_task.c $(AIR_MONITOR_SRC)
 
-safety-test: CFLAGS_COMMON += -DAMS_ENABLE_IWDG=1
+safety-test: CFLAGS_COMMON += -DAMS_ENABLE_IWDG=1 -DAMS_FAULT_INJECTION_CLI=1
 safety-test: test
 
 stress: CFLAGS_COMMON += -DAMS_HOST_LONG_FUZZ_CYCLES=50000u -DAMS_HOST_CONCURRENT_FUZZ_CYCLES=12000u
@@ -732,10 +759,10 @@ analyze: check-core-root
 whole-source-analyze: check-core-root
 	find "$(AMS_ROOT)/Core/Src" -type f -name '*.c' -print0 | \
 		xargs -0 $(CC) $(CFLAGS_COMMON) -D_DEFAULT_SOURCE \
-		$(HOST_EXERCISE_DEFS) -fanalyzer -fsyntax-only
+		$(HOST_EXERCISE_DEFS) -Wundef -Werror=undef -fanalyzer -fsyntax-only
 	find "$(AMS_ROOT)/Core/Src" -type f -name '*.c' -print0 | \
 		xargs -0 $(CC) $(CFLAGS_COMMON) -D_DEFAULT_SOURCE \
-		$(VEHICLE_PROFILE_DEFS) -fanalyzer -fsyntax-only
+		$(VEHICLE_PROFILE_DEFS) -Wundef -Werror=undef -fanalyzer -fsyntax-only
 	@echo "PASS whole-source GCC analysis in bench and vehicle profiles"
 
 clang-analyze: CFLAGS_COMMON += $(SYSTEM_SIL_DEFS)
@@ -757,6 +784,12 @@ firmware-asan: check-core-root make-build-dir
 
 can-v4-contract-gate: check-core-root
 	$(PYTHON) tools/check_can_v4_contract.py
+
+can-irq-contract-gate: check-core-root
+	$(PYTHON) tools/check_can_irq_contract.py
+
+rtos-fail-low-order-gate: check-core-root
+	$(PYTHON) tools/check_rtos_fail_low_order.py
 
 can-clock-contract-gate: check-core-root
 	$(PYTHON) tools/check_can_clock_contract.py
@@ -780,11 +813,12 @@ adbms-v05-variant-gates: check-core-root
 can-load-budget: check-core-root
 	$(PYTHON) tools/check_can_load_budget.py
 
-firmware-ci: unit can-tx-scheduler-test temp-ack-decoder-test test testday-lock-test apm-sil apm-bench-gates \
+firmware-ci: unit can-tx-scheduler-test can-tx-regression-test measurement-integrity-test temp-ack-decoder-test test testday-lock-test apm-sil apm-bench-gates \
 	can-logger-contract-5s-test adbms-resilience-test profile-gates \
 	estimator-topology-gates production-gates static-allocation-gate \
 	state-ownership-gate target-project-gate analyze whole-source-analyze \
-	can-load-budget can-v4-contract-gate can-clock-contract-gate adbms-v05-contract-gate adbms-v05-variant-gates
+	can-load-budget can-v4-contract-gate can-irq-contract-gate rtos-fail-low-order-gate \
+	can-clock-contract-gate adbms-v05-contract-gate adbms-v05-variant-gates
 	@echo "PASS self-contained AMS firmware CI (external oracle repositories not required)"
 
 prevehicle-ci: firmware-ci firmware-asan ubsan stress
@@ -797,3 +831,13 @@ clean:
 	rm -rf $(BUILD_DIR) build-apm build-production "$(AMS_ROOT)/build"
 	$(MAKE) -C sop clean
 	@if [ -d "$(DASHBOARD_TEST_DIR)" ]; then $(MAKE) -C "$(DASHBOARD_TEST_DIR)" clean; fi
+
+.PHONY: measurement-integrity-test
+measurement-integrity-test: check-core-root make-build-dir
+	$(CC) $(CFLAGS_COMMON) -Werror -ffunction-sections -fdata-sections -DNSMBS=5 \
+		unit/measurement_integrity_test.c $(MEASUREMENT_SRC) \
+		$(AMS_ROOT)/Core/Src/sop/ams_sop.c \
+		$(AMS_ROOT)/Core/Src/soh/ams_soh.c \
+		$(AMS_ROOT)/Core/Src/estimator/ams_estimator_lut.c \
+		-Wl,--gc-sections -o "$(BUILD_DIR)/measurement_integrity_tests" $(LDLIBS)
+	"$(BUILD_DIR)/measurement_integrity_tests"

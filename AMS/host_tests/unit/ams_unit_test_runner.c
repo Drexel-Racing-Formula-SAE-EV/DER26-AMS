@@ -271,6 +271,37 @@ static int g_failures = 0;
         }                                                                    \
     } while (0)
 
+static bool unit_covariance_psd(const ams_ekf_instance_t *ekf)
+{
+    if(ekf == NULL)
+    {
+        return false;
+    }
+    const float p00 = ekf->p_soc;
+    const float p01 = ekf->p_soc_vp1;
+    const float p02 = ekf->p_soc_vp2;
+    const float p11 = ekf->p_vp1;
+    const float p12 = ekf->p_vp1_vp2;
+    const float p22 = ekf->p_vp2;
+    if(!isfinite(p00) || !isfinite(p01) || !isfinite(p02) ||
+       !isfinite(p11) || !isfinite(p12) || !isfinite(p22) ||
+       (p00 < 0.0f) || (p11 < 0.0f) || (p22 < 0.0f))
+    {
+        return false;
+    }
+    const float d01 = p00 * p11 - p01 * p01;
+    const float d02 = p00 * p22 - p02 * p02;
+    const float d12 = p11 * p22 - p12 * p12;
+    const float det = p00 * (p11 * p22 - p12 * p12) -
+                      p01 * (p01 * p22 - p12 * p02) +
+                      p02 * (p01 * p12 - p11 * p02);
+    const float tol2 = 1.0e-7f * fmaxf(1.0e-20f,
+        fmaxf(p00 * p11, fmaxf(p00 * p22, p11 * p22)));
+    const float tol3 = 1.0e-6f * fmaxf(1.0e-20f, p00 * p11 * p22);
+    return (d01 >= -tol2) && (d02 >= -tol2) && (d12 >= -tol2) &&
+           (det >= -tol3);
+}
+
 static void test_lut_basic_ranges(void)
 {
     float ocv_0 = ams_p42a_ocv_v(0.0f, 25.0f);
@@ -549,6 +580,256 @@ static void test_r0_observability_and_accounting(void)
     EXPECT_TRUE((soh.status_flags & AMS_SOH_STATUS_ADVISORY_VALID) == 0u);
 }
 
+
+static float unit_acquisition_segment_voltage(float soc,
+                                              float temperature_C,
+                                              float elapsed_s,
+                                              float vp1_start_V,
+                                              float vp2_start_V,
+                                              float cell_bias_V)
+{
+    const float cell_v = ams_p42a_ocv_v(soc, temperature_C) -
+        (vp1_start_V * expf(-elapsed_s / AMS_EKF_ACQ_TAU1_S)) -
+        (vp2_start_V * expf(-elapsed_s / AMS_EKF_ACQ_TAU2_S)) +
+        cell_bias_V;
+    return 15.0f * cell_v;
+}
+
+static void test_fixed_basis_acquisition_and_consensus(void)
+{
+    const float truth_soc = 0.60f;
+    const float temperature_C = 25.0f;
+    const float vp1_start_V = 0.040f;
+    const float vp2_start_V = 0.030f;
+    ams_estimator_t est;
+    memset(&est, 0, sizeof(est));
+    est.enabled = 1u;
+    est.instance_count = 5u;
+
+    for(uint8_t s = 0u; s < est.instance_count; s++)
+    {
+        ams_ekf_config_t cfg;
+        ams_ekf_make_segment_config(&cfg, s);
+        cfg.soc_init = 0.80f;
+        ams_ekf_init(&est.inst[s], &cfg);
+    }
+
+    /* Segment 0 has a coherent +20 mV/cell bias for the entire first
+     * acquisition window. The other four segments should anchor together,
+     * while segment 0 must be rejected by cross-segment consensus. */
+    for(uint16_t k = 0u; k <= 200u; k++)
+    {
+        const float elapsed_s = 0.1f * (float)k;
+        const uint32_t tick = (uint32_t)k * 100u;
+        for(uint8_t s = 0u; s < est.instance_count; s++)
+        {
+            const float bias_V = (s == 0u) ? 0.020f : 0.0f;
+            const float v_meas_V = unit_acquisition_segment_voltage(
+                truth_soc,
+                temperature_C,
+                elapsed_s,
+                vp1_start_V,
+                vp2_start_V,
+                bias_V);
+            ams_ekf_r0_update_result_t r0_result =
+                AMS_EKF_R0_UPDATE_APPLIED;
+            EXPECT_TRUE(ams_ekf_step_acquiring_gated(&est.inst[s],
+                                                      0.0f,
+                                                      v_meas_V,
+                                                      temperature_C,
+                                                      0.1f,
+                                                      &r0_result));
+            EXPECT_TRUE(r0_result == AMS_EKF_R0_UPDATE_NOT_REQUESTED);
+            ams_ekf_acquisition_observe(&est.inst[s],
+                                        0.0f,
+                                        0.0f,
+                                        v_meas_V,
+                                        temperature_C,
+                                        tick,
+                                        true,
+                                        true);
+        }
+        ams_estimator_acquisition_resolve(&est);
+    }
+
+    const float expected_vp1_finish = vp1_start_V *
+        expf(-20.0f / AMS_EKF_ACQ_TAU1_S);
+    const float expected_vp2_finish = vp2_start_V *
+        expf(-20.0f / AMS_EKF_ACQ_TAU2_S);
+
+    EXPECT_FALSE(ams_ekf_acquisition_complete(&est.inst[0]));
+    EXPECT_TRUE(est.inst[0].acquisition.reject_count >= 1u);
+    EXPECT_TRUE(est.inst[0].acquisition.reason ==
+                AMS_EKF_ACQ_REASON_SEGMENT_CONSENSUS_RETRY);
+
+    for(uint8_t s = 1u; s < est.instance_count; s++)
+    {
+        const ams_ekf_instance_t *ekf = &est.inst[s];
+        EXPECT_TRUE(ams_ekf_acquisition_complete(ekf));
+        EXPECT_TRUE(ekf->acquisition.anchor_count == 1u);
+        EXPECT_NEAR(ekf->soc, truth_soc, 0.0025f);
+        EXPECT_NEAR(ekf->vp1_V, expected_vp1_finish, 0.0015f);
+        EXPECT_NEAR(ekf->vp2_V, expected_vp2_finish, 0.0015f);
+        EXPECT_TRUE(ekf->acquisition.fit_rcond >=
+                    AMS_EKF_ACQ_MIN_FIT_RCOND);
+        EXPECT_TRUE(ekf->acquisition.fit_rmse_mV_cell <= 1.0f);
+        EXPECT_NEAR(ekf->r_meas_V2, 1.0e-2f, TEST_EPS_SMALL);
+        EXPECT_NEAR(ekf->p_soc,
+                    AMS_EKF_ACQ_SOC_SIGMA_INIT * AMS_EKF_ACQ_SOC_SIGMA_INIT,
+                    TEST_EPS_SMALL);
+        EXPECT_NEAR(ekf->p_soc_vp1, 0.0f, TEST_EPS_SMALL);
+        EXPECT_NEAR(ekf->p_soc_vp2, 0.0f, TEST_EPS_SMALL);
+        EXPECT_NEAR(ekf->p_vp1_vp2, 0.0f, TEST_EPS_SMALL);
+        EXPECT_TRUE(unit_covariance_psd(ekf));
+    }
+}
+
+static void test_dynamic_acquisition_without_false_rest_anchor(void)
+{
+    ams_ekf_config_t cfg;
+    ams_ekf_make_segment_config(&cfg, 0u);
+    cfg.soc_init = 0.80f;
+
+    ams_ekf_instance_t ekf;
+    ams_ekf_init(&ekf, &cfg);
+    const float initial_error = fabsf(ekf.soc - 0.60f);
+
+    /* 1 A is above the provisional acquisition-enter threshold. The
+     * constrained dynamic estimator must remain alive and improve SoC, but
+     * the relaxation observer must never claim a fixed-basis anchor. */
+    for(uint16_t k = 0u; k <= 400u; k++)
+    {
+        const float current_A = 1.0f;
+        const float i_cell_A = current_A / cfg.parallel_cell_count;
+        const float v_meas_V = 15.0f *
+            (ams_p42a_ocv_v(0.60f, 25.0f) - (ekf.r0_ohm * i_cell_A));
+        ams_ekf_r0_update_result_t r0_result = AMS_EKF_R0_UPDATE_APPLIED;
+        const bool ok = ams_ekf_step_acquiring_gated(&ekf,
+                                                      current_A,
+                                                      v_meas_V,
+                                                      25.0f,
+                                                      0.1f,
+                                                      &r0_result);
+        EXPECT_TRUE(ok);
+        EXPECT_TRUE(r0_result == AMS_EKF_R0_UPDATE_NOT_REQUESTED);
+        ams_ekf_acquisition_observe(&ekf,
+                                    current_A,
+                                    0.0f,
+                                    v_meas_V,
+                                    25.0f,
+                                    (uint32_t)k * 100u,
+                                    true,
+                                    ok);
+    }
+
+    EXPECT_FALSE(ams_ekf_acquisition_complete(&ekf));
+    EXPECT_TRUE(ekf.acquisition.state == AMS_EKF_ACQ_WAITING);
+    EXPECT_TRUE(ekf.acquisition.reason ==
+                AMS_EKF_ACQ_REASON_WAITING_FOR_LOW_CURRENT);
+    EXPECT_TRUE(ekf.acquisition.anchor_count == 0u);
+    EXPECT_TRUE(ekf.acquisition.dynamic_step_count > 0u);
+    EXPECT_TRUE(ekf.acquisition.dynamic_update_count > 0u);
+    EXPECT_TRUE(fabsf(ekf.soc - 0.60f) < initial_error);
+    EXPECT_TRUE(ekf.p_soc >=
+        (AMS_EKF_ACQ_DYNAMIC_SOC_SIGMA_FLOOR *
+         AMS_EKF_ACQ_DYNAMIC_SOC_SIGMA_FLOOR));
+    EXPECT_NEAR(ekf.p_soc_vp1, 0.0f, TEST_EPS_SMALL);
+    EXPECT_NEAR(ekf.p_soc_vp2, 0.0f, TEST_EPS_SMALL);
+    EXPECT_NEAR(ekf.p_vp1_vp2, 0.0f, TEST_EPS_SMALL);
+    EXPECT_TRUE(unit_covariance_psd(&ekf));
+}
+
+static void test_full_covariance_measurement_update(void)
+{
+    ams_ekf_config_t cfg;
+    ams_ekf_make_segment_config(&cfg, 0u);
+    cfg.soc_init = 0.60f;
+    ams_ekf_instance_t ekf;
+    ams_ekf_init(&ekf, &cfg);
+
+    const float voltage_V = 15.0f * ams_p42a_ocv_v(0.60f, 25.0f);
+    EXPECT_TRUE(ams_ekf_step(&ekf, 0.0f, voltage_V, 25.0f, 0.1f));
+    EXPECT_TRUE(unit_covariance_psd(&ekf));
+    EXPECT_FINITE(ekf.p_soc_vp1);
+    EXPECT_FINITE(ekf.p_soc_vp2);
+    EXPECT_FINITE(ekf.p_vp1_vp2);
+    EXPECT_TRUE((fabsf(ekf.p_soc_vp1) + fabsf(ekf.p_soc_vp2) +
+                 fabsf(ekf.p_vp1_vp2)) > 1.0e-10f);
+    EXPECT_TRUE(isfinite(ekf.innovation_variance_V2) &&
+                ekf.innovation_variance_V2 > 0.0f);
+}
+
+static void test_covariance_temperature_floors_and_topology_r(void)
+{
+    ams_ekf_config_t cfg;
+    ams_ekf_make_segment_config(&cfg, 0u);
+    cfg.soc_init = 0.60f;
+    const float voltage_25 = 15.0f * ams_p42a_ocv_v(0.60f, 25.0f);
+    const float voltage_5 = 15.0f * ams_p42a_ocv_v(0.60f, 5.0f);
+
+    ams_ekf_instance_t nominal;
+    ams_ekf_init(&nominal, &cfg);
+    nominal.p_soc = nominal.p_vp1 = nominal.p_vp2 = 1.0e-12f;
+    nominal.p_soc_vp1 = nominal.p_soc_vp2 = nominal.p_vp1_vp2 = 0.0f;
+    nominal.r_meas_V2 = 0.0f;
+    nominal.step_count = AMS_EKF_ACQUISITION_STEPS;
+    EXPECT_TRUE(ams_ekf_step(&nominal,0.0f,voltage_25,25.0f,0.1f));
+    EXPECT_TRUE(nominal.p_soc >= AMS_EKF_SOC_SIGMA_FLOOR_NOMINAL *
+                                  AMS_EKF_SOC_SIGMA_FLOOR_NOMINAL);
+    EXPECT_TRUE(nominal.p_vp1 >= AMS_EKF_VP_SIGMA_FLOOR_NOMINAL_V *
+                                  AMS_EKF_VP_SIGMA_FLOOR_NOMINAL_V);
+    EXPECT_TRUE(nominal.r_meas_V2 >=
+        (15.0f * AMS_EKF_R_SIGMA_FLOOR_PER_CELL_V) *
+        (15.0f * AMS_EKF_R_SIGMA_FLOOR_PER_CELL_V));
+
+    ams_ekf_instance_t cold;
+    ams_ekf_init(&cold, &cfg);
+    cold.p_soc = cold.p_vp1 = cold.p_vp2 = 1.0e-12f;
+    cold.p_soc_vp1 = cold.p_soc_vp2 = cold.p_vp1_vp2 = 0.0f;
+    cold.r_meas_V2 = 0.0f;
+    cold.step_count = AMS_EKF_ACQUISITION_STEPS;
+    EXPECT_TRUE(ams_ekf_step(&cold,0.0f,voltage_5,5.0f,0.1f));
+    EXPECT_TRUE(cold.p_soc >= AMS_EKF_SOC_SIGMA_FLOOR_TEMP_EDGE *
+                               AMS_EKF_SOC_SIGMA_FLOOR_TEMP_EDGE);
+    EXPECT_TRUE(cold.p_vp1 >= AMS_EKF_VP_SIGMA_FLOOR_TEMP_EDGE_V *
+                               AMS_EKF_VP_SIGMA_FLOOR_TEMP_EDGE_V);
+    EXPECT_TRUE(cold.r_meas_V2 >=
+        (15.0f * AMS_EKF_R_SIGMA_FLOOR_TEMP_EDGE_PER_CELL_V) *
+        (15.0f * AMS_EKF_R_SIGMA_FLOOR_TEMP_EDGE_PER_CELL_V));
+    EXPECT_TRUE(cold.p_soc > nominal.p_soc);
+    EXPECT_TRUE(cold.r_meas_V2 > nominal.r_meas_V2);
+    EXPECT_TRUE(unit_covariance_psd(&nominal));
+    EXPECT_TRUE(unit_covariance_psd(&cold));
+}
+
+static void test_soh_advisory_invalid_until_acquisition_complete(void)
+{
+    ams_ekf_config_t cfg;
+    ams_ekf_make_segment_config(&cfg, 0u);
+    cfg.soc_init = 0.50f;
+    ams_ekf_instance_t ekf;
+    ams_ekf_init(&ekf, &cfg);
+    ekf.valid = 1u;
+    ekf.p_r0 = AMS_SOH_MAX_R0_VARIANCE_OHM2 * 0.5f;
+
+    ams_resistance_soh_t soh;
+    memset(&soh, 0, sizeof(soh));
+    soh.accepted_count = AMS_SOH_MIN_ACCEPTED_OBSERVATIONS;
+    soh.last_accept_tick = 1000u;
+
+    ams_resistance_soh_record(&soh,
+                              &ekf,
+                              1u,
+                              1100u,
+                              true,
+                              AMS_SOH_REJECT_ACQUISITION,
+                              AMS_EKF_R0_UPDATE_NOT_REQUESTED,
+                              true);
+    EXPECT_TRUE(soh.reject_acquisition_count == 1u);
+    EXPECT_TRUE((soh.status_flags & AMS_SOH_STATUS_CONVERGED) != 0u);
+    EXPECT_TRUE((soh.status_flags & AMS_SOH_STATUS_ADVISORY_VALID) == 0u);
+}
+
 static void test_single_step_nominal_pack(void)
 {
     ams_ekf_config_t cfg;
@@ -681,9 +962,13 @@ static void test_200_step_numerical_stability(void)
         EXPECT_FINITE(ekf.vp1_V);
         EXPECT_FINITE(ekf.vp2_V);
         EXPECT_FINITE(ekf.p_soc);
+        EXPECT_FINITE(ekf.p_soc_vp1);
+        EXPECT_FINITE(ekf.p_soc_vp2);
         EXPECT_FINITE(ekf.p_vp1);
+        EXPECT_FINITE(ekf.p_vp1_vp2);
         EXPECT_FINITE(ekf.p_vp2);
         EXPECT_FINITE(ekf.p_r0);
+        EXPECT_TRUE(unit_covariance_psd(&ekf));
     }
 
     EXPECT_TRUE(ekf.step_count == 200U);
@@ -1075,6 +1360,20 @@ static void test_current_sensor_requires_fresh_pair_and_channel_mapping(void)
 static void test_current_sensor_zero_cal_and_hysteresis(void)
 {
     current_sensor_t sensor = {0};
+
+    /* A failed conversion must never be accepted as a zero capture. This
+     * covers the bench failure where the 800 A ADC channel was near ground
+     * while stale raw-current members still contained finite zeroes. */
+    sensor.count_high = 1u;
+    sensor.count_low = unit_adc_count_for_sensor_voltage(2.500f);
+    unit_current_sensor_mark_fresh(&sensor);
+    (void)current_sensor_convert(&sensor);
+    EXPECT_FALSE(sensor.current_valid);
+    EXPECT_FALSE(current_sensor_zero_calibrate(&sensor));
+    EXPECT_FALSE(sensor.zero_calibrated);
+    EXPECT_TRUE(sensor.reason == CURRENT_SENSOR_REASON_ZERO_CAL_REJECTED);
+
+    sensor = (current_sensor_t){0};
 
     sensor.count_high = unit_adc_count_for_sensor_voltage(2.505f);  /* +2 A on 800 A channel */
     sensor.count_low = unit_adc_count_for_sensor_voltage(2.540f);   /* +1 A on 50 A channel */
@@ -4646,6 +4945,11 @@ int main(void)
     run_test("bad config rejection", test_bad_config_rejected);
     run_test("R0 initialization clamp", test_r0_initialization_clamp);
     run_test("R0 observability/accounting", test_r0_observability_and_accounting);
+    run_test("fixed-basis acquisition/consensus", test_fixed_basis_acquisition_and_consensus);
+    run_test("dynamic acquisition no false rest anchor", test_dynamic_acquisition_without_false_rest_anchor);
+    run_test("full covariance measurement update", test_full_covariance_measurement_update);
+    run_test("covariance temperature floors/topology R", test_covariance_temperature_floors_and_topology_r);
+    run_test("SoH invalid until acquisition complete", test_soh_advisory_invalid_until_acquisition_complete);
     run_test("single-step nominal pack", test_single_step_nominal_pack);
     run_test("EKF innovation gate/dt observability", test_ekf_innovation_gate_and_dt_observability);
     run_test("invalid step inputs", test_invalid_step_inputs);
