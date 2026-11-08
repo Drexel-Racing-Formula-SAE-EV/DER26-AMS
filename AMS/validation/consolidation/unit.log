@@ -1,0 +1,125 @@
+cc -std=c11 -g -O0 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -Wno-missing-field-initializers -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -DSTM32F767xx -DUSE_HAL_DRIVER -DAMS_HOST_TEST=1 -Iinclude -I.. -I../Core/Inc -I../Core/Inc/tasks -I../Core/Inc/ext_drivers -I../Drivers/CMSIS/Include -I../Drivers/CMSIS/Device/ST/STM32F7xx/Include -I../Drivers/STM32F7xx_HAL_Driver/Inc -I../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy -I../Middlewares/Third_Party/FreeRTOS/Source/include -I../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1 -DAMS_HW_BRINGUP=0 unit/apm_link_clock.c unit/ams_unit_test_runner.c ../Core/Src/estimator/ams_soc_ekf.c ../Core/Src/estimator/ams_estimator_lut.c ../Core/Src/ext_drivers/adbms2950.c ../Core/Src/ext_drivers/air_monitor.c ../Core/Src/ext_drivers/main_fuse_monitor.c ../Core/Src/ext_drivers/parallel_connection_observer.c ../Core/Src/ext_drivers/thermistor_model.c -o build/ams_unit_tests -lm
+build/ams_unit_tests
+PASS lut basic ranges
+PASS lut clamp behavior
+PASS pack config and init
+FAIL unit/ams_unit_test_runner.c:374: expected true: cfg.first_series_group == (uint16_t)(seg * 15U)
+FAIL unit/ams_unit_test_runner.c:375: expected true: cfg.series_group_count == 15U
+PASS even split configuration
+PASS bad config rejection
+PASS R0 initialization clamp
+PASS R0 observability/accounting
+PASS fixed-basis acquisition/consensus
+FAIL unit/ams_unit_test_runner.c:732: expected true: fabsf(ekf.soc - 0.60f) < initial_error
+PASS full covariance measurement update
+FAIL unit/ams_unit_test_runner.c:781: expected true: nominal.r_meas_V2 >= (15.0f * AMS_EKF_R_SIGMA_FLOOR_PER_CELL_V) * (15.0f * AMS_EKF_R_SIGMA_FLOOR_PER_CELL_V)
+FAIL unit/ams_unit_test_runner.c:796: expected true: cold.r_meas_V2 >= (15.0f * AMS_EKF_R_SIGMA_FLOOR_TEMP_EDGE_PER_CELL_V) * (15.0f * AMS_EKF_R_SIGMA_FLOOR_TEMP_EDGE_PER_CELL_V)
+PASS SoH invalid until acquisition complete
+PASS single-step nominal pack
+PASS EKF innovation gate/dt observability
+PASS invalid step inputs
+PASS 200-step numerical stability
+PASS estimator summary aggregation
+PASS estimator status flags
+PASS coulomb count baseline
+FAIL unit/ams_unit_test_runner.c:1719: expected true: vf.voltage_valid
+FAIL unit/ams_unit_test_runner.c:1721: expected false: vf.confirmed
+FAIL unit/ams_unit_test_runner.c:1722: expected true: vf.reason == VOLTAGE_FAULT_REASON_NONE
+FAIL unit/ams_unit_test_runner.c:1726: expected true: vf.warning
+FAIL unit/ams_unit_test_runner.c:1728: expected true: vf.reason == VOLTAGE_FAULT_REASON_OV_WARNING
+FAIL unit/ams_unit_test_runner.c:1732: expected true: vf.warning
+FAIL unit/ams_unit_test_runner.c:1733: expected true: vf.charge_stop
+FAIL unit/ams_unit_test_runner.c:1734: expected false: vf.confirmed
+FAIL unit/ams_unit_test_runner.c:1735: expected true: vf.reason == VOLTAGE_FAULT_REASON_CHARGE_STOP
+FAIL unit/ams_unit_test_runner.c:1740: expected true: vf.latched
+FAIL unit/ams_unit_test_runner.c:1741: expected true: vf.overvoltage_fault
+FAIL unit/ams_unit_test_runner.c:1742: expected true: vf.latched_reason == VOLTAGE_FAULT_REASON_OV_HARD
+FAIL unit/ams_unit_test_runner.c:1752: expected true: vf.latched_reason == VOLTAGE_FAULT_REASON_OV_SEVERE
+FAIL unit/ams_unit_test_runner.c:1757: expected true: vf.warning
+FAIL unit/ams_unit_test_runner.c:1758: expected false: vf.confirmed
+FAIL unit/ams_unit_test_runner.c:1759: expected true: vf.reason == VOLTAGE_FAULT_REASON_UV_SOFT
+FAIL unit/ams_unit_test_runner.c:1764: expected true: vf.undervoltage_fault
+FAIL unit/ams_unit_test_runner.c:1765: expected true: vf.latched_reason == VOLTAGE_FAULT_REASON_UV_HARD
+FAIL unit/ams_unit_test_runner.c:1770: expected true: vf.latched_reason == VOLTAGE_FAULT_REASON_UV_SEVERE
+PASS voltage fault read failure/strings
+FAIL unit/ams_unit_test_runner.c:1867: expected true: vf.voltage_valid
+FAIL unit/ams_unit_test_runner.c:1878: expected true: vf.hardware_warning
+FAIL unit/ams_unit_test_runner.c:1879: expected true: vf.hardware_disagreement
+FAIL unit/ams_unit_test_runner.c:1880: expected true: vf.hardware_disagreement_mask[0] == 0x0001u
+FAIL unit/ams_unit_test_runner.c:1881: expected false: vf.confirmed
+FAIL unit/ams_unit_test_runner.c:1882: expected true: vf.reason == VOLTAGE_FAULT_REASON_HW_STATUS_DISAGREEMENT
+FAIL unit/ams_unit_test_runner.c:1894: expected true: vf.hardware_warning
+FAIL unit/ams_unit_test_runner.c:1896: expected true: vf.warning
+FAIL unit/ams_unit_test_runner.c:1897: expected true: vf.reason == VOLTAGE_FAULT_REASON_HW_STATUS_WARNING
+FAIL unit/ams_unit_test_runner.c:1918: expected true: vf.software_ov_mask[0] == 0x0001u
+FAIL unit/ams_unit_test_runner.c:1919: expected true: vf.hardware_ov_mask[0] == 0x0001u
+PASS parallel connection observer advisory
+PASS main fuse plausibility/controlled clear
+FAIL unit/ams_unit_test_runner.c:2482: expected true: unit_gpio_write_calls == 6u
+FAIL unit/ams_unit_test_runner.c:2615: expected true: dev.session.full_wake_count == wakes_before
+FAIL unit/ams_unit_test_runner.c:2619: expected true: adbms6830_session_require_awake(&dev) == HAL_BUSY
+FAIL unit/ams_unit_test_runner.c:2621: expected true: dev.session.full_wake_count == wakes_before
+FAIL unit/ams_unit_test_runner.c:2627: expected true: dev.session.guard_rewake_count == 1u
+FAIL unit/ams_unit_test_runner.c:2582: expected true: dev.session.full_wake_count == before + 1u
+PASS ADBMS v0.5 products/AUX2/POST diagnostics
+PASS ADBMS SPI debug write/full-duplex
+PASS ADBMS SPI rd48 PEC masks
+PASS ADBMS SPI scope activity
+PASS ADBMS SPI SID/status/counter diagnostics
+PASS ADBMS startup/reference/full status safety policy
+PASS ADBMS command counter rejects stale data
+PASS ADBMS cell ADC conversion diagnostic
+FAIL unit/ams_unit_test_runner.c:3456: expected true: unit_gpio_write_calls == 4u
+PASS ADBMS PWM write packing
+PASS ADBMS final-ring subset write owner
+PASS ADBMS CFGB timer write guard
+PASS ADBMS config/balance readback
+PASS ADBMS physical register readback
+PASS ADBMS I2C COMM releases SDA for slave ACK
+PASS ADBMS mux ACK/temperature freshness
+PASS ADBMS mux transport/ACK failures
+PASS ADBMS full open-wire measurement/fault injection
+PASS ADBMS2950 bounded write PEC
+PASS ADBMS2950 SPI write/full-duplex
+PASS ADBMS2950 final-ring subset write owner
+PASS ADBMS2950 SPI probe PEC masks
+PASS ADBMS2950 mixed-chain init/identity/readback
+FAIL unit/ams_unit_test_runner.c:4618: expected true: adbms2950_read_primary_sample(&dev, 1234u) == HAL_OK
+FAIL unit/ams_unit_test_runner.c:4619: expected true: dev.health.sample_valid
+FAIL unit/ams_unit_test_runner.c:4620: expected true: dev.health.current_valid
+FAIL unit/ams_unit_test_runner.c:4622: expected true: dev.health.i1_calibrated
+FAIL unit/ams_unit_test_runner.c:4623: expected true: dev.health.revision == 0x0Au
+FAIL unit/ams_unit_test_runner.c:4624: expected true: dev.health.i1_raw == 12345
+FAIL unit/ams_unit_test_runner.c:4625: expected true: dev.health.vb1_raw == 18000
+FAIL unit/ams_unit_test_runner.c:4626: dev.health.current_a=0.000000 not near 123.45f=123.449997 eps=0.001000
+FAIL unit/ams_unit_test_runner.c:4627: dev.health.pack_voltage_v=0.000000 not near 18000.0f * VBAT1_SCALE * VBAT_DIV_SCALE=296.345459 eps=0.010000
+FAIL unit/ams_unit_test_runner.c:4630: expected true: dev.health.last_update_ms == 1234u
+FAIL unit/ams_unit_test_runner.c:4631: expected true: dev.health.sample_count == 1u
+FAIL unit/ams_unit_test_runner.c:4632: expected true: dev.health.i1_conversion_count == 10u
+FAIL unit/ams_unit_test_runner.c:4634: expected true: dev.health.last_i1cntpha == 40u
+FAIL unit/ams_unit_test_runner.c:4653: expected true: dev.health.counter_stall_count == 1u
+FAIL unit/ams_unit_test_runner.c:4654: expected true: dev.health.sample_error_count == 1u
+FAIL unit/ams_unit_test_runner.c:4655: expected true: dev.health.last_update_ms == 1234u
+FAIL unit/ams_unit_test_runner.c:4674: expected true: adbms2950_read_primary_sample(&dev, 1600u) == HAL_OK
+FAIL unit/ams_unit_test_runner.c:4675: expected true: dev.health.counter_seen
+FAIL unit/ams_unit_test_runner.c:4676: expected true: dev.health.counter_advanced
+FAIL unit/ams_unit_test_runner.c:4677: expected true: dev.health.sample_count == 2u
+FAIL unit/ams_unit_test_runner.c:4696: expected true: dev.health.last_update_ms == 1600u
+FAIL unit/ams_unit_test_runner.c:4697: expected true: dev.health.sample_error_count == 2u
+FAIL unit/ams_unit_test_runner.c:4713: expected true: dev.health.counter_mismatch_count == 1u
+FAIL unit/ams_unit_test_runner.c:4714: expected true: dev.health.sample_error_count == 3u
+FAIL unit/ams_unit_test_runner.c:4723: expected true: unit_spi_txrx_calls == 1u
+PASS ADBMS2950 calibration/phase freshness
+PASS ADBMS2950 masked config readback
+PASS ADBMS2950 COMM ACK/EEPROM probe
+PASS ADBMS2950 redundant diagnostic/CS timing
+PASS current sensor conversion/range
+PASS current sensor invalid conditions
+PASS current sensor fresh pair/channel mapping
+PASS current sensor zero calibration/hysteresis
+PASS current sensor calibration record integrity
+PASS current sensor ADC status path
+PASS current fault policy
+PASS current fault threshold edges/recovery
+AMS UNIT TESTS FAILED: 67 failure(s)
+make: *** [Makefile:267: unit] Error 1

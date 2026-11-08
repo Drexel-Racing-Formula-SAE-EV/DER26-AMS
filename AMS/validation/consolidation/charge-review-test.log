@@ -1,0 +1,23 @@
+cc -std=c11 -g -O0 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -Wno-missing-field-initializers -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -DSTM32F767xx -DUSE_HAL_DRIVER -DAMS_HOST_TEST=1 -Iinclude -I.. -I../Core/Inc -I../Core/Inc/tasks -I../Core/Inc/ext_drivers -I../Drivers/CMSIS/Include -I../Drivers/CMSIS/Device/ST/STM32F7xx/Include -I../Drivers/STM32F7xx_HAL_Driver/Inc -I../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy -I../Middlewares/Third_Party/FreeRTOS/Source/include -I../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1 -Werror -DAMS_BUILD_PROFILE=6 -DAMS_HOST_CHARGE_REVIEW_TEST=1 \
+	src/ams_host_test_runner.c ../Core/Src/ext_drivers/can_tx_scheduler.c ../Core/Src/diagnostics/ams_flight_recorder.c ../Core/Src/diagnostics/ams_runtime_manifest.c ../Core/Src/ext_drivers/air_monitor.c ../Core/Src/ext_drivers/main_fuse_monitor.c ../Core/Src/ext_drivers/parallel_connection_observer.c ../Core/Src/ext_drivers/thermistor_model.c ../Core/Src/soh/ams_soh.c ../Core/Src/sop/ams_sop.c ../Core/Src/sop/ams_fuse_observer.c ../Core/Src/sop/ams_power_strategy.c ../Core/Src/sop/ams_power_state.c ../Core/Src/sop/ams_power_can.c \
+	-o "build/charge_review_tests" -lm
+"build/charge_review_tests"
+PASS temperature authority boundaries at supervisor and final charger load
+PASS supervisor STOP bypass, queued command purge and stale release rejection
+PASS 75 physical / 74 observed, physical voltage unavailable, charge permitted only with explicit arming, inferred-C1 tripwire
+cc -std=c11 -g -O0 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -Wno-missing-field-initializers -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -DSTM32F767xx -DUSE_HAL_DRIVER -DAMS_HOST_TEST=1 -Iinclude -I.. -I../Core/Inc -I../Core/Inc/tasks -I../Core/Inc/ext_drivers -I../Drivers/CMSIS/Include -I../Drivers/CMSIS/Device/ST/STM32F7xx/Include -I../Drivers/STM32F7xx_HAL_Driver/Inc -I../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy -I../Middlewares/Third_Party/FreeRTOS/Source/include -I../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1 -Werror -DAMS_BUILD_PROFILE=6 -fsyntax-only \
+	../Core/Src/app.c ../Core/Src/tasks/cli_task.c \
+	../Core/Src/tasks/error_task.c ../Core/Src/tasks/canbus_task.c \
+	../Core/Src/ext_drivers/canbus.c ../Core/Src/main.c
+cc -std=c11 -g -O0 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -Wno-missing-field-initializers -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -DSTM32F767xx -DUSE_HAL_DRIVER -DAMS_HOST_TEST=1 -Iinclude -I.. -I../Core/Inc -I../Core/Inc/tasks -I../Core/Inc/ext_drivers -I../Drivers/CMSIS/Include -I../Drivers/CMSIS/Device/ST/STM32F7xx/Include -I../Drivers/STM32F7xx_HAL_Driver/Inc -I../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy -I../Middlewares/Third_Party/FreeRTOS/Source/include -I../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1 -Werror -ffunction-sections -fdata-sections \
+	-DAMS_BUILD_PROFILE=6 -DNSMBS=5 -DACCUMULATOR_PHYSICAL_CHAIN_COUNT=5 \
+	-DAMS_ENABLE_APM_2950=0 \
+	../Core/Src/app.c ../Core/Src/measurement/ams_measurement.c \
+	../Core/Src/soh/ams_soh.c ../Core/Src/sop/ams_sop.c \
+	../Core/Src/sop/ams_fuse_observer.c ../Core/Src/sop/ams_power_strategy.c \
+	../Core/Src/sop/ams_power_state.c ../Core/Src/sop/ams_power_can.c \
+	../Core/Src/estimator/ams_soc_ekf.c ../Core/Src/estimator/ams_estimator_lut.c \
+	production/bms_owner_test.c -Wl,--gc-sections \
+	-o "build/charge_review_bms_owner" -lm
+"build/charge_review_bms_owner"
+PASS CHARGE_REVIEW BMS_OK writer (runtime-armed) and heartbeat critical-section enforcement

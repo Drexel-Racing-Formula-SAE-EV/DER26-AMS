@@ -297,7 +297,7 @@ uint16_t ams_heartbeat_update(app_data_t *data, uint32_t now)
 	return stale;
 }
 
-void adbms_spi_lock(void)
+static bool adbms_spi_acquire(uint32_t timeout_ticks, bool cli_request)
 {
 	uint32_t wait_start;
 	uint32_t acquired_tick;
@@ -305,12 +305,26 @@ void adbms_spi_lock(void)
 
 	if(adbms_spi_mutex == NULL)
 	{
+		if(cli_request)
+		{
+			return false;
+		}
 		adbms_spi_lock_panic(AMS_PANIC_MUTEX_ACQUIRE_FAILED);
 	}
 
 	wait_start = osKernelGetTickCount();
-	if(osMutexAcquire(adbms_spi_mutex, AMS_ADBMS_MUTEX_TIMEOUT_TICKS) != osOK)
+	if(osMutexAcquire(adbms_spi_mutex, timeout_ticks) != osOK)
 	{
+		if(cli_request)
+		{
+			taskENTER_CRITICAL();
+			if(app.adbms_spi_cli_busy_count != UINT32_MAX)
+			{
+				app.adbms_spi_cli_busy_count++;
+			}
+			taskEXIT_CRITICAL();
+			return false;
+		}
 		adbms_spi_lock_panic(AMS_PANIC_MUTEX_ACQUIRE_FAILED);
 	}
 
@@ -357,6 +371,19 @@ void adbms_spi_lock(void)
 		adbms_spi_lock_panic(AMS_PANIC_MUTEX_ACQUIRE_FAILED);
 	}
 	taskEXIT_CRITICAL();
+	return true;
+}
+
+void adbms_spi_lock(void)
+{
+	(void)adbms_spi_acquire(AMS_ADBMS_MUTEX_TIMEOUT_TICKS, false);
+}
+
+bool adbms_spi_cli_try_lock(void)
+{
+	/* A service request may arrive during a long, safety-owned scan. Report
+	 * busy to the CLI instead of panicking the whole AMS for a diagnostic. */
+	return adbms_spi_acquire(AMS_ADBMS_CLI_MUTEX_TIMEOUT_TICKS, true);
 }
 
 void adbms_spi_unlock(void)
@@ -541,6 +568,12 @@ void app_create(void)
 	       sizeof(app.adbms_sense_path_open_sticky_mask));
 	app.adbms_balance_write_fault = false;
     app.adbms_urgent_mute_requested = false;
+    app.adbms_urgent_mute_edge = false;
+    app.adbms_urgent_mute_generation = 0u;
+    app.adbms_urgent_mute_fail_streak = 0u;
+    app.adbms_urgent_mute_retry_tick = 0u;
+    app.adbms_urgent_mute_deferred_count = 0u;
+    app.adbms_diag_schedule_initialized = false;
     app.adbms_mute_asserted = false;
     app.adbms_balance_durable_zero_verified = false;
     app.adbms_balance_inhibit_reason = ACCUMULATOR_BALANCE_INHIBIT_NONE;
@@ -613,6 +646,7 @@ void app_create(void)
 	app.adbms_balance_apply_tick = 0u;
 	app.adbms_spi_lock_acquire_count = 0u;
 	app.adbms_spi_lock_contention_count = 0u;
+	app.adbms_spi_cli_busy_count = 0u;
 	app.adbms_spi_lock_max_wait_ticks = 0u;
 	app.adbms_spi_lock_max_hold_ticks = 0u;
 	app.adbms_spi_lock_violation_count = 0u;
@@ -654,6 +688,8 @@ void app_create(void)
 	app.imd_last_valid_tick = 0u;
 
 	app.fan_state = false;
+	app.charger_service_power_requested = false;
+	app.charger_service_power_expires_tick = 0u;
 	app.fan_command_percent = 0.0f;
 	app.fan_control_reason = 0u;
 	app.fan_set_fail_count = 0u;
@@ -678,6 +714,20 @@ void app_create(void)
 	app.current_meas_reason = CURRENT_SENSOR_REASON_ADC_READ;
 
 	board_init(&app.board);
+#if AMS_ENABLE_FLIGHT_RECORDER
+    {
+        uint32_t recorder_boot_sequence = 1u;
+        const ams_fault_log_t *fault_log = ams_fault_log_get();
+        if((fault_log != NULL) && (fault_log->boot_sequence != 0u))
+        {
+            recorder_boot_sequence = fault_log->boot_sequence;
+        }
+        ams_flight_recorder_init(&app.flight_recorder,
+                                 recorder_boot_sequence,
+                                 0u);
+    }
+#endif
+    ams_runtime_identity_refresh(&app, true);
 	if(app.board.canbus.init_status != HAL_OK)
 	{
 		app.canbus_fault = true;
@@ -787,7 +837,11 @@ void app_create(void)
 #else
 	app.cli_task = NULL;
 #endif
+#if AMS_ENABLE_FAN_TASK
 	app.fan_task = fan_task_start(&app);
+#else
+	app.fan_task = NULL;
+#endif
 	app.error_task = error_task_start(&app);
 	app.canbus_task = canbus_task_start(&app);
 #if AMS_ENABLE_AIR_AUX_FEEDBACK
@@ -810,7 +864,9 @@ void app_create(void)
 #if AMS_ENABLE_CLI
 	   (app.cli_task == NULL) ||
 #endif
+#if AMS_ENABLE_FAN_TASK
 	   (app.fan_task == NULL) ||
+#endif
 	   (app.error_task == NULL) ||
 	   (app.canbus_task == NULL) ||
 #if AMS_ENABLE_AIR_AUX_FEEDBACK
@@ -850,6 +906,14 @@ void set_bms(bool state)
 	bool previous = app.bms_state;
 	bool assertion_owner = false;
 
+/* A low request from any caller always wins and revokes obsolete service state. */
+    if(!state)
+    {
+        app.charger_service_power_requested = false;
+        app.charger_service_power_expires_tick = 0u;
+    }
+
+
 #if !AMS_PROFILE_BMS_RUNTIME_AUTHORITY_ALLOWED
     /* Observation profiles are immutable no-authority images. This final hardware writer
      * does not trust the mutable runtime inhibit as the only barrier.  Convert
@@ -866,18 +930,36 @@ void set_bms(bool state)
     }
 #endif
 
-    /* Any fail-low BMS_OK decision also requests the ASIC-native fast balance
-     * kill.  The ADBMS task services this flag at interruptible wait boundaries
+    /* Fail-low requests the ASIC-native balance kill whenever hardware-off
+     * proof is missing, balancing is active, or the output was asserted. Once
+     * MUTE and durable zero are proven, repeated low decisions need no new
+     * request. The ADBMS task services this flag at interruptible wait boundaries
      * while it owns the recursive transport mutex; high-priority safety tasks
      * never block waiting for SPI ownership. */
-    if(!state && !app.adbms_urgent_mute_requested)
+    taskENTER_CRITICAL();
+    bool mute_needed = previous || app.adbms_balance_active ||
+                       !app.adbms_mute_asserted ||
+                       !app.adbms_balance_durable_zero_verified ||
+                       app.adbms_balance_write_fault;
+    if(!state && mute_needed)
     {
-        app.adbms_urgent_mute_requested = true;
-        if(app.adbms_urgent_mute_request_count != UINT32_MAX)
+        if(!app.adbms_urgent_mute_requested)
         {
-            app.adbms_urgent_mute_request_count++;
+            app.adbms_urgent_mute_requested = true;
+            if(app.adbms_urgent_mute_request_count != UINT32_MAX)
+            {
+                app.adbms_urgent_mute_request_count++;
+            }
+        }
+        if(previous || app.adbms_balance_active)
+        {
+            /* A new physical edge must survive completion of an older attempt.
+             * Shadow state is examined by its SPI owner at scan entry. */
+            app.adbms_urgent_mute_edge = true;
+            app.adbms_urgent_mute_generation++;
         }
     }
+    taskEXIT_CRITICAL();
 
 	if(state && (app.error_task != NULL))
 	{

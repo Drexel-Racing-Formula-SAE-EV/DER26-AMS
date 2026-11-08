@@ -1,0 +1,7 @@
+cc -std=c11 -g -O0 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -Wno-missing-field-initializers -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -DSTM32F767xx -DUSE_HAL_DRIVER -DAMS_HOST_TEST=1 -Iinclude -I.. -I../Core/Inc -I../Core/Inc/tasks -I../Core/Inc/ext_drivers -I../Drivers/CMSIS/Include -I../Drivers/CMSIS/Device/ST/STM32F7xx/Include -I../Drivers/STM32F7xx_HAL_Driver/Inc -I../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy -I../Middlewares/Third_Party/FreeRTOS/Source/include -I../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1 -Werror -DAMS_BUILD_PROFILE=4 -ffunction-sections -fdata-sections \
+	production/cli_async_test.c -Wl,--gc-sections -o "build/cli_async_test" -lm
+"build/cli_async_test"
+PASS real CLI IT TX wrap, ordering, CRLF and cooperative backpressure
+PASS bounded RX, CRLF, burst rejection, overflow rejection and stop bypass
+PASS cancellation and stalled TX have finite cooperative waits/recovery
+PASS failed IT start recovery and exact stop recognition

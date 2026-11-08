@@ -1,3 +1,4 @@
+#include "ams_task_schedule.h"
 /**
 * @file cli_task.c
 * @author Cole Bardin (cab572@drexel.edu)
@@ -23,6 +24,7 @@
 #include "ext_drivers/cli.h"
 #include "ext_drivers/ams_rtos_diag.h"
 #include "ext_drivers/thermistor_model.h"
+#include "diagnostics/ams_flight_recorder.h"
 
 /**
 * @brief Actual CLI task function
@@ -49,6 +51,8 @@ int get_fan_diag(int argc, char *argv[]);
 
 
 int get_current(int argc, char *argv[]);
+int get_imd_diag(int argc, char *argv[]);
+int get_air_diag(int argc, char *argv[]);
 int get_estimator_diag(int argc, char *argv[]);
 int get_power_diag(int argc, char *argv[]);
 int get_charger(int argc, char *argv[]);
@@ -56,10 +60,13 @@ int get_can_diag(int argc, char *argv[]);
 int watchdog_control(int argc, char *argv[]);
 int get_rtos_diag(int argc, char *argv[]);
 int get_uart_diag(int argc, char *argv[]);
+int recorder_control(int argc, char *argv[]);
 int get_spi_debug(int argc, char *argv[]);
+static bool cli_service_inhibited(void);
 int get_apm_debug(int argc, char *argv[]);
 int get_bringup(int argc, char *argv[]);
 int bmsok_control(int argc, char *argv[]);
+int charger_power_control(int argc, char *argv[]);
 int balance_control(int argc, char *argv[]);
 int set_state(int argc, char *argv[]);
 int cause_fault(int argc, char *argv[]);
@@ -67,6 +74,43 @@ int cause_fault(int argc, char *argv[]);
 char outline[CLI_LINESZ];
 app_data_t *data;
 cli_device_t *cli;
+/* UART output from SPI/APM service commands is formatted while the bus is
+ * owned, then transmitted only after unlock. Bounded overflow is explicit. */
+#define CLI_SPI_REPORT_BUFFER_BYTES 16384u
+static char cli_spi_report_buffer[CLI_SPI_REPORT_BUFFER_BYTES];
+
+static void cli_spi_report_begin(void)
+{
+    cli->report_buffer = cli_spi_report_buffer;
+    cli->report_capacity = sizeof(cli_spi_report_buffer);
+    cli->report_used = 0u;
+    cli->report_truncated = false;
+}
+
+static int cli_spi_report_flush(void)
+{
+    size_t used = cli->report_used;
+    bool truncated = cli->report_truncated;
+    size_t pos = 0u;
+    int ret = 0;
+
+    cli->report_buffer = NULL;
+    cli->report_capacity = 0u;
+    cli->report_used = 0u;
+    cli->report_truncated = false;
+    while(pos < used && !cli->report_cancel)
+    {
+        char *line = &cli_spi_report_buffer[pos];
+        size_t length = cli_bounded_strlen(line, CLI_LINESZ - 1u);
+        ret |= cli_printline(cli, line);
+        pos += length + 1u;
+    }
+    if(truncated)
+    {
+        ret |= cli_printline(cli, "SPI report truncated; use narrower command");
+    }
+    return ret;
+}
 static adbms_string cli_adbms_scope_default_string = ACCUMULATOR_SMB_STRING;
 static adbms6830_scope_mode_t cli_adbms_scope_default_mode = ADBMS6830_SCOPE_READ;
 static uint16_t cli_adbms_scope_default_repeat = 20u;
@@ -144,10 +188,28 @@ static int cli_clear_balance_recorded(void)
         return -1;
     }
 
-    adbms_spi_lock();
+    if(!adbms_spi_cli_try_lock())
+    {
+        /* Queue fail-low work; never panic because a service command is busy. */
+        taskENTER_CRITICAL();
+        data->adbms_urgent_mute_requested = true;
+        data->adbms_urgent_mute_edge = true;
+        data->adbms_urgent_mute_generation++;
+        taskEXIT_CRITICAL();
+        cli_printline(cli, "ADBMS SPI busy; balance inhibit queued, clear unverified");
+        return -2;
+    }
     result = accumulator_clear_balance(&data->acc);
-    adbms_spi_unlock();
+    taskENTER_CRITICAL();
+    data->adbms_mute_asserted = data->acc.last_balance_mute_ok;
+    data->adbms_balance_durable_zero_verified = data->acc.last_balance_durable_zero_verified;
+    if(result == 0)
+    {
+        data->adbms_balance_active = false;
+    }
+    taskEXIT_CRITICAL();
     (void)adbms_record_balance_write_result(data, result);
+    adbms_spi_unlock();
     return result;
 }
 
@@ -169,12 +231,14 @@ command_t cmds[] =
 	{"status", &get_status, "compact bring-up status banner"},
 	{"fault", &get_faults, "gets the faults of the system"},
 	{"ver", &get_version, "gets the firmware version"},
-	{"volt", &get_voltage, "gets cell voltages for all SMBs"},
-	{"temp", &get_temperature, "gets sensor temperatures for all SMBs"},
+	{"volt", &get_voltage, "snapshot summary: volt [detail <SMB 0-4>|raw]"},
+	{"temp", &get_temperature, "snapshot summary: temp [detail <SMB 0-4>|raw]"},
 	{"tempsns", &get_temperature_sensor, "one explicit mux attempt: tempsns <ic> <sensor 0-23>"},
 	{"tempbus", &get_temp_bus_debug, "temperature bus debug: tempbus [idle|scan]"},
 	{"fan", &get_fan_diag, "fan control telemetry: fan"},
 	{"current", &get_current, "gets current sensor raw counts/voltages/status"},
+	{"imd", &get_imd_diag, "IMD telemetry: imd [status]"},
+	{"air", &get_air_diag, "RTM/AIR inputs, read only: air [status]"},
 		{"estimator", &get_estimator_diag, "estimator timing and advisory R0/SoH confidence"},
 		{"power", &get_power_diag, "predictive SoP/SoH limits, bindings and freshness"},
 	{"charger", &get_charger, "gets charger CAN command/status/debug state"},
@@ -182,12 +246,14 @@ command_t cmds[] =
 	{"wdg", &watchdog_control, "watchdog diagnostics/control: wdg [status|enable]"},
 	{"rtos", &get_rtos_diag, "RTOS stack/heap diagnostics: rtos"},
 	{"uart", &get_uart_diag, "CLI UART diagnostics/recovery: uart [status|recover|clear]"},
-	{"spi", &get_spi_debug, "ADBMS6830: spi [status|snapshot|faults|lifecycle|ages|authority|events|lockdiag|tempemu|cdump|csoak|cstream|mapcheck|inject|timing|cfgrepeat|recovery|rawdump]"},
+	{"recorder", &recorder_control, "flight recorder: recorder [status|header|dump [n]|clear|trigger-test]"},
+	{"spi", &get_spi_debug, "ADBMS6830: spi [onboard|pins|status|snapshot|faults|lifecycle|ages|authority|events|lockdiag|tempemu|cdump|csoak|cstream|mapcheck|inject|timing|cfgrepeat|recovery|rawdump]"},
 	{"apm", &get_apm_debug, "ADBMS2950/APM: apm help (status/refup/config/flags/raw/sample/redundant/eeprom/scope/recover)"},
 	{"bringup", &get_bringup, "bench bring-up summaries: bringup [help|board|adbms6830|apm2950|charger-lv|charger-battery|ready|snapshot|evidence]"},
 	{"bmsok", &bmsok_control, "BMS_OK control: bmsok [status|release|inhibit]"},
+	{"chargerpower", &charger_power_control, "cart power unavailable: chargerpower [status|off]"},
 	{"balance", &balance_control, "balancing control: balance [status|shadow|inhibit|release|clear]"},
-	{"state", &set_state, "gets or sets the AMS state [charge|discharge]"},
+	{"state", &set_state, "charger CAN state [charge|stop]; pack charging inhibited"},
 	{"cause_fault", &cause_fault, "cause BMS fault for tech"},
 };
 
@@ -245,6 +311,21 @@ static bool cli_parse_int_range(const char *arg, int min_value, int max_value, i
     *value_out = (int)parsed;
     return true;
 }
+
+typedef struct {
+    uint32_t attempt, tick;
+    int32_t raw;
+    int current_ma;
+    uint8_t packet[8];
+    uint8_t raw_stat[6], raw_flag[6], cfga[6], cfgb[6];
+    uint16_t conversion_count;
+    uint8_t phase, stat_cc, sample_cc, flag_cc;
+    bool flag_checked, config_valid;
+    uint8_t stage, reason, status;
+    bool valid, checked;
+} cli_apm_capture_row_t;
+/* CLI owns this buffer; print after releasing SPI, no large task-stack array. */
+static cli_apm_capture_row_t cli_apm_capture[100];
 
 static int cli_scaled_int(float value, int scale)
 {
@@ -404,6 +485,11 @@ void cli_task_fn(void *arg)
     cli_printline(local_cli,
         "PASSIVE RING OBSERVER: open-ring zero-current/25C fallback; SoH/SoP authority disabled");
 #endif
+    snprintf(outline, CLI_LINESZ, "Topology SMBs:%u physical:%u path:%s scan:%uHz CLI_prio:%u",
+             (unsigned)NSMBS, (unsigned)ACCUMULATOR_PHYSICAL_CHAIN_COUNT,
+             ACCUMULATOR_SMB_STRING == STRING_A ? "A/J1" : "B/J2",
+             (unsigned)ADBMS_FREQ, (unsigned)CLI_PRIO);
+    cli_printline(local_cli, outline);
     /* Keep provenance fields on bounded independent lines.  Revision strings
      * are build inputs and may grow; combining all of them in one 128-byte CLI
      * buffer silently truncated exactly the metadata needed to identify a
@@ -424,6 +510,9 @@ void cli_task_fn(void *arg)
              AMS_ESTIMATOR_MODEL_REVISION);
     cli_printline(local_cli, outline);
     cli_printline(local_cli, "ADBMS6822 SPI6 expected: mode3 CPOL HIGH CPHA 2EDGE");
+#if AMS_SPI_LINK_DIAGNOSTIC_ONLY
+    cli_printline(local_cli, "SPI LINK ONLY LV: scan off; BMS_OK inhibited; SMB on CS_B");
+#endif
 	cli_printline(local_cli, "Type 'help' for list of commands");
 
 	for(;;)
@@ -434,24 +523,42 @@ void cli_task_fn(void *arg)
          * disturbance, or failed HAL re-arm left reception disabled. */
         (void)cli_uart_service_rx(local_cli);
 
-		if(local_cli->msg_pending == true)
+        taskENTER_CRITICAL();
+        bool acknowledge_stop=local_cli->stop_ack_pending &&
+            !local_cli->tx_discard_pending && !local_cli->stop_requested;
+        if(acknowledge_stop)
+        {
+            local_cli->stop_ack_pending=false;
+            local_cli->report_cancel=false;
+        }
+        taskEXIT_CRITICAL();
+        if(acknowledge_stop)
+            cli_printline(local_cli,"\r\nSTOP applied; BMS_OK inhibited; queued commands discarded");
+		if(local_cli->msg_pending == true && !local_cli->stop_requested)
 		{
-			size_t len;
 
 			taskENTER_CRITICAL();
-			len = cli_bounded_strlen(local_cli->line, CLI_LINESZ - 1u);
-			memcpy(buf, local_cli->line, len);
-			buf[len] = '\0';
-			memset(local_cli->line, 0, sizeof(local_cli->line));
-			local_cli->msg_pending = false;
-			local_cli->msg_proc++;
+            bool have_line=cli_take_line(local_cli,buf);
+            if(have_line)
+            {
+                local_cli->report_cancel=false;
+                local_cli->command_stop_count=local_cli->stop_count;
+            }
 			taskEXIT_CRITICAL();
+            if(!have_line)continue;
 
 			n = tokenize(buf, tokens, MAXTOKS, " \t");
+            cli_printline(local_cli,"\r\nCMD accepted");
+            uint32_t command_start=osKernelGetTickCount();
 			ret = cli_handle_cmd(n, tokens);
+            local_cli->command_last_ms=osKernelGetTickCount()-command_start;
+            if(local_cli->command_last_ms>local_cli->command_max_ms)
+                local_cli->command_max_ms=local_cli->command_last_ms;
 			data->cli_fault = (ret != 0);
+            snprintf(outline,CLI_LINESZ,"CMD done rc:%d",ret);
+            cli_printline(local_cli,outline);
 		}
-		osDelayUntil(entry + (1000 / CLI_FREQ));
+		ams_task_delay_until(entry + (1000 / CLI_FREQ));
 	}
 }
 
@@ -522,7 +629,7 @@ int get_status(int argc, char *argv[])
     cli_fixed1(data->max_temp, &max_temp_whole, &max_temp_decimal);
 
 	snprintf(outline, CLI_LINESZ,
-	             "FW v%d.%d.%d build:%s service:%d hil:%d state:%s BMS_OK:%d inhibit:%d ready:%d balance_inhibit:%d blocked:%lu",
+	             "FW v%d.%d.%d build:%s service:%d hil:%d state:%s BMS_OK:%d inhibit:%d ready:%d",
 	             VER_MAJOR,
 	             VER_MINOR,
 	             VER_BUG,
@@ -532,9 +639,10 @@ int get_status(int argc, char *argv[])
 	             ams_state_to_str(data->state),
 	             data->bms_state,
 	             data->bms_output_inhibit,
-	             data->bms_supervisor_ready,
-	             data->balance_inhibit,
-	             (unsigned long)data->bms_output_block_count);
+	             data->bms_supervisor_ready);
+    ret |= cli_printline(cli, outline);
+    snprintf(outline, CLI_LINESZ,"balance_inhibit:%d blocked:%lu",
+             data->balance_inhibit,(unsigned long)data->bms_output_block_count);
     ret |= cli_printline(cli, outline);
 
     snprintf(outline, CLI_LINESZ,
@@ -893,7 +1001,7 @@ int get_faults(int argc, char *argv[])
 	return ret;
 }
 
-int get_voltage(int argc, char *argv[])
+static int get_voltage_raw(int argc, char *argv[])
 {
     int ret = 0;
     adbms6830_driver_t *smb = &data->acc.smb;
@@ -919,6 +1027,11 @@ int get_voltage(int argc, char *argv[])
              (unsigned)data->acc.pec_fail_cell_count);
     ret |= cli_printline(cli, outline);
 
+    snprintf(outline, CLI_LINESZ, "Observation required:%u physical:%u excluded_C1_SMB_mask:0x%04X pack_voltage_complete:%d",
+             (unsigned)accumulator_required_cell_count(), (unsigned)(NSMBS * NCELLS),
+             (unsigned)AMS_TESTDAY_C1_EXCLUDED_IC_MASK,
+             AMS_TESTDAY_C1_EXCLUDED_IC_MASK == 0u);
+    ret |= cli_printline(cli, outline);
     snprintf(outline, CLI_LINESZ,
              "Voltage diag jump:%u stuck:%u max_delta:%umV at S%u/C%u",
              (unsigned)data->voltage_jump_cell_count,
@@ -986,15 +1099,15 @@ int get_voltage(int argc, char *argv[])
 }
 
 
-int get_temperature(int argc, char *argv[])
+static int get_temperature_raw(int argc, char *argv[])
 {
     int ret = 0;
     adbms6830_driver_t *smb = &data->acc.smb;
 
     snprintf(outline, CLI_LINESZ,
-             "Temp HW pullups_validated:%d auto_scan:%d (Rev5 100-ohm pull-ups require hardware rework; timing cannot compensate)",
-             AMS_TEMP_PULLUPS_TARGET_VALIDATED,
-             AMS_ENABLE_AUTO_TEMP_MUX_SCAN);
+             "Temp auto_scan:%d vehicle_pullup_gate:%d (bench validation tracked separately)",
+             AMS_ENABLE_AUTO_TEMP_MUX_SCAN,
+             AMS_TEMP_PULLUPS_TARGET_VALIDATED);
     ret |= cli_printline(cli, outline);
 
     snprintf(outline, CLI_LINESZ,
@@ -1038,6 +1151,33 @@ int get_temperature(int argc, char *argv[])
              (unsigned)data->min_temp_sensor);
     ret |= cli_printline(cli, outline);
 
+    snprintf(outline, CLI_LINESZ,
+             "Temp sweep count:%lu tick:%lu span:%lums oldest:%lums revisit_limit:%lums",
+             (unsigned long)data->acc.temp_sweep_count,
+             (unsigned long)data->acc.temp_last_sweep_tick,
+             (unsigned long)data->acc.temp_last_sweep_span_ms,
+             (unsigned long)data->acc.temp_oldest_required_age_ms,
+             (unsigned long)ACCUMULATOR_TEMP_REVISIT_TIMEOUT_MS);
+    ret |= cli_printline(cli, outline);
+    taskENTER_CRITICAL();
+    uint32_t authority_now = osKernelGetTickCount();
+    bool authority_valid = data->temp_authority_valid;
+    uint32_t oldest_tick = data->temp_authority_oldest_tick;
+    bool authority_fresh = ams_temperature_authority_fresh(data, authority_now);
+    taskEXIT_CRITICAL();
+    snprintf(outline, CLI_LINESZ, "Temp authority fresh:%d valid:%d oldest_tick:%lu age_ms:%lu",
+             authority_fresh, authority_valid, (unsigned long)oldest_tick,
+             (unsigned long)(authority_valid ? authority_now - oldest_tick : UINT32_MAX));
+    ret |= cli_printline(cli, outline);
+    for(unsigned mux = 0u; mux < 3u; mux++)
+    {
+        snprintf(outline, CLI_LINESZ, "Temp mux%u select:%lums capture:%lums settle:%lums",
+                 mux, (unsigned long)smb->temp_select_last_ms[mux],
+                 (unsigned long)smb->temp_capture_last_ms[mux],
+                 (unsigned long)smb->temp_settle_last_ms);
+        ret |= cli_printline(cli, outline);
+    }
+
     for (uint8_t ic = 0; ic < smb_ic_count(smb); ic++)
     {
 
@@ -1046,6 +1186,13 @@ int get_temperature(int argc, char *argv[])
                  (unsigned long)data->acc.updated_temp_mask[ic],
                  (unsigned long)data->acc.usable_temp_mask[ic],
                  (unsigned long)data->acc.invalid_temp_mask[ic]);
+        ret |= cli_printline(cli, outline);
+        snprintf(outline, CLI_LINESZ,
+                 "    visit scheduled:0x%06lx attempted:0x%06lx step_ms:%lu/%lu",
+                 (unsigned long)smb->temp_scheduled_mask[ic],
+                 (unsigned long)smb->temp_attempted_mask[ic],
+                 (unsigned long)data->acc.temp_step_last_ms,
+                 (unsigned long)data->acc.temp_step_max_ms);
         ret |= cli_printline(cli, outline);
         snprintf(outline, CLI_LINESZ, "    diag open:0x%06lx short:0x%06lx jump:0x%06lx rate:0x%06lx",
                  (unsigned long)data->acc.temp_open_mask[ic],
@@ -1085,6 +1232,9 @@ int get_fan_diag(int argc, char *argv[])
 {
     (void)argc;
     (void)argv;
+#if !AMS_ENABLE_FAN_TASK
+    return cli_printline(cli, "Fans disabled: no fan task, PWM startup, or required fan heartbeat");
+#else
 
     int ret = 0;
     snprintf(outline, CLI_LINESZ,
@@ -1119,6 +1269,7 @@ int get_fan_diag(int argc, char *argv[])
     }
 
     return ret;
+#endif
 }
 
 static void cli_microvolts_mv_string(int32_t microvolts,
@@ -1141,6 +1292,64 @@ static void cli_microvolts_mv_string(int32_t microvolts,
              (unsigned long)(magnitude / 1000u),
              (unsigned long)(magnitude % 1000u));
 }
+
+static ams_measurement_snapshot_t cli_measurement_report;
+
+static int cli_measurement_command(bool temperature, int argc, char *argv[])
+{
+    bool detail=argc==3 && !strcmp(argv[1],"detail");
+    uint16_t segment=0u;
+    if(argc==2 && !strcmp(argv[1],"raw"))
+    {
+        if(!cli_service_inhibited())return cli_printline(cli,"REFUSED: raw mutable report requires START/inhibit");
+        cli_printline(cli,"RAW diagnostic: mutable data; not one coherent measurement generation");
+        return temperature?get_temperature_raw(1,argv):get_voltage_raw(1,argv);
+    }
+    if((argc!=1 && !detail) || (detail && !cli_parse_u16_range(argv[2],0u,NSMBS-1u,&segment)))
+        return cli_printline(cli,temperature?"Usage: temp [detail <SMB index>|raw]":"Usage: volt [detail <SMB index>|raw]");
+    if(!ams_measurement_store_copy_latest(&data->measurement_store,&cli_measurement_report))
+        return cli_printline(cli,"Measurement snapshot unavailable; use raw only in inhibited service mode");
+    uint32_t now=osKernelGetTickCount();
+    uint32_t elapsed=now-(temperature?cli_measurement_report.publication_tick:
+                                     cli_measurement_report.voltage_complete_tick);
+    snprintf(outline,CLI_LINESZ,"%s snapshot sequence:%lu asof_tick:%lu reference_tick:%lu",
+             temperature?"TEMP":"VOLT",(unsigned long)cli_measurement_report.sequence,
+             (unsigned long)now,(unsigned long)(temperature?cli_measurement_report.publication_tick:
+                                                        cli_measurement_report.voltage_complete_tick));
+    int ret=cli_printline(cli,outline);
+    uint16_t count=0u;int32_t minimum=INT32_MAX,maximum=INT32_MIN;
+    for(uint8_t ic=0u;ic<NSMBS;ic++)
+    {
+        uint8_t n=temperature?NTEMPS:NCELLS;
+        uint32_t mask=temperature?cli_measurement_report.temp_usable_mask[ic]:
+                                  cli_measurement_report.cell_usable_mask[ic];
+        for(uint8_t ch=0u;ch<n;ch++)
+        {
+            uint32_t age=temperature?cli_measurement_report.temp_age_ms[ic][ch]:
+                                      cli_measurement_report.cell_age_ms[ic][ch];
+            bool fresh=temperature?ams_temperature_age_fresh(age,elapsed):
+                (age<=ACCUMULATOR_CELL_STALE_TIMEOUT_MS && elapsed<=ACCUMULATOR_CELL_STALE_TIMEOUT_MS-age);
+            bool usable=(mask&(1UL<<ch)) && fresh;
+            int32_t value=temperature?cli_measurement_report.temp_deci_c[ic][ch]:
+                                       cli_measurement_report.cell_mv[ic][ch];
+            if(usable){count++;if(value<minimum)minimum=value;if(value>maximum)maximum=value;}
+            if(detail && ic==segment)
+            {
+                if(usable)snprintf(outline,CLI_LINESZ,"SMB%u %s%u value:%ld %s age_ms:%lu",ic,
+                    temperature?"Sensor":"C",temperature?ch:ch+1u,(long)value,
+                    temperature?"deci_C":"mV",(unsigned long)(age+elapsed));
+                else snprintf(outline,CLI_LINESZ,"SMB%u %s%u unavailable",ic,temperature?"Sensor":"C",temperature?ch:ch+1u);
+                ret|=cli_printline(cli,outline);
+            }
+        }
+    }
+    if(count)snprintf(outline,CLI_LINESZ,"usable:%u min:%ld max:%ld unit:%s; detail pages use zero-based SMB index",
+                     count,(long)minimum,(long)maximum,temperature?"deci_C":"mV");
+    else snprintf(outline,CLI_LINESZ,"No usable readings at report reference time");
+    return ret|cli_printline(cli,outline);
+}
+int get_voltage(int argc,char *argv[]){return cli_measurement_command(false,argc,argv);}
+int get_temperature(int argc,char *argv[]){return cli_measurement_command(true,argc,argv);}
 
 static void cli_temp_raw_mv_string(int16_t raw, char *buffer, size_t buffer_size)
 {
@@ -1437,12 +1646,17 @@ static int cli_print_temp_debug(const adbms6830_driver_t *smb, uint8_t requested
 
 int get_temperature_sensor(int argc, char *argv[])
 {
+    if(!cli_service_inhibited())return cli_printline(cli,"REFUSED: tempsns requires START/inhibit");
     int ret;
 
-    adbms_spi_lock();
+    if(!adbms_spi_cli_try_lock())
+    {
+        return cli_printline(cli, "ADBMS SPI busy; retry after scan");
+    }
+    cli_spi_report_begin();
     ret = get_temperature_sensor_locked(argc, argv);
     adbms_spi_unlock();
-    return ret;
+    return ret | cli_spi_report_flush();
 }
 
 static int get_temperature_sensor_locked(int argc, char *argv[])
@@ -1564,12 +1778,18 @@ static const char *cli_temp_bus_level(int16_t raw, bool valid)
 
 int get_temp_bus_debug(int argc, char *argv[])
 {
+    if(!cli_service_inhibited())return cli_printline(cli,"REFUSED: tempbus requires START/inhibit");
+    if(argc>=2 && !strcmp(argv[1],"scan"))return cli_printline(cli,"REFUSED: full tempbus scan needs parked acquisition");
     int ret;
 
-    adbms_spi_lock();
+    if(!adbms_spi_cli_try_lock())
+    {
+        return cli_printline(cli, "ADBMS SPI busy; retry after scan");
+    }
+    cli_spi_report_begin();
     ret = get_temp_bus_debug_locked(argc, argv);
     adbms_spi_unlock();
-    return ret;
+    return ret | cli_spi_report_flush();
 }
 
 static int get_temp_bus_debug_locked(int argc, char *argv[])
@@ -2049,6 +2269,30 @@ static int cli_print_adbms_pin_report(const adbms6830_driver_t *smb)
     return ret;
 }
 
+/* Immutable topology and HAL setup: no ADBMS owner mutex or bus access.
+ * Keep UART output short so the report cannot starve the acquisition task. */
+static int cli_print_onboard_6822(const adbms6830_driver_t *smb)
+{
+    int ret = 0;
+    const SPI_HandleTypeDef *hspi = (smb != NULL) ? smb->hspi : NULL;
+    ret |= cli_printline(cli, "ONBOARD U1 schematic only (hardware not detected)");
+    ret |= cli_printline(cli, "SPI6 PG13:SCK PG14:MOSI PG12:MISO; PHAPOL high => mode3");
+    snprintf(outline, CLI_LINESZ, "Build SMBs:%u physical:%u APM:%u path:%s",
+             (unsigned)NSMBS, (unsigned)ACCUMULATOR_PHYSICAL_CHAIN_COUNT,
+             (unsigned)AMS_ENABLE_APM_2950,
+             (ACCUMULATOR_SMB_STRING == STRING_A) ? "A/J1 PE2" : "B/J2 PE4");
+    ret |= cli_printline(cli, outline);
+    if(hspi != NULL)
+    {
+        snprintf(outline, CLI_LINESZ, "Live HAL mode3:%s prescaler_raw:0x%lX",
+                 (hspi->Init.CLKPolarity == SPI_POLARITY_HIGH &&
+                  hspi->Init.CLKPhase == SPI_PHASE_2EDGE) ? "YES" : "NO",
+                 (unsigned long)hspi->Init.BaudRatePrescaler);
+        ret |= cli_printline(cli, outline);
+    }
+    return ret;
+}
+
 static int cli_set_one_cs(adbms6830_driver_t *smb, adbms_string string, GPIO_PinState state)
 {
     if((smb == NULL) || (string > STRING_B) || (smb->cs_port[string] == NULL))
@@ -2466,6 +2710,7 @@ static int cli_run_sadc_repeat(adbms6830_driver_t *smb, uint16_t repeat_count)
 
     for(uint16_t sample = 0u; sample < repeat_count; sample++)
     {
+        if(cli->report_cancel)return HAL_BUSY;
         HAL_StatusTypeDef status = adbms6830_capture_s_adc(smb);
         const adbms6830_sadc_debug_t *dbg = &smb->sadc_debug;
 
@@ -2721,8 +2966,12 @@ static int cli_run_cadc_soak(adbms6830_driver_t *smb, uint16_t repeat_count)
     {
         HAL_StatusTypeDef status;
         const adbms6830_cadc_debug_t *dbg;
+        if(cli->report_cancel)return HAL_BUSY;
 
-        adbms_spi_lock();
+        if(!adbms_spi_cli_try_lock())
+        {
+            return cli_printline(cli, "ADBMS SPI busy; C-ADC soak stopped");
+        }
         status = adbms6830_capture_c_adc(smb);
         dbg = &smb->cadc_debug;
 
@@ -2810,6 +3059,7 @@ static int cli_run_cadc_soak(adbms6830_driver_t *smb, uint16_t repeat_count)
             }
         }
         adbms_spi_unlock();
+        osDelay(1u);
     }
 
     snprintf(outline, CLI_LINESZ,
@@ -3419,7 +3669,10 @@ static int cli_print_adbms_events(void)
         uint16_t guard_mask;
         uint16_t sticky_guard_mask;
 
-        adbms_spi_lock();
+        if(!adbms_spi_cli_try_lock())
+        {
+            return ret | cli_printline(cli, "ADBMS SPI busy; history unavailable");
+        }
         total_count = smb->cfgb_write_total_count;
         count = smb->cfgb_write_history_count;
         write_index = smb->cfgb_write_history_index;
@@ -3505,6 +3758,17 @@ static int cli_print_adbms_lockdiag(const app_data_t *app)
              (unsigned long)app->adbms_spi_lock_max_wait_ticks,
              (unsigned long)app->adbms_spi_lock_max_hold_ticks,
              app->adbms_scan_active);
+    ret |= cli_printline(cli, outline);
+    snprintf(outline, CLI_LINESZ, "SPI CLI busy:%lu (bounded wait:%u ticks)",
+             (unsigned long)app->adbms_spi_cli_busy_count,
+             (unsigned)AMS_ADBMS_CLI_MUTEX_TIMEOUT_TICKS);
+    ret |= cli_printline(cli, outline);
+    snprintf(outline, CLI_LINESZ,
+             "SPI scan last:%lums max:%lums schedule:%lums deadline_miss:%lu",
+             (unsigned long)app->adbms_last_scan_duration_ms,
+             (unsigned long)app->adbms_max_scan_duration_ms,
+             (unsigned long)app->adbms_last_schedule_interval_ms,
+             (unsigned long)app->adbms_scan_deadline_miss_count);
     ret |= cli_printline(cli, outline);
     ret |= cli_printline(cli,
         "All periodic/CLI ADBMS traffic uses the recursive owner mutex; CLI printing occurs after transactions");
@@ -4213,6 +4477,7 @@ static int cli_run_cadc_stream(int argc, char *argv[])
 
     for(int sample = 0; sample < samples; sample++)
     {
+        if(cli->report_cancel)return HAL_BUSY;
         HAL_StatusTypeDef status;
         uint32_t tick;
         uint32_t conversion_us;
@@ -4222,7 +4487,10 @@ static int cli_run_cadc_stream(int argc, char *argv[])
         int32_t cell_uv[CELL] = {0};
         uint8_t cell_count;
 
-        adbms_spi_lock();
+        if(!adbms_spi_cli_try_lock())
+        {
+            return ret | cli_printline(cli, "CSTREAM_ABORT,SPI_BUSY");
+        }
         status = adbms6830_capture_c_adc(smb);
         tick = osKernelGetTickCount();
         conversion_us = smb->cadc_debug.conversion_time_us;
@@ -4276,9 +4544,250 @@ static int cli_run_cadc_stream(int argc, char *argv[])
 #endif
 }
 
+int recorder_control(int argc, char *argv[])
+{
+#if AMS_ENABLE_FLIGHT_RECORDER
+    const char *mode;
+    ams_flight_recorder_status_t status;
+    ams_flight_recorder_header_t header;
+    int ret = 0;
+
+    if((data == NULL) || (cli == NULL))
+    {
+        return -1;
+    }
+
+    mode = ((argc >= 2) && (argv != NULL) && (argv[1] != NULL)) ?
+        argv[1] : "status";
+
+    if(!strcmp(mode, "status"))
+    {
+        taskENTER_CRITICAL();
+        ams_flight_recorder_get_status(&data->flight_recorder, &status);
+        taskEXIT_CRITICAL();
+        snprintf(outline, CLI_LINESZ,
+                 "Recorder en:1 retained:%d schema:%u records:%lu/%u seq:%lu trig:%d frozen:%d post:%lu",
+                 AMS_FLIGHT_RECORDER_RETAINED,
+                 (unsigned)AMS_FLIGHT_RECORDER_SCHEMA_VERSION,
+                 (unsigned long)status.valid_count,
+                 (unsigned)AMS_FLIGHT_RECORDER_CAPACITY,
+                 (unsigned long)status.write_sequence,
+                 status.triggered,
+                 status.frozen,
+                 (unsigned long)status.post_trigger_remaining);
+        ret |= cli_printline(cli, outline);
+        snprintf(outline, CLI_LINESZ,
+                 "Trigger seq:%lu tick:%lu event:%u reason:0x%04X record_size:%u ram_bytes:%lu",
+                 (unsigned long)status.trigger_sequence,
+                 (unsigned long)status.trigger_tick_ms,
+                 (unsigned)status.trigger_event,
+                 (unsigned)status.trigger_reason,
+                 (unsigned)sizeof(ams_flight_record_v1_t),
+                 (unsigned long)sizeof(data->flight_recorder));
+        ret |= cli_printline(cli, outline);
+        return ret;
+    }
+
+    if(!strcmp(mode, "header"))
+    {
+        taskENTER_CRITICAL();
+        header = data->flight_recorder.header;
+        taskEXIT_CRITICAL();
+        snprintf(outline, CLI_LINESZ,
+                 "Recorder hdr magic:%08lX schema:%u size:%u boot:%lu idx:%lu valid:%lu ok:%d",
+                 (unsigned long)header.magic,
+                 (unsigned)header.schema_version,
+                 (unsigned)header.record_size,
+                 (unsigned long)header.boot_sequence,
+                 (unsigned long)header.write_index,
+                 (unsigned long)header.valid_count,
+                 ams_flight_recorder_header_valid(&header));
+        ret |= cli_printline(cli, outline);
+        snprintf(outline, CLI_LINESZ,
+                 "Recorder hdr crc:%08lX commit:%08lX manifest_crc:%08lX flags:%08lX",
+                 (unsigned long)header.header_crc32,
+                 (unsigned long)header.commit,
+                 (unsigned long)header.runtime_manifest_crc,
+                 (unsigned long)header.flags);
+        ret |= cli_printline(cli, outline);
+        return ret;
+    }
+
+#if AMS_ENABLE_SERVICE_RECORDER_DUMP
+    if(!strcmp(mode, "clear"))
+    {
+        taskENTER_CRITICAL();
+        ams_flight_recorder_clear(&data->flight_recorder);
+        taskEXIT_CRITICAL();
+        return cli_printline(cli, "flight recorder cleared/re-armed");
+    }
+
+    if(!strcmp(mode, "trigger-test"))
+    {
+        bool accepted;
+        uint32_t now = osKernelGetTickCount();
+        taskENTER_CRITICAL();
+        accepted = ams_flight_recorder_trigger(
+            &data->flight_recorder,
+            (uint16_t)AMS_FLIGHT_EVENT_MANUAL,
+            0u,
+            now);
+        taskEXIT_CRITICAL();
+        return cli_printline(cli,
+            accepted ? "flight recorder manual trigger accepted" :
+                       "flight recorder already triggered/frozen");
+    }
+
+    if(!strcmp(mode, "dump"))
+    {
+        uint32_t count = 25u;
+        uint32_t valid_count;
+        uint32_t first;
+        char *end = NULL;
+
+        if((argc >= 3) && (argv[2] != NULL))
+        {
+            unsigned long parsed = strtoul(argv[2], &end, 0);
+            if((end == argv[2]) || (*end != '\0') ||
+               (parsed == 0ul) ||
+               (parsed > AMS_FLIGHT_RECORDER_CAPACITY))
+            {
+                return cli_printline(cli,
+                    "Usage: recorder dump [1..110]");
+            }
+            count = (uint32_t)parsed;
+        }
+
+        taskENTER_CRITICAL();
+        valid_count = data->flight_recorder.header.valid_count;
+        taskEXIT_CRITICAL();
+        if(count > valid_count)
+        {
+            count = valid_count;
+        }
+        first = valid_count - count;
+
+        ret |= cli_printline(cli,
+            "r1,seq,tick_ms,meas_seq,pack_mV,current_mA,min_mV,min_idx,max_mV,max_idx,max_temp_dC,temp_idx,soc_permille");
+        ret |= cli_printline(cli,
+            "r2,seq,dcl_W,ccl_W,valid,fault,adbms,can,hb,state,bms,auth,busoff,bal,est");
+        for(uint32_t n = 0u; n < count; n++)
+        {
+            ams_flight_record_v1_t rec;
+            bool ok;
+            taskENTER_CRITICAL();
+            ok = ams_flight_recorder_copy_chronological(
+                &data->flight_recorder, first + n, &rec);
+            taskEXIT_CRITICAL();
+            if(!ok)
+            {
+                ret |= cli_printline(cli, "recorder dump stopped: invalid/torn record");
+                break;
+            }
+            snprintf(outline, CLI_LINESZ,
+                     "r1,%lu,%lu,%lu,%lu,%ld,%u,%u,%u,%u,%d,%u,%u",
+                     (unsigned long)rec.sequence,
+                     (unsigned long)rec.tick_ms,
+                     (unsigned long)rec.measurement_sequence,
+                     (unsigned long)rec.pack_voltage_mV,
+                     (long)rec.pack_current_mA,
+                     (unsigned)rec.min_cell_mV,
+                     (unsigned)rec.min_cell_index,
+                     (unsigned)rec.max_cell_mV,
+                     (unsigned)rec.max_cell_index,
+                     (int)rec.max_temp_deci_C,
+                     (unsigned)rec.max_temp_index,
+                     (unsigned)rec.soc_permille);
+            ret |= cli_printline(cli, outline);
+            snprintf(outline, CLI_LINESZ,
+                     "r2,%lu,%ld,%ld,%08lX,%08lX,%08lX,%08lX,%04X,%u,%u,%u,%u,%u,%u",
+                     (unsigned long)rec.sequence,
+                     (long)rec.discharge_power_limit_W,
+                     (long)rec.charge_power_limit_W,
+                     (unsigned long)rec.measurement_validity_flags,
+                     (unsigned long)rec.safety_fault_mask,
+                     (unsigned long)rec.adbms_fault_mask,
+                     (unsigned long)rec.can_status_flags,
+                     (unsigned)rec.heartbeat_stale_mask,
+                     (unsigned)rec.ams_state,
+                     (unsigned)rec.bms_ok,
+                     (unsigned)rec.can_authority,
+                     (unsigned)rec.can_busoff_active,
+                     (unsigned)rec.balancing_active,
+                     (unsigned)rec.estimator_valid);
+            ret |= cli_printline(cli, outline);
+        }
+        return ret;
+    }
+#else
+    if(!strcmp(mode, "clear") || !strcmp(mode, "trigger-test") ||
+       !strcmp(mode, "dump"))
+    {
+        return cli_printline(cli,
+            "recorder mutation/dump unavailable in this build profile");
+    }
+#endif
+
+    return cli_printline(cli,
+        "Usage: recorder [status|header|dump [n]|clear|trigger-test]");
+#else
+    (void)argc;
+    (void)argv;
+    return cli_printline(cli, "flight recorder compiled out");
+#endif
+}
+
+static bool cli_service_inhibited(void)
+{
+    return data && data->state==STATE_START && data->bms_output_inhibit &&
+           !data->bms_state && !data->state_transition_in_progress;
+}
+
+static int cli_scope_bounded(int argc, char *argv[])
+{
+    if(argc>5)return cli_printline(cli,"ERROR: too many scope arguments");
+    adbms_string string=cli_adbms_scope_default_string;
+    adbms6830_scope_mode_t mode=cli_adbms_scope_default_mode;
+    uint16_t repeat=cli_adbms_scope_default_repeat;
+    if((argc>=3 && !cli_parse_adbms_string(argv[2],&string)) ||
+       (argc>=4 && !cli_parse_scope_mode(argv[3],&mode)) ||
+       (argc>=5 && !cli_parse_scope_repeat(argv[4],&repeat)))
+        return cli_printline(cli,"Usage: spi scope [a|b] [wake|cmd|read|pattern] [1-100]");
+    for(uint16_t i=0;i<repeat;i++)
+    {
+        if(cli->report_cancel || !cli_service_inhibited())return HAL_BUSY;
+        if(!adbms_spi_cli_try_lock())return cli_printline(cli,"SPI busy; scope cancelled");
+        HAL_StatusTypeDef result=adbms6830_scope_activity(&data->acc.smb,string,mode,1u);
+        adbms6830_resync_command_counter_tracking(&data->acc.smb);
+        adbms_spi_unlock();
+        if(result!=HAL_OK)return cli_printline(cli,"Scope transaction failed; stopped");
+        osDelay(1u);
+    }
+    return cli_printline(cli,"Scope complete; SPI released between repetitions");
+}
+
 int get_spi_debug(int argc, char *argv[])
 {
     int ret;
+    const char *action=(argc>=2)?argv[1]:"status";
+    bool readonly=!strcmp(action,"status") || !strcmp(action,"pins") ||
+        !strcmp(action,"onboard") || !strcmp(action,"faults") ||
+        !strcmp(action,"lifecycle") || !strcmp(action,"ages") ||
+        !strcmp(action,"authority") || !strcmp(action,"events") ||
+        !strcmp(action,"lockdiag") || !strcmp(action,"tempemu");
+    if(!readonly && (!AMS_ENABLE_SERVICE_CLI || !cli_service_inhibited()))
+        return cli_printline(cli,"REFUSED: hardware diagnostics require START and BMS_OK inhibit");
+    if(!strcmp(action,"scope"))return cli_scope_bounded(argc,argv);
+    /* These compound jobs still require a parked-acquisition image; refusing
+     * them here prevents a single command exceeding the live SPI budget. */
+    if(!strcmp(action,"recovery") || !strcmp(action,"sessiongap") ||
+       !strcmp(action,"cfgrepeat") || !strcmp(action,"srepeat") ||
+       !strcmp(action,"timing") || !strcmp(action,"rawdump") ||
+       !strcmp(action,"snapshot") || !strcmp(action,"owcheck") ||
+       !strcmp(action,"owc") || !strcmp(action,"ows") ||
+       !strcmp(action,"oweven") || !strcmp(action,"owodd") ||
+       !strcmp(action,"auxdiag") || !strcmp(action,"cellst"))
+        return cli_printline(cli,"REFUSED: compound diagnostic needs parked acquisition; use single-shot/status");
 
     /* Streaming intentionally releases the ADBMS owner lock between samples
      * so the periodic safety task is not starved for the duration of a long
@@ -4302,10 +4811,25 @@ int get_spi_debug(int argc, char *argv[])
 #endif
     }
 
-    adbms_spi_lock();
+    /* This read-only report must respond even if a live scan holds the
+     * ADBMS mutex. It only reads immutable setup and never accesses SPI. */
+    if((argc >= 2) && (argv[1] != NULL) && !strcmp(argv[1], "onboard"))
+    {
+        return cli_print_onboard_6822(&data->acc.smb);
+    }
+    if((argc >= 2) && (argv[1] != NULL) && !strcmp(argv[1], "lockdiag"))
+    {
+        return cli_print_adbms_lockdiag(data);
+    }
+
+    if(!adbms_spi_cli_try_lock())
+    {
+        return cli_printline(cli, "ADBMS SPI busy; retry after scan");
+    }
+    cli_spi_report_begin();
     ret = get_spi_debug_locked(argc, argv);
     adbms_spi_unlock();
-    return ret;
+    return ret | cli_spi_report_flush();
 }
 
 static int get_spi_debug_locked(int argc, char *argv[])
@@ -4318,6 +4842,7 @@ static int get_spi_debug_locked(int argc, char *argv[])
      * evidence, or changes debug instrumentation while the safety task runs. */
     if((argc >= 2) && (argv[1] != NULL) &&
        strcmp(argv[1], "status") && strcmp(argv[1], "pins") &&
+       strcmp(argv[1], "onboard") &&
        strcmp(argv[1], "faults") && strcmp(argv[1], "lifecycle") &&
        strcmp(argv[1], "ages") && strcmp(argv[1], "authority") &&
        strcmp(argv[1], "events") && strcmp(argv[1], "lockdiag") &&
@@ -4458,16 +4983,18 @@ static int get_spi_debug_locked(int argc, char *argv[])
 	            {
 	                return ret;
 	            }
-	            /* The final-ring leading device from String B is the ADBMS2950,
-	             * not an SMB.  Use its one-packet identity path so this service
-	             * probe cannot parse APM-plus-SMB packets into the five-SMB
-	             * image.  Any standalone String-B command makes the next SMB
-	             * packet the only safe command-counter synchronization point. */
-	            probe_status = adbms2950_spi_probe_sid(&data->acc.apm);
-	            adbms6830_resync_command_counter_tracking(smb);
-	            snprintf(outline, CLI_LINESZ,
-	                     "ADBMS2950 RDSID CS_B/stringB probe status: %s",
-	                     cli_hal_status_str(probe_status));
+#if AMS_ENABLE_APM_2950 && !AMS_APM_STANDALONE_EVAL_BENCH
+                probe_status = adbms2950_spi_probe_sid(&data->acc.apm);
+                snprintf(outline, CLI_LINESZ,
+                         "ADBMS2950 RDSID CS_B/stringB probe status: %s",
+                         cli_hal_status_str(probe_status));
+#else
+                probe_status = adbms6830_spi_probe_rdcfga_on_string(smb, STRING_B);
+                snprintf(outline, CLI_LINESZ,
+                         "RDCFGA CS_B/stringB probe status: %s",
+                         cli_hal_status_str(probe_status));
+#endif
+                adbms6830_resync_command_counter_tracking(smb);
 	            ret |= cli_printline(cli, outline);
 	        }
 	        else if(!strcmp(argv[1], "scope"))
@@ -5019,7 +5546,7 @@ static int get_spi_debug_locked(int argc, char *argv[])
         else if(strcmp(argv[1], "status"))
         {
             ret |= cli_printline(cli,
-                    "Usage: spi [status|snapshot|faults|lifecycle|ages|authority|events|lockdiag|inject|mapcheck|tempemu|cdump|csoak|cstream|csdump|sdump|srepeat|sessiongap|timing|cfgrepeat|recovery|rawdump|pins|cspins|cs|preset|toggle|probe|probea|probeb|scope|sid|stat|staterr|cfgchk|cellst|owc|ows|owcheck|oweven|owodd|auxdiag|wake|coldwake|clrflag|clear|diagclear|enable|disable]");
+                    "Usage: spi [onboard|status|snapshot|faults|lifecycle|ages|authority|events|lockdiag|inject|mapcheck|tempemu|cdump|csoak|cstream|csdump|sdump|srepeat|sessiongap|timing|cfgrepeat|recovery|rawdump|pins|cspins|cs|preset|toggle|probe|probea|probeb|scope|sid|stat|staterr|cfgchk|cellst|owc|ows|owcheck|oweven|owodd|auxdiag|wake|coldwake|clrflag|clear|diagclear|enable|disable]");
             return ret;
         }
     }
@@ -5108,6 +5635,21 @@ static int get_spi_debug_locked(int argc, char *argv[])
     ret |= cli_printline(cli, outline);
 
     {
+        static const char *const phases[8] = {
+            "lock", "pre_diag", "balance_prep", "voltage", "processing",
+            "temperature", "post_diag", "finalize"
+        };
+        uint32_t last[8], maximum[8];
+        taskENTER_CRITICAL();
+        memcpy(last, data->adbms_phase_last_us, sizeof(last));
+        memcpy(maximum, data->adbms_phase_max_us, sizeof(maximum));
+        taskEXIT_CRITICAL();
+        for(unsigned phase = 0u; phase < 8u; phase++)
+        {
+            snprintf(outline, CLI_LINESZ, "phase %s wall_us last/max:%lu/%lu",
+                     phases[phase], (unsigned long)last[phase], (unsigned long)maximum[phase]);
+            ret |= cli_printline(cli, outline);
+        }
         const adbms6830_session_health_t *session = adbms6830_session_health_get(smb);
         if(session != NULL)
         {
@@ -5119,6 +5661,15 @@ static int get_spi_debug_locked(int argc, char *argv[])
                      (unsigned long)session->max_gap_us);
             ret |= cli_printline(cli, outline);
             snprintf(outline, CLI_LINESZ,
+                     "wake cold:%lu warm:%lu reused:%lu gap_abort:%lu edge_us:%u/%u",
+                     (unsigned long)session->cold_wake_count,
+                     (unsigned long)session->warm_wake_count,
+                     (unsigned long)session->skipped_wake_count,
+                     (unsigned long)session->wake_gap_abort_count,
+                     (unsigned)WAKEUP_US_DELAY,
+                     (unsigned)AMS_ADBMS_WARM_WAKE_EDGE_US);
+            ret |= cli_printline(cli, outline);
+            snprintf(outline, CLI_LINESZ,
                      "session expiry:%lu rewake:%lu restart:%lu restart_fail:%lu inject:%lu",
                      (unsigned long)session->guard_expiry_count,
                      (unsigned long)session->guard_rewake_count,
@@ -5127,10 +5678,11 @@ static int get_spi_debug_locked(int argc, char *argv[])
                      (unsigned long)session->injected_gap_count);
             ret |= cli_printline(cli, outline);
             snprintf(outline, CLI_LINESZ,
-                     "session waits:%lu interrupted:%lu requested:%lluus duration last/max:%lu/%luus",
+                     "session waits:%lu interrupted:%lu requested_us:0x%08lX%08lX duration last/max:%lu/%luus",
                      (unsigned long)session->long_wait_count,
                      (unsigned long)session->long_wait_interrupted_count,
-                     (unsigned long long)session->long_wait_requested_us,
+                     (unsigned long)(uint32_t)(session->long_wait_requested_us >> 32),
+                     (unsigned long)(uint32_t)session->long_wait_requested_us,
                      (unsigned long)session->last_duration_us,
                      (unsigned long)session->max_duration_us);
             ret |= cli_printline(cli, outline);
@@ -5179,6 +5731,14 @@ static int get_spi_debug_locked(int argc, char *argv[])
     ret |= cli_printline(cli, outline);
 
     snprintf(outline, CLI_LINESZ,
+             "inhibit retry streak:%lu deferred:%lu edge:%d due:%lu",
+             (unsigned long)data->adbms_urgent_mute_fail_streak,
+             (unsigned long)data->adbms_urgent_mute_deferred_count,
+             data->adbms_urgent_mute_edge,
+             (unsigned long)data->adbms_urgent_mute_retry_tick);
+    ret |= cli_printline(cli, outline);
+
+    snprintf(outline, CLI_LINESZ,
              "voltage products FC:%u ready:%d estimator_src:%d avg_mask0:0x%04X iir_mask0:0x%04X",
              (unsigned)AMS_ADBMS_IIR_FC,
              smb->filtered_voltage_ready,
@@ -5194,6 +5754,13 @@ static int get_spi_debug_locked(int argc, char *argv[])
              (unsigned long)smb->post.run_count,
              (unsigned long)smb->post.fail_count,
              smb->post.failed_ic_mask, smb->post.unexpected_ic_mask);
+    ret |= cli_printline(cli, outline);
+    snprintf(outline, CLI_LINESZ,
+             "POST failed_step:%u restore_HAL:%u result_HAL:%u stimulus:0x%02X",
+             (unsigned)smb->post.failed_stage,
+             (unsigned)smb->post.restore_status,
+             (unsigned)smb->post.last_status,
+             (unsigned)smb->post.expected_flag_d);
     ret |= cli_printline(cli, outline);
 
     snprintf(outline, CLI_LINESZ,
@@ -5301,6 +5868,12 @@ static int get_spi_debug_locked(int argc, char *argv[])
                  health->configa_mismatch_mask,
                  health->configb_mismatch_mask,
                  health->config_mismatch_mask);
+        ret |= cli_printline(cli, outline);
+        snprintf(outline, CLI_LINESZ,
+                 "diag balance readback cfgB:0x%04X pwmA:0x%04X pwmB:0x%04X",
+                 health->balance_cfgb_mismatch_mask,
+                 health->balance_pwma_mismatch_mask,
+                 health->balance_pwmb_mismatch_mask);
         ret |= cli_printline(cli, outline);
 
         snprintf(outline, CLI_LINESZ,
@@ -5526,14 +6099,135 @@ static int get_spi_debug_locked(int argc, char *argv[])
 
 
 
+
+#if AMS_APM_STANDALONE_EVAL_BENCH
+/* Static CLI-owned snapshot: never allocate this on the CLI task stack. */
+static adbms2950_debug_snapshot_t cli_apm_debug_snapshot;
+static int cli_apm_print_debug(const adbms2950_debug_snapshot_t *s, bool verbose)
+{
+    int ret=0;
+    snprintf(outline,CLI_LINESZ,"DIAG5 sequential capture t:%lu..%lu AUX requested:%u command_wait_OK:%u rc:%u",
+        (unsigned long)s->started_ms,(unsigned long)s->finished_ms,
+        s->aux_requested,s->aux_completed,(unsigned)s->aux_start_status);
+    ret |= cli_printline(cli,outline);
+    ret |= cli_printline(cli,"Diagnostic observations only; not qualified samples. Non-atomic; Vx results may be old.");
+    for(unsigned n=0;n<ADBMS2950_DEBUG_REGS;n++) {
+        const adbms2950_debug_register_t *r=&s->reg[n];
+        if(!verbose && n!=3u && n!=7u && n!=18u && n!=19u && n!=20u && n!=23u) continue;
+        snprintf(outline,CLI_LINESZ,"%s HAL:%s PECok:%04X bad:%04X CCmis:%04X CC:%u expected:%u",
+            adbms2950_debug_register_name(n),cli_hal_status_str(r->status),
+            r->pec_pass,r->pec_fail,r->counter_mismatch,r->observed_ccnt,r->expected_ccnt);
+        ret |= cli_printline(cli,outline);
+        ret |= cli_print_hex_preview("payload+PEC/CCNT:",r->packet,8u);
+    }
+    for(unsigned n=3u;n<=23u;n+=20u) {
+        const adbms2950_debug_register_t *r=&s->reg[n];
+        if(r->status!=HAL_OK) continue;
+        uint32_t mask=adbms2950_decode_fault_mask(r->packet);
+        snprintf(outline,CLI_LINESZ,"%s mask:0x%08lX (sticky/history, not proof of a present rail fault)",
+            adbms2950_debug_register_name(n),(unsigned long)mask);
+        ret |= cli_printline(cli,outline);
+        for(unsigned b=0;b<27u;b++) if(mask & (1ul<<b)) {
+            snprintf(outline,CLI_LINESZ,"  asserted:%s",adbms2950_fault_name(b));
+            ret |= cli_printline(cli,outline);
+        }
+    }
+    if(s->reg[7].status==HAL_OK) {
+        const uint8_t *b=s->reg[7].packet;
+        int32_t raw=adbms2950_debug_s24(b);
+        snprintf(outline,CLI_LINESZ,"OBSERVED I1_counts/uV:%ld VB1_counts:%ld I1_sentinel:%u (not accepted current)",
+            (long)raw,(long)adbms2950_debug_s16(b+4),
+            raw==262143 || raw==-262144);
+        ret |= cli_printline(cli,outline);
+    }
+    if(verbose && s->reg[5].status==HAL_OK) {
+        snprintf(outline,CLI_LINESZ,"OBSERVED I1_uV:%ld I2_uV:%ld (I2 inverted LSB; initialization/config must be checked)",
+            (long)adbms2950_debug_s24(s->reg[5].packet),
+            (long)-adbms2950_debug_s24(s->reg[5].packet+3));
+        ret |= cli_printline(cli,outline);
+    }
+    /* Rev0 Tables51/52: three AUX register groups, explicit sentinel check. */
+    static const char *const aux_names[8]={"VREF1P25","TMP1","VREG","VDD","VDIG","EPAD","VDIV","TMP2"};
+    for(unsigned j=0;j<8u;j++) {
+        unsigned n=18u+j/3u, off=(j%3u)*2u;
+        const adbms2950_debug_register_t *r=&s->reg[n];
+        if(r->status!=HAL_OK) {
+            snprintf(outline,CLI_LINESZ,"%s unavailable: register transport failed",aux_names[j]);
+        } else {
+            int32_t raw=adbms2950_debug_s16(r->packet+off);
+            if(raw==32767 || raw==-32768) {
+                snprintf(outline,CLI_LINESZ,"%s raw:%ld RESET/CLEAR sentinel; no numeric measurement",aux_names[j],(long)raw);
+            } else {
+                int32_t value; const char *unit="uV";
+                if(j==1u) {value=(int32_t)((int64_t)raw*10000/618)-250000;unit="mC";}
+                else if(j==7u) {value=(int32_t)((int64_t)raw*10000/205)-267000;unit="mC";}
+                else value=raw*((j==2u || j==4u)?240:(j==3u?1000:100));
+                snprintf(outline,CLI_LINESZ,"%s raw:%ld observed_%s:%ld refresh_requested:%u",
+                    aux_names[j],(long)raw,unit,(long)value,s->aux_requested && s->aux_completed);
+            }
+        }
+        ret |= cli_printline(cli,outline);
+    }
+    if(s->reg[20].status==HAL_OK) {
+        uint8_t osc=s->reg[20].packet[5];
+        snprintf(outline,CLI_LINESZ,"OSCCNT:0x%02X expected:0x34..0x47 in_range:%u; may latch first oscillator fault",osc,osc>=0x34u && osc<=0x47u);
+        ret |= cli_printline(cli,outline);
+    }
+    if(verbose && s->reg[0].status==HAL_OK && s->reg[1].status==HAL_OK) {
+        const uint8_t *a=s->reg[0].packet,*b=s->reg[1].packet;
+        snprintf(outline,CLI_LINESZ,"CFGA OCEN:%u INJECT:0x%02X SOAK:%u REFUP:%u SNAPST:%u VB1MUX:%u VB2MUX:%u ACCN:%u",
+            a[0]>>7,a[1],a[2]>>5,(a[5]>>4)&1,(a[5]>>5)&1,(a[5]>>6)&1,a[5]>>7,4u*((a[5]&7u)+1u));
+        ret |= cli_printline(cli,outline);
+        snprintf(outline,CLI_LINESZ,"CFGB DIAGSEL:%u OCMODE:%u OCDGT:%u OCEN above; OC thresholds:%u/%u/%u gain_bits:%u",
+            b[5]&7u,(b[4]>>4)&3u,b[3]&3u,b[0]&127u,b[1]&127u,b[2]&127u,(b[4]>>1)&7u);
+        ret |= cli_printline(cli,outline);
+    }
+    if(verbose && s->reg[2].status==HAL_OK) {
+        const uint8_t *b=s->reg[2].packet;
+        snprintf(outline,CLI_LINESZ,"STAT CAL1:%u CAL2:%u OCA:%u OCB:%u GPOH:0x%02X GPOL:0x%02X GPIO:0x%X REV:%u",
+            (b[1]>>6)&1u,b[1]>>7,b[0]&1u,(b[0]>>1)&1u,b[3]>>2,((b[3]&3u)<<4)|(b[4]>>4),b[4]&0x0fu,b[5]>>4);
+        ret |= cli_printline(cli,outline);
+    }
+    if(verbose) {
+        for(unsigned n=12u;n<18u;n++) {
+            if(s->reg[n].status!=HAL_OK) continue;
+            for(unsigned j=0;j<3u;j++) {
+                int32_t raw=adbms2950_debug_s16(s->reg[n].packet+2*j);
+                int32_t scale=n<15u?100:-85;
+                if((n==14u || n==17u) && j==2u) scale=n==14u?240:-204;
+                if(raw==32767 || raw==-32768)
+                    snprintf(outline,CLI_LINESZ,"%s word:%u raw:%ld RESET/CLEAR sentinel; no numeric measurement",
+                        adbms2950_debug_register_name(n),j,(long)raw);
+                else
+                    snprintf(outline,CLI_LINESZ,"%s word:%u raw:%ld observed_uV:%ld age_unknown:1",
+                        adbms2950_debug_register_name(n),j,(long)raw,(long)(raw*scale));
+                ret |= cli_printline(cli,outline);
+            }
+        }
+    }
+    return ret;
+}
+
+#endif
+static bool apm_cli_lock_held;
+
 int get_apm_debug(int argc, char *argv[])
 {
     int ret;
 
-    adbms_spi_lock();
+    if((argc >= 2) && argv[1] &&
+       (!strcmp(argv[1], "sid") || !strcmp(argv[1], "probe")))
+        cli_printline(cli, "APM SID: acquiring SPI, then one RDSID transaction");
+    if(!adbms_spi_cli_try_lock())
+    {
+        return cli_printline(cli, "ADBMS SPI busy; retry after scan");
+    }
+    apm_cli_lock_held = true;
+    cli_spi_report_begin();
     ret = get_apm_debug_locked(argc, argv);
-    adbms_spi_unlock();
-    return ret;
+    if(apm_cli_lock_held) adbms_spi_unlock();
+    apm_cli_lock_held = false;
+    return ret | cli_spi_report_flush();
 }
 
 static void cli_apm_resync_smb_tracking(void)
@@ -5567,20 +6261,124 @@ static int get_apm_debug_locked(int argc, char *argv[])
     {
         if(!strcmp(argv[1], "help"))
         {
-            ret |= cli_printline(cli, "apm status|health              - complete APM diagnostic state");
+            ret |= cli_printline(cli, "apm status|health              - cached qualified state");
+            ret |= cli_printline(cli, "apm debug - fresh AUX rails/temp +24 register groups; no fault clear");
+            ret |= cli_printline(cli, "apm registers -24 read groups without starting conversions");
+            ret |= cli_printline(cli, "apm adcdiag 4|5|6 - explicit I1/VB1 internal-source test; recover afterwards");
+            ret |= cli_printline(cli, "apm power | apm monitor 1..20 - AUX/flags/raw current, continue errors");
+            ret |= cli_printline(cli, "apm history - last8 fault-mask changes (RAM; reset/recover clears)");
+#ifdef AMS_APM_EXTERNAL_EVAL6822
+            ret |= cli_printline(cli, "External EVAL-ADBMS6822: SPI6 mode3 /256; CS_B PE4; JP5 mode3");
+#endif
             ret |= cli_printline(cli, "apm sid|probe                  - identity/transport read");
             ret |= cli_printline(cli, "apm refup                      - verify core/reference readiness");
             ret |= cli_printline(cli, "apm config                     - masked CFGA/CFGB readback");
             ret |= cli_printline(cli, "apm flags                      - decode STAT/FLAG and faults");
+#ifdef DER_APM_STANDALONE
+            ret |= cli_printline(cli, "apm baseline - one startup flag acknowledgement; thermal faults refused");
+#endif
             ret |= cli_printline(cli, "apm raw                        - coherent raw core snapshot");
             ret |= cli_printline(cli, "apm sample                     - coherent I1/VB1 sample");
             ret |= cli_printline(cli, "apm redundant                  - I1/I2 and VB1/VB2 cross-check");
             ret |= cli_printline(cli, "apm eeprom                     - COMM/I2C ACK probe at 0x50");
-            ret |= cli_printline(cli, "apm scope [sid|sample] [1-100] - bounded repeat/soak");
+            ret |= cli_printline(cli, "apm scope [sid|sample] [1-100] [0A|1A|other] - bounded capture");
             ret |= cli_printline(cli, "apm recover                    - bounded APM reinitialization");
             ret |= cli_printline(cli, "apm profile der|eval           - 100uR or 50uR scaling");
             ret |= cli_printline(cli, "apm trace on|off               - SPI previews/counters");
             ret |= cli_printline(cli, "apm clear                      - clear diagnostic counters");
+            return ret;
+        }
+#ifdef DER_APM_STANDALONE
+        else if(!strcmp(argv[1], "baseline"))
+        {
+            if(cli_adbms_refuse_active_scan("apm baseline")) return ret;
+            action_status = adbms2950_startup_baseline(apm);
+            snprintf(outline, CLI_LINESZ,
+                     "APM startup baseline:%s attempted:%u qualified:%u faults:0x%08lX",
+                     cli_hal_status_str(action_status), apm->startup_baseline_attempted,
+                     apm->startup_baseline_valid, (unsigned long)apm->health.fault_mask);
+            ret |= cli_printline(cli, outline);
+            return ret;
+        }
+#endif
+        else if(!strcmp(argv[1], "debug") || !strcmp(argv[1], "registers") ||
+                !strcmp(argv[1], "power") || !strcmp(argv[1], "monitor"))
+        {
+#if AMS_APM_STANDALONE_EVAL_BENCH
+            uint16_t count=1u;
+            bool monitor=!strcmp(argv[1],"monitor");
+            bool fresh=strcmp(argv[1],"registers")!=0;
+            bool verbose=!strcmp(argv[1],"debug") || !strcmp(argv[1],"registers");
+            if(cli_adbms_refuse_active_scan("apm diagnostics")) return ret;
+            if((!monitor && argc!=2) || (monitor && (argc!=3 || !cli_parse_scope_repeat(argv[2],&count) || count>20u)))
+                return cli_printline(cli,"Usage: apm debug|registers|power OR apm monitor 1..20");
+            for(unsigned n=0;n<count;n++) {
+                if(cli->report_cancel) break;
+                action_status=adbms2950_debug_capture(apm,&cli_apm_debug_snapshot,fresh);
+                cli_apm_resync_smb_tracking();
+                adbms_spi_unlock(); apm_cli_lock_held=false;
+                ret |= cli_spi_report_flush();
+                snprintf(outline,CLI_LINESZ,"capture:%u/%u status:%s",n+1u,count,cli_hal_status_str(action_status));
+                ret |= cli_printline(cli,outline);
+                ret |= cli_apm_print_debug(&cli_apm_debug_snapshot,verbose);
+                if(n+1u<count && !cli->report_cancel) {
+                    /* FreeRTOS delays are ticks, not milliseconds. Add one
+                     * tick so tick phase cannot shorten the minimum pause. */
+                    osDelay(1u + ((uint32_t)configTICK_RATE_HZ + 9u) / 10u);
+                    if(!adbms_spi_cli_try_lock()) {
+                        ret |= cli_printline(cli,"monitor stopped: SPI busy"); break;
+                    }
+                    apm_cli_lock_held=true;
+                    cli_spi_report_begin();
+                    /* A scan may have started while UART output owned no SPI
+                     * lock. Revalidate before every subsequent capture. */
+                    if(cli_adbms_refuse_active_scan("apm monitor")) break;
+                }
+            }
+            return ret;
+#else
+            return cli_printline(cli,"DIAG5 capture requires the standalone inhibited APM bench profile");
+#endif
+        }
+        else if(!strcmp(argv[1], "adcdiag"))
+        {
+#if AMS_APM_STANDALONE_EVAL_BENCH
+            if(argc!=3 || !argv[2] || strlen(argv[2])!=1u || argv[2][0]<'4' || argv[2][0]>'6')
+                return cli_printline(cli,"Usage: apm adcdiag 4|5|6 (inhibited bench; stops normal sampling; recover afterwards)");
+            if(cli_adbms_refuse_active_scan("apm adcdiag")) return ret;
+            HAL_StatusTypeDef restore;
+            action_status=adbms2950_debug_adc_probe(apm,(uint8_t)(argv[2][0]-'0'),&cli_apm_debug_snapshot,&restore);
+            if(cli_apm_debug_snapshot.adc_probe.disturbed) data->acc.apm_ready=false;
+            cli_apm_resync_smb_tracking();
+            adbms_spi_unlock();apm_cli_lock_held=false;
+            ret |= cli_spi_report_flush();
+            const adbms2950_adc_probe_t *p=&cli_apm_debug_snapshot.adc_probe;
+            snprintf(outline,CLI_LINESZ,"I1/VB1 DIAGSEL:%c status:%s step:%u config_restore:%s disturbed:%u",
+                argv[2][0],cli_hal_status_str(action_status),p->step,
+                p->restore_attempted?cli_hal_status_str(restore):"NOT_ATTEMPTED",p->disturbed);
+            ret |= cli_printline(cli,outline);
+            snprintf(outline,CLI_LINESZ,"I1CAL:%u clear_verified:%u fresh:%u I1_uV:%ld VB1_counts:%d expected:%s",
+                p->initialized,p->clear_verified,p->fresh,(long)p->i1_raw,(int)p->vb1_raw,
+                p->expected_checked?(p->expected_match?"MATCH":"MISMATCH"):"NOT_CHECKED");
+            ret |= cli_printline(cli,outline);
+            if(p->disturbed) ret |= cli_printline(cli,"Normal sampling invalidated; save output then run apm recover.");
+            if(p->step>=7u) ret |= cli_apm_print_debug(&cli_apm_debug_snapshot,true);
+            return ret;
+#else
+            return cli_printline(cli,"adcdiag requires standalone inhibited APM bench profile");
+#endif
+        }
+        else if(!strcmp(argv[1], "history"))
+        {
+            snprintf(outline,CLI_LINESZ,"Fault changes retained:%u total:%lu; latest8; lost on recovery/reset",apm->fault_history_count,(unsigned long)apm->fault_history_total);
+            ret |= cli_printline(cli,outline);
+            for(unsigned n=0;n<apm->fault_history_count;n++) {
+                unsigned idx=(apm->fault_history_next+ADBMS2950_FAULT_HISTORY-apm->fault_history_count+n)%ADBMS2950_FAULT_HISTORY;
+                const adbms2950_fault_event_t *e=&apm->fault_history[idx];
+                snprintf(outline,CLI_LINESZ,"event:%u t_ms:%lu mask:0x%08lX",n,(unsigned long)e->tick_ms,(unsigned long)e->mask);
+                ret |= cli_printline(cli,outline);
+                ret |= cli_print_hex_preview("FLAG:",e->raw,6u);
+            }
             return ret;
         }
         else if(!strcmp(argv[1], "clear"))
@@ -5616,6 +6414,21 @@ static int get_apm_debug_locked(int argc, char *argv[])
             snprintf(outline, CLI_LINESZ, "ADBMS2950 RDSID: %s",
                      cli_hal_status_str(action_status));
             ret |= cli_printline(cli, outline);
+            /* Keep the probe independent of the large float-rich status
+             * formatter. Full cached health remains available via status. */
+            const adbms2950_spi_debug_t *probe = adbms2950_spi_debug_get(apm);
+            ret |= cli_print_hex_preview("SID:", apm->health.sid, RSID);
+            if(probe) {
+                snprintf(outline, CLI_LINESZ,
+                         "SID HAL:%s PEC pass:0x%04X fail:0x%04X",
+                         cli_hal_status_str(probe->last_xfer_status),
+                         probe->last_read_pec_pass_mask,
+                         probe->last_read_pec_fail_mask);
+                ret |= cli_printline(cli, outline);
+                ret |= cli_print_hex_preview("SID RX:", probe->last_rx_preview,
+                                             ADBMS2950_SPI_DEBUG_PREVIEW_BYTES);
+            }
+            return ret;
         }
         else if(!strcmp(argv[1], "refup"))
         {
@@ -5714,20 +6527,20 @@ static int get_apm_debug_locked(int argc, char *argv[])
             if(redundant != NULL)
             {
                 snprintf(outline, CLI_LINESZ,
-                         "I1:%ld %.3fA I2:%ld %.3fA delta:%.3fA",
+                         "I1_counts:%ld I1_mA:%d I2_counts:%ld I2_mA:%d delta_mA:%d",
                          (long)redundant->i1_raw,
-                         (double)redundant->current1_a,
+                         cli_scaled_int(redundant->current1_a, 1000),
                          (long)redundant->i2_raw,
-                         (double)redundant->current2_a,
-                         (double)redundant->current_disagreement_a);
+                         cli_scaled_int(redundant->current2_a, 1000),
+                         cli_scaled_int(redundant->current_disagreement_a, 1000));
                 ret |= cli_printline(cli, outline);
                 snprintf(outline, CLI_LINESZ,
-                         "VB1:%d %.2fV VB2:%d %.2fV delta:%.2fV",
+                         "VB1_counts:%d VB1_mV:%d VB2_counts:%d VB2_mV:%d delta_mV:%d",
                          (int)redundant->vb1_raw,
-                         (double)redundant->pack_voltage1_v,
+                         cli_scaled_int(redundant->pack_voltage1_v, 1000),
                          (int)redundant->vb2_raw,
-                         (double)redundant->pack_voltage2_v,
-                         (double)redundant->pack_voltage_disagreement_v);
+                         cli_scaled_int(redundant->pack_voltage2_v, 1000),
+                         cli_scaled_int(redundant->pack_voltage_disagreement_v, 1000));
                 ret |= cli_printline(cli, outline);
             }
         }
@@ -5765,6 +6578,10 @@ static int get_apm_debug_locked(int argc, char *argv[])
             uint16_t completed = 0u;
             const char *mode = "sid";
             uint8_t repeat_arg = 2u;
+            const char *label = "unmarked";
+            uint16_t captured = 0u;
+            uint16_t accepted = 0u;
+            HAL_StatusTypeDef first_failure = HAL_OK;
             float min_i = 0.0f, max_i = 0.0f;
             float min_v = 0.0f, max_v = 0.0f;
 
@@ -5789,16 +6606,54 @@ static int get_apm_debug_locked(int argc, char *argv[])
                     "Usage: apm scope [sid|sample] [1-100]");
                 return ret;
             }
+            if(argc > (int)repeat_arg + 2)
+                return cli_printline(cli, "Usage: apm scope sample 10 [0A|1A|other]");
+            if(argc == (int)repeat_arg + 2)
+            {
+                label = argv[repeat_arg + 1u];
+                if(strcmp(label, "0A") && strcmp(label, "1A") && strcmp(label, "other"))
+                    return cli_printline(cli, "Label must be 0A, 1A or other (operator annotation only)");
+            }
             for(completed = 0u; completed < repeat; completed++)
             {
+                if(cli->report_cancel)
+                {
+                    action_status = HAL_BUSY;
+                    break;
+                }
                 if(!strcmp(mode, "sample"))
                 {
                     action_status = adbms2950_read_primary_sample(
                         apm, osKernelGetTickCount());
+                    const adbms2950_health_t *captured_health = adbms2950_health_get(apm);
+                    cli_apm_capture_row_t *row = &cli_apm_capture[captured++];
+                    row->attempt = captured_health->primary_attempt;
+                    row->tick = captured_health->primary_attempt_ms;
+                    row->raw = adbms2950_debug_s24(captured_health->primary_packet);
+                    row->current_ma = cli_scaled_int(captured_health->current_a, 1000);
+                    row->valid = captured_health->sample_valid;
+                    row->checked = captured_health->primary_packet_checked;
+                    row->stage = (uint8_t)captured_health->last_stage;
+                    row->reason = (uint8_t)captured_health->last_reason;
+                    row->status = (uint8_t)action_status;
+                    memcpy(row->packet, captured_health->primary_packet, 8u);
+                    row->flag_checked = captured_health->primary_flag_checked;
+                    row->conversion_count = captured_health->i1_conversion_count;
+                    row->phase = captured_health->i1_conversion_phase;
+                    row->stat_cc = captured_health->primary_status_counter;
+                    row->sample_cc = captured_health->primary_sample_counter;
+                    row->flag_cc = captured_health->primary_flag_counter;
+                    row->config_valid = captured_health->config_valid;
+                    memcpy(row->raw_stat, captured_health->raw_status, 6u);
+                    memcpy(row->raw_flag, captured_health->raw_flag, 6u);
+                    /* Latest verified readback, NOT fresh configuration reads.
+                     * Preserve acquisition timing and snapshot transaction. */
+                    memcpy(row->cfga, apm->ics[0].configa.rx_data, 6u);
+                    memcpy(row->cfgb, apm->ics[0].configb.rx_data, 6u);
                     if(action_status == HAL_OK)
                     {
-                        const adbms2950_health_t *h = adbms2950_health_get(apm);
-                        if(completed == 0u)
+                        const adbms2950_health_t *h = captured_health;
+                        if(accepted == 0u)
                         {
                             min_i = max_i = h->current_a;
                             min_v = max_v = h->pack_voltage_v;
@@ -5810,28 +6665,79 @@ static int get_apm_debug_locked(int argc, char *argv[])
                             if(h->pack_voltage_v < min_v) min_v = h->pack_voltage_v;
                             if(h->pack_voltage_v > max_v) max_v = h->pack_voltage_v;
                         }
+                        accepted++;
                     }
                 }
                 else
                 {
                     action_status = adbms2950_spi_probe_sid(apm);
                 }
-                if(action_status != HAL_OK) break;
+                if(action_status != HAL_OK && first_failure == HAL_OK) first_failure=action_status;
+                if(action_status != HAL_OK &&
+                   (strcmp(mode,"sample") || !apm->health.primary_packet_checked)) break;
+                if((completed + 1u) < repeat)
+                {
+                    adbms_spi_unlock();
+                    apm_cli_lock_held = false;
+                    osDelay(2u);
+                    if(!adbms_spi_cli_try_lock())
+                    {
+                        action_status = HAL_BUSY;
+                        completed++;
+                        break;
+                    }
+                    apm_cli_lock_held = true;
+                }
             }
-            cli_apm_resync_smb_tracking();
+            if(apm_cli_lock_held) {
+                cli_apm_resync_smb_tracking();
+                adbms_spi_unlock();
+                apm_cli_lock_held = false;
+            }
+            /* Disable deferred reporting now that SPI is free. A 100-row
+             * capture can exceed the normal 16 KiB report buffer. */
+            ret |= cli_spi_report_flush();
+            for(uint16_t n = 0u; n < captured; n++)
+            {
+                if(cli->report_cancel) break;
+                const cli_apm_capture_row_t *r = &cli_apm_capture[n];
+                snprintf(outline, CLI_LINESZ,
+                    "APM row:%u label:%.8s seq:%lu t_ms:%lu valid:%d",
+                    (unsigned)n, label, (unsigned long)r->attempt,
+                    (unsigned long)r->tick, r->valid);
+                ret |= cli_printline(cli, outline);
+                snprintf(outline, CLI_LINESZ,
+                    "observed_raw:%ld last_accepted_mA:%d packet_checked:%d rc:%u stage:%u reason:%u",
+                    (long)r->raw, r->current_ma, r->checked, r->status, r->stage, r->reason);
+                ret |= cli_printline(cli, outline);
+                ret |= cli_print_hex_preview("RDIVB1 payload+PEC/CCNT:", r->packet, 8u);
+                snprintf(outline, CLI_LINESZ,
+                    "epoch flag_checked:%d I1cnt:%u phase:%u CCNT:%u/%u/%u cfg_cached_valid:%d",
+                    r->flag_checked, (unsigned)r->conversion_count, (unsigned)r->phase,
+                    r->stat_cc, r->sample_cc, r->flag_cc, r->config_valid);
+                ret |= cli_printline(cli, outline);
+                ret |= cli_print_hex_preview("STAT cached:", r->raw_stat, 6u);
+                ret |= cli_print_hex_preview("FLAG cached:", r->raw_flag, 6u);
+                ret |= cli_print_hex_preview("CFGA cached readback:", r->cfga, 6u);
+                ret |= cli_print_hex_preview("CFGB cached readback:", r->cfgb, 6u);
+                osDelay(1u);
+            }
             snprintf(outline, CLI_LINESZ,
                      "ADBMS2950 scope %s requested:%u completed:%u status:%s",
                      mode, (unsigned)repeat, (unsigned)completed,
-                     cli_hal_status_str(action_status));
+                     cli_hal_status_str(first_failure!=HAL_OK?first_failure:action_status));
             ret |= cli_printline(cli, outline);
-            if(!strcmp(mode, "sample") && (completed > 0u))
+            if(!strcmp(mode, "sample") && (accepted > 0u))
             {
                 snprintf(outline, CLI_LINESZ,
-                         "scope range current:%.3f..%.3fA pack:%.2f..%.2fV",
-                         (double)min_i, (double)max_i,
-                         (double)min_v, (double)max_v);
+                         "accepted-only range current_mA:%d..%d pack_mV:%d..%d",
+                         cli_scaled_int(min_i, 1000), cli_scaled_int(max_i, 1000),
+                         cli_scaled_int(min_v, 1000), cli_scaled_int(max_v, 1000));
                 ret |= cli_printline(cli, outline);
             }
+            snprintf(outline,CLI_LINESZ,"scope captured:%u accepted:%u rejected:%u (range excludes rejected observations)",captured,accepted,captured-accepted);
+            ret |= cli_printline(cli,outline);
+            return ret; /* Rows were captured while locked; no live status after unlock. */
         }
         else if(strcmp(argv[1], "status") && strcmp(argv[1], "health"))
         {
@@ -5904,12 +6810,22 @@ static int get_apm_debug_locked(int argc, char *argv[])
              health->hv_dividers_enabled ? "ON" : "OFF");
     ret |= cli_printline(cli, outline);
     snprintf(outline, CLI_LINESZ,
-             "sample valid:%d I:%d V:%d rawI:%ld %.3fA rawVB:%d %.2fV",
+             "sample valid:%d I:%d V:%d raw_counts:%ld current_mA:%d rawVB:%d pack_mV:%d",
              health->sample_valid, health->current_valid,
              health->pack_voltage_valid, (long)health->i1_raw,
-             (double)health->current_a, (int)health->vb1_raw,
-             (double)health->pack_voltage_v);
+             cli_scaled_int(health->current_a, 1000), (int)health->vb1_raw,
+             cli_scaled_int(health->pack_voltage_v, 1000));
     ret |= cli_printline(cli, outline);
+    snprintf(outline, CLI_LINESZ,
+             "primary seq:%lu attempt_ms:%lu packet_checked:%d CCNT stat/sample/flag:%u/%u/%u",
+             (unsigned long)health->primary_attempt,
+             (unsigned long)health->primary_attempt_ms, health->primary_packet_checked,
+             health->primary_status_counter, health->primary_sample_counter,
+             health->primary_flag_counter);
+    ret |= cli_printline(cli, outline);
+    ret |= cli_print_hex_preview("RDIVB1 payload+PEC/CCNT:", health->primary_packet, 8u);
+    ret |= cli_printline(cli, "Invalid samples retain last accepted values; packet_checked is transport only.");
+    ret |= cli_printline(cli, "I1 scale: 1 count = 1 uV; DER 100uOhm nominal: 100 counts = 1 A.");
     snprintf(outline, CLI_LINESZ,
              "fresh I1cnt:%u last:%u phase:%u seen:%d advanced:%d age:%lums",
              (unsigned)health->i1_conversion_count,
@@ -5978,30 +6894,141 @@ static int get_apm_debug_locked(int argc, char *argv[])
                                  ADBMS2950_SPI_DEBUG_PREVIEW_BYTES);
 
     snprintf(outline, CLI_LINESZ,
-             "cal:%s shunt:%.1fuOhm gain:%.6f offset:%.3fuV polarity:%d",
+             "cal:%s shunt_uOhm:%d gain_ppm:%d offset_nV:%d polarity:%d",
              adbms2950_calibration_profile_str(calibration->profile),
-             (double)(calibration->shunt_resistance_ohm * 1.0e6f),
-             (double)calibration->current_gain,
-             (double)calibration->current_offset_uv,
+             cli_scaled_int(calibration->shunt_resistance_ohm, 1000000),
+             cli_scaled_int(calibration->current_gain, 1000000),
+             cli_scaled_int(calibration->current_offset_uv, 1000),
              (int)calibration->current_polarity);
     ret |= cli_printline(cli, outline);
-    snprintf(outline, CLI_LINESZ, "VB ratios VB1:%.3f VB2:%.3f",
-             (double)calibration->vb1_divider_ratio,
-             (double)calibration->vb2_divider_ratio);
+    snprintf(outline, CLI_LINESZ, "VB ratios milli VB1:%d VB2:%d",
+             cli_scaled_int(calibration->vb1_divider_ratio, 1000),
+             cli_scaled_int(calibration->vb2_divider_ratio, 1000));
     ret |= cli_printline(cli, outline);
     if(redundant != NULL)
     {
         snprintf(outline, CLI_LINESZ,
-                 "redundant valid:%d status:%s dI:%.3fA dV:%.2fV",
+                 "redundant valid:%d status:%s dI_mA:%d dV_mV:%d",
                  redundant->valid,
                  cli_hal_status_str(redundant->last_status),
-                 (double)redundant->current_disagreement_a,
-                 (double)redundant->pack_voltage_disagreement_v);
+                 cli_scaled_int(redundant->current_disagreement_a, 1000),
+                 cli_scaled_int(redundant->pack_voltage_disagreement_v, 1000));
         ret |= cli_printline(cli, outline);
     }
     return ret;
 }
 
+
+/* These commands observe the existing supervisor/ISR publications only.
+ * They never perform an IMD capture, assert BMS_OK, or actuate contactors. */
+
+#if AMS_ENABLE_IMD
+static const char *cli_imd_status_str(imd_status_t status)
+{
+    switch(status)
+    {
+    case IMD_SHORT_TO_CHASSIS_GROUND: return "short_to_chassis";
+    case IMD_NORMAL: return "normal";
+    case IMD_UNDERVOLT: return "undervoltage";
+    case IMD_SPEED_START: return "speed_start";
+    case IMD_DEVICE_ERROR: return "device_error";
+    case IMD_GROUND_FAULT: return "ground_fault";
+    default: return "unknown";
+    }
+}
+
+#endif
+
+int get_imd_diag(int argc, char *argv[])
+{
+    if((argc > 2) || ((argc == 2) && strcmp(argv[1], "status")))
+        return cli_printline(cli, "usage: imd [status]");
+#if AMS_ENABLE_IMD
+    imd_t snapshot;
+    imd_status_t published_status;
+    bool valid, ok, fault;
+    uint32_t last_valid;
+    uint32_t now;
+    /* TIM2 and the IMD task use RTOS-compatible interrupt priorities. Copy
+     * their bounded publication while masked, then print after unmasking. */
+    taskENTER_CRITICAL();
+    snapshot = data->board.imd;
+    valid = data->imd_valid;
+    published_status = data->imd_status;
+    ok = data->imd_ok;
+    fault = data->imd_fault;
+    last_valid = data->imd_last_valid_tick;
+    now = osKernelGetTickCount();
+    taskEXIT_CRITICAL();
+    uint32_t age = snapshot.capture_seen ? now - snapshot.last_capture_tick : UINT32_MAX;
+    bool fresh = snapshot.capture_seen && age <= AMS_IMD_CAPTURE_TIMEOUT_MS;
+    int ret = 0;
+    int freq_whole, freq_dec, duty_whole, duty_dec;
+    /* Derive signal telemetry from the coherent ISR tuple, not partially
+     * processed driver fields if this CLI preempted the IMD task. */
+    float freq = snapshot.captured_total_count ?
+        (float)snapshot.clock_freq / (float)snapshot.captured_total_count : 0.0f;
+    float duty = snapshot.captured_total_count ?
+        100.0f * (float)snapshot.captured_high_count / (float)snapshot.captured_total_count : 0.0f;
+    cli_fixed1(freq, &freq_whole, &freq_dec);
+    cli_fixed1(duty, &duty_whole, &duty_dec);
+    snprintf(outline, CLI_LINESZ,
+             "IMD enabled:1 published_valid:%d ok:%d fault:%d status:%s raw_OK_HS:%d",
+             valid, ok, fault, cli_imd_status_str(published_status),
+             HAL_GPIO_ReadPin(IMD_STAT_GPIO_Port, IMD_STAT_Pin) == GPIO_PIN_SET);
+    ret |= cli_printline(cli, outline);
+    snprintf(outline, CLI_LINESZ,
+             "IMD map status:PC5 PWM:PA5 TIM2_CH1 period/CH2 high init:%s started:%d",
+             cli_hal_status_str(snapshot.init_status), snapshot.capture_started);
+    ret |= cli_printline(cli, outline);
+    snprintf(outline, CLI_LINESZ,
+             "IMD latest signal freq:%d.%01dHz duty:%d.%01d%% clock:%luHz period:%lu high:%lu",
+             freq_whole, freq_dec, duty_whole, duty_dec,
+             (unsigned long)snapshot.clock_freq, (unsigned long)snapshot.captured_total_count,
+             (unsigned long)snapshot.captured_high_count);
+    ret |= cli_printline(cli, outline);
+    snprintf(outline, CLI_LINESZ,
+             "IMD latest capture count:%lu seen:%d fresh:%d age:%lums timeout:%ums period:%lu high:%lu",
+             (unsigned long)snapshot.capture_count, snapshot.capture_seen, fresh,
+             (unsigned long)age, (unsigned)AMS_IMD_CAPTURE_TIMEOUT_MS,
+             (unsigned long)snapshot.captured_total_count,
+             (unsigned long)snapshot.captured_high_count);
+    ret |= cli_printline(cli, outline);
+    snprintf(outline, CLI_LINESZ, "IMD last_valid_tick:%lu now:%lu ret:%d",
+             (unsigned long)last_valid, (unsigned long)now, snapshot.ret);
+    ret |= cli_printline(cli, outline);
+    return ret;
+#else
+    return cli_printline(cli, "IMD disabled in this build");
+#endif
+}
+
+int get_air_diag(int argc, char *argv[])
+{
+    if((argc > 2) || ((argc == 2) && strcmp(argv[1], "status")))
+        return cli_printline(cli, "usage: air [status]");
+    bool inhibited, bms, control;
+    taskENTER_CRITICAL();
+    inhibited = data->bms_output_inhibit;
+    bms = data->bms_state;
+    control = data->air_state;
+    taskEXIT_CRITICAL();
+    int ret = 0;
+    snprintf(outline, CLI_LINESZ,
+             "RTM HV_PRESENT raw PF9:%d AIR_CONTROL raw PF11:%d sampled:%d legacy_TSAL raw PE13:%d",
+             HAL_GPIO_ReadPin(HV_ACTIVE_GPIO_Port, HV_ACTIVE_Pin) == GPIO_PIN_SET,
+             HAL_GPIO_ReadPin(AIR_CTRL_GPIO_Port, AIR_CTRL_Pin) == GPIO_PIN_SET,
+             control, HAL_GPIO_ReadPin(TSAL_GPIO_Port, TSAL_Pin) == GPIO_PIN_SET);
+    ret |= cli_printline(cli, outline);
+    snprintf(outline, CLI_LINESZ,
+             "BMS_OK PE0 raw:%d state:%d inhibit:%d aux_feedback_enabled:%d",
+             HAL_GPIO_ReadPin(BMS_OK_GPIO_Port, BMS_OK_Pin) == GPIO_PIN_SET,
+             bms, inhibited, AMS_ENABLE_AIR_AUX_FEEDBACK);
+    ret |= cli_printline(cli, outline);
+    ret |= cli_printline(cli, "HV_PRESENT is a digital indication; AIR_CONTROL is coil/control voltage, not contact position");
+    ret |= cli_printline(cli, "Precharge completion is hardware-controlled; no independent load voltage or contact feedback is measured here");
+    return ret;
+}
 
 int get_current(int argc, char *argv[])
 {
@@ -6047,6 +7074,7 @@ int get_current(int argc, char *argv[])
                 CURRENT_SENSOR_REASON_CALIBRATION_CHANGED;
             taskEXIT_CRITICAL();
             ams_current_window_unlock();
+            ams_runtime_identity_refresh(data, true);
             ret |= cli_printline(cli, "current zero: cleared");
             return ret;
 #else
@@ -6131,6 +7159,11 @@ int get_current(int argc, char *argv[])
         }
         cs_snapshot = *cs;
         ams_current_window_unlock();
+
+        if(zero_captured)
+        {
+            ams_runtime_identity_refresh(data, true);
+        }
 
         if(zero_captured)
         {
@@ -6863,6 +7896,18 @@ int get_uart_diag(int argc, char *argv[])
              cli->index);
     ret |= cli_printline(cli, outline);
 
+    snprintf(outline, CLI_LINESZ,"CLI RX queued:%u overflow:%lu long:%lu stop:%lu",
+             cli->rx_count,(unsigned long)cli->rx_queue_overflow,
+             (unsigned long)cli->rx_line_overflow,(unsigned long)cli->stop_count);
+    ret |= cli_printline(cli,outline);
+    snprintf(outline, CLI_LINESZ,"CLI TX queued:%u peak:%lu drop:%lu err:%lu abort:%lu",
+             cli->tx_used,(unsigned long)cli->tx_high_water,(unsigned long)cli->tx_dropped,
+             (unsigned long)cli->tx_errors,(unsigned long)cli->tx_aborts);
+    ret |= cli_printline(cli,outline);
+    snprintf(outline, CLI_LINESZ,"CLI command last/max:%lu/%lums stop_tick:%lu",
+             (unsigned long)cli->command_last_ms,(unsigned long)cli->command_max_ms,
+             (unsigned long)cli->stop_applied_tick);
+    ret |= cli_printline(cli,outline);
     return ret;
 }
 
@@ -7368,9 +8413,10 @@ int get_bringup(int argc, char *argv[])
         ret |= cli_printline(cli, outline);
 
         snprintf(outline, CLI_LINESZ,
-                 "counts cells:%u/%u temps:%u/%u charge_stop:%d",
+                 "counts cells:%u/%u observed (%u physical) temps:%u/%u charge_stop:%d",
                  (unsigned)data->voltage_usable_cell_count,
                  (unsigned)AMS_EXPECTED_CELL_COUNT,
+                 (unsigned)AMS_PHYSICAL_SERIES_CELLS,
                  (unsigned)data->temp_usable_sensor_count,
                  (unsigned)AMS_EXPECTED_TEMP_SENSOR_COUNT,
                  data->charge_voltage_stop);
@@ -7433,6 +8479,27 @@ int get_version(int argc, char *argv[])
              (unsigned)data->acc.smb.string);
     ret |= cli_printline(cli, outline);
     snprintf(outline, CLI_LINESZ,
+             "runtime manifest crc:%08lX source:%08lX cal:%08lX valid:%d",
+             (unsigned long)data->runtime_manifest.manifest_crc,
+             (unsigned long)data->runtime_manifest.source_identity_crc,
+             (unsigned long)data->runtime_manifest.current_calibration_crc,
+             ams_runtime_manifest_valid(&data->runtime_manifest));
+    ret |= cli_printline(cli, outline);
+    snprintf(outline, CLI_LINESZ,
+             "runtime models est:%08lX sop:%08lX soh:%08lX fuse:%08lX",
+             (unsigned long)data->runtime_manifest.estimator_model_crc,
+             (unsigned long)data->runtime_manifest.sop_model_crc,
+             (unsigned long)data->runtime_manifest.soh_model_crc,
+             (unsigned long)data->runtime_manifest.fuse_model_crc);
+    ret |= cli_printline(cli, outline);
+    snprintf(outline, CLI_LINESZ,
+             "runtime contracts thresholds:%08lX can:%08lX topo:%08lX cal_id:%lu",
+             (unsigned long)data->runtime_manifest.thresholds_crc,
+             (unsigned long)data->runtime_manifest.can_contract_crc,
+             (unsigned long)data->runtime_manifest.topology_crc,
+             (unsigned long)data->runtime_manifest.current_calibration_id);
+    ret |= cli_printline(cli, outline);
+    snprintf(outline, CLI_LINESZ,
              "diagnostics service_cli:%d adbms_injection:%d auto_temp_scan:%d HIL_replace:%d discharge_timer:%d",
              AMS_ENABLE_SERVICE_CLI,
              AMS_ENABLE_ADBMS_FAULT_INJECTION,
@@ -7465,7 +8532,11 @@ int bmsok_control(int argc, char *argv[])
             ret |= cli_printline(cli,
                 "BMS_OK release REFUSED: build-profile source lock is immutable");
 #elif AMS_ENABLE_SERVICE_CLI
+            taskENTER_CRITICAL();
+            if(cli->stop_requested || cli->command_stop_count!=cli->stop_count)
+            {taskEXIT_CRITICAL();return 1;}
             data->bms_output_inhibit = false;
+            taskEXIT_CRITICAL();
             ret |= cli_printline(cli, "BMS_OK output release enabled; safety gates still apply");
 #else
             ret |= cli_service_action_refused("BMS_OK release");
@@ -7506,6 +8577,19 @@ int bmsok_control(int argc, char *argv[])
     ret |= cli_printline(cli, outline);
 
     return ret;
+}
+
+int charger_power_control(int argc, char *argv[])
+{
+    if((argc == 2) && !strcmp(argv[1], "off"))
+    {
+        set_bms(false);
+        return cli_printline(cli, "BMS_OK forced low; service request cleared");
+    }
+    if((argc == 1) || ((argc == 2) && !strcmp(argv[1], "status")))
+        return cli_printline(cli, "Cart power unavailable: observation-only image; BMS_OK compile-locked low");
+    cli_printline(cli, "REFUSED: cart power override removed; independently power charger for CAN testing");
+    return 1;
 }
 
 int balance_control(int argc, char *argv[])
@@ -7634,17 +8718,31 @@ int set_state(int argc, char *argv[])
 
         if(!strcmp(argv[1], "charge"))
         {
+#if AMS_VEHICLE_ONLY_BUILD
+            cli_printline(cli,"REFUSED: non-charging vehicle project");return 1;
+#endif
             requested_state = STATE_CHARGE;
         }
         else if(!strcmp(argv[1], "discharge"))
         {
+#if AMS_CHARGER_ONLY_BUILD
+            cli_printline(cli, "REFUSED: charger-only project; use state stop");
+            return 1;
+#else
             requested_state = STATE_DISCARGE;
+#endif
         }
+#if AMS_CHARGER_ONLY_BUILD || AMS_VEHICLE_ONLY_BUILD
+        else if(!strcmp(argv[1], "stop"))
+        {
+            requested_state = STATE_START;
+        }
+#endif
         else
         {
             snprintf(outline, CLI_LINESZ, "ERROR: unrecognized state: %s", argv[1]);
             cli_printline(cli, outline);
-            cli_printline(cli, "Usage: state [charge|discharge]");
+            cli_printline(cli, "Usage: state [discharge|stop]");
             return 1;
         }
 
@@ -7656,6 +8754,15 @@ int set_state(int argc, char *argv[])
          * cleanup, so the higher-priority supervisor cannot reassert BMS_OK
          * while bleed outputs are still being cleared. */
         taskENTER_CRITICAL();
+#if AMS_BUILD_PROFILE == AMS_PROFILE_CHARGE_REVIEW
+        data->charger_service_power_requested = false;
+        data->charger_service_power_expires_tick = 0u;
+#endif
+        if(cli->stop_requested || cli->command_stop_count!=cli->stop_count)
+        {
+            taskEXIT_CRITICAL();
+            return 1;
+        }
         set_bms(false);
         transition_result = ams_state_transition_begin(
             data,
@@ -7666,11 +8773,14 @@ int set_state(int argc, char *argv[])
         if((transition_result != AMS_STATE_TRANSITION_REJECTED) &&
            (requested_state == STATE_CHARGE))
         {
+#if (AMS_BUILD_PROFILE != AMS_PROFILE_CHARGE_REVIEW) || \
+    AMS_CHARGE_REVIEW_C1_UNOBSERVED_CHARGE_ALLOWED
             /* A CLI state change must not fabricate charger freshness.  Force
              * the charge path to wait for a real charger status frame. */
             data->board.charger.last_rx_tick = 0u;
             data->board.charger.communication_fail = true;
             data->charger_fault = true;
+#endif
         }
         taskEXIT_CRITICAL();
 
@@ -7714,7 +8824,7 @@ int set_state(int argc, char *argv[])
     else
     {
         cli_printline(cli, "ERROR: too many arguments");
-        cli_printline(cli, "Usage: state [charge|discharge]");
+        cli_printline(cli, "Usage: state [discharge|stop]");
         return 1;
     }
 

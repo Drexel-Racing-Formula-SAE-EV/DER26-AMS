@@ -1,3 +1,4 @@
+#include "ams_task_schedule.h"
 /*
 *   imd_task.h
 *   Created: 3/25/2024
@@ -99,7 +100,7 @@ void imd_task_fn(void *argument)
     {
     	entry = osKernelGetTickCount();
 		(void)imd_task_update(data, entry);
-    	osDelayUntil(entry + (1000 / IMD_FREQ));
+    	ams_task_delay_until(entry + (1000 / IMD_FREQ));
     }
 
 }

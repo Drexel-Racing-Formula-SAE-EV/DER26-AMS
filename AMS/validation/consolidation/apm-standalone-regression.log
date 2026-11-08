@@ -1,0 +1,29 @@
+cc -std=c11 -g -O0 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -Wno-missing-field-initializers -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -DSTM32F767xx -DUSE_HAL_DRIVER -DAMS_HOST_TEST=1 -Iinclude -I.. -I../Core/Inc -I../Core/Inc/tasks -I../Core/Inc/ext_drivers -I../Drivers/CMSIS/Include -I../Drivers/CMSIS/Device/ST/STM32F7xx/Include -I../Drivers/STM32F7xx_HAL_Driver/Inc -I../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy -I../Middlewares/Third_Party/FreeRTOS/Source/include -I../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1 -Werror -DDER_APM_STANDALONE=1 -DAMS_HOST_ONLY_ADBMS2950_HARDENING_TEST=1 unit/apm_regression.c ../Core/Src/estimator/ams_soc_ekf.c ../Core/Src/estimator/ams_estimator_lut.c ../Core/Src/ext_drivers/adbms2950.c ../Core/Src/ext_drivers/air_monitor.c ../Core/Src/ext_drivers/main_fuse_monitor.c ../Core/Src/ext_drivers/parallel_connection_observer.c ../Core/Src/ext_drivers/thermistor_model.c -o build/apm_standalone_regression -lm
+build/apm_standalone_regression
+PASS ADBMS2950 calibration/phase freshness
+PASS ADBMS2950 masked config readback
+PASS ADBMS2950 COMM ACK/EEPROM probe
+PASS ADBMS2950 redundant diagnostic/CS timing
+PASS ADBMS2950 REFUP/snapshot/flags/CCNT reset
+ALL AMS UNIT TESTS PASSED
+PASS ADBMS2950 single-shot/continuous initialization
+Init single=1 continuous=150 calibrated=1 HAL=0 expected_ok=1 failures=0
+Init single=1 continuous=150 calibrated=0 HAL=1 expected_ok=0 failures=0
+Init single=0 continuous=150 calibrated=1 HAL=1 expected_ok=0 failures=0
+Init single=1 continuous=0 calibrated=1 HAL=1 expected_ok=0 failures=0
+Init single=1 continuous=135 calibrated=1 HAL=1 expected_ok=0 failures=0
+Init single=1 continuous=136 calibrated=1 HAL=0 expected_ok=1 failures=0
+Absent-device SID error/trace regression failures=0
+MED1 injection: HAL=1 sample_valid=0 current_valid=0 fault_mask=0x00020000
+Legacy wake repeated-transaction regression failures=0
+Bridge readiness idle/port regression failures=0
+Startup baseline persistent=0 status=0 valid=1 failures=0
+Startup baseline persistent=1 status=1 valid=0 failures=0
+Thermal baseline refusal failures=0
+Disabled-voltage sentinel isolation enabled=0 status=0 failures=0
+Disabled-voltage sentinel isolation enabled=1 status=1 failures=0
+Failed recovery preservation status=3 failures=0
+Primary diagnostic packet scenario=0 failures=0
+Primary diagnostic packet scenario=1 failures=0
+Primary diagnostic packet scenario=2 failures=0
+Existing test exit=0; independent FLAG mismatches=0/12

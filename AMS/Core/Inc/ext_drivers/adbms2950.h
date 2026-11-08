@@ -71,7 +71,8 @@ typedef enum
   ADBMS2950_REASON_CONVERSION_STALL,
   ADBMS2950_REASON_SENTINEL,
   ADBMS2950_REASON_PERIPHERAL_NACK,
-  ADBMS2950_REASON_RESTORE
+  ADBMS2950_REASON_RESTORE,
+  ADBMS2950_REASON_HARDWARE_FAULT
 } adbms2950_reason_t;
 
 typedef struct
@@ -230,6 +231,16 @@ typedef struct
   uint32_t fault_mask;
   uint8_t raw_status[TX_DATA];
   uint8_t raw_flag[TX_DATA];
+  /* Latest primary attempt, retained independently of the final UNSNAP trace.
+   * packet_checked means RDIVB1 passed transport checks, not sample safety. */
+  uint32_t primary_attempt;
+  uint32_t primary_attempt_ms;
+  bool primary_packet_checked;
+  bool primary_flag_checked; /* FLAG/count belongs to this primary attempt. */
+  uint8_t primary_packet[8];
+  uint8_t primary_status_counter;
+  uint8_t primary_sample_counter;
+  uint8_t primary_flag_counter;
   int32_t i1_raw;
   int16_t vb1_raw;
   float current_a;
@@ -297,6 +308,35 @@ typedef struct
 } adbms2950_asic;
 
 /* adbms2950 main driver */
+/* DIAG5: observation is separate from qualified measurement publication. */
+#define ADBMS2950_DEBUG_REGS 24u
+#define ADBMS2950_FAULT_HISTORY 8u
+typedef struct {
+  uint32_t tick_ms, mask;
+  uint8_t raw[6];
+} adbms2950_fault_event_t;
+typedef struct {
+  uint8_t packet[8];
+  HAL_StatusTypeDef status;
+  uint16_t pec_pass, pec_fail, counter_mismatch;
+  uint8_t observed_ccnt, expected_ccnt;
+} adbms2950_debug_register_t;
+typedef struct {
+  uint8_t mode, step; /* 1 precheck, 2 stop, 3 config, 4 clear,
+                      * 5 conversion, 6 result, 7 capture, 8 expected screening */
+  bool initialized, disturbed, restore_attempted, clear_verified, fresh;
+  bool expected_checked, expected_match;
+  int32_t i1_raw;
+  int16_t vb1_raw;
+} adbms2950_adc_probe_t;
+typedef struct {
+  adbms2950_adc_probe_t adc_probe;
+  uint32_t started_ms, finished_ms;
+  HAL_StatusTypeDef aux_start_status;
+  bool aux_requested, aux_completed;
+  adbms2950_debug_register_t reg[ADBMS2950_DEBUG_REGS];
+} adbms2950_debug_snapshot_t;
+
 typedef struct
 {
 	float vbat[NVBATS]; // Actual battery voltage
@@ -320,6 +360,15 @@ typedef struct
 	 * probed from either end, but subset writes are safe only from this owner. */
 	adbms_string write_string;
 	TIM_HandleTypeDef *htim;
+	/* Standalone bridge readiness cache; invalidate on transfer failures. */
+	bool startup_baseline_attempted;
+	bool startup_baseline_valid;
+	uint8_t startup_raw_flag[6];
+	bool bridge_ready;
+	adbms_string bridge_string;
+	uint32_t bridge_activity_ms;
+	uint32_t bridge_wakes;
+	uint32_t bridge_wake_skips;
 	HAL_StatusTypeDef delay_last_status;
 	uint32_t delay_timeout_count;
 	adbms2950_spi_debug_t spi_debug;
@@ -327,7 +376,23 @@ typedef struct
 	adbms2950_calibration_t calibration;
 	adbms2950_redundant_sample_t redundant_sample;
 	adbms2950_core_snapshot_t core_snapshot;
+  adbms2950_fault_event_t fault_history[ADBMS2950_FAULT_HISTORY];
+  uint32_t fault_history_total;
+  uint8_t fault_history_count, fault_history_next;
 } adbms2950_driver_t;
+
+/* Caller owns the existing SPI mutex. New capture is restricted to one IC.
+ * Reads are sequential, NOT an atomic snapshot. No clear/reset/config writes.
+ * refresh_aux issues ADX only; external Vx results remain age-unknown. */
+HAL_StatusTypeDef adbms2950_debug_capture(adbms2950_driver_t *dev,
+    adbms2950_debug_snapshot_t *snapshot, bool refresh_aux);
+HAL_StatusTypeDef adbms2950_debug_adc_probe(adbms2950_driver_t *dev, uint8_t mode,
+    adbms2950_debug_snapshot_t *snapshot, HAL_StatusTypeDef *restore_status);
+const char *adbms2950_debug_register_name(unsigned index);
+uint32_t adbms2950_decode_fault_mask(const uint8_t flag[6]);
+const char *adbms2950_fault_name(unsigned bit);
+int32_t adbms2950_debug_s24(const uint8_t *bytes);
+int32_t adbms2950_debug_s16(const uint8_t *bytes);
 
 /* Legacy standalone initializer retained for source compatibility.  New AMS
  * code must use adbms2950_init_mixed_chain() so reset ownership and chain
@@ -401,6 +466,7 @@ void adbms2950_rdv1d(adbms2950_driver_t* dev); //rd48, reads v1adc for v7a, v2ad
 
 HAL_StatusTypeDef adbms2950_read_sid(adbms2950_driver_t *dev);
 HAL_StatusTypeDef adbms2950_read_status(adbms2950_driver_t *dev);
+HAL_StatusTypeDef adbms2950_startup_baseline(adbms2950_driver_t *dev);
 HAL_StatusTypeDef adbms2950_read_flag(adbms2950_driver_t *dev);
 HAL_StatusTypeDef adbms2950_verify_refup(adbms2950_driver_t *dev);
 HAL_StatusTypeDef adbms2950_read_core_snapshot(adbms2950_driver_t *dev,

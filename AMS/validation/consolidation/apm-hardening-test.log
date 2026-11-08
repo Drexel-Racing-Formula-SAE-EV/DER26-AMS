@@ -1,0 +1,11 @@
+cc -std=c11 -g -O0 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -Wno-missing-field-initializers -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -DSTM32F767xx -DUSE_HAL_DRIVER -DAMS_HOST_TEST=1 -Iinclude -I.. -I../Core/Inc -I../Core/Inc/tasks -I../Core/Inc/ext_drivers -I../Drivers/CMSIS/Include -I../Drivers/CMSIS/Device/ST/STM32F7xx/Include -I../Drivers/STM32F7xx_HAL_Driver/Inc -I../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy -I../Middlewares/Third_Party/FreeRTOS/Source/include -I../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1 -Werror unit/apm_link_clock.c \
+	-DAMS_HOST_ONLY_ADBMS2950_HARDENING_TEST=1 \
+	unit/ams_unit_test_runner.c ../Core/Src/estimator/ams_soc_ekf.c ../Core/Src/estimator/ams_estimator_lut.c ../Core/Src/ext_drivers/adbms2950.c ../Core/Src/ext_drivers/air_monitor.c ../Core/Src/ext_drivers/main_fuse_monitor.c ../Core/Src/ext_drivers/parallel_connection_observer.c ../Core/Src/ext_drivers/thermistor_model.c \
+	-o "build/adbms2950_hardening_tests" -lm
+"build/adbms2950_hardening_tests"
+PASS ADBMS2950 calibration/phase freshness
+PASS ADBMS2950 masked config readback
+PASS ADBMS2950 COMM ACK/EEPROM probe
+PASS ADBMS2950 redundant diagnostic/CS timing
+PASS ADBMS2950 REFUP/snapshot/flags/CCNT reset
+ALL AMS UNIT TESTS PASSED

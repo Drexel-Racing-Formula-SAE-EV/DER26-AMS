@@ -1,0 +1,7 @@
+cc -std=c11 -g -O0 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -Wno-missing-field-initializers -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -DSTM32F767xx -DUSE_HAL_DRIVER -DAMS_HOST_TEST=1 -Iinclude -I.. -I../Core/Inc -I../Core/Inc/tasks -I../Core/Inc/ext_drivers -I../Drivers/CMSIS/Include -I../Drivers/CMSIS/Device/ST/STM32F7xx/Include -I../Drivers/STM32F7xx_HAL_Driver/Inc -I../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy -I../Middlewares/Third_Party/FreeRTOS/Source/include -I../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1 -Werror \
+	-DAMS_BUILD_PROFILE=4 -DAMS_HOST_TESTDAY_CELL_POLICY_TEST=1 \
+	-DNSMBS=5 -DACCUMULATOR_PHYSICAL_CHAIN_COUNT=5 -DAMS_ENABLE_APM_2950=0 \
+	src/ams_host_test_runner.c ../Core/Src/ext_drivers/can_tx_scheduler.c ../Core/Src/diagnostics/ams_flight_recorder.c ../Core/Src/diagnostics/ams_runtime_manifest.c ../Core/Src/ext_drivers/air_monitor.c ../Core/Src/ext_drivers/main_fuse_monitor.c ../Core/Src/ext_drivers/parallel_connection_observer.c ../Core/Src/ext_drivers/thermistor_model.c ../Core/Src/soh/ams_soh.c ../Core/Src/sop/ams_sop.c ../Core/Src/sop/ams_fuse_observer.c ../Core/Src/sop/ams_power_strategy.c ../Core/Src/sop/ams_power_state.c ../Core/Src/sop/ams_power_can.c \
+	-o "build/testday_cell_policy_tests" -lm
+"build/testday_cell_policy_tests"
+PASS testday B/no-fan/measured-input configuration; explicit missing C1 only; required-cell faults; no fabricated pack voltage

@@ -79,6 +79,8 @@ void Error_Handler(void);
 #define IMD_STAT_GPIO_Port GPIOC
 #define FAN_2_Pin GPIO_PIN_1
 #define FAN_2_GPIO_Port GPIOB
+#define HV_ACTIVE_Pin GPIO_PIN_9
+#define HV_ACTIVE_GPIO_Port GPIOF
 #define AIR_CTRL_Pin GPIO_PIN_11
 #define AIR_CTRL_GPIO_Port GPIOF
 #define TSAL_Pin GPIO_PIN_13

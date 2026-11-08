@@ -1,3 +1,4 @@
+#include "ams_task_schedule.h"
 /*
  * adbms_task.h
  *
@@ -138,10 +139,22 @@ static uint32_t adbms_task_time_us(void *ctx)
 /* Long conversion/settling intervals must not busy-spin at ADBMS task priority.
  * Yield in one-tick chunks so a fail-low safety decision can interrupt the
  * wait within about one RTOS tick.  Sub-millisecond residue remains a bounded
- * timer-backed wait and is intentionally not a scheduler suspension. */
+ * timer-backed wait and is intentionally not a scheduler suspension. An
+ * executing fail-low inhibit finishes its own checked readback even if another
+ * inhibit request arrives; that request remains queued for the owner. */
+static void adbms_phase_end(app_data_t *data, unsigned phase, uint32_t *start_us,
+                            uint32_t elapsed_us[8])
+{
+    uint32_t now = adbms_task_time_us(data);
+    uint32_t elapsed = now - *start_us;
+    elapsed_us[phase] = elapsed;
+    *start_us = now;
+}
+
 static HAL_StatusTypeDef adbms_task_cooperative_wait(void *ctx, uint32_t wait_us)
 {
     app_data_t *data = (app_data_t *)ctx;
+    uint32_t start_us = adbms_task_time_us(ctx);
     uint32_t remaining = wait_us;
 
     if(data == NULL)
@@ -151,19 +164,28 @@ static HAL_StatusTypeDef adbms_task_cooperative_wait(void *ctx, uint32_t wait_us
 
     while(remaining >= 1000u)
     {
-        if(data->adbms_urgent_mute_requested)
+#if !AMS_SPI_LINK_DIAGNOSTIC_ONLY
+        if(data->adbms_urgent_mute_edge &&
+           !data->acc.smb.balance_inhibit_in_progress)
         {
             return HAL_BUSY;
         }
+#endif
+        uint32_t yield_start = adbms_task_time_us(ctx);
         osDelay(1u);
-        adbms_task_cooperative_yield_total_us += 1000u;
-        remaining -= 1000u;
+        uint32_t now_us = adbms_task_time_us(ctx);
+        adbms_task_cooperative_yield_total_us += (uint32_t)(now_us - yield_start);
+        uint32_t elapsed = now_us - start_us;
+        remaining = (elapsed >= wait_us) ? 0u : wait_us - elapsed;
     }
 
-    if(data->adbms_urgent_mute_requested)
+#if !AMS_SPI_LINK_DIAGNOSTIC_ONLY
+    if(data->adbms_urgent_mute_edge &&
+           !data->acc.smb.balance_inhibit_in_progress)
     {
         return HAL_BUSY;
     }
+#endif
     if(remaining != 0u)
     {
         return adbms6830_us_delay(&data->acc.smb, (uint16_t)remaining);
@@ -172,11 +194,14 @@ static HAL_StatusTypeDef adbms_task_cooperative_wait(void *ctx, uint32_t wait_us
 }
 
 
-static bool adbms_task_service_urgent_mute(app_data_t *data,
-                                           accumulator_balance_inhibit_reason_t reason)
+static bool adbms_task_service_urgent_mute_at(app_data_t *data,
+                                           accumulator_balance_inhibit_reason_t reason,
+                                           bool scan_boundary)
 {
     bool requested;
     int result;
+    uint32_t generation;
+    uint32_t now = osKernelGetTickCount();
 
     if(data == NULL)
     {
@@ -184,12 +209,30 @@ static bool adbms_task_service_urgent_mute(app_data_t *data,
     }
 
     taskENTER_CRITICAL();
+    if(scan_boundary && data->adbms_balance_write_fault)
+    {
+        data->adbms_urgent_mute_requested = true;
+    }
     requested = data->adbms_urgent_mute_requested;
+    if(requested && !data->adbms_urgent_mute_edge &&
+       (!scan_boundary ||
+        ((data->adbms_urgent_mute_fail_streak >= AMS_ADBMS_MUTE_FAST_RETRIES) &&
+         !adbms_tick_due(now, data->adbms_urgent_mute_retry_tick))))
+    {
+        if(data->adbms_urgent_mute_deferred_count != UINT32_MAX)
+        {
+            data->adbms_urgent_mute_deferred_count++;
+        }
+        taskEXIT_CRITICAL();
+        return false;
+    }
+    generation = data->adbms_urgent_mute_generation;
     if(requested)
     {
         /* Consume this generation before the physical attempt.  A new fail-low
          * request arriving during the transaction will set it again. */
         data->adbms_urgent_mute_requested = false;
+        data->adbms_urgent_mute_edge = false;
     }
     taskEXIT_CRITICAL();
 
@@ -198,7 +241,11 @@ static bool adbms_task_service_urgent_mute(app_data_t *data,
         return true;
     }
 
+    /* CLI also writes the accumulator. Keep ownership through publication so
+     * it cannot change the proof between physical readback and task state. */
+    adbms_spi_lock();
     result = accumulator_emergency_balance_inhibit(&data->acc, reason);
+    now = osKernelGetTickCount();
 
     taskENTER_CRITICAL();
     if(data->adbms_urgent_mute_service_count != UINT32_MAX)
@@ -209,18 +256,48 @@ static bool adbms_task_service_urgent_mute(app_data_t *data,
     data->adbms_balance_durable_zero_verified =
         data->acc.last_balance_durable_zero_verified;
     data->adbms_balance_inhibit_reason = reason;
+    if(data->adbms_balance_active && (result == 0))
+    {
+        data->adbms_last_balance_on_ms = now - data->adbms_balance_apply_tick;
+    }
     data->adbms_balance_active = false;
-    if(result != 0)
+    if(result == 0)
+    {
+        data->adbms_urgent_mute_fail_streak = 0u;
+        data->adbms_urgent_mute_retry_tick = now;
+        data->adbms_balance_write_fault = false;
+        /* Retain a genuinely new edge, discard only superseded maintenance. */
+        if(data->adbms_urgent_mute_generation == generation)
+        {
+            data->adbms_urgent_mute_requested = false;
+            data->adbms_urgent_mute_edge = false;
+        }
+    }
+    else
     {
         if(data->adbms_urgent_mute_fail_count != UINT32_MAX)
         {
             data->adbms_urgent_mute_fail_count++;
         }
         data->adbms_balance_write_fault = true;
+        data->adbms_urgent_mute_requested = true;
+        if(data->adbms_urgent_mute_fail_streak != UINT32_MAX)
+        {
+            data->adbms_urgent_mute_fail_streak++;
+        }
+        data->adbms_urgent_mute_retry_tick = now + AMS_ADBMS_MUTE_BACKOFF_MS;
     }
     taskEXIT_CRITICAL();
+    (void)adbms_record_balance_write_result(data, result);
+    adbms_spi_unlock();
 
     return (result == 0);
+}
+
+static bool adbms_task_service_urgent_mute(app_data_t *data,
+                                           accumulator_balance_inhibit_reason_t reason)
+{
+    return adbms_task_service_urgent_mute_at(data, reason, false);
 }
 
 static void adbms_task_publish_voltage_state(app_data_t *data,
@@ -291,9 +368,7 @@ static uint16_t adbms_task_compute_c_authority(const app_data_t *data)
     health = adbms6830_diag_health_get(smb);
     now = osKernelGetTickCount();
     expected_ic_mask = adbms_task_expected_ic_mask(smb);
-    expected_cell_count = (uint16_t)((uint16_t)smb->monitored_cell_count *
-                                     (uint16_t)((smb->num_ics > 0) ?
-                                         smb->num_ics : 0));
+    expected_cell_count = accumulator_required_cell_count();
 
 #if AMS_HIL_REPLACE_ADBMS
     /* The HIL image has no physical ADBMS PEC, command counter, configuration,
@@ -500,8 +575,11 @@ static bool adbms_open_wire_auto_allowed(const app_data_t *data)
 #endif
 }
 
-static void adbms_task_run_periodic_diagnostics(app_data_t *data)
+static void adbms_task_run_periodic_diagnostics(app_data_t *data, bool after_acquisition)
 {
+    static bool status_pending = false;
+    static uint32_t status_start_tick;
+    static HAL_StatusTypeDef status_start_result;
     accumulator_t *acc;
     adbms6830_driver_t *smb;
     HAL_StatusTypeDef status;
@@ -514,7 +592,31 @@ static void adbms_task_run_periodic_diagnostics(app_data_t *data)
     acc = &data->acc;
     smb = &acc->smb;
 
-    if((data->adbms_scan_count % ADBMS_STATUS_DIAG_PERIOD_CYCLES) == 0u)
+    uint32_t schedule_now = osKernelGetTickCount();
+    if(!data->adbms_diag_schedule_initialized)
+    {
+        status_pending = false;
+        data->adbms_status_next_due_tick = schedule_now + ADBMS_STATUS_DIAG_PERIOD_MS;
+        data->adbms_config_next_due_tick = schedule_now + ADBMS_CONFIG_DIAG_PERIOD_MS;
+        data->adbms_open_wire_next_due_tick = schedule_now + ADBMS_OPEN_WIRE_DIAG_PERIOD_MS;
+        data->adbms_diag_schedule_initialized = true;
+    }
+    /* Launch AUX_ALL only after primary AUX acquisition. Consume its result
+     * at the next scan entry, before primary AUX can overwrite it. */
+    if(after_acquisition && !status_pending &&
+       adbms_tick_due(schedule_now, data->adbms_status_next_due_tick))
+    {
+        status_start_result = adbms6830_start_status_conversion(smb);
+        status_start_tick = osKernelGetTickCount();
+        status_pending = true;
+        if(!acc->delay_timer_ready || !acc->smb_transport_ready ||
+           (status_start_result != HAL_OK))
+        {
+            data->adbms_status_fault = true;
+        }
+        goto publish_diagnostic_fault;
+    }
+    if(!after_acquisition && status_pending)
     {
         bool status_fault;
         bool transport_ok;
@@ -523,11 +625,19 @@ static void adbms_task_run_periodic_diagnostics(app_data_t *data)
         uint16_t expected_mask;
         uint32_t now;
 
-        status = adbms6830_refresh_diagnostics(smb);
+        status_pending = false;
+        status = ((status_start_result == HAL_OK) &&
+                  ((uint32_t)(schedule_now - status_start_tick) >= 20u)) ?
+                 adbms6830_complete_status_conversion(smb) : HAL_ERROR;
         health = adbms6830_diag_health_get(smb);
         expected_mask = adbms_task_expected_ic_mask(smb);
         now = osKernelGetTickCount();
-        transport_ok = adbms6830_diagnostic_transport_ok(smb);
+        data->adbms_status_next_due_tick = adbms_next_future_due(
+            now, data->adbms_status_next_due_tick, ADBMS_STATUS_DIAG_PERIOD_MS);
+        transport_ok = (status_start_result == HAL_OK) &&
+                       (status != HAL_BUSY) && (status != HAL_TIMEOUT) &&
+                       ((uint32_t)(schedule_now - status_start_tick) >= 20u) &&
+                       adbms6830_diagnostic_transport_ok(smb);
         non_cs_ok = adbms6830_non_cs_diagnostics_ok(smb);
         if(transport_ok && (smb->health.silicon_health_sweep_count != UINT32_MAX))
         {
@@ -566,7 +676,10 @@ static void adbms_task_run_periodic_diagnostics(app_data_t *data)
         taskEXIT_CRITICAL();
     }
 
-    if((data->adbms_scan_count % ADBMS_CONFIG_DIAG_PERIOD_CYCLES) == 0u)
+    if(!after_acquisition) goto publish_diagnostic_fault;
+
+    schedule_now = osKernelGetTickCount();
+    if(adbms_tick_due(schedule_now, data->adbms_config_next_due_tick))
     {
         const adbms6830_diag_health_t *health;
         uint32_t expected_fingerprint;
@@ -578,6 +691,8 @@ static void adbms_task_run_periodic_diagnostics(app_data_t *data)
         expected_fingerprint = adbms6830_config_expected_fingerprint(smb);
         readback_fingerprint = adbms6830_config_readback_fingerprint(smb);
         now = osKernelGetTickCount();
+        data->adbms_config_next_due_tick = adbms_next_future_due(
+            now, data->adbms_config_next_due_tick, ADBMS_CONFIG_DIAG_PERIOD_MS);
         taskENTER_CRITICAL();
         data->adbms_last_diag_status = status;
         if(data->adbms_config_diag_count != UINT32_MAX)
@@ -595,9 +710,12 @@ static void adbms_task_run_periodic_diagnostics(app_data_t *data)
             data->adbms_config_last_valid_tick = now;
         }
         taskEXIT_CRITICAL();
+        /* Never stack a second diagnostic onto configuration readback. */
+        goto publish_diagnostic_fault;
     }
 
-    if(((data->adbms_scan_count % ADBMS_OPEN_WIRE_DIAG_PERIOD_CYCLES) == 0u) &&
+    schedule_now = osKernelGetTickCount();
+    if(adbms_tick_due(schedule_now, data->adbms_open_wire_next_due_tick) &&
        adbms_open_wire_auto_allowed(data))
     {
         adbms6830_open_wire_result_t ow = {0};
@@ -612,6 +730,9 @@ static void adbms_task_run_periodic_diagnostics(app_data_t *data)
         ow_result = accumulator_run_c_open_wire_diagnostic(acc, &ow);
         status = (ow_result == 0) ? HAL_OK : HAL_ERROR;
         restore_tick = osKernelGetTickCount();
+        data->adbms_open_wire_next_due_tick = adbms_next_future_due(
+            restore_tick, data->adbms_open_wire_next_due_tick,
+            ADBMS_OPEN_WIRE_DIAG_PERIOD_MS);
         post_ow_voltage_fault = data->voltage_fault_state;
         voltage_fault_update(&post_ow_voltage_fault, acc);
         adbms_task_publish_voltage_state(data,
@@ -751,6 +872,7 @@ static void adbms_task_run_periodic_diagnostics(app_data_t *data)
     }
 #endif
 
+publish_diagnostic_fault:
     taskENTER_CRITICAL();
     data->adbms_diag_fault = adbms_task_diag_fault_from_components(data);
     taskEXIT_CRITICAL();
@@ -833,8 +955,7 @@ static uint16_t adbms_task_fault_active_mask(const app_data_t *data)
     {
         expected_ic_mask = (uint16_t)((1u << (uint8_t)smb->num_ics) - 1u);
     }
-    expected_cell_count = (uint16_t)((uint16_t)smb->monitored_cell_count *
-                                     (uint16_t)((smb->num_ics > 0) ? smb->num_ics : 0));
+    expected_cell_count = accumulator_required_cell_count();
 
 #if AMS_HIL_REPLACE_ADBMS
     /* In CAN-fed HIL there is no physical ADBMS chain to classify.  Preserve
@@ -1200,7 +1321,9 @@ static void adbms_task_publish_voltage_state(app_data_t *data,
     data->voltage_fault_state = *fault;
     data->max_voltage = acc->max_volt;
     data->min_voltage = acc->min_volt;
-    data->total_voltage = acc->total_volt;
+    data->total_voltage = ((AMS_PHYSICAL_SERIES_CELLS == accumulator_required_cell_count()) &&
+                           acc->voltage_full_usable) ? acc->total_volt : 0.0f;
+    data->observed_sum_voltage = acc->voltage_full_usable ? acc->observed_sum_volt : 0.0f;
     data->voltage_valid = fault->voltage_valid;
     data->voltage_read_fault = fault->read_fault;
     data->voltage_read_fault_pending = fault->read_fault_pending;
@@ -1226,12 +1349,22 @@ static void adbms_task_publish_voltage_state(app_data_t *data,
     data->min_voltage_seg = fault->min_cell_segment;
     data->min_voltage_cell = fault->min_cell_index;
 
-    data->voltage_fault = ((fault->read_fault &&
-                            !fault->read_fault_pending) ||
+    /* A detected missing/interrupted cell-voltage measurement is immediately
+     * shutdown-authoritative.  read_fault_pending remains diagnostic telemetry
+     * for transport recovery, but must not preserve BMS_OK eligibility. */
+    data->voltage_fault = (fault->read_fault ||
                            fault->overvoltage_fault ||
                            fault->undervoltage_fault ||
                            fault->latched);
     taskEXIT_CRITICAL();
+
+    /* Detection is shutdown-authoritative at the acquisition boundary; do
+     * not wait for the periodic supervisor to observe the published state. */
+    if(fault->read_fault || fault->overvoltage_fault ||
+       fault->undervoltage_fault || fault->latched)
+    {
+        set_bms(false);
+    }
 }
 
 static void adbms_task_publish_temperature_state(app_data_t *data,
@@ -1248,6 +1381,11 @@ static void adbms_task_publish_temperature_state(app_data_t *data,
     data->max_temp = acc->max_temp;
     data->avg_temp = acc->avg_temp;
     data->temp_valid = fault->temp_valid;
+    data->temp_authority_oldest_tick = acc->temp_stats_tick -
+                                       acc->temp_oldest_required_age_ms;
+    data->temp_authority_valid = fault->temp_valid && !fault->read_fault &&
+        acc->temp_full_usable && acc->usable_temp_count == (NSMBS * NTEMPS) &&
+        ams_temperature_age_fresh(acc->temp_oldest_required_age_ms, 0u);
     data->temp_read_fault = fault->read_fault;
     data->temp_warning = fault->warning;
     data->temp_fan_max = fault->fan_max;
@@ -1282,6 +1420,13 @@ static void adbms_task_publish_temperature_state(app_data_t *data,
                         fault->overtemp_fault ||
                         fault->latched);
     taskEXIT_CRITICAL();
+
+    /* Temperature availability and >=60 C trips are shutdown-authoritative
+     * immediately when the completed scan is evaluated. */
+    if(fault->read_fault || fault->overtemp_fault || fault->latched)
+    {
+        set_bms(false);
+    }
 }
 
 TaskHandle_t adbms_task_start(app_data_t *data)
@@ -1323,10 +1468,26 @@ void adbms_task_fn(void *argument)
                                  adbms_task_time_us,
                                  data);
 
+#if AMS_SPI_LINK_DIAGNOSTIC_ONLY
+    /* The CLI owns all post-startup SPI traffic in this diagnostic image.
+     * Leave the measurement heartbeat stale and BMS_OK low intentionally.
+     * This LV-only build has no balancing authority. Its CLI conversion
+     * waits must finish even when fail-low supervision has queued a mute
+     * request that the parked measurement task cannot consume. The request
+     * remains visible; this build must never operate a powered pack. */
+    for(;;)
+    {
+        set_bms(0);
+        osDelay(1000u);
+    }
+#endif
+
 	for(;;)
 	{
 	    entry = osKernelGetTickCount();
         uint32_t scan_start_us = adbms_task_time_us(data);
+        uint32_t phase_start_us = scan_start_us;
+        uint32_t phase_elapsed_us[8] = {0u};
         uint64_t yield_start_us = adbms_task_cooperative_yield_total_us;
         adbms6830_session_begin_scan(&acc->smb);
 	    uint16_t balance_mask_at_acquisition[NSMBS] = {0u};
@@ -1345,6 +1506,9 @@ void adbms_task_fn(void *argument)
 	     * excludes injected cell/temperature writes until the immutable
 	     * snapshot has been published. */
 	    adbms_spi_lock();
+	    adbms_phase_end(data, 0u, &phase_start_us, phase_elapsed_us);
+	    adbms_task_run_periodic_diagnostics(data, false);
+        adbms_phase_end(data, 1u, &phase_start_us, phase_elapsed_us);
 	    for(uint8_t seg = 0u; seg < NSMBS; seg++)
 	    {
 	        balance_mask_at_acquisition[seg] =
@@ -1353,16 +1517,23 @@ void adbms_task_fn(void *argument)
 	                             (balance_mask_at_acquisition[seg] != 0u);
 	    }
 #if !AMS_HIL_REPLACE_ADBMS
-	    bool balance_recovery_required =
-	        balance_was_active || data->adbms_balance_write_fault;
+	    bool balance_recovery_required = balance_was_active;
+        if(balance_was_active)
+        {
+            taskENTER_CRITICAL();
+            data->adbms_urgent_mute_requested = true;
+            data->adbms_urgent_mute_edge = true;
+            data->adbms_urgent_mute_generation++;
+            taskEXIT_CRITICAL();
+        }
 #endif
 
 #if !AMS_HIL_REPLACE_ADBMS
         /* A fail-low supervisor decision never blocks in the high-priority
          * task.  Service its queued ASIC-native balance kill here while the
          * ADBMS task owns the recursive transport lock. */
-        (void)adbms_task_service_urgent_mute(
-            data, ACCUMULATOR_BALANCE_INHIBIT_SHUTDOWN);
+        (void)adbms_task_service_urgent_mute_at(
+            data, ACCUMULATOR_BALANCE_INHIBIT_SHUTDOWN, true);
 #endif
 	    data->adbms_scan_active = true;
         /* Do not oscillate READY/FAULTED -> MEASURING -> READY/FAULTED on
@@ -1382,9 +1553,7 @@ void adbms_task_fn(void *argument)
                 AMS_ADBMS_STATE_REASON_SCAN_BEGIN,
                 entry);
         }
-	    /* This counter is also the modulo schedule for periodic diagnostics.
-	     * Unsigned wrap is intentional so those diagnostics cannot stop after
-	     * the counter reaches its maximum value. */
+	    /* Telemetry only: periodic diagnostic deadlines use kernel time. */
 	    data->adbms_scan_count++;
 
         bool voltage_was_latched = data->voltage_fault_latched;
@@ -1402,8 +1571,10 @@ void adbms_task_fn(void *argument)
 #if !AMS_HIL_REPLACE_ADBMS
 	    if(balance_recovery_required)
 	    {
-	        balance_recovery_verified = adbms_record_balance_write_result(
-	            data, accumulator_clear_balance(acc));
+	        /* The scan-boundary edge service already performed the physical
+             * clear. Preserve its off/settle epoch without a duplicate write. */
+	        balance_recovery_verified = acc->last_balance_mute_ok &&
+                                        acc->last_balance_durable_zero_verified;
         /* accumulator_clear_balance() completed the MUTE -> durable zero
          * transaction. Copy that verified hardware state immediately. A
          * successful clear also clears adbms_balance_write_fault, so waiting
@@ -1433,10 +1604,17 @@ void adbms_task_fn(void *argument)
 	        {
 	            data->adbms_balance_recovery_count++;
 	        }
-	        osDelay(AMS_ADBMS_BALANCE_RECOVERY_MS);
+            /* Only a successful physical clear establishes an off/recovery
+             * epoch. A failed clear remains faulted; waiting here cannot
+             * repair it and otherwise occupies the bus for the full period. */
+            if(balance_recovery_verified)
+            {
+                osDelay(AMS_ADBMS_BALANCE_RECOVERY_MS);
+            }
 	    }
 #endif
 
+        adbms_phase_end(data, 2u, &phase_start_us, phase_elapsed_us);
 #if AMS_HIL_REPLACE_ADBMS
         accumulator_hil_refresh_update_masks(acc,
                                              osKernelGetTickCount(),
@@ -1485,6 +1663,7 @@ void adbms_task_fn(void *argument)
 #endif
 #endif
         accumulator_update_voltage_stats_at(acc, osKernelGetTickCount());
+        adbms_phase_end(data, 3u, &phase_start_us, phase_elapsed_us);
 	    /* Close the logical voltage/current epoch on the same serialized
 	     * timeline as current sample completion. Never save a boundary before
 	     * this lock: a higher-priority current update could overtake it. Cell
@@ -1578,6 +1757,7 @@ void adbms_task_fn(void *argument)
                 data, ACCUMULATOR_BALANCE_INHIBIT_VOLTAGE);
         }
 #endif
+        adbms_phase_end(data, 4u, &phase_start_us, phase_elapsed_us);
 #if AMS_HIL_REPLACE_ADBMS
         accumulator_hil_refresh_update_masks(acc,
                                              osKernelGetTickCount(),
@@ -1585,9 +1765,7 @@ void adbms_task_fn(void *argument)
 #elif AMS_ENABLE_AUTO_TEMP_MUX_SCAN
         (void)accumulator_read_temp(acc);
 #else
-        /* Bench temperature-bus bring-up is explicit-only.  Do not repeatedly
-         * drive GPIO4/SDA and GPIO5/SCL from the periodic task while the
-         * pull-up network is under hardware review. */
+        /* Explicit-only profiles do not publish stale mux samples as fresh. */
         for(uint8_t ic = 0u; ic < ADBMS6830_MAX_TRACKED_ICS; ic++)
         {
             acc->smb.last_temp_updated_mask[ic] = 0u;
@@ -1623,6 +1801,7 @@ void adbms_task_fn(void *argument)
 	        set_bms(0);
 	    }
 	    ams_heartbeat_kick(data, AMS_HEARTBEAT_TEMP, osKernelGetTickCount());
+        adbms_phase_end(data, 5u, &phase_start_us, phase_elapsed_us);
 
 #if AMS_HIL_REPLACE_ADBMS
 	    taskENTER_CRITICAL();
@@ -1640,7 +1819,7 @@ void adbms_task_fn(void *argument)
 	    data->adbms_last_diag_status = data->adbms_diag_fault ? HAL_ERROR : HAL_OK;
 	    taskEXIT_CRITICAL();
 #else
-	    adbms_task_run_periodic_diagnostics(data);
+	    adbms_task_run_periodic_diagnostics(data, true);
         if(data->adbms_diag_fault && !adbms_diag_was_faulted)
         {
             ams_fault_log_event(AMS_FAULT_LOG_ADBMS_DIAG_FAIL,
@@ -1650,6 +1829,7 @@ void adbms_task_fn(void *argument)
         }
 #endif
 
+        adbms_phase_end(data, 6u, &phase_start_us, phase_elapsed_us);
         adbms_task_update_fault_classification(data);
 
 	    (void)accumulator_plan_balance(acc, balance_shadow_plan);
@@ -1729,8 +1909,7 @@ void adbms_task_fn(void *argument)
             }
         }
         else if(data->adbms_balance_active ||
-                accumulator_balance_shadow_active(acc) ||
-                data->adbms_balance_write_fault)
+                accumulator_balance_shadow_active(acc))
         {
 	        (void)adbms_record_balance_write_result(data,
                                                    accumulator_clear_balance(acc));
@@ -1791,6 +1970,17 @@ void adbms_task_fn(void *argument)
 	        data->adbms_scan_active = false;
         adbms6830_session_end_scan(&acc->smb);
 	        adbms_spi_unlock();
+            adbms_phase_end(data, 7u, &phase_start_us, phase_elapsed_us);
+            /* Publish one completed scan's phase vector atomically. Do not
+             * mix an in-progress scan with the preceding scan in CLI output. */
+            taskENTER_CRITICAL();
+            for(unsigned phase = 0u; phase < 8u; phase++)
+            {
+                data->adbms_phase_last_us[phase] = phase_elapsed_us[phase];
+                if(phase_elapsed_us[phase] > data->adbms_phase_max_us[phase])
+                    data->adbms_phase_max_us[phase] = phase_elapsed_us[phase];
+            }
+            taskEXIT_CRITICAL();
 	        uint32_t scan_end = osKernelGetTickCount();
         uint32_t scan_end_us = adbms_task_time_us(data);
         uint64_t yielded_us64 =
@@ -1831,7 +2021,6 @@ void adbms_task_fn(void *argument)
 	        {
 	            data->adbms_max_scan_duration_ms = duration_ms;
 	        }
-	        data->adbms_last_schedule_interval_ms = (uint32_t)(deadline - entry);
 	        if((int32_t)(scan_end - deadline) > 0)
 	        {
 	            if(data->adbms_scan_deadline_miss_count != UINT32_MAX)
@@ -1839,6 +2028,23 @@ void adbms_task_fn(void *argument)
 	                data->adbms_scan_deadline_miss_count++;
 	            }
 	        }
-	        osDelayUntil(deadline);
+            /* A past absolute deadline does not block in CMSIS-RTOS. Without
+             * a future wake tick, an overrunning ADBMS task reacquires SPI
+             * before lower-priority CLI waiters can run. Skip the missed slot
+             * and block after unlock, retaining the nominal schedule otherwise. */
+            uint32_t schedule_now = osKernelGetTickCount();
+            if((int32_t)(deadline - schedule_now) <= 0)
+            {
+                data->adbms_last_schedule_interval_ms =
+                    (uint32_t)(schedule_now - entry) + 1u;
+                /* A relative delay avoids racing the tick interrupt between
+                 * reading now and submitting a one-tick absolute deadline. */
+                osDelay(1u);
+            }
+            else
+            {
+                data->adbms_last_schedule_interval_ms = (uint32_t)(deadline - entry);
+                ams_task_delay_until(deadline);
+            }
 	}
 }

@@ -78,6 +78,10 @@ HAL_StatusTypeDef adbms6830_read_cell_voltage_products(adbms6830_driver_t *dev,
                                                        bool read_avg8,
                                                        bool read_filtered);
 HAL_StatusTypeDef adbms6830_mute_checked(adbms6830_driver_t *dev);
+/* Caller owns SPI for the complete session. Guarded activity reuse and verified warm wakes are transport-only. */
+HAL_StatusTypeDef adbms6830_transaction_session_begin(adbms6830_driver_t *dev,
+                                                     bool *owned);
+void adbms6830_transaction_session_end(adbms6830_driver_t *dev, bool owned);
 HAL_StatusTypeDef adbms6830_unmute_checked(adbms6830_driver_t *dev);
 HAL_StatusTypeDef adbms6830_run_startup_post(adbms6830_driver_t *dev);
 HAL_StatusTypeDef adbms6830_run_aux2_redundancy(adbms6830_driver_t *dev, uint8_t sensor_num);
@@ -98,6 +102,9 @@ HAL_StatusTypeDef adbms6830_scope_activity(adbms6830_driver_t *dev,
 HAL_StatusTypeDef adbms6830_read_sid(adbms6830_driver_t *dev);
 HAL_StatusTypeDef adbms6830_read_status(adbms6830_driver_t *dev, bool inject_spiflt);
 HAL_StatusTypeDef adbms6830_refresh_diagnostics(adbms6830_driver_t *dev);
+/* Owner must complete before another AUX conversion overwrites the result. */
+HAL_StatusTypeDef adbms6830_start_status_conversion(adbms6830_driver_t *dev);
+HAL_StatusTypeDef adbms6830_complete_status_conversion(adbms6830_driver_t *dev);
 HAL_StatusTypeDef adbms6830_establish_diagnostic_baseline(adbms6830_driver_t *dev);
 /* Transport/integrity validity is intentionally separate from the diagnostic
  * fault policy.  A clean Status A-E/SID image can be transported correctly

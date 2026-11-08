@@ -1,3 +1,4 @@
+#include "ams_task_schedule.h"
 /*
  * estimator_task.c
  * Author: Mahad Faisal (2026)
@@ -1085,11 +1086,10 @@ bool estimator_task_update(app_data_t *data, uint32_t now, float cc_dt_s)
 #if AMS_ENABLE_BENCH_PASSIVE_RING_ESTIMATOR
         if(!temp_ok)
         {
-            /* The Rev5 100-ohm GPIO4/GPIO5 pull-ups are still under hardware
-             * review, so BENCH_VALIDATION deliberately does not run the mux
-             * bus periodically.  A room-temperature fallback is adequate for
-             * passive OCV observation, but it is never published as a valid
-             * temperature measurement or consumed by SoH/SoP. */
+            /* Automatic validated temperature scans remain enabled. If this
+             * epoch lacks usable temperatures, the passive OCV observer may
+             * use its room-temperature fallback. This fallback is never
+             * published as a valid measurement or consumed by SoH/SoP. */
             t_surf_C = AMS_BENCH_PASSIVE_RING_TEMP_C;
             temp_ok = true;
         }
@@ -1168,6 +1168,6 @@ void estimator_task_fn(void *argument)
         (void)estimator_task_update(data, entry, cc_dt_s);
         ams_heartbeat_kick(data, AMS_HEARTBEAT_ESTIMATOR,
                            osKernelGetTickCount());
-        osDelayUntil(entry + (1000U / ESTIMATOR_FREQ));
+        ams_task_delay_until(entry + (1000U / ESTIMATOR_FREQ));
     }
 }

@@ -1,0 +1,80 @@
+cc -std=c11 -g -O0 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -Wno-missing-field-initializers -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -DSTM32F767xx -DUSE_HAL_DRIVER -DAMS_HOST_TEST=1 -Iinclude -I.. -I../Core/Inc -I../Core/Inc/tasks -I../Core/Inc/ext_drivers -I../Drivers/CMSIS/Include -I../Drivers/CMSIS/Device/ST/STM32F7xx/Include -I../Drivers/STM32F7xx_HAL_Driver/Inc -I../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy -I../Middlewares/Third_Party/FreeRTOS/Source/include -I../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1 -Werror unit/apm_link_clock.c \
+	-DAMS_HOST_ONLY_ADBMS2950_HARDENING_TEST=1 \
+	unit/ams_unit_test_runner.c ../Core/Src/estimator/ams_soc_ekf.c ../Core/Src/estimator/ams_estimator_lut.c ../Core/Src/ext_drivers/adbms2950.c ../Core/Src/ext_drivers/air_monitor.c ../Core/Src/ext_drivers/main_fuse_monitor.c ../Core/Src/ext_drivers/parallel_connection_observer.c ../Core/Src/ext_drivers/thermistor_model.c \
+	-o "build/adbms2950_hardening_tests" -lm
+cc -std=c11 -g -O0 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -Wno-missing-field-initializers -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -DSTM32F767xx -DUSE_HAL_DRIVER -DAMS_HOST_TEST=1 -Iinclude -I.. -I../Core/Inc -I../Core/Inc/tasks -I../Core/Inc/ext_drivers -I../Drivers/CMSIS/Include -I../Drivers/CMSIS/Device/ST/STM32F7xx/Include -I../Drivers/STM32F7xx_HAL_Driver/Inc -I../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy -I../Middlewares/Third_Party/FreeRTOS/Source/include -I../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1 -Werror -DAMS_BUILD_PROFILE=1 -DAMS_HW_BRINGUP=0 -DAMS_HW_BRINGUP_BALANCE_INHIBIT_DEFAULT=0 -DAMS_ENABLE_HIL_CAN=1 -DAMS_ENABLE_MISSION_CAN=1 -DAMS_ENABLE_SERVICE_CLI=1 \
+	-DAMS_HOST_ONLY_ADBMS2950_CLI_TEST=1 -DDER_APM_STANDALONE=1 -UAMS_BUILD_PROFILE -DAMS_BUILD_PROFILE=5 \
+	-DAMS_APM_STANDALONE_EVAL_BENCH=1 -DAMS_ENABLE_APM_2950=1 \
+	src/ams_host_test_runner.c ../Core/Src/ext_drivers/can_tx_scheduler.c ../Core/Src/diagnostics/ams_flight_recorder.c ../Core/Src/diagnostics/ams_runtime_manifest.c ../Core/Src/ext_drivers/air_monitor.c ../Core/Src/ext_drivers/main_fuse_monitor.c ../Core/Src/ext_drivers/parallel_connection_observer.c ../Core/Src/ext_drivers/thermistor_model.c ../Core/Src/soh/ams_soh.c ../Core/Src/sop/ams_sop.c ../Core/Src/sop/ams_fuse_observer.c ../Core/Src/sop/ams_power_strategy.c ../Core/Src/sop/ams_power_state.c ../Core/Src/sop/ams_power_can.c \
+	-o "build/adbms2950_cli_tests" -lm
+"build/adbms2950_hardening_tests"
+PASS ADBMS2950 calibration/phase freshness
+PASS ADBMS2950 masked config readback
+PASS ADBMS2950 COMM ACK/EEPROM probe
+PASS ADBMS2950 redundant diagnostic/CS timing
+PASS ADBMS2950 REFUP/snapshot/flags/CCNT reset
+ALL AMS UNIT TESTS PASSED
+cc -std=c11 -g -O0 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -Wno-missing-field-initializers -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -DSTM32F767xx -DUSE_HAL_DRIVER -DAMS_HOST_TEST=1 -Iinclude -I.. -I../Core/Inc -I../Core/Inc/tasks -I../Core/Inc/ext_drivers -I../Drivers/CMSIS/Include -I../Drivers/CMSIS/Device/ST/STM32F7xx/Include -I../Drivers/STM32F7xx_HAL_Driver/Inc -I../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy -I../Middlewares/Third_Party/FreeRTOS/Source/include -I../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1 -Werror -DAMS_HOST_ONLY_ADBMS2950_HARDENING_TEST=1 unit/apm_regression.c ../Core/Src/estimator/ams_soc_ekf.c ../Core/Src/estimator/ams_estimator_lut.c ../Core/Src/ext_drivers/adbms2950.c ../Core/Src/ext_drivers/air_monitor.c ../Core/Src/ext_drivers/main_fuse_monitor.c ../Core/Src/ext_drivers/parallel_connection_observer.c ../Core/Src/ext_drivers/thermistor_model.c -o build/apm_regression -lm
+build/apm_regression
+PASS ADBMS2950 calibration/phase freshness
+PASS ADBMS2950 masked config readback
+PASS ADBMS2950 COMM ACK/EEPROM probe
+PASS ADBMS2950 redundant diagnostic/CS timing
+PASS ADBMS2950 REFUP/snapshot/flags/CCNT reset
+ALL AMS UNIT TESTS PASSED
+PASS ADBMS2950 single-shot/continuous initialization
+Init single=1 continuous=150 calibrated=1 HAL=0 expected_ok=1 failures=0
+Init single=1 continuous=150 calibrated=0 HAL=1 expected_ok=0 failures=0
+Init single=0 continuous=150 calibrated=1 HAL=1 expected_ok=0 failures=0
+Init single=1 continuous=0 calibrated=1 HAL=1 expected_ok=0 failures=0
+Init single=1 continuous=135 calibrated=1 HAL=1 expected_ok=0 failures=0
+Init single=1 continuous=136 calibrated=1 HAL=0 expected_ok=1 failures=0
+Absent-device SID error/trace regression failures=0
+MED1 injection: HAL=1 sample_valid=0 current_valid=0 fault_mask=0x00020000
+Startup baseline persistent=0 status=0 valid=1 failures=0
+Startup baseline persistent=1 status=1 valid=0 failures=0
+Thermal baseline refusal failures=0
+Disabled-voltage sentinel isolation enabled=0 status=0 failures=0
+Disabled-voltage sentinel isolation enabled=1 status=1 failures=0
+Failed recovery preservation status=3 failures=0
+Primary diagnostic packet scenario=0 failures=0
+Primary diagnostic packet scenario=1 failures=0
+Primary diagnostic packet scenario=2 failures=0
+Existing test exit=0; independent FLAG mismatches=0/12
+cc -std=c11 -g -O0 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -Wno-missing-field-initializers -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -DSTM32F767xx -DUSE_HAL_DRIVER -DAMS_HOST_TEST=1 -Iinclude -I.. -I../Core/Inc -I../Core/Inc/tasks -I../Core/Inc/ext_drivers -I../Drivers/CMSIS/Include -I../Drivers/CMSIS/Device/ST/STM32F7xx/Include -I../Drivers/STM32F7xx_HAL_Driver/Inc -I../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy -I../Middlewares/Third_Party/FreeRTOS/Source/include -I../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1 -Werror -DDER_APM_STANDALONE=1 -DAMS_HOST_ONLY_ADBMS2950_HARDENING_TEST=1 unit/apm_regression.c ../Core/Src/estimator/ams_soc_ekf.c ../Core/Src/estimator/ams_estimator_lut.c ../Core/Src/ext_drivers/adbms2950.c ../Core/Src/ext_drivers/air_monitor.c ../Core/Src/ext_drivers/main_fuse_monitor.c ../Core/Src/ext_drivers/parallel_connection_observer.c ../Core/Src/ext_drivers/thermistor_model.c -o build/apm_standalone_regression -lm
+"build/adbms2950_cli_tests"
+PASS system SIL ADBMS2950 comprehensive CLI
+PASS system SIL ADBMS2950 standalone init/ownership
+ALL ADBMS2950 STANDALONE CLI/SYSTEM TESTS PASSED
+cc -std=c11 -g -O0 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -Wno-missing-field-initializers -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -DSTM32F767xx -DUSE_HAL_DRIVER -DAMS_HOST_TEST=1 -Iinclude -I.. -I../Core/Inc -I../Core/Inc/tasks -I../Core/Inc/ext_drivers -I../Drivers/CMSIS/Include -I../Drivers/CMSIS/Device/ST/STM32F7xx/Include -I../Drivers/STM32F7xx_HAL_Driver/Inc -I../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy -I../Middlewares/Third_Party/FreeRTOS/Source/include -I../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1 -Werror -DDER_APM_STANDALONE=1 -DAMS_HOST_ONLY_ADBMS2950_HARDENING_TEST=1 unit/apm_diag5_test.c ../Core/Src/estimator/ams_soc_ekf.c ../Core/Src/estimator/ams_estimator_lut.c ../Core/Src/ext_drivers/adbms2950.c ../Core/Src/ext_drivers/air_monitor.c ../Core/Src/ext_drivers/main_fuse_monitor.c ../Core/Src/ext_drivers/parallel_connection_observer.c ../Core/Src/ext_drivers/thermistor_model.c -o build/apm_diag5 -lm
+build/apm_standalone_regression
+PASS ADBMS2950 calibration/phase freshness
+PASS ADBMS2950 masked config readback
+PASS ADBMS2950 COMM ACK/EEPROM probe
+PASS ADBMS2950 redundant diagnostic/CS timing
+PASS ADBMS2950 REFUP/snapshot/flags/CCNT reset
+ALL AMS UNIT TESTS PASSED
+PASS ADBMS2950 single-shot/continuous initialization
+Init single=1 continuous=150 calibrated=1 HAL=0 expected_ok=1 failures=0
+Init single=1 continuous=150 calibrated=0 HAL=1 expected_ok=0 failures=0
+Init single=0 continuous=150 calibrated=1 HAL=1 expected_ok=0 failures=0
+Init single=1 continuous=0 calibrated=1 HAL=1 expected_ok=0 failures=0
+Init single=1 continuous=135 calibrated=1 HAL=1 expected_ok=0 failures=0
+Init single=1 continuous=136 calibrated=1 HAL=0 expected_ok=1 failures=0
+Absent-device SID error/trace regression failures=0
+MED1 injection: HAL=1 sample_valid=0 current_valid=0 fault_mask=0x00020000
+Legacy wake repeated-transaction regression failures=0
+Bridge readiness idle/port regression failures=0
+Startup baseline persistent=0 status=0 valid=1 failures=0
+Startup baseline persistent=1 status=1 valid=0 failures=0
+Thermal baseline refusal failures=0
+Disabled-voltage sentinel isolation enabled=0 status=0 failures=0
+Disabled-voltage sentinel isolation enabled=1 status=1 failures=0
+Failed recovery preservation status=3 failures=0
+Primary diagnostic packet scenario=0 failures=0
+Primary diagnostic packet scenario=1 failures=0
+Primary diagnostic packet scenario=2 failures=0
+Existing test exit=0; independent FLAG mismatches=0/12
+cc -std=c11 -g -O0 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -Wno-missing-field-initializers -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -DSTM32F767xx -DUSE_HAL_DRIVER -DAMS_HOST_TEST=1 -Iinclude -I.. -I../Core/Inc -I../Core/Inc/tasks -I../Core/Inc/ext_drivers -I../Drivers/CMSIS/Include -I../Drivers/CMSIS/Device/ST/STM32F7xx/Include -I../Drivers/STM32F7xx_HAL_Driver/Inc -I../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy -I../Middlewares/Third_Party/FreeRTOS/Source/include -I../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1 -Werror -DDER_APM_STANDALONE=1 -fsyntax-only ../Core/Src/tasks/cli_task.c ../Core/Src/ext_drivers/adbms2950.c
+build/apm_diag5
+DIAG5 production-driver failures:0

@@ -1,0 +1,17 @@
+cc -std=c11 -g -O0 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -Wno-missing-field-initializers -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -DSTM32F767xx -DUSE_HAL_DRIVER -DAMS_HOST_TEST=1 -Iinclude -I.. -I../Core/Inc -I../Core/Inc/tasks -I../Core/Inc/ext_drivers -I../Drivers/CMSIS/Include -I../Drivers/CMSIS/Device/ST/STM32F7xx/Include -I../Drivers/STM32F7xx_HAL_Driver/Inc -I../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy -I../Middlewares/Third_Party/FreeRTOS/Source/include -I../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1 -Werror -ffunction-sections -fdata-sections -DNSMBS=5 \
+	unit/measurement_integrity_test.c ../Core/Src/measurement/ams_measurement.c \
+	../Core/Src/sop/ams_sop.c \
+	../Core/Src/soh/ams_soh.c \
+	../Core/Src/estimator/ams_estimator_lut.c \
+	-Wl,--gc-sections -o "build/measurement_integrity_tests" -lm
+"build/measurement_integrity_tests"
+PASS late boundary rejection and clean recovery
+PASS carried uncertainty, extrema, sticky mixed range, next-window recovery
+PASS unknown uncertainty and late sample rejection
+PASS tick wrap and excessive gap rejection
+PASS rotation cannot hide a real-sample gap
+PASS stale rotation cannot charge a new window for an old interval
+PASS CAN calibration quality, immutable sequence/age, expiry and fallback
+PASS CAN per-reading expiry, aggregates, overflow and tick wrap
+PASS SoP and SoH reject unknown/zero uncertainty as calibrated
+PASS SoP/SoH effective cell/temperature freshness, mux cadence and tick wrap

@@ -143,6 +143,7 @@ HAL_StatusTypeDef canbus_configure_rx_filters(CAN_HandleTypeDef *hcan)
     }
 #endif
 
+#if !AMS_CHARGER_ONLY_BUILD
     /* DER26-CAN-V4 ECU->AMS application-level observability. List-mode
      * includes the RTR bit, so only a standard data frame at 0x6F0 reaches
      * FIFO0. Software still rejects RTR explicitly as defense in depth. */
@@ -162,6 +163,7 @@ HAL_StatusTypeDef canbus_configure_rx_filters(CAN_HandleTypeDef *hcan)
         return HAL_ERROR;
     }
 
+#endif
     return HAL_OK;
 }
 
@@ -251,11 +253,13 @@ static bool canbus_rx_header_allowed(const CAN_RxHeaderTypeDef *header)
         return (header->ExtId == CHARGER_RX_ID) && (header->DLC >= 5u);
     }
 
+#if !AMS_CHARGER_ONLY_BUILD
     if((header->IDE == CAN_ID_STD) &&
        (header->StdId == AMS_ECU_DIAG_FEEDBACK_CAN_ID))
     {
         return header->DLC == AMS_ECU_DIAG_FEEDBACK_DLC;
     }
+#endif
 
 #if AMS_ENABLE_HIL_CAN
     if(header->IDE == CAN_ID_STD)
@@ -864,7 +868,22 @@ static void canbus_charger_fail_safe_at_load(ams_can_tx_frame_t *frame)
      * transmit race, which is why state exit also sends the repeated zero-
      * demand shutdown burst. This guard prevents software from loading a new
      * stale enable after the transition has become visible. */
-    if((app.state != STATE_CHARGE) || !app.bms_state ||
+    if(AMS_VEHICLE_ONLY_BUILD || !AMS_PROFILE_BMS_RUNTIME_AUTHORITY_ALLOWED ||
+       (app.state != STATE_CHARGE) || !app.bms_state ||
+       app.hard_fault || app.state_transition_in_progress ||
+       app.bms_output_inhibit || app.can_authority_refresh_pending ||
+       app.task_heartbeat_fault || app.fuse_fault || app.adbms_diag_fault ||
+       !app.imd_valid || !app.imd_ok || app.imd_fault ||
+       (app.board.charger.last_rx_tick == 0u) ||
+       ((uint32_t)(osKernelGetTickCount() - app.board.charger.last_rx_tick) > CHARGER_RX_TIMEOUT_MS) ||
+       app.board.charger.communication_fail ||
+       app.board.charger.hardware_fail || app.board.charger.overtemp_fail ||
+       app.board.charger.input_volt_fail || app.board.charger.voltage_sense_fail ||
+       !app.voltage_valid || app.voltage_fault || app.charge_voltage_stop ||
+       !ams_temperature_authority_fresh(&app, osKernelGetTickCount()) ||
+       app.temp_charge_stop ||
+       !app.current_valid || app.current_fault ||
+       app.charger_fault ||
        app.board.charger.shutdown_pending || app.board.charger.tx_fail)
     {
         frame->data[0] = 0u;

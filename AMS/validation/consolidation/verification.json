@@ -1,0 +1,39 @@
+{
+  "cubeide_configurations": [
+    "CHARGER LV 250k Debug",
+    "CHARGER LV 250k Release",
+    "75S 74OBS CHARGE-REVIEW 250k Debug",
+    "75S 74OBS CHARGE-REVIEW 250k Release"
+  ],
+  "verified_invariants": [
+    "profile 4 and 6 250k CubeIDE configs",
+    "charger-only CAN and source control",
+    "75 physical/74 observed cell masks unchanged",
+    "312 V and 10 A charger limits unchanged",
+    "27% profile 6 SoC initialization",
+    "temperature freshness and async CLI merged",
+    "source version 0.5.57"
+  ],
+  "tested_targets": {
+    "charger-only-test": "PASS",
+    "charge-review-test": "PASS",
+    "cli-async-test": "PASS",
+    "adbms-wake-policy-test": "PASS",
+    "apm-regression": "PASS",
+    "apm-standalone-regression": "PASS",
+    "apm-hardening-test": "PASS",
+    "apm-cli-test": "PASS",
+    "apm-diag5-unit": "PASS",
+    "apm-diag5-check": "PASS",
+    "measurement-integrity-test": "PASS",
+    "task-schedule-test": "PASS",
+    "testday-cell-policy-test": "PASS",
+    "charge-only-ci": "PASS"
+  },
+  "known_nonpassing_or_unrun": {
+    "unit": "67 expectation failures in consolidated project; base charge project also fails 42 expectations",
+    "test": "generic profile-1 SIL harness incompatible with charger-only build profile restrictions",
+    "ARM_build": "not run: compiler unavailable",
+    "hardware_test": "not run"
+  }
+}

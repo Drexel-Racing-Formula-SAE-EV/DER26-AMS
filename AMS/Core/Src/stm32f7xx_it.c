@@ -258,45 +258,18 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 
     c = cli->c;
 
-    if(cli->msg_pending)
-    {
-        /* Keep a completed command intact until the CLI task copies it. Bytes
-         * received meanwhile are intentionally dropped and counted. */
-        cli->index = 0u;
-        cli->rx_drop_count++;
-        (void)cli_uart_start_rx(cli);
-        return;
-    }
-
-    if((c == '\r') || (c == '\n'))
-    {
-        if(cli->index > 0u)
-        {
-            cli->line[cli->index] = '\0';
-            cli->index = 0u;
-            cli->msg_count++;
-            cli->msg_pending = true;
-        }
-    }
-    else if((c == '\b') || (c == 127u))
-    {
-        if(cli->index > 0u)
-        {
-            cli->index--;
-        }
-    }
-    else if(cli->index < (CLI_LINESZ - 1u))
-    {
-        cli->line[cli->index++] = (char)c;
-    }
-    else
-    {
-        cli->rx_drop_count++;
-    }
+    cli_rx_byte(cli,c);
 
     /* RX ISR only receives bytes and re-arms RX. All CLI output happens from
      * the CLI task through cli_printline(). */
     (void)cli_uart_start_rx(cli);
+}
+
+void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
+{
+    cli_device_t *cli=&app.board.cli;
+    if(huart && cli->huart && huart->Instance==cli->huart->Instance)
+        cli_uart_tx_complete(cli);
 }
 
 void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
@@ -315,11 +288,9 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
 
     /* Preserve a completed pending command, but discard a partial command
      * because a framing/noise/overrun event may have corrupted it. */
-    if(cli->msg_pending == false)
-    {
-        cli->index = 0u;
-        cli->line[0] = '\0';
-    }
+    cli->index = 0u;
+    cli->line[0] = '\0';
+    cli->rx_discard_line = true;
 
     __HAL_UART_CLEAR_FLAG(huart,
                           UART_CLEAR_OREF | UART_CLEAR_NEF |

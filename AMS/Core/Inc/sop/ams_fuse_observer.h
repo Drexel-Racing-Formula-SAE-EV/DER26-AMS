@@ -21,6 +21,7 @@ extern "C" {
 #endif
 
 #define AMS_FUSE_EAC14_80_RATED_CURRENT_A       80.0f
+#define AMS_FUSE_MODEL_REVISION "EAC14-80|ELX1308|2026-01|typical-curve|8020-A2s-anchor"
 
 #define AMS_FUSE_REASON_NONE                   0x0000u
 #define AMS_FUSE_REASON_INPUT_INVALID          0x0001u

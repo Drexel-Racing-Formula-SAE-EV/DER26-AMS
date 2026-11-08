@@ -16,8 +16,13 @@
 #include <stdint.h>
 #include "ext_drivers/accumulator.h"
 
+/* This count describes readings, not physical series positions. */
+#if AMS_BUILD_PROFILE == AMS_PROFILE_CHARGE_REVIEW
+#define AMS_EXPECTED_CELL_COUNT          74u
+#else
 #define AMS_EXPECTED_CELL_COUNT          (NSMBS * NCELLS)
-#define AMS_SERIES_CELLS                 75u
+#endif
+#define AMS_SERIES_CELLS                 AMS_PHYSICAL_SERIES_CELLS
 #define AMS_SEGMENT_SERIES_CELLS         15u
 
 #define CELL_OV_WARN_MV                  4150u

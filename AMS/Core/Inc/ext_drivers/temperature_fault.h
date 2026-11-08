@@ -21,8 +21,8 @@
 #define TEMP_HOT_WARNING_C                 50.0f
 #define TEMP_HOT_HARD_C                    60.0f
 #define TEMP_HOT_SEVERE_C                  65.0f
-#define TEMP_HOT_HARD_CONFIRM_MS           2000u
-#define TEMP_HOT_SEVERE_CONFIRM_MS         2000u
+#define TEMP_HOT_HARD_CONFIRM_MS           0u
+#define TEMP_HOT_SEVERE_CONFIRM_MS         0u
 #define TEMP_FAULT_DEFAULT_SAMPLE_MS       1000u
 
 typedef enum

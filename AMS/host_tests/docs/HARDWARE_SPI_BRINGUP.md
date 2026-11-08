@@ -1,3 +1,5 @@
+> For the new onboard U1 board, use [ONBOARD_6822_BRINGUP.md](../../docs/ONBOARD_6822_BRINGUP.md). The historical instructions below include older EVAL/service-release workflows; they are not the current BENCH_VALIDATION release procedure.
+
 # AMS Hardware SPI Bring-Up Guide
 
 
