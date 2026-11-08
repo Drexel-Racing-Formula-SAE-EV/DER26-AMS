@@ -1,3 +1,4 @@
+#include "ams_task_schedule.h"
 /*
  * currentt_task.c
  *
@@ -219,6 +220,6 @@ void current_task_fn(void *argument)
         }
 
         ams_heartbeat_kick(app_data, AMS_HEARTBEAT_CURRENT, osKernelGetTickCount());
-        osDelayUntil(entry + CURRENT_TASK_PERIOD_MS);
+        ams_task_delay_until(entry + CURRENT_TASK_PERIOD_MS);
     }
 }

@@ -34,7 +34,16 @@ extern "C" {
 #define AMS_EKF_CELL_CAPACITY_AH    4.2f
 #define AMS_EKF_DEFAULT_DT_S        0.1f
 
+/* Temporary, pack-specific initialization from the observed approximately
+ * 3.55 V/cell rested-OCV estimate (~27% at 25 C). This is only a startup
+ * prior, not a measurement or a retained last-known SoC. Replace with a
+ * validated persistent/OCV initialization policy in a future release.
+ * Keep unrelated firmware profiles on their existing startup assumption. */
+#if AMS_BUILD_PROFILE == AMS_PROFILE_CHARGE_REVIEW
+#define AMS_EKF_DEFAULT_SOC_INIT    0.27f
+#else
 #define AMS_EKF_DEFAULT_SOC_INIT    1.0f
+#endif
 #define AMS_EKF_DEFAULT_R0_INIT_OHM 0.0147f
 
 #define AMS_HIL_CAN_ID_MEAS         0x200U
@@ -484,6 +493,9 @@ void ams_resistance_soh_record(ams_resistance_soh_t *soh,
 void ams_estimator_init_default(ams_estimator_t *est);
 bool ams_estimator_configure_pack(ams_estimator_t *est);
 bool ams_estimator_configure_segments(ams_estimator_t *est);
+/* Core experiments only: 2 groups/SMB, respecting TESTDAY missing C1.
+ * Live five-segment SoP/tuning contracts are not extended by this API. */
+bool ams_estimator_configure_subsegments(ams_estimator_t *est);
 bool ams_estimator_configure_even_split(ams_estimator_t *est, uint8_t instance_count);
 void ams_estimator_cc_reset(ams_estimator_t *est, float soc_init);
 bool ams_estimator_cc_step(ams_estimator_t *est, float i_pack_A, float dt_s);

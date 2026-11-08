@@ -18,10 +18,12 @@
 
 #define CCS_CANBUS_ID      0x1806E5F4
 #define CHARGER_RX_ID      0x18FF50E5u
+/* Correct target for 75 physical cells; NOT a permission to charge. */
 #define CHARGE_MAX_VOLTAGE 312.0f
 #define CHARGE_MAX_CURRENT 10.0f
 #define CHARGER_COMMAND_PERIOD_MS 1000u
 #define CHARGER_RX_TIMEOUT_MS     5000u
+#define CHARGER_SERVICE_POWER_TIMEOUT_MS 60000u
 #define CHARGER_CMD_ENABLE        0u
 #define CHARGER_CMD_DISABLE       1u
 /* A successful HAL queue operation is not an end-to-end charger

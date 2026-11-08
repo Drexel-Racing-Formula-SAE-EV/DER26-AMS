@@ -2527,6 +2527,64 @@ static void test_adbms_topology_and_delay_guards(void)
 }
 
 
+static void test_five_smb_missing_tail_and_guarded_write_session(void)
+{
+    adbms6830_driver_t dev = {0};
+    adbms6830_asic ics[5] = {0};
+    SPI_HandleTypeDef spi = {0};
+    GPIO_TypeDef gpio_a = {0}, gpio_b = {0};
+    unit_adbms_init_driver(&dev, ics, &spi, &gpio_a, &gpio_b, 5u);
+    unit_spi_reset();
+    adbms6830_resync_command_counter_tracking(&dev);
+    for(uint8_t ic = 0u; ic < 3u; ic++)
+    {
+        unit_adbms_make_cfga_mute_packet(
+            &unit_spi_txrx_response[CMDSZ + PEC15SZ + ic * RX_DATA], true, 1u);
+    }
+    memset(&unit_spi_txrx_response[CMDSZ + PEC15SZ + 3u * RX_DATA],
+           0xFF, 2u * RX_DATA);
+    EXPECT_TRUE(adbms6830_mute_checked(&dev) == HAL_ERROR);
+    EXPECT_TRUE(dev.health.last_pec_pass_mask == 0x0007u);
+    EXPECT_TRUE(dev.health.last_pec_fail_mask == 0x0018u);
+    EXPECT_TRUE(dev.health.last_cmd_counter_mismatch_mask == 0u);
+
+    unit_spi_reset();
+    adbms6830_bind_runtime_hooks(&dev, NULL, unit_adbms_time_us, NULL);
+    unit_adbms_fake_time_us = 1000u;
+    uint32_t before = dev.session.full_wake_count;
+    bool owned = false;
+    EXPECT_TRUE(adbms6830_transaction_session_begin(&dev, &owned) == HAL_OK);
+    EXPECT_TRUE(owned);
+    EXPECT_TRUE(adbms6830_wrcfgb_checked_reason(&dev,
+                ADBMS6830_CFGB_WRITE_BALANCE_CLEAR) == HAL_OK);
+    /* Advance by a realistic five-device SPI frame duration. */
+    unit_adbms_fake_time_us += 1000u;
+    EXPECT_TRUE(adbms6830_write_pwm_checked(&dev) == HAL_OK);
+    EXPECT_TRUE(dev.session.full_wake_count == before + 1u);
+    unit_adbms_fake_time_us += AMS_ADBMS_SESSION_GUARD_US + 100u;
+    EXPECT_TRUE(adbms6830_wrcfgb_checked_reason(&dev,
+                ADBMS6830_CFGB_WRITE_BALANCE_CLEAR) == HAL_OK);
+    EXPECT_TRUE(dev.session.full_wake_count == before + 2u);
+    adbms6830_transaction_session_end(&dev, owned);
+    EXPECT_FALSE(dev.session.active);
+
+    /* Nested callers must not close a session that they did not open. */
+    EXPECT_TRUE(adbms6830_transaction_session_begin(&dev, &owned) == HAL_OK);
+    bool nested_owned = true;
+    EXPECT_TRUE(adbms6830_transaction_session_begin(&dev, &nested_owned) == HAL_OK);
+    EXPECT_FALSE(nested_owned);
+    adbms6830_transaction_session_end(&dev, nested_owned);
+    EXPECT_TRUE(dev.session.active);
+    dev.session.coherent_snapshot_active = true;
+    before = dev.session.full_wake_count;
+    EXPECT_TRUE(adbms6830_wrcfgb_checked_reason(&dev,
+                ADBMS6830_CFGB_WRITE_BALANCE_CLEAR) == HAL_OK);
+    EXPECT_TRUE(dev.session.full_wake_count == before + 1u);
+    adbms6830_transaction_session_end(&dev, owned);
+    EXPECT_FALSE(dev.session.active);
+    adbms6830_bind_runtime_hooks(&dev, NULL, NULL, NULL);
+}
+
 static void test_adbms_v05_session_filter_and_mute_contract(void)
 {
     adbms6830_driver_t dev;
@@ -3448,8 +3506,8 @@ static void test_adbms_pwm_write_packing(void)
     EXPECT_TRUE(unit_spi_last_tx[1] == 0x21u);
     EXPECT_TRUE(unit_spi_last_tx[4] == ((PWM_46_2_PCT << 4) | PWM_39_6_PCT));
     EXPECT_TRUE(unit_spi_last_tx[5] == ((PWM_59_4_PCT << 4) | PWM_52_8_PCT));
-    EXPECT_TRUE(unit_spi_last_tx[6] == 0u);
-    EXPECT_TRUE(unit_spi_last_tx[9] == 0u);
+    EXPECT_TRUE(unit_spi_last_tx[6] == 0xFFu);
+    EXPECT_TRUE(unit_spi_last_tx[9] == 0xFFu);
 }
 
 static void test_adbms6830_final_ring_subset_write_owner(void)
@@ -3711,6 +3769,89 @@ static void test_adbms_config_and_balance_readback(void)
     unit_spi_txrx_status = HAL_OK;
 }
 
+
+/* Model the datasheet read image independently of the write packer. */
+static void test_adbms_physical_register_readback(void)
+{
+    adbms6830_driver_t dev;
+    adbms6830_asic ics[1];
+    SPI_HandleTypeDef spi = {0};
+    GPIO_TypeDef gpio_a = {0}, gpio_b = {0};
+    uint8_t cfga[TX_DATA];
+    uint8_t pwm_a[TX_DATA] = {0};
+    uint8_t pwm_b[TX_DATA] = {0, 0, 0xFF, 0xFF, 0xFF, 0xFF};
+    unit_adbms_init_driver(&dev, ics, &spi, &gpio_a, &gpio_b, 1u);
+    adbms6830_pack_cfga(&dev);
+    adbms6830_pack_cfgb(&dev);
+
+    for(uint8_t status_bits = 0u; status_bits < 4u; status_bits++)
+    {
+        memcpy(cfga, ics[0].configa.tx_data, TX_DATA);
+        cfga[5] = (uint8_t)((cfga[5] & ~0x30u) | (status_bits << 4));
+        unit_spi_reset();
+        adbms6830_resync_command_counter_tracking(&dev);
+        unit_spi_txrx_sequence_count = 2u;
+        unit_adbms_make_read_packet_from_data(
+            &unit_spi_txrx_sequence[0][CMDSZ + PEC15SZ], cfga, 4u, false);
+        unit_adbms_make_read_packet_from_data(
+            &unit_spi_txrx_sequence[1][CMDSZ + PEC15SZ],
+            ics[0].configb.tx_data, 4u, false);
+        EXPECT_TRUE(adbms6830_verify_config_readback(&dev) == HAL_OK);
+        EXPECT_TRUE(ics[0].rx_cfga.mute_st == (status_bits & 1u));
+        EXPECT_TRUE(ics[0].rx_cfga.snap == (status_bits >> 1));
+        EXPECT_TRUE(adbms6830_config_expected_fingerprint(&dev) ==
+                    adbms6830_config_readback_fingerprint(&dev));
+    }
+    /* Every other CFGA bit remains checked, including FC and COMM_BK. */
+    for(uint8_t byte = 0u; byte < TX_DATA; byte++)
+    {
+        for(uint8_t bit = 0u; bit < 8u; bit++)
+        {
+            if(byte == 5u && (bit == 4u || bit == 5u)) continue;
+            memcpy(cfga, ics[0].configa.tx_data, TX_DATA);
+            cfga[byte] ^= (uint8_t)(1u << bit);
+            unit_spi_reset();
+            adbms6830_resync_command_counter_tracking(&dev);
+            unit_spi_txrx_sequence_count = 2u;
+            unit_adbms_make_read_packet_from_data(
+                &unit_spi_txrx_sequence[0][CMDSZ + PEC15SZ], cfga, 4u, false);
+            unit_adbms_make_read_packet_from_data(
+                &unit_spi_txrx_sequence[1][CMDSZ + PEC15SZ],
+                ics[0].configb.tx_data, 4u, false);
+            EXPECT_TRUE(adbms6830_verify_config_readback(&dev) == HAL_ERROR);
+            EXPECT_TRUE(dev.health.configa_mismatch_mask == 1u);
+            EXPECT_TRUE(adbms6830_config_expected_fingerprint(&dev) !=
+                        adbms6830_config_readback_fingerprint(&dev));
+        }
+    }
+    for(uint8_t ic = 0; ic < 1u; ic++)
+    {
+        memset(&ics[ic].PwmA, 0, sizeof(ics[ic].PwmA));
+        memset(&ics[ic].PwmB, 0, sizeof(ics[ic].PwmB));
+    }
+    /* Pass physical all-off image, then reject each nonzero PWM channel. */
+    for(uint8_t channel = 0u; channel <= 16u; channel++)
+    {
+        memset(pwm_a, 0, sizeof(pwm_a));
+        pwm_b[0] = pwm_b[1] = 0u;
+        if(channel < 12u) pwm_a[channel / 2u] |= (uint8_t)(1u << ((channel % 2u) * 4u));
+        else if(channel < 16u) pwm_b[(channel - 12u) / 2u] |= (uint8_t)(1u << ((channel % 2u) * 4u));
+        unit_spi_reset();
+        adbms6830_resync_command_counter_tracking(&dev);
+        unit_spi_txrx_sequence_count = 3u;
+        unit_adbms_make_read_packet_from_data(
+            &unit_spi_txrx_sequence[0][CMDSZ + PEC15SZ],
+            ics[0].configb.tx_data, 4u, false);
+        unit_adbms_make_read_packet_from_data(
+            &unit_spi_txrx_sequence[1][CMDSZ + PEC15SZ], pwm_a, 4u, false);
+        unit_adbms_make_read_packet_from_data(
+            &unit_spi_txrx_sequence[2][CMDSZ + PEC15SZ], pwm_b, 4u, false);
+        EXPECT_TRUE(adbms6830_verify_balance_readback(&dev) ==
+                    ((channel == 16u) ? HAL_OK : HAL_ERROR));
+    }
+    for(uint8_t byte = 2u; byte < TX_DATA; byte++)
+        EXPECT_TRUE(ics[0].pwmb.tx_data[byte] == 0xFFu);
+}
 
 static void test_adbms_i2c_comm_releases_sda_for_slave_ack(void)
 {
@@ -4290,8 +4431,8 @@ static void test_adbms2950_mixed_chain_init_identity_and_readback(void)
     unit_delay_timer_advances = true;
     unit_spi_reset();
 
-    unit_adbms2950_make_flag_payload(initialization_flag_payload, 150u, 0u);
-    unit_adbms2950_make_flag_payload(continuous_flag_payload, 2u, 0u);
+    unit_adbms2950_make_flag_payload(initialization_flag_payload, 1u, 0u);
+    unit_adbms2950_make_flag_payload(continuous_flag_payload, 150u, 0u);
 
     /* Current initialization proves REFUP before any APM-specific write.
      * Reads do not advance CCNT, so SID and REFUP share epoch 1; the two
@@ -4341,7 +4482,7 @@ static void test_adbms2950_mixed_chain_init_identity_and_readback(void)
     EXPECT_TRUE(dev.health.config_valid);
     EXPECT_TRUE(dev.health.i1_calibrated);
     EXPECT_TRUE(dev.health.i1_continuous_ready);
-    EXPECT_TRUE(dev.health.i1_conversion_count == 2u);
+    EXPECT_TRUE(dev.health.i1_conversion_count == 150u);
     EXPECT_TRUE(dev.health.counter_seen);
     EXPECT_TRUE(dev.health.device_id == ADBMS2950B_DEVICE_ID);
     EXPECT_FALSE(dev.health.hv_dividers_enabled);
@@ -4460,7 +4601,7 @@ static void test_adbms2950_sid_probe_and_primary_sample_integrity(void)
     EXPECT_TRUE(dev.health.pec_error_count == 1u);
 
     unit_spi_reset();
-    dev.health.initialized = true;
+    dev.health.initialized = true; dev.health.sid_valid = true; dev.health.config_valid = true;
     dev.health.i1_continuous_ready = true;
     dev.health.sid_valid = true;
     dev.health.config_valid = true;
@@ -4638,7 +4779,7 @@ static void test_adbms2950_calibration_profiles_and_phase_freshness(void)
     custom.shunt_resistance_ohm = 0.0f;
     EXPECT_TRUE(adbms2950_set_calibration(&dev, &custom) == HAL_ERROR);
 
-    dev.health.initialized = true;
+    dev.health.initialized = true; dev.health.sid_valid = true; dev.health.config_valid = true;
     dev.health.i1_continuous_ready = true;
     dev.health.counter_seen = false;
     unit_adbms2950_make_flag_payload(flag_payload, 10u, 0u);
@@ -4791,7 +4932,7 @@ static void test_adbms2950_redundant_diagnostic_and_cs_timing(void)
     dev.write_string = STRING_B;
     EXPECT_TRUE(adbms2950_set_calibration_profile(
         &dev, ADBMS2950_CAL_PROFILE_DER_APM) == HAL_OK);
-    dev.health.initialized = true;
+    dev.health.initialized = true; dev.health.sid_valid = true; dev.health.config_valid = true;
     dev.health.i1_continuous_ready = true;
     dev.health.i1_calibrated = true;
     unit_adbms2950_make_flag_payload(flag, 20u, 0u);
@@ -4818,7 +4959,7 @@ static void test_adbms2950_redundant_diagnostic_and_cs_timing(void)
     /* A failed restore leaves the normal primary mode unproven and must
      * withdraw both the redundant result and I1 continuous readiness. */
     unit_spi_reset();
-    dev.health.initialized = true;
+    dev.health.initialized = true; dev.health.sid_valid = true; dev.health.config_valid = true;
     dev.health.i1_continuous_ready = true;
     dev.health.i1_calibrated = true;
     unit_spi_tx_status_sequence_count = 5u;
@@ -4964,6 +5105,7 @@ int main(void)
     run_test("main fuse plausibility/controlled clear", test_main_fuse_monitor_plausibility_and_clear);
     run_test("ADBMS topology/delay guards", test_adbms_topology_and_delay_guards);
     run_test("ADBMS v0.5 session/filter/MUTE contract", test_adbms_v05_session_filter_and_mute_contract);
+    run_test("five-SMB missing tail and guarded write sessions", test_five_smb_missing_tail_and_guarded_write_session);
     run_test("ADBMS v0.5 products/AUX2/POST diagnostics", test_adbms_v05_products_aux2_post_and_diagnostic_freshness);
     run_test("ADBMS SPI debug write/full-duplex", test_adbms_spi_debug_write_and_full_duplex_paths);
     run_test("ADBMS SPI rd48 PEC masks", test_adbms_spi_debug_rd48_pec_masks_and_clear);
@@ -4977,6 +5119,7 @@ int main(void)
     run_test("ADBMS final-ring subset write owner", test_adbms6830_final_ring_subset_write_owner);
     run_test("ADBMS CFGB timer write guard", test_adbms6830_cfgb_timer_write_guard);
     run_test("ADBMS config/balance readback", test_adbms_config_and_balance_readback);
+    run_test("ADBMS physical register readback", test_adbms_physical_register_readback);
     run_test("ADBMS I2C COMM releases SDA for slave ACK", test_adbms_i2c_comm_releases_sda_for_slave_ack);
     run_test("ADBMS mux ACK/temperature freshness", test_adbms_mux_ack_and_temperature_freshness);
     run_test("ADBMS mux transport/ACK failures", test_adbms_mux_transport_and_ack_failures);

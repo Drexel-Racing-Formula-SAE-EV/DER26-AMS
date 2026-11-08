@@ -623,6 +623,10 @@ typedef struct
   uint32_t max_duration_us;
   uint32_t session_count;
   uint32_t full_wake_count;
+  uint32_t cold_wake_count;
+  uint32_t warm_wake_count;
+  uint32_t skipped_wake_count;
+  uint32_t wake_gap_abort_count;
   uint32_t wake_count_scan_start;
   uint32_t wake_count_last_scan;
   uint32_t guard_expiry_count;
@@ -637,6 +641,20 @@ typedef struct
   uint32_t inject_gap_us_once;
   bool inject_bypass_guard_once;
 } adbms6830_session_health_t;
+
+/* SPI-owner-only cache. Protocol sessions may end while the physical link
+ * remains awake. A clean reply is required before using a warm wake. */
+typedef struct
+{
+  bool activity_valid;
+  bool verified;
+  adbms_string string;
+  uint8_t physical_count;
+  uint8_t logical_count;
+  uint32_t activity_us;
+  uint32_t activity_ms;
+  uint32_t verified_ms;
+} adbms6830_wake_state_t;
 
 typedef enum
 {
@@ -660,6 +678,8 @@ typedef enum
 typedef struct
 {
   adbms6830_post_stage_t stage;
+  adbms6830_post_stage_t failed_stage; /* Last attempt, before cleanup overwrites stage. */
+  HAL_StatusTypeDef restore_status;
   HAL_StatusTypeDef last_status;
   bool passed;
   uint8_t attempts;
@@ -796,6 +816,16 @@ typedef struct
    * thermistor codes as newly updated.
    */
   uint32_t last_temp_updated_mask[ADBMS6830_MAX_TRACKED_ICS];
+  /* Rolling scan diagnostics, separate from authority/missed-scan policy. */
+  uint32_t temp_scheduled_mask[ADBMS6830_MAX_TRACKED_ICS];
+  uint32_t temp_attempted_mask[ADBMS6830_MAX_TRACKED_ICS];
+  uint32_t temp_capture_tick_valid_mask[ADBMS6830_MAX_TRACKED_ICS];
+  uint32_t temp_capture_tick_ms[ADBMS6830_MAX_TRACKED_ICS][ADBMS6830_TEMP_SENSOR_COUNT];
+  uint32_t temp_visit_generation;
+  uint32_t temp_select_last_ms[3];
+  uint32_t temp_capture_last_ms[3];
+  uint32_t temp_settle_last_ms;
+  uint32_t temp_sample_generation[ADBMS6830_MAX_TRACKED_ICS][ADBMS6830_TEMP_SENSOR_COUNT];
 
   /* A temperature is publishable only when the corresponding ADG728 channel
    * selection was acknowledged by that IC's local mux.  RDCOMM supplies the
@@ -819,10 +849,16 @@ typedef struct
 
   /* Runtime transport hooks are bound by the ADBMS task after the scheduler
    * starts.  Startup code can still use the existing timer busy-wait fallback. */
+  /* SPI owner only: completing a fail-low transaction must not be aborted
+   * by another request for the same inhibit. Pending requests remain queued. */
+  bool balance_inhibit_in_progress;
   adbms6830_cooperative_wait_fn_t cooperative_wait_fn;
+  bool status_conversion_pending;
+  uint32_t status_conversion_start_ms;
   adbms6830_time_us_fn_t time_us_fn;
   void *runtime_hook_ctx;
   adbms6830_session_health_t session;
+  adbms6830_wake_state_t wake;
   adbms6830_post_health_t post;
   adbms6830_aux2_health_t aux2_health;
   adbms6830_therm_ow_health_t therm_ow_health;

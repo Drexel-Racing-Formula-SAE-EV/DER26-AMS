@@ -95,7 +95,8 @@ static void update_hot_pending(temperature_fault_state_t *state,
 {
     state->warning = true;
     state->fan_max = true;
-    state->pending = true;
+    state->charge_stop = true;
+    state->pending = (confirm_ms != 0u);
     state->reason = reason;
     state->threshold_deci_c = threshold_deci_c;
 

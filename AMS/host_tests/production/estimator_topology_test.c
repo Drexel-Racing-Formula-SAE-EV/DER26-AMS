@@ -1,6 +1,7 @@
 /* Compile/link/run gate for the estimator topology selected by the build. */
 
 #include "estimator/ams_soc_ekf.h"
+#include "ams_cell_observation.h"
 
 #include <stdint.h>
 
@@ -19,6 +20,31 @@ int main(void)
         return 1;
     }
 
+    /* Segment EKFs and coulomb counting must use the same startup prior. */
+    if (estimator.cc_soc != AMS_EKF_DEFAULT_SOC_INIT)
+    {
+        return 4;
+    }
+    for (uint8_t i = 0u; i < estimator.instance_count; ++i)
+    {
+        if ((estimator.inst[i].soc != AMS_EKF_DEFAULT_SOC_INIT) ||
+            (estimator.inst[i].cfg.soc_init != AMS_EKF_DEFAULT_SOC_INIT))
+        {
+            return 5;
+        }
+    }
+#if AMS_BUILD_PROFILE == AMS_PROFILE_CHARGE_REVIEW
+    if (AMS_EKF_DEFAULT_SOC_INIT != 0.27f)
+    {
+        return 6;
+    }
+#else
+    if (AMS_EKF_DEFAULT_SOC_INIT != 1.0f)
+    {
+        return 7;
+    }
+#endif
+
 #if AMS_ESTIMATOR_DEFAULT_TOPOLOGY == AMS_ESTIMATOR_TOPOLOGY_PACK
     if((estimator.instance_count != 1u) ||
        (estimator.inst[0].cfg.first_series_group != 0u) ||
@@ -30,8 +56,8 @@ int main(void)
     for(uint8_t segment = 0u; segment < 5u; segment++)
     {
         if((estimator.inst[segment].cfg.first_series_group !=
-            (uint16_t)(segment * 15u)) ||
-           (estimator.inst[segment].cfg.series_group_count != 15u))
+            (uint16_t)(segment * 15u + 15u - ams_observed_segment_cell_count(segment))) ||
+           (estimator.inst[segment].cfg.series_group_count != ams_observed_segment_cell_count(segment)))
         {
             return 3;
         }

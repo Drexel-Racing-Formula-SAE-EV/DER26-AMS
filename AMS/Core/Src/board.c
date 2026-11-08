@@ -42,12 +42,14 @@ void board_init(board_t *board)
 
 	stm32f767z_init(&board->stm32f767z);
 
+#if AMS_ENABLE_FAN_TASK
 	fan_init(&board->fans[0], TIM3, board->stm32f767z.htim3, FAN_MAX, &TIM3->CCR2, 2);
 	fan_init(&board->fans[1], TIM3, board->stm32f767z.htim3, FAN_MAX, &TIM3->CCR4, 4);
 	fan_init(&board->fans[2], TIM4, board->stm32f767z.htim4, FAN_MAX, &TIM4->CCR3, 3);
 	fan_init(&board->fans[3], TIM4, board->stm32f767z.htim4, FAN_MAX, &TIM4->CCR4, 4);
 	fan_init(&board->fans[4], TIM5, board->stm32f767z.htim5, FAN_MAX, &TIM5->CCR1, 1);
 	fan_init(&board->fans[5], TIM5, board->stm32f767z.htim5, FAN_MAX, &TIM5->CCR2, 2);
+#endif
 
 
 	canbus_device_init(&board->canbus, board->stm32f767z.hcan1);

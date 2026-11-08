@@ -1,3 +1,4 @@
+#include "ams_task_schedule.h"
 /**
  * @file error_task.c
  * @author Ian Kennedy (ibk24@drexel.edu)
@@ -14,6 +15,11 @@
 #include "tasks/error_task.h"
 #include "ext_drivers/ams_safety.h"
 #include "ext_drivers/ams_rtos_diag.h"
+#include "diagnostics/ams_flight_recorder.h"
+
+#include <limits.h>
+#include <math.h>
+#include <string.h>
 
 /**
  * @brief Actual ERROR task function
@@ -25,6 +31,13 @@ void error_task_fn(void *arg);
 static StaticTask_t error_task_tcb;
 static StackType_t error_task_stack[AMS_STACK_ERROR_WORDS];
 static TaskHandle_t error_task_handle = NULL;
+#if AMS_ENABLE_FLIGHT_RECORDER
+/* Only the ERROR task invokes flight capture on target. The five-SMB
+ * snapshot is larger than the old 256-word task stack by itself. Keep its
+ * scratch storage static; the published measurement is still copied via
+ * the measurement store's coherent snapshot API. */
+static ams_measurement_snapshot_t error_task_flight_snapshot_scratch;
+#endif
 
 static bool error_task_air_publication_fresh(const app_data_t *data,
                                              uint32_t now)
@@ -222,7 +235,7 @@ static bool error_task_operating_inputs_ready(const app_data_t *data,
 
     return data->voltage_valid &&
            !data->voltage_fault &&
-           data->temp_valid &&
+           ams_temperature_authority_fresh(data, now) &&
            !data->temp_fault &&
            data->current_valid &&
            !data->current_fault &&
@@ -288,9 +301,211 @@ static bool error_task_bms_ready(const app_data_t *data, uint32_t now)
            !data->can_authority_refresh_pending &&
            error_task_current_policy_matches_state(data) &&
            error_task_operating_inputs_ready(data, now) &&
-           ((data->state != STATE_CHARGE) || !data->temp_charge_stop) &&
+           ((data->state != STATE_CHARGE) ||
+            (!data->temp_charge_stop && !data->charge_voltage_stop)) &&
            !data->hard_fault;
 }
+
+#if AMS_ENABLE_FLIGHT_RECORDER
+static int32_t error_task_flight_sat_i32(float value)
+{
+    if(!isfinite(value))
+    {
+        return 0;
+    }
+    if(value >= (float)INT32_MAX)
+    {
+        return INT32_MAX;
+    }
+    if(value <= (float)INT32_MIN)
+    {
+        return INT32_MIN;
+    }
+    return (int32_t)lroundf(value);
+}
+
+static uint16_t error_task_flight_sat_u16(float value)
+{
+    if(!isfinite(value) || (value <= 0.0f))
+    {
+        return 0u;
+    }
+    if(value >= (float)UINT16_MAX)
+    {
+        return UINT16_MAX;
+    }
+    return (uint16_t)lroundf(value);
+}
+
+static uint32_t error_task_flight_fault_mask(const app_data_t *data)
+{
+    uint32_t mask = 0u;
+
+    if(data == NULL)
+    {
+        return 0u;
+    }
+
+    if(data->hard_fault) mask |= AMS_FLIGHT_FAULT_HARD;
+    if(data->voltage_fault || data->voltage_fault_latched)
+        mask |= AMS_FLIGHT_FAULT_VOLTAGE;
+    if(data->temp_fault || data->temp_fault_latched)
+        mask |= AMS_FLIGHT_FAULT_TEMPERATURE;
+    if(data->current_fault || data->current_fault_latched ||
+       data->current_overcurrent_fault)
+        mask |= AMS_FLIGHT_FAULT_CURRENT;
+    if(data->fuse_fault) mask |= AMS_FLIGHT_FAULT_FUSE;
+    if(data->imd_fault) mask |= AMS_FLIGHT_FAULT_IMD;
+    if(data->charger_fault) mask |= AMS_FLIGHT_FAULT_CHARGER;
+    if(data->adbms_diag_fault) mask |= AMS_FLIGHT_FAULT_ADBMS;
+    if(data->can_busoff_hard_fault_latched) mask |= AMS_FLIGHT_FAULT_CAN_HARD;
+    if(data->task_heartbeat_fault) mask |= AMS_FLIGHT_FAULT_HEARTBEAT;
+    if(data->rtos_fault || data->rtos_stack_critical)
+        mask |= AMS_FLIGHT_FAULT_RTOS;
+    if(data->estimator_fault) mask |= AMS_FLIGHT_FAULT_ESTIMATOR;
+    if(data->power_limit_fault) mask |= AMS_FLIGHT_FAULT_POWER_LIMIT;
+    return mask;
+}
+
+static uint32_t error_task_flight_can_flags(const app_data_t *data)
+{
+    uint32_t flags = 0u;
+
+    if(data == NULL)
+    {
+        return 0u;
+    }
+
+    if(data->can_busoff_fault) flags |= AMS_FLIGHT_CAN_BUSOFF_ACTIVE;
+    if(data->can_recover_pending) flags |= AMS_FLIGHT_CAN_RECOVER_PENDING;
+    if(data->can_authority_ready) flags |= AMS_FLIGHT_CAN_AUTHORITY_READY;
+    if(data->can_busoff_hard_fault_latched) flags |= AMS_FLIGHT_CAN_HARD_LATCH;
+    if(data->board.canbus.tx_latched_inhibit) flags |= AMS_FLIGHT_CAN_TX_LATCHED;
+    if(data->can_authority_refresh_pending) flags |= AMS_FLIGHT_CAN_AUTH_REFRESH;
+    if(data->canbus_fault) flags |= AMS_FLIGHT_CAN_GENERIC_FAULT;
+    return flags;
+}
+
+static void error_task_flight_summarize_measurement(
+    const ams_measurement_snapshot_t *snapshot,
+    ams_flight_record_v1_t *record)
+{
+    bool have_cell = false;
+    bool have_temp = false;
+    uint32_t pack_mv = 0u;
+
+    if((snapshot == NULL) || (record == NULL))
+    {
+        return;
+    }
+
+    record->measurement_sequence = snapshot->sequence;
+    record->measurement_validity_flags = snapshot->validity_flags;
+    record->current_uncertainty_mA = snapshot->current.uncertainty_mA;
+
+    for(uint16_t seg = 0u; seg < NSMBS; seg++)
+    {
+        uint16_t cell_mask = snapshot->cell_usable_mask[seg];
+        for(uint16_t cell = 0u; cell < NCELLS; cell++)
+        {
+            if((cell_mask & (uint16_t)(1u << cell)) == 0u)
+            {
+                continue;
+            }
+
+            uint16_t mv = snapshot->cell_mv[seg][cell];
+            uint16_t index = (uint16_t)((seg * NCELLS) + cell);
+            pack_mv += mv;
+            if(!have_cell || (mv < record->min_cell_mV))
+            {
+                record->min_cell_mV = mv;
+                record->min_cell_index = index;
+            }
+            if(!have_cell || (mv > record->max_cell_mV))
+            {
+                record->max_cell_mV = mv;
+                record->max_cell_index = index;
+            }
+            have_cell = true;
+        }
+
+        uint32_t temp_mask = snapshot->temp_usable_mask[seg];
+        for(uint16_t sensor = 0u; sensor < NTEMPS; sensor++)
+        {
+            if((temp_mask & (1u << sensor)) == 0u)
+            {
+                continue;
+            }
+
+            int16_t temp = snapshot->temp_deci_c[seg][sensor];
+            uint16_t index = (uint16_t)((seg * NTEMPS) + sensor);
+            if(!have_temp || (temp > record->max_temp_deci_C))
+            {
+                record->max_temp_deci_C = temp;
+                record->max_temp_index = index;
+            }
+            have_temp = true;
+        }
+    }
+
+    record->pack_voltage_mV = pack_mv;
+}
+
+static void error_task_flight_capture(app_data_t *data, uint32_t now)
+{
+    ams_flight_record_v1_t record;
+    bool have_measurement;
+    uint32_t fault_mask;
+
+    if(data == NULL)
+    {
+        return;
+    }
+
+    memset(&record, 0, sizeof(record));
+    record.tick_ms = now;
+    record.pack_current_mA = error_task_flight_sat_i32(data->current * 1000.0f);
+    record.discharge_power_limit_W =
+        error_task_flight_sat_i32(data->power_can_snapshot.discharge_power_w_1s);
+    record.charge_power_limit_W =
+        error_task_flight_sat_i32(data->power_can_snapshot.charge_power_w_1s);
+    record.soc_permille =
+        error_task_flight_sat_u16(data->estimator.pack_soc * 1000.0f);
+    record.safety_fault_mask = error_task_flight_fault_mask(data);
+    record.adbms_fault_mask =
+        (uint32_t)data->adbms_fault_active_mask |
+        ((uint32_t)data->adbms_fault_latched_mask << 16u);
+    record.can_status_flags = error_task_flight_can_flags(data);
+    record.heartbeat_stale_mask = data->heartbeat_stale_mask;
+    record.current_range = (uint8_t)data->current_selected_range;
+    record.ams_state = (uint8_t)data->state;
+    record.bms_ok = data->bms_state ? 1u : 0u;
+    record.can_authority = data->can_authority_ready ? 1u : 0u;
+    record.can_busoff_active = data->can_busoff_recovery_active ? 1u : 0u;
+    record.balancing_active = data->adbms_balance_active ? 1u : 0u;
+    record.estimator_valid = (!data->estimator_fault && data->estimator.enabled) ? 1u : 0u;
+
+    have_measurement = ams_measurement_store_copy_latest(
+        &data->measurement_store, &error_task_flight_snapshot_scratch);
+    if(have_measurement)
+    {
+        error_task_flight_summarize_measurement(
+            &error_task_flight_snapshot_scratch, &record);
+    }
+
+    fault_mask = record.safety_fault_mask;
+    if((fault_mask & AMS_FLIGHT_FAULT_HARD) != 0u)
+    {
+        (void)ams_flight_recorder_trigger(
+            &data->flight_recorder,
+            (uint16_t)AMS_FLIGHT_EVENT_HARD_FAULT,
+            (uint16_t)(fault_mask & UINT16_MAX),
+            now);
+    }
+
+    (void)ams_flight_recorder_push(&data->flight_recorder, &record);
+}
+#endif
 
 TaskHandle_t error_task_start(app_data_t *data)
 {
@@ -347,6 +562,23 @@ void error_task_update(app_data_t *data, uint32_t now)
      * Normalize it to the explicit fail-safe state before evaluating the
      * output gate.  STATE_NULL and STATE_ERROR remain intact but can never
      * authorize BMS_OK. */
+#if AMS_ENABLE_CLI
+    if(data->board.cli.stop_requested)
+    {
+        data->board.cli.stop_requested=false;
+        data->board.cli.stop_ack_pending=true;
+        data->board.cli.stop_count++;
+        data->board.cli.stop_applied_tick=now;
+        data->bms_output_inhibit=true;
+        set_bms(false);
+        (void)ams_state_transition_begin(data,STATE_START,
+                                        AMS_STATE_TRANSITION_SERVICE_COMMAND,now);
+        data->adbms_urgent_mute_requested=true;
+        data->adbms_urgent_mute_edge=true;
+        data->adbms_urgent_mute_generation++;
+        ams_state_transition_finish(data);
+    }
+#endif
     if(!ams_state_is_valid(data->state))
     {
         set_bms(false);
@@ -424,7 +656,7 @@ void error_task_update(app_data_t *data, uint32_t now)
      * Measurement/communication tasks may still force the output low for
      * immediate response, but they cannot reassert it. */
     data->bms_supervisor_ready = !startup_transitioned &&
-                                 error_task_bms_ready(data, now);
+        error_task_bms_ready(data, now);
     set_bms(data->bms_supervisor_ready);
 
     taskEXIT_CRITICAL();
@@ -438,6 +670,9 @@ void error_task_update(app_data_t *data, uint32_t now)
                             transition_count);
     }
 
+#if AMS_ENABLE_FLIGHT_RECORDER
+    error_task_flight_capture(data, now);
+#endif
     ams_safety_watchdog_task_update(data);
 }
 
@@ -457,6 +692,6 @@ void error_task_fn(void *arg)
     {
         entry = osKernelGetTickCount();
         error_task_update(data, entry);
-        osDelayUntil(entry + (1000 / ERR_FREQ));
+        ams_task_delay_until(entry + (1000 / ERR_FREQ));
     }
 }

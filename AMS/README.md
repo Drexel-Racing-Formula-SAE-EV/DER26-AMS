@@ -1,66 +1,55 @@
-# DER26 AMS Firmware
+# DER26 AMS v0.5.57 — Vehicle Main Branch (1 Mbps)
 
-STM32F767 + FreeRTOS firmware for the DER26 Accumulator Management System.
+**STM32CubeIDE source project** for the 1 Mbps AMS↔ECU vehicle bus. This is NOT
+the separate 250 kbps charge-only image. Derived from the original
+`v0.5.56-VEHICLE-1M-CLI4` variant with a targeted ADBMS2950B driver maintenance
+import from the `APM-EVAL6822-DIAG5R3` branch.
 
-The AMS acquires cell voltage/temperature and pack-current data, supervises battery/communication faults, runs battery-state estimation and power-limit logic, publishes accumulator authority over CAN, and owns the normal software path that may assert BMS_OK.
+## CubeIDE build configurations
 
-> This source tree contains bench/HIL/vehicle-oriented build profiles. A successful build or host test does not by itself authorize HV/vehicle operation.
+- `VEHICLE COMMS 1M Debug/Release` (profile 4): five-SMB acquisition,
+  ECU CAN telemetry, optional service CLI; BMS_OK and balancing permanently inhibited.
+- `VEHICLE RELEASE GATED 1M Debug/Release` (profile 3): driving-profile
+  source, rejects compilation until its existing target-validation evidence
+  macros are supplied. The gate is **not** bypassed in this release.
 
-Project documentation: [Documentation index](docs/README.md)
+CAN: **1 Mbit/s**; five SMBs; no installed ADBMS2950/APM; no fan task.
+The charger-only 250 kbps CAN/project settings are not present.
 
-## Main application areas
+## Consolidation / what's new
 
-```text
-Core/Src/tasks/        RTOS tasks and scheduling ownership
-Core/Src/estimator/    SoC/state estimator
-Core/Src/measurement/  canonical measurement interface
-Core/Src/sop/          State-of-Power, strategy, fuse observer
-Core/Src/soh/          State-of-Health
-Core/Src/ext_drivers/  ADBMS, CAN, safety, current, IMD, fan, charger, CLI
-Core/Inc/...            matching interfaces/contracts
-```
+- Retains previously integrated asynchronous CLI, voltage/temperature
+  acquisition timing, wake policy and CAN scheduling from v0.5.56 vehicle.
+- Imports ADBMS2950B core driver updates from DIAG5R3 (calibration validity,
+  single-shot and continuous conversion qualification, diagnostic register
+  snapshot/fault observations, protocol and error-handling fixes). This driver
+  is **not enabled in vehicle profiles 3/4**; no APM standalone wiring or
+  evaluation-board configuration is imported.
+- Adds host-only APM driver regression fixtures. Does not import standalone
+  CLI commands, bench bridge readiness behavior, or charger CAN overrides.
+- Sets release identity to v0.5.57; retains all installed vehicle power and
+  authority gates, cell requirements, and CLI profile behavior.
 
-A maintainer-oriented module map is available in [`../docs/CODE_ORGANIZATION.md`](../docs/CODE_ORGANIZATION.md).
+## Usage
 
-## Safety architecture
+Import this directory via STM32CubeIDE > File > Import > Existing Projects
+into Workspace. The default vehicle communications configuration is profile 4.
+Choose the desired documented configuration explicitly, clean and build.
 
-- The safety/error supervisor is the sole normal owner that may assert BMS_OK.
-- Measurement freshness/validity and latched diagnostics participate in the permission gate.
-- Bench/HIL/service functionality is compile-time constrained by build profile.
-- Diagnostic/tuning CAN traffic is passive and lower priority than protected/status traffic.
-- Hardware shutdown remains an independent safety layer; firmware does not replace it.
+To reproduce supported host checks:
 
-See:
-
-- [`docs/CONCURRENCY_OWNERSHIP.md`](docs/CONCURRENCY_OWNERSHIP.md)
-- [`docs/AIR_CONTACTOR_MONITORING.md`](docs/AIR_CONTACTOR_MONITORING.md)
-- [`../docs/SAFETY_MODEL.md`](../docs/SAFETY_MODEL.md)
-
-## Battery estimation and power authority
-
-The current architecture includes segment/pack estimation, SoP/SoH logic, fuse observation, and CAN publication of battery power authority. Unvalidated current sign/calibration, stale measurement state, incomplete topology, or other required-invalid conditions are designed to fail closed rather than create battery authority.
-
-Deep passive telemetry for estimator/SoP/fuse tuning is documented in [`docs/AMS_TUNING_CAN_SD_CONTRACT.md`](docs/AMS_TUNING_CAN_SD_CONTRACT.md). The live passive logger schema is protocol v4 and includes full estimator covariance plus acquisition diagnostics.
-
-## CAN contracts
-
-- [`docs/AMS_ECU_CAN_CONTRACT.md`](docs/AMS_ECU_CAN_CONTRACT.md)
-- [`docs/AMS_LOGGER_CAN_CONTRACT_V1.md`](docs/AMS_LOGGER_CAN_CONTRACT_V1.md)
-- [`docs/AMS_TUNING_CAN_SD_CONTRACT.md`](docs/AMS_TUNING_CAN_SD_CONTRACT.md)
-
-## Host validation
-
-```bash
+```sh
 cd host_tests
-make test
+make vehicle-variant-test cli-async-test can-tx-scheduler-test vehicle-project-check
+make adbms-wake-policy-test measurement-integrity-test
+make apm-hardening-test apm-driver-regression
 ```
 
-Focused targets, sanitizer options, profile gates, and bring-up documentation are in `host_tests/README.md` and `host_tests/docs/`.
+## Status
 
-## STM32 target build
-
-Import this directory directly into STM32CubeIDE. The checked-in `.ioc`, `.project`, `.cproject`, linker scripts, startup code, HAL, and FreeRTOS middleware are retained so the project remains reproducible from its native toolchain.
-
-## Attribution
-
-Original AMS design/code authorship and major 2026 update attribution are summarized in [`../docs/ATTRIBUTION.md`](../docs/ATTRIBUTION.md). Vendor code under `Drivers/` and `Middlewares/` retains its upstream notices.
+This release is *source only*. It is not an ARM-target-linked binary and
+not a hardware-validated driving release. The configured vehicle profile 3
+retains its evidence gates, including full cell observation requirements.
+Charging is intentionally excluded from this vehicle project.
+See `VEHICLE_VARIANT_README.md` for the original vehicle contract and bring-up.
+Older charge-only documentation is retained under `docs/historical/` only.

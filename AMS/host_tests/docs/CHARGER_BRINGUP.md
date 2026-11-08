@@ -1,5 +1,9 @@
 # Charger CAN Bring-Up Guide
 
+**This standalone project is inhibited. Follow `../../CHARGER_README.md` for
+its active build and CLI sequence. The enabled-charge examples below describe
+the protocol only; this image cannot enable charger output.**
+
 
 Authored by Mahad Faisal, 2026.
 This guide is for low-voltage bench validation of the plug-in charger CAN path.
@@ -69,7 +73,7 @@ polarity.
    ```
 10. Return to a safe non-charge state when finished:
     ```text
-    state discharge
+    state stop
     bmsok inhibit
     charger
     ```

@@ -11,6 +11,7 @@
 #ifndef INC_AMS_BUILD_PROFILE_H_
 #define INC_AMS_BUILD_PROFILE_H_
 
+#include "ams_vehicle_project.h"
 #include "ams_version.h"
 
 #define AMS_PROFILE_BENCH   1
@@ -18,6 +19,7 @@
 #define AMS_PROFILE_VEHICLE 3
 #define AMS_PROFILE_TESTDAY 4
 #define AMS_PROFILE_BENCH_VALIDATION 5
+#define AMS_PROFILE_CHARGE_REVIEW 6
 
 /* TESTDAY is an observation/bring-up image. Generic service CLI must never
  * turn it into an authority image at runtime. A future evidenced release gets
@@ -39,16 +41,36 @@
  * These are intentionally compile-time expressions, not mutable app flags.
  * TESTDAY and BENCH_VALIDATION are observation/bring-up images and cannot
  * acquire BMS_OK or balancing authority through the service CLI. */
+/* CHARGE_REVIEW cannot energize a 75s pack while one physical cell is
+ * unobservable. A separate protector has not been integrated/validated as an
+ * input to this firmware. This is a compile-time fail-closed diagnostic build. */
 #define AMS_PROFILE_BMS_RUNTIME_AUTHORITY_ALLOWED \
-    (((AMS_BUILD_PROFILE != AMS_PROFILE_TESTDAY) || AMS_TESTDAY_BMS_RELEASE_ALLOWED) && \
+    (((AMS_BUILD_PROFILE != AMS_PROFILE_CHARGE_REVIEW) || \
+      AMS_CHARGE_REVIEW_C1_UNOBSERVED_CHARGE_ALLOWED) && \
+     ((AMS_BUILD_PROFILE != AMS_PROFILE_TESTDAY) || AMS_TESTDAY_BMS_RELEASE_ALLOWED) && \
      ((AMS_BUILD_PROFILE != AMS_PROFILE_BENCH_VALIDATION) || AMS_BENCH_VALIDATION_BMS_RELEASE_ALLOWED))
 #define AMS_PROFILE_BALANCE_RUNTIME_AUTHORITY_ALLOWED \
     (((AMS_BUILD_PROFILE != AMS_PROFILE_TESTDAY) || AMS_TESTDAY_BALANCE_RELEASE_ALLOWED) && \
-     ((AMS_BUILD_PROFILE != AMS_PROFILE_BENCH_VALIDATION) || AMS_BENCH_VALIDATION_BALANCE_RELEASE_ALLOWED))
-#define AMS_BUILD_CONFIG_FINGERPRINT 0xA5051405u
+     ((AMS_BUILD_PROFILE != AMS_PROFILE_BENCH_VALIDATION) || AMS_BENCH_VALIDATION_BALANCE_RELEASE_ALLOWED) && \
+     (AMS_BUILD_PROFILE != AMS_PROFILE_CHARGE_REVIEW))
+#define AMS_BUILD_CONFIG_FINGERPRINT 0xA5055714u
 
 #ifndef AMS_BUILD_PROFILE
 #define AMS_BUILD_PROFILE AMS_PROFILE_BENCH
+#endif
+
+/* Muad'Dib lessons-transfer diagnostics. Stage A is ordinary SRAM only;
+ * retained .noinit placement is deliberately disabled until map/headroom and
+ * torn-write reset recovery are target-validated. The recorder is passive and
+ * must never participate in BMS authority decisions. */
+#ifndef AMS_ENABLE_FLIGHT_RECORDER
+#define AMS_ENABLE_FLIGHT_RECORDER 1
+#endif
+#ifndef AMS_FLIGHT_RECORDER_RETAINED
+#define AMS_FLIGHT_RECORDER_RETAINED 0
+#endif
+#ifndef AMS_ENABLE_SERVICE_RECORDER_DUMP
+#define AMS_ENABLE_SERVICE_RECORDER_DUMP AMS_ENABLE_SERVICE_CLI
 #endif
 
 /* Passive five-SMB ring observer used for LV bench characterization when the
@@ -81,6 +103,7 @@
 
 #ifndef AMS_VOLTAGE_MODE
 #if (AMS_BUILD_PROFILE == AMS_PROFILE_TESTDAY) || \
+    (AMS_BUILD_PROFILE == AMS_PROFILE_CHARGE_REVIEW) || \
     (AMS_BUILD_PROFILE == AMS_PROFILE_BENCH_VALIDATION)
 #define AMS_VOLTAGE_MODE AMS_VOLTAGE_MODE_C_ONLY_MVP
 #else
@@ -117,6 +140,15 @@
 #define AMS_ADBMS_COOPERATIVE_WAIT_MIN_US 1000u
 #endif
 
+/* ADBMS6822 Rev B table 7 and ADBMS6830B Rev 0 tables 7/9:
+ * tREADY <=10 us; tWAKE <=500 us; tIDLE >=4300 us; tSLEEP >=1.8 s.
+ * A 50 us warm edge interval covers both controller and chain propagation.
+ * Cold wake retains the established 1 ms intervals. Warm proof expires at
+ * 1 s and is withdrawn on any transport/counter failure or path change. */
+#define AMS_ADBMS_WARM_WAKE_EDGE_US 50u
+#define AMS_ADBMS_CORE_PROOF_MAX_AGE_MS 1000u
+#define AMS_ADBMS_WAKE_EDGE_MAX_US 3000u
+
 /* SPI6 is 108 MHz on the reviewed clock tree.  Keep /256 as the conservative
  * default until /128 or /64 is proven on the complete AMS->6822->6830 chain.
  * The code and CI support all three so the hardware A/B is a build-only change. */
@@ -136,10 +168,20 @@
 #define AMS_ENABLE_ADBMS_FILTERED_VOLTAGE 1
 #endif
 #ifndef AMS_ENABLE_ADBMS_STARTUP_POST
+/* Bench bring-up: omit active POST stimulus; retain identity, config and
+ * diagnostic baseline checks. Vehicle profiles keep startup POST enabled. */
+#if (AMS_BUILD_PROFILE == AMS_PROFILE_BENCH) || \
+    (AMS_BUILD_PROFILE == AMS_PROFILE_BENCH_VALIDATION) || \
+    (AMS_BUILD_PROFILE == AMS_PROFILE_TESTDAY) || \
+    (AMS_BUILD_PROFILE == AMS_PROFILE_CHARGE_REVIEW)
+#define AMS_ENABLE_ADBMS_STARTUP_POST 0
+#else
 #define AMS_ENABLE_ADBMS_STARTUP_POST 1
+#endif
 #endif
 #ifndef AMS_ENABLE_ADBMS_AUX2_REDUNDANCY
 #if (AMS_BUILD_PROFILE == AMS_PROFILE_TESTDAY) || \
+    (AMS_BUILD_PROFILE == AMS_PROFILE_CHARGE_REVIEW) || \
     (AMS_BUILD_PROFILE == AMS_PROFILE_BENCH_VALIDATION)
 #define AMS_ENABLE_ADBMS_AUX2_REDUNDANCY 0
 #else
@@ -148,6 +190,7 @@
 #endif
 #ifndef AMS_ENABLE_ADBMS_THERM_OPEN_WIRE_DIAG
 #if (AMS_BUILD_PROFILE == AMS_PROFILE_TESTDAY) || \
+    (AMS_BUILD_PROFILE == AMS_PROFILE_CHARGE_REVIEW) || \
     (AMS_BUILD_PROFILE == AMS_PROFILE_BENCH_VALIDATION)
 #define AMS_ENABLE_ADBMS_THERM_OPEN_WIRE_DIAG 0
 #else
@@ -256,8 +299,8 @@
 #ifndef AMS_C_OPEN_WIRE_TARGET_VALIDATED
 #define AMS_C_OPEN_WIRE_TARGET_VALIDATED 0
 #endif
-/* Current SMB Rev5 boards have unvalidated 100-ohm GPIO4/GPIO5 pull-ups.
- * Firmware timing changes cannot make that electrical load acceptable. */
+/* Vehicle release evidence for installed SMB pull-ups is tracked separately
+ * from the already validated five-SMB bench temperature acquisition. */
 #ifndef AMS_TEMP_PULLUPS_TARGET_VALIDATED
 #define AMS_TEMP_PULLUPS_TARGET_VALIDATED 0
 #endif
@@ -329,11 +372,10 @@
 
 #elif AMS_BUILD_PROFILE == AMS_PROFILE_BENCH_VALIDATION
 
-/* Hardware-validation bench image. This deliberately runs the production-rate
- * physical measurement/CAN paths needed to validate the assembled system, but
- * BMS_OK and balancing are compile-time locked off. IMD is enabled for LV
- * bench verification; intrusive automatic open-wire/thermistor diagnostics and
- * fault injection remain disabled. */
+/* Hardware-validation bench image. Run physical cell and temperature scans
+ * at production rate; prior five-SMB temperature validation is retained.
+ * BMS_OK and balancing remain compile-time inhibited. Automatic open-wire and
+ * thermistor open-wire diagnostics and fault injection remain disabled. */
 #define AMS_BUILD_PROFILE_NAME "bench_validation"
 #ifndef AMS_HW_BRINGUP
 #define AMS_HW_BRINGUP 0
@@ -360,7 +402,7 @@
 #define AMS_ENABLE_IWDG 0
 #endif
 #ifndef AMS_ENABLE_AUTO_TEMP_MUX_SCAN
-#define AMS_ENABLE_AUTO_TEMP_MUX_SCAN 0
+#define AMS_ENABLE_AUTO_TEMP_MUX_SCAN 1
 #endif
 #ifndef AMS_ENABLE_AUTO_C_OPEN_WIRE
 #define AMS_ENABLE_AUTO_C_OPEN_WIRE 0
@@ -377,7 +419,51 @@
 /* Five-segment acquisition/tuning image for controlled track/bench testing.
  * All real measurement paths execute at their intended rate, but physical
  * BMS permission and balancing remain source-owned inhibited. */
-#define AMS_BUILD_PROFILE_NAME "testday"
+#define AMS_BUILD_PROFILE_NAME "vehicle-comms-1M-inhibited"
+#ifndef AMS_HW_BRINGUP
+#define AMS_HW_BRINGUP 0
+#endif
+#ifndef AMS_HIL_REPLACE_ADBMS
+#define AMS_HIL_REPLACE_ADBMS 0
+#endif
+#ifndef AMS_ENABLE_HIL_CAN
+#define AMS_ENABLE_HIL_CAN 0
+#endif
+#ifndef AMS_ENABLE_MISSION_CAN
+#define AMS_ENABLE_MISSION_CAN 1
+#endif
+#ifndef AMS_ENABLE_SERVICE_CLI
+#define AMS_ENABLE_SERVICE_CLI 1
+#endif
+#ifndef AMS_ENABLE_CLI
+#define AMS_ENABLE_CLI 1
+#endif
+#ifndef AMS_ENABLE_IMD
+#define AMS_ENABLE_IMD 1
+#endif
+#ifndef AMS_ENABLE_IWDG
+#define AMS_ENABLE_IWDG 1
+#endif
+#ifndef AMS_ENABLE_AUTO_TEMP_MUX_SCAN
+#define AMS_ENABLE_AUTO_TEMP_MUX_SCAN 1
+#endif
+#ifndef AMS_ENABLE_AUTO_C_OPEN_WIRE
+#define AMS_ENABLE_AUTO_C_OPEN_WIRE 0
+#endif
+#ifndef AMS_ENABLE_ADBMS_FAULT_INJECTION
+#define AMS_ENABLE_ADBMS_FAULT_INJECTION 0
+#endif
+#define AMS_PROFILE_BMS_OUTPUT_INHIBIT_DEFAULT 1
+#define AMS_PROFILE_BALANCE_INHIBIT_DEFAULT 1
+#define AMS_SOP_AUTHORITY_REQUIRED 0
+
+#elif AMS_BUILD_PROFILE == AMS_PROFILE_CHARGE_REVIEW
+
+/* Standalone charger review profile. It retains the five-SMB TESTDAY hardware
+ * and measurement paths. Five segments contain 75 physical cells but only
+ * 74 voltage inputs are observed; output authority remains disabled.
+ * Passive balancing remains compile-time inhibited. */
+#define AMS_BUILD_PROFILE_NAME "75s-74obs-diag"
 #ifndef AMS_HW_BRINGUP
 #define AMS_HW_BRINGUP 0
 #endif
@@ -400,7 +486,7 @@
 #define AMS_ENABLE_IMD 1
 #endif
 #ifndef AMS_ENABLE_IWDG
-#define AMS_ENABLE_IWDG 0
+#define AMS_ENABLE_IWDG 1
 #endif
 #ifndef AMS_ENABLE_AUTO_TEMP_MUX_SCAN
 #define AMS_ENABLE_AUTO_TEMP_MUX_SCAN 1
@@ -573,7 +659,7 @@
 #endif
 
 #else
-#error "AMS_BUILD_PROFILE must be BENCH, HIL, TESTDAY, BENCH_VALIDATION or VEHICLE"
+#error "AMS_BUILD_PROFILE must be BENCH, HIL, TESTDAY, BENCH_VALIDATION, CHARGE_REVIEW or VEHICLE"
 #endif
 
 /* DER26-CAN-V4 publication policy. Safety/status/power authority remains at
@@ -722,6 +808,18 @@
 #if (AMS_ENABLE_CLI != 0) && (AMS_ENABLE_CLI != 1)
 #error "AMS_ENABLE_CLI must be 0 or 1"
 #endif
+#if (AMS_ENABLE_FLIGHT_RECORDER != 0) && (AMS_ENABLE_FLIGHT_RECORDER != 1)
+#error "AMS_ENABLE_FLIGHT_RECORDER must be 0 or 1"
+#endif
+#if (AMS_FLIGHT_RECORDER_RETAINED != 0) && (AMS_FLIGHT_RECORDER_RETAINED != 1)
+#error "AMS_FLIGHT_RECORDER_RETAINED must be 0 or 1"
+#endif
+#if AMS_FLIGHT_RECORDER_RETAINED && !AMS_ENABLE_FLIGHT_RECORDER
+#error "Retained flight recorder requires AMS_ENABLE_FLIGHT_RECORDER=1"
+#endif
+#if AMS_ENABLE_SERVICE_RECORDER_DUMP && !AMS_ENABLE_CLI
+#error "Recorder CLI dump requires CLI transport"
+#endif
 #if AMS_ENABLE_SERVICE_CLI && !AMS_ENABLE_CLI
 #error "Service CLI mutation requires the diagnostic CLI task/UART"
 #endif
@@ -743,6 +841,7 @@
 #ifndef AMS_ESTIMATOR_DEFAULT_TOPOLOGY
 #if (AMS_BUILD_PROFILE == AMS_PROFILE_VEHICLE) || \
     (AMS_BUILD_PROFILE == AMS_PROFILE_TESTDAY) || \
+    (AMS_BUILD_PROFILE == AMS_PROFILE_CHARGE_REVIEW) || \
     ((AMS_BUILD_PROFILE == AMS_PROFILE_BENCH_VALIDATION) && !AMS_BENCH_VALIDATION_SINGLE_SMB)
 #define AMS_ESTIMATOR_DEFAULT_TOPOLOGY AMS_ESTIMATOR_TOPOLOGY_SEGMENTS
 #else
@@ -787,6 +886,29 @@
 #endif
 #ifndef AMS_SOH_MODEL_REVISION
 #define AMS_SOH_MODEL_REVISION "rest-anchor-capacity-R0-v3"
+#endif
+
+/* Fans are absent on the one-SMB bench and this TESTDAY vehicle setup.
+ * Omit their task and required heartbeat in those profiles. */
+#ifndef AMS_ENABLE_FAN_TASK
+#define AMS_ENABLE_FAN_TASK \
+    (!((AMS_BUILD_PROFILE == AMS_PROFILE_TESTDAY) || \
+       (AMS_BUILD_PROFILE == AMS_PROFILE_CHARGE_REVIEW) || \
+       ((AMS_BUILD_PROFILE == AMS_PROFILE_BENCH_VALIDATION) && \
+        AMS_BENCH_VALIDATION_SINGLE_SMB)))
+#endif
+
+/* Shared acquisition cadence: driver freshness and task scheduling must use
+ * the same compile-time period, including hardware-bringup overrides. */
+#ifndef AMS_ADBMS_SCAN_HZ
+#if AMS_HW_BRINGUP
+#define AMS_ADBMS_SCAN_HZ 1u
+#else
+#define AMS_ADBMS_SCAN_HZ 10u
+#endif
+#endif
+#if (AMS_ADBMS_SCAN_HZ == 0u) || (AMS_ADBMS_SCAN_HZ > 1000u)
+#error "AMS_ADBMS_SCAN_HZ must be between 1 and 1000 Hz"
 #endif
 
 #endif /* INC_AMS_BUILD_PROFILE_H_ */

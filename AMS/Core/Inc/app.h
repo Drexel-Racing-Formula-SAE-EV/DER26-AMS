@@ -27,6 +27,8 @@
 #include "ext_drivers/ams_safety.h"
 #include "ext_drivers/ams_tuning_telemetry.h"
 #include "measurement/ams_measurement.h"
+#include "diagnostics/ams_flight_recorder.h"
+#include "diagnostics/ams_runtime_manifest.h"
 #include "sop/ams_power_state.h"
 
 #define VER_MAJOR AMS_VERSION_MAJOR
@@ -70,7 +72,7 @@
 
 
 #define AMS_BUILD_MANIFEST_MAGIC 0x414D5342u /* 'AMSB' */
-#define AMS_BUILD_MANIFEST_SCHEMA 6u
+#define AMS_BUILD_MANIFEST_SCHEMA 7u
 
 #define AMS_BUILD_FEATURE_HIL_CAN      (1u << 0u)
 #define AMS_BUILD_FEATURE_HIL_ADBMS    (1u << 1u)
@@ -83,6 +85,7 @@
 #define AMS_BUILD_FEATURE_MISSION_CAN  (1u << 8u)
 #define AMS_BUILD_FEATURE_FUSE_MODEL   (1u << 9u)
 #define AMS_BUILD_FEATURE_CLI          (1u << 10u)
+#define AMS_BUILD_FEATURE_FLIGHT_RECORDER (1u << 11u)
 
 #define AMS_BUILD_FEATURE_FLAGS_VALUE ( \
     (AMS_ENABLE_HIL_CAN ? AMS_BUILD_FEATURE_HIL_CAN : 0u) | \
@@ -95,7 +98,8 @@
     (AMS_HW_BRINGUP ? AMS_BUILD_FEATURE_HW_BRINGUP : 0u) | \
     (AMS_ENABLE_MISSION_CAN ? AMS_BUILD_FEATURE_MISSION_CAN : 0u) | \
     (AMS_FUSE_MODEL_VALIDATED ? AMS_BUILD_FEATURE_FUSE_MODEL : 0u) | \
-    (AMS_ENABLE_CLI ? AMS_BUILD_FEATURE_CLI : 0u))
+    (AMS_ENABLE_CLI ? AMS_BUILD_FEATURE_CLI : 0u) | \
+    (AMS_ENABLE_FLIGHT_RECORDER ? AMS_BUILD_FEATURE_FLIGHT_RECORDER : 0u))
 
 #ifndef AMS_HW_BRINGUP
 #define AMS_HW_BRINGUP 0
@@ -253,12 +257,24 @@
  * target.  A bounded wait is essential here: the caller's panic path drops
  * BMS_OK, whereas osWaitForever could leave it asserted after a deadlock. */
 #define AMS_ADBMS_MUTEX_TIMEOUT_TICKS 500u
+#define AMS_ADBMS_MUTE_FAST_RETRIES 3u
+#define AMS_ADBMS_MUTE_BACKOFF_MS 1000u
+#define AMS_ADBMS_CLI_MUTEX_TIMEOUT_TICKS 50u
 #define AMS_CURRENT_WINDOW_MUTEX_TIMEOUT_TICKS 20u
 
-/* FreeRTOS priority policy: larger number means higher priority.
- * Safety supervisor stays highest. Blocking bench/service CLI stays below all
- * measurement/control tasks so long UART prints cannot starve ADBMS/current/CAN.
- */
+/* Isolate the onboard 6822/one-SMB link for an LV-only CLI bench test.
+ * No periodic ADBMS traffic or measurement authority is published. */
+#ifndef AMS_SPI_LINK_DIAGNOSTIC_ONLY
+#define AMS_SPI_LINK_DIAGNOSTIC_ONLY 0
+#endif
+#if AMS_SPI_LINK_DIAGNOSTIC_ONLY && \
+    ((AMS_BUILD_PROFILE != AMS_PROFILE_BENCH_VALIDATION) || \
+     !AMS_BENCH_VALIDATION_SINGLE_SMB || AMS_ENABLE_APM_2950)
+#error "SPI link diagnostic requires one-SMB bench validation with APM disabled"
+#endif
+
+/* Larger number means higher priority. CLI yields below safety, acquisition,
+ * CAN, estimator and IMD in every profile. */
 #define ERR_PRIO    17
 #define CUR_PRIO    12
 #define ADBMS_PRIO  11
@@ -272,7 +288,7 @@
 /* Static FreeRTOS task stack sizes are in StackType_t words, not bytes.
  * Cortex-M7 uses 32-bit StackType_t, so multiply by 4 for bytes.
  */
-#define AMS_STACK_ERROR_WORDS       256u
+#define AMS_STACK_ERROR_WORDS       512u
 #define AMS_STACK_CURRENT_WORDS     256u
 #define AMS_STACK_ADBMS_WORDS      1536u
 #define AMS_STACK_CAN_WORDS        1536u
@@ -407,6 +423,11 @@ static inline bool ams_state_is_valid(state_t state)
 
 static inline bool ams_state_allows_bms_ok(state_t state)
 {
+#if AMS_VEHICLE_ONLY_BUILD
+    return state == STATE_DISCARGE || state == STATE_BALANCE;
+#elif AMS_CHARGER_ONLY_BUILD
+    return state == STATE_CHARGE;
+#else
 	switch(state)
 	{
 	case STATE_CHARGE:
@@ -419,6 +440,7 @@ static inline bool ams_state_allows_bms_ok(state_t state)
 	default:
 		return false;
 	}
+#endif
 }
 
 static inline bool ams_state_transition_allowed(
@@ -431,18 +453,37 @@ static inline bool ams_state_transition_allowed(
 		return false;
 	}
 
+#if AMS_VEHICLE_ONLY_BUILD
+    if(target == STATE_CHARGE)return false;
+#endif
+#if AMS_CHARGER_ONLY_BUILD
+    if((target == STATE_DISCARGE) || (target == STATE_BALANCE))
+    {
+        return false;
+    }
+#endif
+
 	switch(reason)
 	{
 	case AMS_STATE_TRANSITION_STARTUP_READY:
 		return (previous == STATE_START) && (target == STATE_DISCARGE);
 
 	case AMS_STATE_TRANSITION_SERVICE_COMMAND:
+#if AMS_CHARGER_ONLY_BUILD
+        return ((previous == STATE_START) || (previous == STATE_CHARGE)) &&
+               ((target == STATE_CHARGE) || (target == STATE_START));
+#elif AMS_VEHICLE_ONLY_BUILD
+        return ((previous == STATE_START) || (previous == STATE_DISCARGE) ||
+                (previous == STATE_BALANCE)) &&
+               ((target == STATE_START) || (target == STATE_DISCARGE));
+#else
 		return ((previous == STATE_START) ||
 		        (previous == STATE_CHARGE) ||
 		        (previous == STATE_DISCARGE) ||
 		        (previous == STATE_BALANCE)) &&
 		       ((target == STATE_CHARGE) ||
 		        (target == STATE_DISCARGE));
+#endif
 
 	case AMS_STATE_TRANSITION_CORRUPT_CURRENT_STATE:
 	case AMS_STATE_TRANSITION_INVALID_REQUEST:
@@ -565,10 +606,11 @@ typedef enum
                                    AMS_HEARTBEAT_BIT(AMS_HEARTBEAT_CURRENT) | \
                                    AMS_HEARTBEAT_BIT(AMS_HEARTBEAT_TEMP) | \
                                    AMS_HEARTBEAT_BIT(AMS_HEARTBEAT_CAN) | \
-                                   AMS_HEARTBEAT_BIT(AMS_HEARTBEAT_FAN) | \
+                                   (AMS_ENABLE_FAN_TASK ? AMS_HEARTBEAT_BIT(AMS_HEARTBEAT_FAN) : 0u) | \
                                    (AMS_SOP_AUTHORITY_REQUIRED ? AMS_HEARTBEAT_BIT(AMS_HEARTBEAT_ESTIMATOR) : 0u) | \
                                    (AMS_ENABLE_IMD ? AMS_HEARTBEAT_BIT(AMS_HEARTBEAT_IMD) : 0u))
-#define AMS_HEARTBEAT_LOGGER_MASK AMS_HEARTBEAT_BIT(AMS_HEARTBEAT_LOGGER)
+/* No CAN logger is present on the standalone charger bus. */
+#define AMS_HEARTBEAT_LOGGER_MASK 0u
 
 typedef struct
 {
@@ -586,6 +628,7 @@ typedef struct
 struct app_data_t
 {
 	float total_voltage;
+	float observed_sum_voltage;
 	float max_voltage;
 	float min_voltage;
 	float max_temp;
@@ -693,6 +736,8 @@ struct app_data_t
 	bool temp_fault;
 	bool temp_valid;
 	bool temp_read_fault;
+    bool temp_authority_valid;
+    uint32_t temp_authority_oldest_tick;
 	bool temp_warning;
 	bool temp_fan_max;
 	bool temp_charge_stop;
@@ -770,6 +815,10 @@ struct app_data_t
     uint32_t fan_last_update_tick;
 
 	bool charger_fault;
+	/* CHARGE_REVIEW only: bounded permission to energize the cart while every
+	 * charger frame remains zero-demand/disabled. The error task owns BMS_OK. */
+	bool charger_service_power_requested;
+	uint32_t charger_service_power_expires_tick;
 	bool adbms_diag_fault;
 	bool adbms_config_fault;
 	bool adbms_status_fault;
@@ -783,6 +832,11 @@ struct app_data_t
 	uint16_t adbms_sense_path_open_sticky_mask[NSMBS];
 	bool adbms_balance_write_fault;
 	volatile bool adbms_urgent_mute_requested;
+	volatile bool adbms_urgent_mute_edge;
+	uint32_t adbms_urgent_mute_generation;
+	uint32_t adbms_urgent_mute_fail_streak;
+	uint32_t adbms_urgent_mute_retry_tick;
+	uint32_t adbms_urgent_mute_deferred_count;
 	bool adbms_mute_asserted;
 	bool adbms_balance_durable_zero_verified;
 	accumulator_balance_inhibit_reason_t adbms_balance_inhibit_reason;
@@ -827,6 +881,10 @@ struct app_data_t
 	uint32_t adbms_s_last_valid_tick;
 	uint32_t adbms_temp_last_valid_tick;
 	uint32_t adbms_status_last_valid_tick;
+	uint32_t adbms_status_next_due_tick;
+	uint32_t adbms_config_next_due_tick;
+	uint32_t adbms_open_wire_next_due_tick;
+	bool adbms_diag_schedule_initialized;
 	uint32_t adbms_config_last_valid_tick;
 	uint32_t adbms_identity_last_valid_tick;
 	uint32_t adbms_config_expected_fingerprint;
@@ -845,6 +903,8 @@ struct app_data_t
 	uint32_t adbms_scan_deadline_miss_count;
 	uint32_t adbms_last_scan_duration_ms;
 	uint32_t adbms_max_scan_duration_ms;
+    uint32_t adbms_phase_last_us[8];
+    uint32_t adbms_phase_max_us[8];
 	uint32_t adbms_last_scan_cpu_us;
 	uint32_t adbms_max_scan_cpu_us;
 	uint32_t adbms_last_scan_yield_us;
@@ -855,6 +915,7 @@ struct app_data_t
 	uint32_t adbms_balance_apply_tick;
 	uint32_t adbms_spi_lock_acquire_count;
 	uint32_t adbms_spi_lock_contention_count;
+	uint32_t adbms_spi_cli_busy_count;
 	uint32_t adbms_spi_lock_max_wait_ticks;
 	uint32_t adbms_spi_lock_max_hold_ticks;
 	uint32_t adbms_spi_lock_violation_count;
@@ -888,6 +949,10 @@ struct app_data_t
 	ams_mission_request_state_t mission_request;
 	ams_current_window_accumulator_t current_window;
 	ams_measurement_store_t measurement_store;
+    ams_runtime_manifest_t runtime_manifest;
+#if AMS_ENABLE_FLIGHT_RECORDER
+    ams_flight_recorder_t flight_recorder;
+#endif
 	ams_hil_input_t hil;
 	ams_heartbeat_monitor_t heartbeat;
 
@@ -1003,9 +1068,20 @@ static inline const char *ams_state_transition_reason_str(
 	}
 }
 
+/* Caller holds the safety/transport critical section. Acquisition publishes
+ * validity and the oldest required acquisition timestamp in one section. */
+static inline bool ams_temperature_authority_fresh(const app_data_t *data,
+                                                  uint32_t now)
+{
+    return data != NULL && data->temp_authority_valid && data->temp_valid &&
+           !data->temp_read_fault && !data->temp_fault &&
+           ams_temperature_age_fresh(0u, now - data->temp_authority_oldest_tick);
+}
+
 void app_create(void);
 void set_bms(bool state);
 void adbms_spi_lock(void);
+bool adbms_spi_cli_try_lock(void);
 void adbms_spi_unlock(void);
 void ams_current_window_lock(void);
 void ams_current_window_unlock(void);

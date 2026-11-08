@@ -119,7 +119,7 @@ int main(void)
     s.cell_mv[0][0]=3700; s.cell_mv[0][1]=3800;
     s.temp_deci_c[0][0]=250; s.temp_deci_c[0][1]=300;
     s.cell_age_ms[0][0]=ACCUMULATOR_CELL_STALE_TIMEOUT_MS-10;
-    s.temp_age_ms[0][0]=ACCUMULATOR_TEMP_STALE_TIMEOUT_MS-10;
+    s.temp_age_ms[0][0]=ACCUMULATOR_TEMP_REVISIT_TIMEOUT_MS-10;
     tick=1010; can_measurement_view_build(&app,&s,&v);
     CHECK(v.voltage_valid && v.temperature_valid);
     tick=1011; can_measurement_view_build(&app,&s,&v);

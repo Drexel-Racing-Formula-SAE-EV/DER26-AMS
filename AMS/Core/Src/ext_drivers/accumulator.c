@@ -11,6 +11,7 @@
 #include "ext_drivers/thermistor_model.h"
 #include <math.h>
 #include <string.h>
+#include "cmsis_os2.h"
 
 static uint8_t sensor_num = 0;
 
@@ -271,6 +272,7 @@ void accumulator_init(accumulator_t *dev,
     }
 
 	dev->total_volt = 0;
+	dev->observed_sum_volt = 0.0f;
 	dev->max_temp = 0.0f;
 	dev->avg_temp = 0.0f;
 	dev->max_volt = 0.0f;
@@ -307,6 +309,25 @@ void accumulator_init(accumulator_t *dev,
 	memset(dev->temp_filter_valid_mask, 0, sizeof(dev->temp_filter_valid_mask));
 	memset(dev->temp_last_update_ms, 0, sizeof(dev->temp_last_update_ms));
 	memset(dev->temp_consecutive_misses, 0, sizeof(dev->temp_consecutive_misses));
+    memset(dev->temp_failed_visits, 0, sizeof(dev->temp_failed_visits));
+    dev->temp_step_last_ms = 0u;
+    dev->temp_step_max_ms = 0u;
+    dev->temp_visit_generation_consumed = dev->smb.temp_visit_generation;
+    memset(dev->temp_sample_generation_consumed, 0, sizeof(dev->temp_sample_generation_consumed));
+    memset(dev->temp_seen_mask, 0, sizeof(dev->temp_seen_mask));
+    memset(dev->temp_sample_status, 0, sizeof(dev->temp_sample_status));
+    memset(dev->temp_sweep_seen_mask, 0, sizeof(dev->temp_sweep_seen_mask));
+    dev->temp_sweep_count = 0u;
+    dev->temp_last_sweep_tick = 0u;
+    dev->temp_last_sweep_span_ms = 0u;
+    dev->temp_sweep_start_tick = 0u;
+    dev->temp_sweep_started = false;
+    dev->temp_oldest_required_age_ms = UINT32_MAX;
+    dev->temp_stats_tick = 0u;
+    memset(dev->smb.temp_scheduled_mask, 0, sizeof(dev->smb.temp_scheduled_mask));
+    memset(dev->smb.temp_attempted_mask, 0, sizeof(dev->smb.temp_attempted_mask));
+    memset(dev->smb.temp_capture_tick_valid_mask, 0,
+           sizeof(dev->smb.temp_capture_tick_valid_mask));
 	memset(dev->updated_temp_mask, 0, sizeof(dev->updated_temp_mask));
 	memset(dev->usable_temp_mask, 0, sizeof(dev->usable_temp_mask));
 	memset(dev->stale_temp_mask, 0, sizeof(dev->stale_temp_mask));
@@ -832,9 +853,9 @@ static int accumulator_temp_select_checked(adbms6830_driver_t *dev,
     {
         if(mux_set_channel(dev, sensor) == 0)
         {
-            return (adbms6830_wait_cooperative(dev,
-                                       ACCUMULATOR_TEMP_MUX_SETTLE_US) == HAL_OK)
-                       ? 0 : -1;
+            /* The caller waits once after the final mux selection. Every
+             * selected analog node then gets at least the original 3 ms. */
+            return 0;
         }
         if((attempt + 1u) < ACCUMULATOR_TEMP_TRANSACTION_ATTEMPTS)
         {
@@ -884,9 +905,16 @@ int smb_read_temp(adbms6830_driver_t* dev)
         return -1;
     }
 
+    dev->temp_visit_generation++;
+    memset(dev->temp_select_last_ms, 0, sizeof(dev->temp_select_last_ms));
+    memset(dev->temp_capture_last_ms, 0, sizeof(dev->temp_capture_last_ms));
+    dev->temp_settle_last_ms = 0u;
+
     for(uint8_t ic = 0u; ic < ADBMS6830_MAX_TRACKED_ICS; ic++)
     {
         dev->last_temp_updated_mask[ic] = 0u;
+        dev->temp_scheduled_mask[ic] = 0u;
+        dev->temp_attempted_mask[ic] = 0u;
     }
 
     if((dev->ics == NULL) || (dev->num_ics <= 0) ||
@@ -909,17 +937,43 @@ int smb_read_temp(adbms6830_driver_t* dev)
     selected[1] = (uint8_t)(sensor_num + 7u);
     selected[2] = (uint8_t)(sensor_num + 15u);
 
-    for(uint8_t mux = 0u; mux < ADBMS6830_MUX_COUNT; mux++)
+    for(uint8_t ic = 0u; ic < (uint8_t)dev->num_ics; ic++)
     {
-        if(accumulator_temp_select_checked(dev, selected[mux]) != 0)
+        for(uint8_t mux = 0u; mux < ADBMS6830_MUX_COUNT; mux++)
         {
-            return -1;
+            dev->temp_scheduled_mask[ic] |= 1UL << selected[mux];
         }
     }
 
     for(uint8_t mux = 0u; mux < ADBMS6830_MUX_COUNT; mux++)
     {
-        if(accumulator_temp_capture_checked(dev, selected[mux]) != 0)
+        for(uint8_t ic = 0u; ic < (uint8_t)dev->num_ics; ic++)
+        {
+            dev->temp_attempted_mask[ic] |= 1UL << selected[mux];
+        }
+        uint32_t phase_start = osKernelGetTickCount();
+        int phase_status = accumulator_temp_select_checked(dev, selected[mux]);
+        dev->temp_select_last_ms[mux] = osKernelGetTickCount() - phase_start;
+        if(phase_status != 0)
+        {
+            return -1;
+        }
+    }
+
+    uint32_t settle_start = osKernelGetTickCount();
+    HAL_StatusTypeDef settle_status = adbms6830_wait_cooperative(dev, ACCUMULATOR_TEMP_MUX_SETTLE_US);
+    dev->temp_settle_last_ms = osKernelGetTickCount() - settle_start;
+    if(settle_status != HAL_OK)
+    {
+        return -1;
+    }
+
+    for(uint8_t mux = 0u; mux < ADBMS6830_MUX_COUNT; mux++)
+    {
+        uint32_t phase_start = osKernelGetTickCount();
+        int phase_status = accumulator_temp_capture_checked(dev, selected[mux]);
+        dev->temp_capture_last_ms[mux] = osKernelGetTickCount() - phase_start;
+        if(phase_status != 0)
         {
             return -1;
         }
@@ -930,14 +984,32 @@ int smb_read_temp(adbms6830_driver_t* dev)
 
 int accumulator_read_temp(accumulator_t *dev)
 {
-	if((dev == NULL) || !dev->smb_transport_ready ||
-	   !accumulator_final_ring_topology_valid(dev))
-	{
-		return -1;
-	}
-
-	adbms_spi_lock();
-	int status = smb_read_temp(&dev->smb);
+    if(dev == NULL)
+    {
+        return -1;
+    }
+    uint32_t step_start = osKernelGetTickCount();
+    adbms_spi_lock();
+    {
+        /* An early topology/transport rejection is not a successful repeat
+         * of the preceding step. Clear only current-attempt products. */
+        memset(dev->smb.last_temp_updated_mask, 0,
+               sizeof(dev->smb.last_temp_updated_mask));
+        memset(dev->smb.temp_scheduled_mask, 0,
+               sizeof(dev->smb.temp_scheduled_mask));
+        memset(dev->smb.temp_attempted_mask, 0,
+               sizeof(dev->smb.temp_attempted_mask));
+    }
+    int status = -1;
+    if(dev->smb_transport_ready && accumulator_final_ring_topology_valid(dev))
+    {
+        status = smb_read_temp(&dev->smb);
+    }
+    dev->temp_step_last_ms = osKernelGetTickCount() - step_start;
+    if(dev->temp_step_last_ms > dev->temp_step_max_ms)
+    {
+        dev->temp_step_max_ms = dev->temp_step_last_ms;
+    }
 	adbms_spi_unlock();
 
 	return status;
@@ -1107,6 +1179,9 @@ int accumulator_hil_ingest_temp_triplet(accumulator_t *dev,
         uint32_t bit = (uint32_t)(1UL << sensor);
         smb_ics[seg].temp.raw[sensor] = accumulator_temp_deci_c_to_raw(temp_deci_c[n]);
         dev->hil_temp_last_update_ms[seg][sensor] = now_ms;
+        dev->smb.temp_capture_tick_ms[seg][sensor] = now_ms;
+        dev->smb.temp_sample_generation[seg][sensor]++;
+        dev->smb.temp_capture_tick_valid_mask[seg] |= bit;
         dev->hil_temp_seen_mask[seg] |= bit;
         dev->smb.last_temp_updated_mask[seg] |= bit;
     }
@@ -1164,12 +1239,10 @@ static uint16_t accumulator_expected_cell_count(const accumulator_t *dev)
 {
     (void)dev;
 
-    /* Safety policy is tied to the real accumulator topology: 5 SMBs x 15 cells.
-     * Do not reduce the required cell count if smb.num_ics is corrupted or
-     * accidentally configured low; that could otherwise allow BMS_OK with only
-     * a partial pack represented in firmware.
-     */
-    return (uint16_t)(NSMBS * NCELLS);
+    /* Required observations come from the compile-time topology and explicit
+     * TESTDAY C1 exception, never from a reduced live device count. The
+     * physical topology is still 5 x 15; TESTDAY output release stays locked. */
+    return accumulator_required_cell_count();
 }
 
 static uint16_t accumulator_count_bits(uint16_t mask)
@@ -1282,6 +1355,11 @@ void accumulator_update_voltage_stats_at(accumulator_t *dev, uint32_t now_ms)
         for(uint8_t cell = 0u; cell < NCELLS; cell++)
         {
             uint16_t bit = (uint16_t)(1u << cell);
+            if((ams_observed_cell_mask(ic) & bit) == 0u)
+            {
+                dev->cell_voltage_valid[ic][cell] = false;
+                continue;
+            }
             bool updated_this_scan = ((read_updated_mask & bit) != 0u);
             bool usable = false;
 
@@ -1408,6 +1486,11 @@ void accumulator_update_voltage_stats_at(accumulator_t *dev, uint32_t now_ms)
         for(uint8_t cell = 0u; cell < NCELLS; cell++)
         {
             uint16_t bit = (uint16_t)(1u << cell);
+            if((ams_observed_cell_mask(ic) & bit) == 0u)
+            {
+                dev->cell_voltage_valid[ic][cell] = false;
+                continue;
+            }
             if(((avg_updated & bit) != 0u) && ((avg_pec & bit) == 0u))
             {
                 uint16_t mv = accumulator_code_to_mv(smb_ics[ic].acell.ac_codes[cell]);
@@ -1460,7 +1543,10 @@ void accumulator_update_voltage_stats_at(accumulator_t *dev, uint32_t now_ms)
         dev->min_voltage_cell = min_cell;
         dev->max_volt = (float)max_mv / 1000.0f;
         dev->min_volt = (float)min_mv / 1000.0f;
-        dev->total_volt = total;
+        /* An observed partial sum is not a physical pack voltage. */
+        dev->total_volt = ((AMS_PHYSICAL_SERIES_CELLS == accumulator_required_cell_count()) &&
+                           dev->voltage_full_usable) ? total : 0.0f;
+        dev->observed_sum_volt = dev->voltage_full_usable ? total : 0.0f;
     }
     else
     {
@@ -1473,13 +1559,16 @@ void accumulator_update_voltage_stats_at(accumulator_t *dev, uint32_t now_ms)
         dev->max_volt = 0.0f;
         dev->min_volt = 0.0f;
         dev->total_volt = 0.0f;
+        dev->observed_sum_volt = 0.0f;
     }
 }
 
 
 void accumulator_update_temp_stats(accumulator_t *dev)
 {
-    accumulator_update_temp_stats_at(dev, 0u);
+    /* Capture producers and the acquisition task use the RTOS tick epoch.
+     * Zero is a valid acquisition time, never a substitute for current time. */
+    accumulator_update_temp_stats_at(dev, osKernelGetTickCount());
 }
 
 static bool accumulator_temp_code_to_deci_c(int16_t raw,
@@ -1509,22 +1598,14 @@ static bool accumulator_temp_code_to_deci_c(int16_t raw,
     return true;
 }
 
-static int16_t accumulator_iir_deci_c(int16_t old_deci_c, int16_t new_deci_c)
+static int16_t accumulator_iir_deci_c(int16_t old_deci_c, int16_t new_deci_c,
+                                     uint32_t elapsed_ms)
 {
-    int32_t num = ((int32_t)old_deci_c *
-                   (int32_t)(ACCUMULATOR_TEMP_FILTER_ALPHA_DEN - ACCUMULATOR_TEMP_FILTER_ALPHA_NUM)) +
-                  ((int32_t)new_deci_c * (int32_t)ACCUMULATOR_TEMP_FILTER_ALPHA_NUM);
-
-    if(num >= 0)
-    {
-        num += (ACCUMULATOR_TEMP_FILTER_ALPHA_DEN / 2);
-    }
-    else
-    {
-        num -= (ACCUMULATOR_TEMP_FILTER_ALPHA_DEN / 2);
-    }
-
-    return (int16_t)(num / ACCUMULATOR_TEMP_FILTER_ALPHA_DEN);
+    int64_t den = (int64_t)ACCUMULATOR_TEMP_FILTER_TAU_MS + elapsed_ms;
+    int64_t num = (int64_t)old_deci_c * ACCUMULATOR_TEMP_FILTER_TAU_MS +
+                  (int64_t)new_deci_c * elapsed_ms;
+    num += (num >= 0) ? den / 2 : -(den / 2);
+    return (int16_t)(num / den);
 }
 
 bool accumulator_temp_sensor_usable(const accumulator_t *dev, uint8_t seg, uint8_t sensor)
@@ -1555,6 +1636,9 @@ void accumulator_update_temp_stats_at(accumulator_t *dev, uint32_t now_ms)
     }
 
     uint32_t now = now_ms;
+    bool new_visit = dev->temp_visit_generation_consumed !=
+                     dev->smb.temp_visit_generation;
+    dev->temp_visit_generation_consumed = dev->smb.temp_visit_generation;
     uint16_t expected_count = (uint16_t)(NSMBS * NTEMPS);
     uint16_t updated_count = 0u;
     uint16_t usable_count = 0u;
@@ -1572,6 +1656,7 @@ void accumulator_update_temp_stats_at(accumulator_t *dev, uint32_t now_ms)
     int32_t sum_deci_c = 0;
     int32_t filtered_sum_deci_c = 0;
     uint16_t filtered_count = 0u;
+    uint32_t oldest_age = 0u;
 
     uint8_t ic_count = accumulator_configured_smb_count(dev);
     adbms6830_asic *smb_ics = (dev->smb.ics != NULL) ? dev->smb.ics : dev->smb_ics;
@@ -1606,7 +1691,11 @@ void accumulator_update_temp_stats_at(accumulator_t *dev, uint32_t now_ms)
         for(uint8_t sensor = 0u; sensor < NTEMPS; sensor++)
         {
             uint32_t bit = (uint32_t)(1UL << sensor);
-            bool updated_this_scan = ((read_updated_mask & bit) != 0u);
+            bool has_capture = (dev->smb.temp_capture_tick_valid_mask[ic] & bit) != 0u;
+            bool updated_this_scan = ((read_updated_mask & bit) != 0u) && has_capture &&
+                (((dev->temp_seen_mask[ic] & bit) == 0u) ||
+                 (dev->temp_sample_generation_consumed[ic][sensor] !=
+                  dev->smb.temp_sample_generation[ic][sensor]));
             bool usable = false;
 
             if(updated_this_scan && (ic < ic_count))
@@ -1617,6 +1706,10 @@ void accumulator_update_temp_stats_at(accumulator_t *dev, uint32_t now_ms)
                 bool had_previous = dev->temp_sensor_valid[ic][sensor];
                 int16_t previous_deci_c = dev->temp_deci_c[ic][sensor];
                 uint32_t previous_tick = dev->temp_last_update_ms[ic][sensor];
+                uint32_t sample_tick = dev->smb.temp_capture_tick_ms[ic][sensor];
+                dev->temp_seen_mask[ic] |= bit;
+                dev->temp_sample_generation_consumed[ic][sensor] =
+                    dev->smb.temp_sample_generation[ic][sensor];
 
                 dev->temp_raw_code[ic][sensor] = raw;
 
@@ -1627,7 +1720,7 @@ void accumulator_update_temp_stats_at(accumulator_t *dev, uint32_t now_ms)
                         uint16_t delta_deci_c = (deci_c >= previous_deci_c) ?
                                                 (uint16_t)(deci_c - previous_deci_c) :
                                                 (uint16_t)(previous_deci_c - deci_c);
-                        uint32_t elapsed_ms = (uint32_t)(now - previous_tick);
+                        uint32_t elapsed_ms = (uint32_t)(sample_tick - previous_tick);
 
                         if(delta_deci_c >= ACCUMULATOR_TEMP_IMPLAUSIBLE_JUMP_DECI_C)
                         {
@@ -1635,7 +1728,7 @@ void accumulator_update_temp_stats_at(accumulator_t *dev, uint32_t now_ms)
                             jump_count++;
                         }
 
-                        if(elapsed_ms > 0u)
+                        if((elapsed_ms > 0u) && (deci_c > previous_deci_c))
                         {
                             uint32_t rate = ((uint32_t)delta_deci_c * 1000u) / elapsed_ms;
                             if(rate > (uint32_t)INT16_MAX)
@@ -1656,7 +1749,8 @@ void accumulator_update_temp_stats_at(accumulator_t *dev, uint32_t now_ms)
                         }
                     }
 
-                    if((dev->temp_filter_valid_mask[ic] & bit) == 0u)
+                    if(((dev->temp_filter_valid_mask[ic] & bit) == 0u) ||
+                       ((uint32_t)(sample_tick - previous_tick) > ACCUMULATOR_TEMP_REVISIT_TIMEOUT_MS))
                     {
                         dev->temp_filtered_deci_c[ic][sensor] = deci_c;
                         dev->temp_filter_valid_mask[ic] |= bit;
@@ -1664,13 +1758,16 @@ void accumulator_update_temp_stats_at(accumulator_t *dev, uint32_t now_ms)
                     else
                     {
                         dev->temp_filtered_deci_c[ic][sensor] =
-                            accumulator_iir_deci_c(dev->temp_filtered_deci_c[ic][sensor], deci_c);
+                            accumulator_iir_deci_c(dev->temp_filtered_deci_c[ic][sensor], deci_c,
+                                                   (uint32_t)(sample_tick - previous_tick));
                     }
 
                     dev->temp_deci_c[ic][sensor] = deci_c;
                     dev->temp_sensor_valid[ic][sensor] = true;
-                    dev->temp_last_update_ms[ic][sensor] = now;
+                    dev->temp_last_update_ms[ic][sensor] = sample_tick;
                     dev->temp_consecutive_misses[ic][sensor] = 0u;
+                    dev->temp_failed_visits[ic][sensor] = 0u;
+                    dev->temp_sample_status[ic][sensor] = (uint8_t)thermistor_status;
                     dev->updated_temp_mask[ic] |= bit;
                     updated_count++;
                 }
@@ -1678,38 +1775,45 @@ void accumulator_update_temp_stats_at(accumulator_t *dev, uint32_t now_ms)
                 {
                     dev->temp_sensor_valid[ic][sensor] = false;
                     dev->temp_filter_valid_mask[ic] &= ~bit;
-                    dev->invalid_temp_mask[ic] |= bit;
-                    invalid_count++;
-                    if(thermistor_status == THERMISTOR_STATUS_OPEN_CIRCUIT)
-                    {
-                        dev->temp_open_mask[ic] |= bit;
-                        open_count++;
-                    }
-                    else if(thermistor_status == THERMISTOR_STATUS_SHORT_CIRCUIT)
-                    {
-                        dev->temp_short_mask[ic] |= bit;
-                        short_count++;
-                    }
-                    if(dev->temp_consecutive_misses[ic][sensor] < UINT8_MAX)
-                    {
-                        dev->temp_consecutive_misses[ic][sensor]++;
-                    }
+                    dev->temp_sample_status[ic][sensor] = (uint8_t)thermistor_status;
                 }
             }
-            else
+            if(new_visit && ((dev->smb.temp_scheduled_mask[ic] & bit) != 0u) &&
+               (!updated_this_scan || !dev->temp_sensor_valid[ic][sensor]))
             {
-                if(dev->temp_consecutive_misses[ic][sensor] < UINT8_MAX)
+                if(dev->temp_failed_visits[ic][sensor] < UINT8_MAX)
                 {
-                    dev->temp_consecutive_misses[ic][sensor]++;
+                    dev->temp_failed_visits[ic][sensor]++;
                 }
             }
+            dev->temp_consecutive_misses[ic][sensor] = dev->temp_failed_visits[ic][sensor];
+
+            if(((dev->temp_seen_mask[ic] & bit) != 0u) && !dev->temp_sensor_valid[ic][sensor])
+            {
+                dev->invalid_temp_mask[ic] |= bit;
+                invalid_count++;
+                if(dev->temp_sample_status[ic][sensor] == THERMISTOR_STATUS_OPEN_CIRCUIT)
+                {
+                    dev->temp_open_mask[ic] |= bit;
+                    open_count++;
+                }
+                else if(dev->temp_sample_status[ic][sensor] == THERMISTOR_STATUS_SHORT_CIRCUIT)
+                {
+                    dev->temp_short_mask[ic] |= bit;
+                    short_count++;
+                }
+            }
+
+            uint32_t sensor_age = ((dev->temp_seen_mask[ic] & bit) != 0u) ?
+                (uint32_t)(now - dev->temp_last_update_ms[ic][sensor]) : UINT32_MAX;
+            if(sensor_age > oldest_age) oldest_age = sensor_age;
 
             if(dev->temp_sensor_valid[ic][sensor])
             {
                 uint32_t age_ms = (uint32_t)(now - dev->temp_last_update_ms[ic][sensor]);
 
-                usable = (age_ms <= ACCUMULATOR_TEMP_STALE_TIMEOUT_MS) &&
-                         (dev->temp_consecutive_misses[ic][sensor] <= ACCUMULATOR_TEMP_MAX_CONSEC_MISSES);
+                usable = ams_temperature_age_fresh(age_ms, 0u) &&
+                         (dev->temp_failed_visits[ic][sensor] == 0u);
 
                 if(usable)
                 {
@@ -1757,6 +1861,36 @@ void accumulator_update_temp_stats_at(accumulator_t *dev, uint32_t now_ms)
     }
 
     dev->updated_temp_count = updated_count;
+    dev->temp_oldest_required_age_ms = oldest_age;
+    dev->temp_stats_tick = now;
+    if(!dev->temp_sweep_started && updated_count != 0u)
+    {
+        uint32_t first_age = 0u;
+        for(uint8_t ic = 0u; ic < NSMBS; ic++)
+            for(uint8_t sensor = 0u; sensor < NTEMPS; sensor++)
+                if((dev->updated_temp_mask[ic] & (1UL << sensor)) != 0u)
+                {
+                    uint32_t age = now - dev->temp_last_update_ms[ic][sensor];
+                    if(age > first_age) first_age = age;
+                }
+        dev->temp_sweep_start_tick = now - first_age;
+        dev->temp_sweep_started = true;
+    }
+    bool sweep_complete = (ic_count == NSMBS);
+    for(uint8_t ic = 0u; ic < NSMBS; ic++)
+    {
+        dev->temp_sweep_seen_mask[ic] |= dev->updated_temp_mask[ic];
+        sweep_complete = sweep_complete &&
+            (dev->temp_sweep_seen_mask[ic] == ((1UL << NTEMPS) - 1UL));
+    }
+    if(sweep_complete && usable_count == expected_count)
+    {
+        dev->temp_last_sweep_span_ms = now - dev->temp_sweep_start_tick;
+        dev->temp_last_sweep_tick = now;
+        if(dev->temp_sweep_count != UINT32_MAX) dev->temp_sweep_count++;
+        memset(dev->temp_sweep_seen_mask, 0, sizeof(dev->temp_sweep_seen_mask));
+        dev->temp_sweep_started = false;
+    }
     dev->usable_temp_count = usable_count;
     dev->stale_temp_count = stale_count;
     dev->invalid_temp_count = invalid_count;
@@ -2001,8 +2135,20 @@ int accumulator_emergency_balance_inhibit(
     accumulator_t *dev,
     accumulator_balance_inhibit_reason_t reason)
 {
-    if((dev == NULL) || !dev->smb_transport_ready ||
-       !accumulator_final_ring_topology_valid(dev))
+    if(dev == NULL)
+    {
+        return -1;
+    }
+
+    /* Emergency inhibition is allowed before POST/readiness. Requiring the
+     * measurement baseline here creates a bootstrap deadlock after POST
+     * failure. Timer/topology integrity and checked hardware readback still
+     * apply; this operation never grants measurement or balancing authority. */
+    dev->last_balance_mute_ok = false;
+    dev->last_balance_durable_zero_verified = false;
+    dev->last_balance_unmute_ok = false;
+    dev->last_balance_inhibit_reason = (uint8_t)reason;
+    if(!dev->delay_timer_ready || !accumulator_final_ring_topology_valid(dev))
     {
         return -1;
     }
@@ -2014,14 +2160,16 @@ int accumulator_emergency_balance_inhibit(
     HAL_StatusTypeDef cfg_status;
     HAL_StatusTypeDef pwm_status;
     HAL_StatusTypeDef verify_status = HAL_ERROR;
-
-    dev->last_balance_mute_ok = false;
-    dev->last_balance_durable_zero_verified = false;
-    dev->last_balance_unmute_ok = false;
-    dev->last_balance_inhibit_reason = (uint8_t)reason;
+    bool session_owned = false;
 
     adbms_spi_lock();
+    const bool previous_inhibit_in_progress = smb->balance_inhibit_in_progress;
+    smb->balance_inhibit_in_progress = true;
+    /* A newly queued fail-low request cannot cancel the fail-low transaction
+     * already fulfilling it. Interrupts/tasks still run during all waits. */
 
+    /* Failed session opening does not skip the checked safety actions. */
+    (void)adbms6830_transaction_session_begin(smb, &session_owned);
     /* Stage 1: fastest ASIC-native discharge inhibit. */
     mute_status = adbms6830_mute_checked(smb);
     dev->last_balance_mute_ok = (mute_status == HAL_OK);
@@ -2052,6 +2200,8 @@ int accumulator_emergency_balance_inhibit(
         accumulator_best_effort_clear_balance_locked(smb, smb_ics, ic_count);
     }
 
+    adbms6830_transaction_session_end(smb, session_owned);
+    smb->balance_inhibit_in_progress = previous_inhibit_in_progress;
     adbms_spi_unlock();
 
     /* MUTE failure is still a failed emergency transition even when the slower
@@ -2095,4 +2245,3 @@ int accumulator_clear_balance(accumulator_t *dev)
     return accumulator_emergency_balance_inhibit(
         dev, ACCUMULATOR_BALANCE_INHIBIT_USER);
 }
-

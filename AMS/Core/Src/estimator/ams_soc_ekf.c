@@ -8,6 +8,7 @@
 
 #include "estimator/ams_soc_ekf.h"
 #include "estimator/ams_estimator_lut.h"
+#include "ams_cell_observation.h"
 
 #include <math.h>
 #include <string.h>
@@ -665,7 +666,11 @@ void ams_ekf_make_pack_config(ams_ekf_config_t *cfg)
 
 void ams_ekf_make_segment_config(ams_ekf_config_t *cfg, uint8_t segment_index)
 {
-    ams_ekf_make_group_range_config(cfg, (uint16_t)segment_index * 15U, 15U);
+    const uint16_t count = ams_observed_segment_cell_count(segment_index);
+    /* Retain physical indexing: the affected segment observes C2..C15.
+     * Scaling the EKF to 14 groups avoids treating that sum as 15 cells. */
+    const uint16_t first = (uint16_t)segment_index * 15U + (15U - count);
+    ams_ekf_make_group_range_config(cfg, first, count);
 }
 
 void ams_ekf_make_group_range_config(ams_ekf_config_t *cfg,
@@ -902,15 +907,18 @@ static bool ams_ekf_step_impl(ams_ekf_instance_t *ekf,
 
     float p_prior[3][3];
     float p_pred[3][3] = {{0.0f}};
+    /* Q was calibrated per 100 ms epoch. Preserve that nominal tuning while
+     * integrating uncertainty over the actual accepted elapsed interval. */
+    const float q_scale = dt / AMS_EKF_DEFAULT_DT_S;
     covariance_load(ekf, p_prior);
-    p_pred[0][0] = p_prior[0][0] + AMS_EKF_Q_SOC;
+    p_pred[0][0] = p_prior[0][0] + AMS_EKF_Q_SOC * q_scale;
     p_pred[0][1] = p_pred[1][0] = f_vp1 * p_prior[0][1];
     p_pred[0][2] = p_pred[2][0] = f_vp2 * p_prior[0][2];
-    p_pred[1][1] = (f_vp1 * f_vp1 * p_prior[1][1]) + AMS_EKF_Q_VP1;
+    p_pred[1][1] = (f_vp1 * f_vp1 * p_prior[1][1]) + AMS_EKF_Q_VP1 * q_scale;
     p_pred[1][2] = p_pred[2][1] =
         f_vp1 * f_vp2 * p_prior[1][2];
-    p_pred[2][2] = (f_vp2 * f_vp2 * p_prior[2][2]) + AMS_EKF_Q_VP2;
-    ekf->p_r0 += AMS_EKF_Q_R0;
+    p_pred[2][2] = (f_vp2 * f_vp2 * p_prior[2][2]) + AMS_EKF_Q_VP2 * q_scale;
+    ekf->p_r0 += AMS_EKF_Q_R0 * q_scale;
 
     if(acquisition_constrained)
     {
@@ -1801,6 +1809,40 @@ bool ams_estimator_configure_segments(ams_estimator_t *est)
     return true;
 }
 
+bool ams_estimator_configure_subsegments(ams_estimator_t *est)
+{
+    if(est == NULL) return false;
+    /* Experimental core topology only. Never selected by init_default: the
+     * live SoP and CAN contracts still require five segment instances. */
+    memset(est->inst, 0, sizeof(est->inst));
+    memset(est->resistance_soh, 0, sizeof(est->resistance_soh));
+    est->enabled = 1u;
+    est->instance_count = 10u;
+    est->active_index = 0u;
+    est->fault_flags = AMS_EKF_FAULT_NONE;
+    for(uint8_t seg = 0u; seg < 5u; seg++)
+    {
+        ams_ekf_config_t segment;
+        ams_ekf_make_segment_config(&segment, seg);
+        uint16_t first_count = segment.series_group_count / 2u;
+        for(uint8_t half = 0u; half < 2u; half++)
+        {
+            ams_ekf_config_t cfg;
+            uint16_t first = segment.first_series_group + (half ? first_count : 0u);
+            uint16_t count = half ? segment.series_group_count - first_count : first_count;
+            ams_ekf_make_group_range_config(&cfg, first, count);
+            ams_ekf_instance_t *inst = &est->inst[seg * 2u + half];
+            ams_ekf_init(inst, &cfg);
+            if(inst->fault_flags != AMS_EKF_FAULT_NONE)
+            {
+                est->fault_flags |= inst->fault_flags;
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 bool ams_estimator_configure_even_split(ams_estimator_t *est, uint8_t instance_count)
 {
     if ((est == NULL) || (instance_count == 0U) || (instance_count > AMS_EKF_MAX_INSTANCES) ||
@@ -1953,7 +1995,9 @@ void ams_estimator_refresh_summary(ams_estimator_t *est,
     est->fault_flags = AMS_EKF_FAULT_NONE;
     est->model_domain_flags = AMS_EKF_MODEL_DOMAIN_NONE;
 
-    if ((est->active_index >= est->instance_count) ||
+    if ((est->instance_count == 0u) ||
+        (est->instance_count > AMS_EKF_MAX_INSTANCES) ||
+        (est->active_index >= est->instance_count) ||
         (est->active_index >= AMS_EKF_MAX_INSTANCES))
     {
         est->fault_flags = AMS_EKF_FAULT_BAD_CONFIG;

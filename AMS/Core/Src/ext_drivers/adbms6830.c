@@ -9,6 +9,7 @@
 #include <math.h>
 #include <stddef.h>
 #include <string.h>
+#include "cmsis_os2.h"
 
 #include "ext_drivers/adbms6830_functions.h"
 #include "ext_drivers/thermistor_model.h"
@@ -306,7 +307,7 @@ static HAL_StatusTypeDef adbms6830_adcv_checked(adbms6830_driver_t *dev, RD rd, 
 static HAL_StatusTypeDef adbms6830_wr48_checked(adbms6830_driver_t* dev, uint8_t cmd[CMDSZ], uint8_t* tx_data);
 static HAL_StatusTypeDef adbms6830_rd48_checked(adbms6830_driver_t* dev, uint8_t cmd[CMDSZ], uint8_t* rx_data);
 static uint32_t adbms6830_runtime_time_us(const adbms6830_driver_t *dev);
-static void adbms6830_session_note_activity(adbms6830_driver_t *dev);
+static void adbms6830_session_note_activity(adbms6830_driver_t *dev, uint32_t now, uint32_t now_ms);
 static void adbms6830_session_open(adbms6830_driver_t *dev);
 static void adbms6830_session_close(adbms6830_driver_t *dev);
 static HAL_StatusTypeDef adbms6830_session_require_awake(adbms6830_driver_t *dev);
@@ -354,35 +355,50 @@ static uint32_t adbms6830_runtime_time_us(const adbms6830_driver_t *dev)
     {
         return dev->time_us_fn(dev->runtime_hook_ctx);
     }
-    return 0u;
+    return HAL_GetTick() * 1000u;
 }
 
-static void adbms6830_session_note_activity(adbms6830_driver_t *dev)
+static void adbms6830_link_forget(adbms6830_driver_t *dev)
 {
-    uint32_t now;
-    uint32_t gap;
+    dev->wake.activity_valid = false;
+    dev->wake.verified = false;
+    dev->status_conversion_pending = false;
+}
 
-    if((dev == NULL) || !dev->session.active)
-    {
-        return;
-    }
+static bool adbms6830_link_matches(const adbms6830_driver_t *dev)
+{
+    return (dev->wake.string == dev->string) &&
+           (dev->wake.physical_count == dev->physical_chain_count) &&
+           (dev->wake.logical_count == (uint8_t)dev->num_ics);
+}
 
-    now = adbms6830_runtime_time_us(dev);
-    if(now == 0u)
+static void adbms6830_session_note_activity(adbms6830_driver_t *dev, uint32_t now, uint32_t now_ms)
+{
+    if(dev == NULL) return;
+    /* Record physical traffic even outside a logical SNAP/read session. */
+    dev->wake.activity_us = now;
+    dev->wake.activity_ms = now_ms;
+    dev->wake.activity_valid = true;
+    dev->wake.string = dev->string;
+    dev->wake.physical_count = dev->physical_chain_count;
+    dev->wake.logical_count = (uint8_t)dev->num_ics;
+    if(dev->session.active)
     {
-        return;
-    }
-
-    if(dev->session.last_activity_us != 0u)
-    {
-        gap = now - dev->session.last_activity_us;
+        uint32_t gap = now - dev->session.last_activity_us;
         dev->session.last_gap_us = gap;
-        if(gap > dev->session.max_gap_us)
-        {
-            dev->session.max_gap_us = gap;
-        }
+        if(gap > dev->session.max_gap_us) dev->session.max_gap_us = gap;
+        dev->session.last_activity_us = now;
     }
-    dev->session.last_activity_us = now;
+}
+
+/* Bound a frame by its wire length, with 2 ms HAL/tick/scheduling margin.
+ * SPI6's reviewed PCLK2 is 108 MHz; use the actual programmed prescaler.
+ * Supported prescaler bits encode /2 through /256. No shared 2950 change. */
+static uint32_t adbms6830_frame_timeout_ms(const adbms6830_driver_t *dev,
+                                          uint16_t bytes)
+{
+    uint32_t divisor = 1u << (((dev->hspi->Init.BaudRatePrescaler & SPI_CR1_BR) >> 3u) + 1u);
+    return 2u + (((uint32_t)bytes * 8u * divisor + 107999u) / 108000u);
 }
 
 static void adbms6830_session_open(adbms6830_driver_t *dev)
@@ -472,11 +488,6 @@ static HAL_StatusTypeDef adbms6830_session_require_awake(adbms6830_driver_t *dev
     }
 
     now = adbms6830_runtime_time_us(dev);
-    if((now == 0u) || (dev->session.last_activity_us == 0u))
-    {
-        return HAL_OK;
-    }
-
     gap = now - dev->session.last_activity_us;
     dev->session.last_gap_us = gap;
     if(gap > dev->session.max_gap_us)
@@ -484,7 +495,8 @@ static HAL_StatusTypeDef adbms6830_session_require_awake(adbms6830_driver_t *dev
         dev->session.max_gap_us = gap;
     }
 
-    if(gap < AMS_ADBMS_SESSION_GUARD_US)
+    if((gap < AMS_ADBMS_SESSION_GUARD_US) &&
+       dev->wake.activity_valid && adbms6830_link_matches(dev))
     {
         /* This guard is deliberately advisory, not a scheduler lock. A higher
          * priority task or ISR can still preempt between this check and the
@@ -493,7 +505,7 @@ static HAL_StatusTypeDef adbms6830_session_require_awake(adbms6830_driver_t *dev
          * detected by PEC/counter integrity and causes the coherent epoch to be
          * discarded/retried, with persistent read faults qualified over scans.
          * Do not close this race by masking safety interrupts. */
-        return HAL_OK;
+        return adbms6830_wakeup_checked(dev);
     }
 
     if(dev->session.guard_expiry_count != UINT32_MAX)
@@ -564,6 +576,17 @@ static void adbms6830_read_session_end(adbms6830_driver_t *dev, bool owned)
     (void)dev;
     (void)owned;
 #endif
+}
+
+HAL_StatusTypeDef adbms6830_transaction_session_begin(adbms6830_driver_t *dev,
+                                                     bool *owned)
+{
+    return adbms6830_read_session_begin(dev, owned);
+}
+
+void adbms6830_transaction_session_end(adbms6830_driver_t *dev, bool owned)
+{
+    adbms6830_read_session_end(dev, owned);
 }
 
 static uint16_t adbms6830_min_u16(uint16_t a, uint16_t b)
@@ -1530,6 +1553,7 @@ HAL_StatusTypeDef adbms6830_scope_activity(adbms6830_driver_t *dev,
         switch(mode)
         {
         case ADBMS6830_SCOPE_WAKE:
+            adbms6830_link_forget(dev); /* Explicit waveform request. */
             status = adbms6830_wakeup_checked(dev);
             break;
         case ADBMS6830_SCOPE_CMD:
@@ -1705,7 +1729,8 @@ HAL_StatusTypeDef adbms6830_read_status(adbms6830_driver_t *dev, bool inject_spi
     return first_error;
 }
 
-HAL_StatusTypeDef adbms6830_refresh_diagnostics(adbms6830_driver_t *dev)
+static HAL_StatusTypeDef adbms6830_refresh_diagnostics_internal(adbms6830_driver_t *dev,
+                                                               bool convert)
 {
     HAL_StatusTypeDef first_error = HAL_OK;
     HAL_StatusTypeDef status;
@@ -1734,12 +1759,12 @@ HAL_StatusTypeDef adbms6830_refresh_diagnostics(adbms6830_driver_t *dev)
 
     /* ADAX with AUX_ALL updates VREF2, ITMP, VD, VA and VRES before Status
      * A/B are evaluated.  Reading stale reset values is never accepted. */
-    status = adbms6830_wakeup_checked(dev);
-    if(status == HAL_OK)
+    status = convert ? adbms6830_wakeup_checked(dev) : HAL_OK;
+    if(convert && (status == HAL_OK))
     {
         status = adbms6830_cmd_checked(dev, adax_cmd);
     }
-    if(status == HAL_OK)
+    if(convert && (status == HAL_OK))
     {
         status = adbms6830_wait_cooperative(dev, ADBMS6830_AUX_CONVERSION_WAIT_US);
     }
@@ -1809,6 +1834,32 @@ HAL_StatusTypeDef adbms6830_refresh_diagnostics(adbms6830_driver_t *dev)
         dev->spi_debug.last_status = first_error;
     }
     return first_error;
+}
+
+HAL_StatusTypeDef adbms6830_start_status_conversion(adbms6830_driver_t *dev)
+{
+    uint8_t cmd[2] = { ADAX_CMD_BYTE0, ADAX_CMD_BYTE1 };
+    HAL_StatusTypeDef status = adbms6830_cmd_checked(dev, cmd);
+    if(dev != NULL)
+    {
+        dev->status_conversion_pending = (status == HAL_OK);
+        dev->status_conversion_start_ms = HAL_GetTick();
+    }
+    return status;
+}
+
+HAL_StatusTypeDef adbms6830_complete_status_conversion(adbms6830_driver_t *dev)
+{
+    if((dev == NULL) || !dev->status_conversion_pending) return HAL_BUSY;
+    uint32_t age = HAL_GetTick() - dev->status_conversion_start_ms;
+    dev->status_conversion_pending = false;
+    if((age < 20u) || (age > 1500u)) return HAL_BUSY;
+    return adbms6830_refresh_diagnostics_internal(dev, false);
+}
+
+HAL_StatusTypeDef adbms6830_refresh_diagnostics(adbms6830_driver_t *dev)
+{
+    return adbms6830_refresh_diagnostics_internal(dev, true);
 }
 
 HAL_StatusTypeDef adbms6830_establish_diagnostic_baseline(adbms6830_driver_t *dev)
@@ -1977,6 +2028,27 @@ void adbms6830_diag_health_clear(adbms6830_driver_t *dev)
     adbms6830_refresh_status_health(dev);
 }
 
+/* Table 55 / Table 102: SNAP_ST and MUTE_ST report command state,
+ * not writable configuration. Their physical state is checked separately. */
+static uint8_t adbms6830_cfga_config_byte(uint8_t byte, uint8_t value)
+{
+    return (byte == 5u) ? (uint8_t)(value & (uint8_t)~0x30u) : value;
+}
+
+static bool adbms6830_cfga_config_matches(const uint8_t *expected,
+                                         const uint8_t *actual)
+{
+    for(uint8_t byte = 0u; byte < TX_DATA; byte++)
+    {
+        if(adbms6830_cfga_config_byte(byte, expected[byte]) !=
+           adbms6830_cfga_config_byte(byte, actual[byte]))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
 HAL_StatusTypeDef adbms6830_verify_config_readback(adbms6830_driver_t *dev)
 {
     HAL_StatusTypeDef first_error = HAL_OK;
@@ -2049,9 +2121,8 @@ HAL_StatusTypeDef adbms6830_verify_config_readback(adbms6830_driver_t *dev)
         bool actual_cfg_mismatch = false;
 
         if(!cfga_verified ||
-           (memcmp(dev->ics[ic].configa.tx_data,
-                   dev->ics[ic].configa.rx_data,
-                   TX_DATA) != 0))
+           !adbms6830_cfga_config_matches(dev->ics[ic].configa.tx_data,
+                                         dev->ics[ic].configa.rx_data))
         {
             dev->health.configa_mismatch_mask |= bit;
             mismatch = true;
@@ -3469,7 +3540,8 @@ static void adbms6830_pack_pwmb(adbms6830_driver_t *dev)
 	adbms6830_asic *ics = dev->ics;
 	for(uint8_t curr_ic = 0; curr_ic < dev->num_ics; curr_ic++)
 	{
-		memset(ics[curr_ic].pwmb.tx_data, 0, TX_DATA);
+		/* Table 96: PSR2..PSR5 are fixed ones, not PWM channels. */
+		memset(ics[curr_ic].pwmb.tx_data, 0xFF, TX_DATA);
 		ics[curr_ic].pwmb.tx_data[0] = (uint8_t)(((ics[curr_ic].PwmB.pwmb[1] & 0x0Fu) << 4) |
 		                                         (ics[curr_ic].PwmB.pwmb[0] & 0x0Fu));
 		ics[curr_ic].pwmb.tx_data[1] = (uint8_t)(((ics[curr_ic].PwmB.pwmb[3] & 0x0Fu) << 4) |
@@ -3839,6 +3911,8 @@ static HAL_StatusTypeDef adbms6830_run_startup_post_once(
     uint16_t unexpected = 0u;
 
     dev->post.stage = ADBMS6830_POST_BASELINE;
+    dev->post.failed_stage = ADBMS6830_POST_IDLE;
+    dev->post.restore_status = HAL_ERROR;
     dev->post.last_status = HAL_ERROR;
     dev->post.failed_ic_mask = 0u;
     dev->post.unexpected_ic_mask = 0u;
@@ -3877,6 +3951,24 @@ static HAL_StatusTypeDef adbms6830_run_startup_post_once(
         status = adbms6830_wrcfga_checked(dev);
         if(status == HAL_OK)
         {
+            /* Discard the preceding stimulus before exercising this one.
+             * Supply and oscillator diagnostics are evaluated during ADC
+             * operation; FLAG_D followed only by RDSTAT cannot prove them.
+             * SINGLE/RD_ON keeps the test bounded with discharge inhibited. */
+            status = adbms6830_clear_all_flags(dev);
+        }
+        if(status == HAL_OK)
+        {
+            status = adbms6830_adcv_checked(dev, RD_ON, SINGLE, DCP_OFF,
+                                            RSTF_ON, OW_OFF_ALL_CH);
+        }
+        if(status == HAL_OK)
+        {
+            status = adbms6830_wait_cooperative(dev,
+                                    ADBMS6830_REDUNDANT_CONVERSION_WAIT_US);
+        }
+        if(status == HAL_OK)
+        {
             status = adbms6830_read_status(dev, false);
         }
         if((status != HAL_OK) ||
@@ -3905,7 +3997,23 @@ static HAL_StatusTypeDef adbms6830_run_startup_post_once(
         dev->post.expected_flag_d = 0u;
         failed = 0u;
         unexpected = 0u;
-        status = adbms6830_read_status(dev, true);
+        /* TMOD's FLAG_D[7] remains active after clearing its status latch.
+         * Remove every preceding stimulus in hardware and require a fresh
+         * clean conversion baseline before injecting the SPI comparison bit.
+         * Merely assigning expected_flag_d does not write the ASIC. */
+        for(uint8_t ic = 0u; ic < (uint8_t)dev->num_ics; ic++)
+        {
+            dev->ics[ic].tx_cfga = production_cfga[ic];
+        }
+        status = adbms6830_wrcfga_checked(dev);
+        if(status == HAL_OK)
+        {
+            status = adbms6830_establish_diagnostic_baseline(dev);
+        }
+        if(status == HAL_OK)
+        {
+            status = adbms6830_read_status(dev, true);
+        }
         if((status != HAL_OK) ||
            !adbms6830_post_stage_matches(dev, ADBMS6830_POST_SPIFLT,
                                          &failed, &unexpected))
@@ -3920,6 +4028,11 @@ static HAL_StatusTypeDef adbms6830_run_startup_post_once(
         }
     }
 
+    if(status != HAL_OK)
+    {
+        dev->post.failed_stage = dev->post.stage;
+    }
+
     /* Restoration is mandatory even when an injected stage failed. */
     dev->post.stage = ADBMS6830_POST_RESTORE_CONFIG;
     for(uint8_t ic = 0u; ic < (uint8_t)dev->num_ics; ic++)
@@ -3932,8 +4045,10 @@ static HAL_StatusTypeDef adbms6830_run_startup_post_once(
         {
             restore_status = adbms6830_clear_all_flags(dev);
         }
+        dev->post.restore_status = restore_status;
         if((status == HAL_OK) && (restore_status != HAL_OK))
         {
+            dev->post.failed_stage = ADBMS6830_POST_RESTORE_CONFIG;
             status = restore_status;
         }
     }
@@ -3946,6 +4061,10 @@ static HAL_StatusTypeDef adbms6830_run_startup_post_once(
     if(status == HAL_OK)
     {
         status = adbms6830_verify_config_readback(dev);
+    }
+    if((status != HAL_OK) && (dev->post.failed_stage == ADBMS6830_POST_IDLE))
+    {
+        dev->post.failed_stage = ADBMS6830_POST_FINAL_BASELINE;
     }
     return status;
 }
@@ -4027,78 +4146,90 @@ HAL_StatusTypeDef adbms6830_run_startup_post(adbms6830_driver_t *dev)
 #endif
 }
 
+static HAL_StatusTypeDef adbms6830_wake_train(adbms6830_driver_t *dev,
+                                               bool cold)
+{
+    const uint16_t edge_us = cold ? WAKEUP_US_DELAY : AMS_ADBMS_WARM_WAKE_EDGE_US;
+    HAL_StatusTypeDef status = HAL_OK;
+    uint32_t edge_start_us = 0u, edge_start_ms = 0u;
+    adbms_spi_lock();
+    for(uint8_t i = 0u; i < dev->physical_chain_count; i++)
+    {
+        for(uint8_t edge = 0u; edge < 2u; edge++)
+        {
+            edge_start_us = adbms6830_runtime_time_us(dev);
+            edge_start_ms = HAL_GetTick();
+            adbms6830_set_cs(dev, edge);
+            status = adbms6830_us_delay(dev, edge_us);
+            /* Preemption must not stretch a train past minimum idle time.
+             * Fail this attempt; never mask safety interrupts or loop forever. */
+            if((status == HAL_OK) &&
+               ((uint32_t)(adbms6830_runtime_time_us(dev) - edge_start_us) >=
+                AMS_ADBMS_WAKE_EDGE_MAX_US))
+            {
+                adbms6830_increment_u32_sat(&dev->session.wake_gap_abort_count);
+                status = HAL_BUSY;
+            }
+            if(status != HAL_OK) break;
+        }
+        if(status != HAL_OK) break;
+    }
+    adbms6830_set_cs(dev, 1u);
+    if(status == HAL_OK)
+    {
+        adbms6830_increment_u32_sat(&dev->session.full_wake_count);
+        adbms6830_increment_u32_sat(cold ? &dev->session.cold_wake_count :
+                                           &dev->session.warm_wake_count);
+        adbms6830_session_note_activity(dev, edge_start_us, edge_start_ms);
+    }
+    else
+    {
+        adbms6830_link_forget(dev);
+    }
+    adbms_spi_unlock();
+    return status;
+}
+
 HAL_StatusTypeDef adbms6830_wakeup_checked(adbms6830_driver_t* dev)
 {
-	HAL_StatusTypeDef status;
-
-	if((dev == NULL) || !adbms6830_topology_valid(dev))
-	{
-		return HAL_ERROR;
-	}
-
-	for(uint8_t i = 0u; i < dev->physical_chain_count; i++)
-	{
-		adbms6830_set_cs(dev, 0);
-		status = adbms6830_us_delay(dev, WAKEUP_US_DELAY);
-		adbms6830_set_cs(dev, 1);
-		if(status != HAL_OK)
-		{
-			return status;
-		}
-		status = adbms6830_us_delay(dev, WAKEUP_BW_DELAY);
-		if(status != HAL_OK)
-		{
-			return status;
-		}
-	}
-
-    if(dev->session.full_wake_count != UINT32_MAX)
+    if((dev == NULL) || !adbms6830_topology_valid(dev)) return HAL_ERROR;
+    if(!adbms6830_link_matches(dev)) adbms6830_link_forget(dev);
+#if AMS_ENABLE_ADBMS_AWAKE_SESSION
+    uint32_t now_us = adbms6830_runtime_time_us(dev);
+    uint32_t now_ms = HAL_GetTick();
+    /* The independent millisecond age also rejects stale microsecond-cache
+     * reuse after its wrap. Zero is a valid timestamp, not a sentinel. */
+    if(dev->wake.activity_valid &&
+       ((uint32_t)(now_ms - dev->wake.activity_ms) < 3u) &&
+       ((uint32_t)(now_us - dev->wake.activity_us) < AMS_ADBMS_SESSION_GUARD_US))
     {
-        dev->session.full_wake_count++;
+        adbms6830_increment_u32_sat(&dev->session.skipped_wake_count);
+        return HAL_OK;
     }
-    if(dev->session.active)
-    {
-        dev->session.last_activity_us = adbms6830_runtime_time_us(dev);
-    }
-	return HAL_OK;
+    if(dev->session.coherent_snapshot_active) return HAL_BUSY;
+    bool warm = dev->wake.verified &&
+                (dev->physical_chain_count == (uint8_t)dev->num_ics) &&
+                ((uint32_t)(now_ms - dev->wake.verified_ms) <
+                 AMS_ADBMS_CORE_PROOF_MAX_AGE_MS);
+    if(!warm) adbms6830_link_forget(dev);
+    return adbms6830_wake_train(dev, !warm);
+#else
+    return adbms6830_wake_train(dev, true);
+#endif
 }
 
 void adbms6830_wakeup(adbms6830_driver_t* dev)
 {
-	(void)adbms6830_wakeup_checked(dev);
+    (void)adbms6830_wakeup_checked(dev);
 }
 
 void adbms6830_wakeup_cold(adbms6830_driver_t* dev)
 {
-    if(!adbms6830_topology_valid(dev))
-    {
-        return;
-    }
-
-    if(dev->spi_debug.enabled)
-    {
-        dev->spi_debug.last_op = ADBMS6830_SPI_OP_COLD_WAKE;
-    }
-
-    for(uint8_t pass = 0u; pass < 2u; pass++)
-    {
-		for(uint8_t i = 0u; i < dev->physical_chain_count; i++)
-        {
-            adbms6830_set_cs(dev, 0);
-            if(adbms6830_us_delay(dev, WAKEUP_US_DELAY) != HAL_OK)
-            {
-                adbms6830_set_cs(dev, 1);
-                return;
-            }
-            adbms6830_set_cs(dev, 1);
-            if(adbms6830_us_delay(dev, WAKEUP_BW_DELAY) != HAL_OK)
-            {
-                return;
-            }
-        }
-    }
-
-    /* Leave time for references/regulators after a true sleep/cold state. */
+    if(!adbms6830_topology_valid(dev)) return;
+    adbms6830_link_forget(dev);
+    if(dev->spi_debug.enabled) dev->spi_debug.last_op = ADBMS6830_SPI_OP_COLD_WAKE;
+    /* Explicit service/startup recovery always forces a real cold train. */
+    if(adbms6830_wake_train(dev, true) != HAL_OK) return;
     (void)adbms6830_wait_cooperative(dev, 5000u);
 }
 
@@ -4162,12 +4293,14 @@ HAL_StatusTypeDef adbms6830_spi_write(adbms6830_driver_t* dev,
     adbms6830_spi_debug_note_tx(dev, dev->spi_debug.last_op, data, data, len, 0u);
 
     adbms_spi_lock();
+    uint32_t frame_start_us = adbms6830_runtime_time_us(dev);
+    uint32_t frame_start_ms = HAL_GetTick();
     if(use_cs)
     {
         adbms6830_set_cs(dev, 0);
     }
 
-    status = HAL_SPI_Transmit(dev->hspi, data, len, SPI_TIMEOUT);
+    status = HAL_SPI_Transmit(dev->hspi, data, len, adbms6830_frame_timeout_ms(dev, len));
 
     if(use_cs)
     {
@@ -4177,8 +4310,10 @@ HAL_StatusTypeDef adbms6830_spi_write(adbms6830_driver_t* dev,
 
     if(status == HAL_OK)
     {
-        adbms6830_session_note_activity(dev);
+        adbms6830_session_note_activity(dev, frame_start_us, frame_start_ms);
     }
+
+    if(status != HAL_OK) adbms6830_link_forget(dev);
 
     if(dev->spi_debug.enabled)
     {
@@ -4210,7 +4345,18 @@ static HAL_StatusTypeDef adbms6830_cmd_checked(adbms6830_driver_t* dev, uint8_t 
         return HAL_ERROR;
     }
 
+    status = dev->session.active ? adbms6830_session_require_awake(dev) :
+                                   adbms6830_wakeup_checked(dev);
+    if(status != HAL_OK) return status;
+
     write_buf[0] = cmd[0];
+    /* An intervening AUX conversion or reset withdraws deferred ownership.
+     * This includes service CLI conversions between scan epochs. */
+    if(((cmd[0] & 0xFEu) == 0x04u) ||
+       ((cmd[0] == SRST[0]) && (cmd[1] == SRST[1])))
+    {
+        dev->status_conversion_pending = false;
+    }
     write_buf[1] = cmd[1];
     pec15 = Pec15_Calc(CMDSZ, cmd);
     write_buf[2] = (uint8_t)(pec15 >> 8);
@@ -4234,6 +4380,10 @@ static HAL_StatusTypeDef adbms6830_cmd_checked(adbms6830_driver_t* dev, uint8_t 
         }
     }
 
+    if((cmd[0] == SRST[0]) && (cmd[1] == SRST[1]))
+    {
+        adbms6830_link_forget(dev);
+    }
     return status;
 }
 
@@ -4269,8 +4419,13 @@ static HAL_StatusTypeDef adbms6830_wr48_checked(adbms6830_driver_t* dev,
         return HAL_ERROR;
     }
 
-    /* 1. Wakeup the isoSPI Daisy Chain */
+    /* Writes may reuse a guarded transaction session, never a SNAP epoch. */
+#if AMS_ENABLE_ADBMS_AWAKE_SESSION
+    status = (dev->session.active && !dev->session.coherent_snapshot_active) ?
+             adbms6830_session_require_awake(dev) : adbms6830_wakeup_checked(dev);
+#else
     status = adbms6830_wakeup_checked(dev);
+#endif
     if(status != HAL_OK)
     {
         return status;
@@ -4425,6 +4580,15 @@ static HAL_StatusTypeDef adbms6830_rd48_checked(adbms6830_driver_t* dev,
                                         received_pec == calculated_pec);
     }
 
+    if(adbms6830_last_read_integrity_ok(dev))
+    {
+        dev->wake.verified = true;
+        dev->wake.verified_ms = dev->wake.activity_ms;
+    }
+    else
+    {
+        adbms6830_link_forget(dev);
+    }
     return HAL_OK;
 }
 
@@ -4471,6 +4635,8 @@ HAL_StatusTypeDef adbms6830_spi_write_read(adbms6830_driver_t *dev,
     adbms6830_spi_debug_note_tx(dev, dev->spi_debug.last_op, tx_Data, spi_txrx_tx_buf, tx_len, rx_len);
 
     adbms_spi_lock();
+    uint32_t frame_start_us = adbms6830_runtime_time_us(dev);
+    uint32_t frame_start_ms = HAL_GetTick();
     if(use_cs)
     {
         adbms6830_set_cs(dev, 0);
@@ -4480,7 +4646,7 @@ HAL_StatusTypeDef adbms6830_spi_write_read(adbms6830_driver_t *dev,
                                      spi_txrx_tx_buf,
                                      spi_txrx_rx_buf,
                                      total_len,
-                                     SPI_TIMEOUT);
+                                     adbms6830_frame_timeout_ms(dev, total_len));
 
     if(use_cs)
     {
@@ -4491,12 +4657,14 @@ HAL_StatusTypeDef adbms6830_spi_write_read(adbms6830_driver_t *dev,
     if(status == HAL_OK)
     {
         memcpy(rx_data, &spi_txrx_rx_buf[tx_len], rx_len);
-        adbms6830_session_note_activity(dev);
+        adbms6830_session_note_activity(dev, frame_start_us, frame_start_ms);
     }
     else
     {
         memset(rx_data, 0, rx_len);
     }
+
+    if(status != HAL_OK) adbms6830_link_forget(dev);
 
     if(dev->spi_debug.enabled)
     {
@@ -4526,6 +4694,7 @@ void adbms6830_bind_runtime_hooks(adbms6830_driver_t *dev,
     {
         return;
     }
+    adbms6830_link_forget(dev);
     dev->cooperative_wait_fn = wait_fn;
     dev->time_us_fn = time_fn;
     dev->runtime_hook_ctx = ctx;
@@ -4742,7 +4911,7 @@ static HAL_StatusTypeDef adbms6830_poll_conversion_checked(
 
     adbms_spi_lock();
     adbms6830_set_cs(dev, 0u);
-    status = HAL_SPI_Transmit(dev->hspi, cmd_frame, sizeof(cmd_frame), SPI_TIMEOUT);
+    status = HAL_SPI_Transmit(dev->hspi, cmd_frame, sizeof(cmd_frame), adbms6830_frame_timeout_ms(dev, sizeof(cmd_frame)));
     if(status == HAL_OK)
     {
         adbms6830_note_counter_increment(dev);
@@ -4750,7 +4919,7 @@ static HAL_StatusTypeDef adbms6830_poll_conversion_checked(
 
         while(__HAL_TIM_GET_COUNTER(dev->htim) < timeout_us)
         {
-            status = HAL_SPI_TransmitReceive(dev->hspi, &tx, &rx, 1u, SPI_TIMEOUT);
+            status = HAL_SPI_TransmitReceive(dev->hspi, &tx, &rx, 1u, adbms6830_frame_timeout_ms(dev, 1u));
             if(status != HAL_OK)
             {
                 break;
@@ -6401,7 +6570,8 @@ static uint32_t adbms6830_config_fingerprint(const adbms6830_driver_t *dev,
         hash = adbms6830_fnv1a_byte(hash, ic);
         for(uint8_t byte = 0u; byte < TX_DATA; byte++)
         {
-            hash = adbms6830_fnv1a_byte(hash, cfga[byte]);
+            hash = adbms6830_fnv1a_byte(hash,
+                adbms6830_cfga_config_byte(byte, cfga[byte]));
         }
         for(uint8_t byte = 0u; byte < TX_DATA; byte++)
         {
@@ -6766,7 +6936,12 @@ static HAL_StatusTypeDef adbms6830_gpio_i2c_write(adbms6830_driver_t *dev,
     {
         dev->spi_debug.last_op = ADBMS6830_SPI_OP_STCOMM;
     }
-    status = adbms6830_spi_write(dev, STCOMM, sizeof(STCOMM), 1u);
+    status = dev->session.active ? adbms6830_session_require_awake(dev) :
+                                   adbms6830_wakeup_checked(dev);
+    if(status == HAL_OK)
+    {
+        status = adbms6830_spi_write(dev, STCOMM, sizeof(STCOMM), 1u);
+    }
     dev->temp_debug.stcomm_status = status;
     if(status != HAL_OK)
     {
@@ -7138,6 +7313,8 @@ static HAL_StatusTypeDef adbms6830_capture_aux_gpio_for_sensor(
 
     /* Trigger ADC conversion on the current GPIO channel */
     uint8_t adax_cmd[2] = { ADAX_CMD_BYTE0, ADAX_CH[mux_idx] };
+    /* Conservative age includes wake, command and conversion time. */
+    uint32_t capture_tick = osKernelGetTickCount();
     status = adbms6830_wakeup_checked(dev);
     dev->temp_debug.wake_status = status;
     if(status == HAL_OK)
@@ -7199,6 +7376,9 @@ static HAL_StatusTypeDef adbms6830_capture_aux_gpio_for_sensor(
             int16_t raw = (int16_t)((uint16_t)packet[byte_lo] |
                                     ((uint16_t)packet[byte_lo + 1u] << 8u));
             dev->ics[ic].temp.raw[sensor_num] = raw;
+            dev->temp_capture_tick_ms[ic][sensor_num] = capture_tick;
+            dev->temp_sample_generation[ic][sensor_num]++;
+            dev->temp_capture_tick_valid_mask[ic] |= sensor_bit;
             dev->last_temp_updated_mask[ic] |= sensor_bit;
             updated_mask |= bit;
         }
