@@ -23,6 +23,8 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "app.h"
+#include "diagnostics/ams_perf.h"
+#include "ext_drivers/ams_spi6_transport.h"
 #include "ext_drivers/ams_safety.h"
 /* USER CODE END Includes */
 
@@ -109,6 +111,9 @@ int main(void)
 #if AMS_BENCHMARK_ICACHE
   SCB_EnableICache();
 #endif
+#if AMS_BENCHMARK_DCACHE
+  SCB_EnableDCache();
+#endif
   HAL_Init();
 
   /* USER CODE BEGIN Init */
@@ -121,6 +126,7 @@ int main(void)
   SystemClock_Config();
 
   /* USER CODE BEGIN SysInit */
+  ams_perf_init();
 
   /* USER CODE END SysInit */
 
@@ -440,6 +446,9 @@ static void MX_SPI6_Init(void)
     Error_Handler();
   }
   /* USER CODE BEGIN SPI6_Init 2 */
+#if AMS_ADBMS_SPI_DMA
+  ams_spi6_dma_init();
+#endif
 
   /* USER CODE END SPI6_Init 2 */
 

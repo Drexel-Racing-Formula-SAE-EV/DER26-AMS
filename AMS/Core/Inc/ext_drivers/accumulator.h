@@ -309,6 +309,8 @@ int accumulator_run_c_open_wire_diagnostic(
  * API and resynchronize SMB counter tracking after their transaction. */
 int accumulator_read_apm(accumulator_t *dev, uint32_t now_ms);
 int accumulator_read_temp(accumulator_t *dev);
+int accumulator_prepare_temp(accumulator_t *dev);
+int smb_prepare_temp(adbms6830_driver_t *dev);
 int accumulator_set_temp_ch(accumulator_t *dev, uint8_t channel);
 int accumulator_stat_temp(accumulator_t *dev);
 int accumulator_set_mux_ch(accumulator_t *dev, uint8_t channel, uint8_t addr7);

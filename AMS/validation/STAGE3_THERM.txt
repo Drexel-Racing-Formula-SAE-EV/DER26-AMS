@@ -1,0 +1,6 @@
+make: Entering directory '/workspace/scratch/43e64d7c85ca/work/ams-timing-r8/host_tests'
+cc -std=c11 -g -O0 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -Wno-missing-field-initializers -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -DSTM32F767xx -DUSE_HAL_DRIVER -DAMS_HOST_TEST=1 -Iinclude -I.. -I../Core/Inc -I../Core/Inc/tasks -I../Core/Inc/ext_drivers -I../Drivers/CMSIS/Include -I../Drivers/CMSIS/Device/ST/STM32F7xx/Include -I../Drivers/STM32F7xx_HAL_Driver/Inc -I../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy -I../Middlewares/Third_Party/FreeRTOS/Source/include -I../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1 -Wno-unused-variable -Werror -DAMS_BUILD_PROFILE=4 -DAMS_ENABLE_ADBMS_THERM_OPEN_WIRE_DIAG=1 -ffunction-sections -fdata-sections production/therm_phase_test.c ../Core/Src/ext_drivers/adbms_shared.c ../Core/Src/ext_drivers/thermistor_model.c -Wl,--gc-sections -o build/therm_phase_test -lm
+build/therm_phase_test
+THERM phase wall model: down=25155 up=25155 us
+PASS two-phase completion, normal configuration between phases, no primary publication, timeout/integrity cancellation and partial-write restoration
+make: Leaving directory '/workspace/scratch/43e64d7c85ca/work/ams-timing-r8/host_tests'

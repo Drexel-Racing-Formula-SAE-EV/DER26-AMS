@@ -1,0 +1,15 @@
+therm exit=0
+THERM phase wall model: down=25155 up=25155 us
+PASS two-phase completion, normal configuration between phases, no primary publication, timeout/integrity cancellation and partial-write restoration
+
+pipeline exit=0
+PASS residual settling, voltage overlap, single-use preparation, no immediate failure retry, stale/mux/integrity rejection and clock wrap
+
+perf exit=0
+PASS task/IRQ accounting, nested IRQ exclusion, unblock latency, wrap and bounded slots
+
+scheduler exit=0
+PASS production diagnostic scheduler: mixed budgets, status/config collisions, pending phases, strict admission and coverage
+
+dma exit=0
+PASS DMA success, suspension, timeout, error, late/split IRQ, reuse, writes, NDTR, BSY, pre-kernel fallback, counters and quarantine

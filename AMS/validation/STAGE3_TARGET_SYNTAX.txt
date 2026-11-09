@@ -1,0 +1,3 @@
+Native target-branch syntax only; newlib shim declarations; no ARM link
+
+exit=0

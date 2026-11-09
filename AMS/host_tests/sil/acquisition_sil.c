@@ -4,6 +4,17 @@
 #include <stdlib.h>
 #include <string.h>
 #include "ext_drivers/accumulator.h"
+/* Fake MMIO used by the real per-frame prescaler policy. */
+static SPI_TypeDef spi_regs;
+static RCC_TypeDef rcc_regs;
+#undef SPI6
+#define SPI6 (&spi_regs)
+#undef RCC
+#define RCC (&rcc_regs)
+#undef __HAL_RCC_SPI6_FORCE_RESET
+#undef __HAL_RCC_SPI6_RELEASE_RESET
+#define __HAL_RCC_SPI6_FORCE_RESET() do { spi_regs.SR=0; spi_regs.CR1=0; spi_regs.CR2=0; } while(0)
+#define __HAL_RCC_SPI6_RELEASE_RESET() ((void)0)
 static uint64_t sim_us;
 static adbms6830_driver_t *sil_device;
 static unsigned coherent_reads;
@@ -11,6 +22,9 @@ static unsigned read_number, pause_every, corrupt_every, timeout_every;
 static uint32_t pause_us;
 static bool rounded_wait, persistent_pec;
 static uint64_t last_mux_end_us;
+static uint64_t model_aux_ready_us;
+static bool reply_ref_off, reply_soak;
+static uint32_t baseline_prescaler;
 static uint32_t timer_base;
 static uint32_t extra_delay_once;
 static bool timer_stopped;
@@ -69,17 +83,32 @@ static void wire_time(SPI_HandleTypeDef *h,uint16_t n,uint32_t timeout)
     if(timeout>largest_timeout) largest_timeout=timeout;
     transfers++; sim_us+=us;
 }
+GPIO_PinState HAL_GPIO_ReadPin(GPIO_TypeDef *p,uint16_t pin) { return last_cs; }
 HAL_StatusTypeDef HAL_SPI_Transmit(SPI_HandleTypeDef *h,uint8_t *p,uint16_t n,uint32_t timeout)
 {
     CHECK(test_lock_depth > 0);
+    CHECK(h->Init.BaudRatePrescaler == ((p[0]==0x07 && p[1]==0x23) ? SPI_BAUDRATEPRESCALER_256 : baseline_prescaler));
     wire_time(h,n,timeout);
-    if(fail_spi) return HAL_TIMEOUT;
+    if(fail_spi) {
+        if(n>=2 && p[0]==0x07 && p[1]==0x23) {
+            CHECK(h->Init.BaudRatePrescaler==SPI_BAUDRATEPRESCALER_256);
+            h->Instance->SR |= SPI_SR_BSY;
+            h->State=HAL_SPI_STATE_BUSY_TX;
+        }
+        return HAL_TIMEOUT;
+    }
     CHECK(n>=4);
     uint16_t pec=Pec15_Calc(2,p);
     CHECK(p[2]==(pec>>8) && p[3]==(pec&255));
-    if(p[0]==0x07u && p[1]==0x23u) last_mux_end_us=sim_us;
+    if(p[0]==0x07u && p[1]==0x23u) {
+        CHECK(h->Init.BaudRatePrescaler==SPI_BAUDRATEPRESCALER_256);
+        CHECK((h->Instance->CR1 & SPI_CR1_BR)==SPI_BAUDRATEPRESCALER_256);
+        last_mux_end_us=sim_us;
+    }
     if(p[0]==0x04u && p[1]>=0x11u && p[1]<=0x13u && last_mux_end_us!=0u)
         CHECK(sim_us-last_mux_end_us>=3000u);
+    if(p[0]==0x04u && p[1]>=0x11u && p[1]<=0x13u)
+        model_aux_ready_us=sim_us+1112u; /* datasheet slowest AUX period */
     if(p[0]==0 && (p[1]==0x27 || p[1]==0x2e)) model_counter=0;
     else model_counter=(model_counter%63u)+1u;
     return HAL_OK;
@@ -87,6 +116,7 @@ HAL_StatusTypeDef HAL_SPI_Transmit(SPI_HandleTypeDef *h,uint8_t *p,uint16_t n,ui
 HAL_StatusTypeDef HAL_SPI_TransmitReceive(SPI_HandleTypeDef *h,uint8_t *tx,uint8_t *rx,uint16_t n,uint32_t timeout)
 {
     CHECK(test_lock_depth > 0);
+    CHECK(h->Init.BaudRatePrescaler == ((tx[0]==0x07 && tx[1]==0x23) ? SPI_BAUDRATEPRESCALER_256 : baseline_prescaler));
     wire_time(h,n,timeout);
     read_number++;
     bool coherent = sil_device && sil_device->session.coherent_snapshot_active;
@@ -96,11 +126,13 @@ HAL_StatusTypeDef HAL_SPI_TransmitReceive(SPI_HandleTypeDef *h,uint8_t *tx,uint8
     memset(rx,0,n);
     CHECK(n>=12 && (n-4)%8==0);
     uint16_t command=(uint16_t)((tx[0]<<8)|tx[1]);
+    if(command==0x0019u && model_aux_ready_us) CHECK(sim_us>=model_aux_ready_us);
     for(unsigned i=4;i+7<n;i+=8)
     {
         uint8_t *p=rx+i;
         /* Coherent normal cells/AUX codes, status C counter, COMM ACK. */
         for(unsigned k=0;k<6;k+=2){p[k]=0xa8; p[k+1]=0x61;}
+        if(command==0x0002){ memset(p,0,6); p[0]=reply_ref_off?0:0x80; p[2]=reply_soak?0x80:0; } /* REFON, no soak */
         if(command==0x0722){p[0]=0x67;p[1]=0x98;p[2]=0x77;p[3]=1;p[4]=0x1f;p[5]=0xff;}
         if(command==0x0012 || command==0x0030){p[0]=p[1]=p[4]=p[5]=0;p[2]=0;p[3]=1;}
         p[6]=(uint8_t)(((model_counter+(bad_counter?1u:0u))&63u)<<2);
@@ -121,11 +153,21 @@ static void reset_dev(unsigned count)
     memset(&dev,0,sizeof(dev));memset(ics,0,sizeof(ics));
     memset(&spi,0,sizeof(spi));memset(&tim,0,sizeof(tim));
     sim_us=0; timer_base=0; edge_count=0;model_counter=0;transfers=0;largest_timeout=0;
-    last_mux_end_us=0;
+    last_mux_end_us=0; model_aux_ready_us=0; reply_ref_off=reply_soak=false;
     bad_pec=bad_counter=fail_spi=timer_stopped=false;extra_delay_once=0;last_cs=GPIO_PIN_SET;
+    memset(&spi_regs,0,sizeof(spi_regs));
     spi.Instance=SPI6;
+    spi.State=HAL_SPI_STATE_READY;
     spi.Init.DataSize=SPI_DATASIZE_8BIT;
+    #if AMS_ADBMS_SPI_PRESCALER_DIV == 64
+    spi.Init.BaudRatePrescaler=SPI_BAUDRATEPRESCALER_64;
+#elif AMS_ADBMS_SPI_PRESCALER_DIV == 128
+    spi.Init.BaudRatePrescaler=SPI_BAUDRATEPRESCALER_128;
+#else
     spi.Init.BaudRatePrescaler=SPI_BAUDRATEPRESCALER_256;
+#endif
+    baseline_prescaler=spi.Init.BaudRatePrescaler;
+    spi_regs.CR1=spi.Init.BaudRatePrescaler|SPI_CR1_SPE;
     tim.Instance=&timer;dev.htim=&tim;dev.hspi=&spi;
     dev.ics=ics;dev.ics_capacity=count;dev.num_ics=count;dev.physical_chain_count=count;
     dev.monitored_cell_count=15;dev.string=dev.write_string=STRING_B;
@@ -162,7 +204,9 @@ int main(void)
     uint8_t frame[4]={0,0x2c,0x59,0x90};
     CHECK(adbms6830_spi_write_read(&dev,frame,4,response,40,1)==HAL_OK);
     CHECK((uint32_t)(sim_us-dev.wake.activity_us)<3000u);
+#if AMS_ADBMS_SPI_PRESCALER_DIV == 256
     CHECK((uint32_t)(HAL_GetTick()-dev.wake.activity_ms)>=3u);
+#endif
     CHECK(adbms6830_rd48_checked(&dev,RDCFGA,response)==HAL_OK);
     pause_every=0;
 #endif
@@ -180,6 +224,7 @@ int main(void)
         for(unsigned scan=0;scan<200;scan++) {
             uint64_t begin=sim_us;
             adbms6830_session_begin_scan(&dev);
+            (void)smb_prepare_temp(&dev);
             int rc=smb_read_voltage(&dev);
             if(rc==0) {
                 accepted++;
@@ -198,6 +243,14 @@ int main(void)
         }
         if(scenario==0 || scenario==1) CHECK(accepted==200);
 #ifdef SIL_CANDIDATE
+        if(scenario==0 || scenario==1) {
+            CHECK(temp_rejected==0);
+            CHECK(overrun==0);
+            CHECK(dev.session.warm_wake_count<=600);
+            CHECK(dev.session.reference_probe_count<=2);
+            CHECK(dev.session.reference_wait_count<=2);
+            CHECK(dev.session.aux_short_wait_count==600);
+        }
         if(scenario==2) { CHECK(accepted==200); CHECK(dev.session.coherent_restart_count==0); }
 #endif
         if(scenario==6) CHECK(accepted==0);

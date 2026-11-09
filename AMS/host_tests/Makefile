@@ -52,7 +52,8 @@ RUNTIME_MANIFEST_SRC := \
 	$(AMS_ROOT)/Core/Src/diagnostics/ams_runtime_manifest.c
 RUNTIME_MANIFEST_UNIT_SRC := unit/runtime_manifest_test.c
 RUNTIME_MANIFEST_UNIT_BIN = $(BUILD_DIR)/runtime_manifest_tests
-SYSTEM_SRC := $(SRC) $(CAN_TX_SCHED_SRC) $(FLIGHT_RECORDER_SRC) $(RUNTIME_MANIFEST_SRC)
+PERF_SRC := $(AMS_ROOT)/Core/Src/diagnostics/ams_perf.c
+SYSTEM_SRC := $(PERF_SRC) $(SRC) $(CAN_TX_SCHED_SRC) $(FLIGHT_RECORDER_SRC) $(RUNTIME_MANIFEST_SRC)
 MEASUREMENT_SRC := \
 	$(AMS_ROOT)/Core/Src/measurement/ams_measurement.c
 POWER_SRC := \
@@ -816,7 +817,7 @@ testday-hardware-map-gate: check-core-root
 .PHONY: cli-async-test
 cli-async-test: | make-build-dir
 	$(CC) $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=4 -ffunction-sections -fdata-sections \
-		production/cli_async_test.c -Wl,--gc-sections -o "$(BUILD_DIR)/cli_async_test" $(LDLIBS)
+		production/cli_async_test.c $(PERF_SRC) -Wl,--gc-sections -o "$(BUILD_DIR)/cli_async_test" $(LDLIBS)
 	"$(BUILD_DIR)/cli_async_test"
 .PHONY: ekf-refinement-test
 ekf-refinement-test: | make-build-dir
@@ -906,3 +907,42 @@ diag-budget-test: | make-build-dir
 .PHONY: acquisition-sil
 acquisition-sil:
 	python3 sil/run_acquisition_sil.py
+
+.PHONY: spi6-dma-test
+spi6-dma-test: | $(BUILD_DIR)
+	$(CC) -Idma_fakes $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=4 -DAMS_ADBMS_SPI_DMA=1 production/spi6_dma_test.c -o $(BUILD_DIR)/spi6_dma_test
+	$(BUILD_DIR)/spi6_dma_test
+	$(CC) -Idma_fakes $(CFLAGS_COMMON) -Wno-unused-variable -Werror -DAMS_BUILD_PROFILE=4 -DAMS_ADBMS_SPI_DMA=1 -ffunction-sections -fdata-sections production/mux_dma_test.c $(AMS_ROOT)/Core/Src/ext_drivers/adbms_shared.c $(THERMISTOR_SRC) -Wl,--gc-sections -o $(BUILD_DIR)/mux_dma_test $(LDLIBS)
+	$(BUILD_DIR)/mux_dma_test
+	$(PYTHON) tools/check_spi_dma.py
+
+vehicle-ci: spi6-dma-test
+
+.PHONY: therm-phase-test
+therm-phase-test: | make-build-dir
+	$(CC) $(CFLAGS_COMMON) -Wno-unused-variable -Werror -DAMS_BUILD_PROFILE=4 -DAMS_ENABLE_ADBMS_THERM_OPEN_WIRE_DIAG=1 -ffunction-sections -fdata-sections production/therm_phase_test.c $(AMS_ROOT)/Core/Src/ext_drivers/adbms_shared.c $(THERMISTOR_SRC) -Wl,--gc-sections -o $(BUILD_DIR)/therm_phase_test $(LDLIBS)
+	$(BUILD_DIR)/therm_phase_test
+vehicle-ci: therm-phase-test
+
+.PHONY: perf-test
+perf-test: | make-build-dir
+	$(CC) $(CFLAGS_COMMON) -Werror production/perf_test.c $(PERF_SRC) -o $(BUILD_DIR)/perf_test
+	$(BUILD_DIR)/perf_test
+vehicle-ci: perf-test
+
+.PHONY: diag-scheduler-test
+diag-scheduler-test: | make-build-dir
+	$(CC) $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=4 -DAMS_HOST_DIAG_SCHEDULER_TEST=1 -DAMS_ENABLE_ADBMS_THERM_OPEN_WIRE_DIAG=1 -DAMS_ENABLE_ADBMS_AUX2_REDUNDANCY=1 $(SYSTEM_SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC) $(POWER_SRC) -o $(BUILD_DIR)/diag_scheduler_test $(LDLIBS)
+	$(BUILD_DIR)/diag_scheduler_test
+vehicle-ci: diag-scheduler-test
+
+.PHONY: temp-pipeline-test
+temp-pipeline-test: | make-build-dir
+	$(CC) $(CFLAGS_COMMON) -Wno-unused-variable -Werror -DAMS_BUILD_PROFILE=4 -ffunction-sections -fdata-sections production/temp_pipeline_test.c $(AMS_ROOT)/Core/Src/ext_drivers/adbms_shared.c $(THERMISTOR_SRC) -Wl,--gc-sections -o $(BUILD_DIR)/temp_pipeline_test $(LDLIBS)
+	$(BUILD_DIR)/temp_pipeline_test
+vehicle-ci: temp-pipeline-test
+
+.PHONY: stage3-target-syntax
+stage3-target-syntax:
+	$(PYTHON) tools/check_timing_stage3.py
+vehicle-ci: stage3-target-syntax

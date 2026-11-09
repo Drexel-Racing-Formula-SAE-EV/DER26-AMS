@@ -1,0 +1,918 @@
+--- a/.cproject
++++ b/.cproject
+@@ -376,6 +376,303 @@
+ 							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.verilog.32986976.vehicle" name="MCU Output Converter Verilog" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.verilog" />
+ 							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.srec.2000949913.vehicle" name="MCU Output Converter Motorola S-rec" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.srec" />
+ 							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.symbolsrec.1183223974.vehicle" name="MCU Output Converter Motorola S-rec with symbols" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.symbolsrec" />
++						</toolChain>
++					</folderInfo>
++					<sourceEntries>
++						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Core" />
++						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Middlewares" />
++						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Drivers" />
++					</sourceEntries>
++				</configuration>
++			</storageModule>
++			<storageModule moduleId="org.eclipse.cdt.core.externalSettings" />
++		</cconfiguration>
++		<cconfiguration id="com.st.stm32cube.ide.mcu.gnu.managedbuild.config.exe.debug.616168893.spi128">
++			<storageModule buildSystemId="org.eclipse.cdt.managedbuilder.core.configurationDataProvider" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.config.exe.debug.616168893.spi128" moduleId="org.eclipse.cdt.core.settings" name="VEHICLE COMMS 1M SPI128 POLL Debug">
++				<externalSettings />
++				<extensions>
++					<extension id="org.eclipse.cdt.core.ELF.spi128" point="org.eclipse.cdt.core.BinaryParser" />
++					<extension id="org.eclipse.cdt.core.GASErrorParser.spi128" point="org.eclipse.cdt.core.ErrorParser" />
++					<extension id="org.eclipse.cdt.core.GmakeErrorParser.spi128" point="org.eclipse.cdt.core.ErrorParser" />
++					<extension id="org.eclipse.cdt.core.GLDErrorParser.spi128" point="org.eclipse.cdt.core.ErrorParser" />
++					<extension id="org.eclipse.cdt.core.CWDLocator.spi128" point="org.eclipse.cdt.core.ErrorParser" />
++					<extension id="org.eclipse.cdt.core.GCCErrorParser.spi128" point="org.eclipse.cdt.core.ErrorParser" />
++				</extensions>
++			</storageModule>
++			<storageModule moduleId="cdtBuildSystem" version="4.0.0">
++				<configuration artifactExtension="elf" artifactName="${ProjName}" buildArtefactType="org.eclipse.cdt.build.core.buildArtefactType.exe" buildProperties="org.eclipse.cdt.build.core.buildArtefactType=org.eclipse.cdt.build.core.buildArtefactType.exe,org.eclipse.cdt.build.core.buildType=org.eclipse.cdt.build.core.buildType.debug" cleanCommand="rm -rf" description="Five SMBs; 1 Mbit/s ECU bus; no charging; BMS_OK and balancing inhibited" errorParsers="org.eclipse.cdt.core.GASErrorParser;org.eclipse.cdt.core.GmakeErrorParser;org.eclipse.cdt.core.GLDErrorParser;org.eclipse.cdt.core.CWDLocator;org.eclipse.cdt.core.GCCErrorParser" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.config.exe.debug.616168893.spi128" name="VEHICLE COMMS 1M SPI128 POLL Debug" parent="com.st.stm32cube.ide.mcu.gnu.managedbuild.config.exe.debug">
++					<folderInfo id="com.st.stm32cube.ide.mcu.gnu.managedbuild.config.exe.debug.616168893..spi128" name="/" resourcePath="">
++						<toolChain id="com.st.stm32cube.ide.mcu.gnu.managedbuild.toolchain.exe.debug.334188844.spi128" name="MCU ARM GCC" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.toolchain.exe.debug">
++							<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.target_mcu.150424282.spi128" name="MCU" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.target_mcu" useByScannerDiscovery="true" value="STM32F767ZITx" valueType="string" />
++							<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.target_cpuid.2083765812.spi128" name="CPU" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.target_cpuid" useByScannerDiscovery="false" value="0" valueType="string" />
++							<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.target_coreid.1519747212.spi128" name="Core" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.target_coreid" useByScannerDiscovery="false" value="0" valueType="string" />
++							<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.fpu.1110505566.spi128" name="Floating-point unit" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.fpu" useByScannerDiscovery="true" value="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.fpu.value.fpv5-d16" valueType="enumerated" />
++							<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.floatabi.1802554443.spi128" name="Floating-point ABI" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.floatabi" useByScannerDiscovery="true" value="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.floatabi.value.hard" valueType="enumerated" />
++							<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.target_board.577431893.spi128" name="Board" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.target_board" useByScannerDiscovery="false" value="genericBoard" valueType="string" />
++							<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.defaults.47761206.spi128" name="Defaults" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.defaults" useByScannerDiscovery="false" value="com.st.stm32cube.ide.common.services.build.inputs.revA.1.0.6 || Debug || true || Executable || com.st.stm32cube.ide.mcu.gnu.managedbuild.option.toolchain.value.workspace || STM32F767ZITx || 0 || 0 || arm-none-eabi- || ${gnu_tools_for_stm32_compiler_path} || ../Core/Inc | ../Drivers/STM32F7xx_HAL_Driver/Inc | ../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy | ../Drivers/CMSIS/Device/ST/STM32F7xx/Include | ../Drivers/CMSIS/Include | ../Middlewares/Third_Party/FreeRTOS/Source/include | ../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 | ../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1 || ../Core/Inc | ../Drivers/STM32F7xx_HAL_Driver/Inc | ../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy | ../Middlewares/Third_Party/FreeRTOS/Source/include | ../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 | ../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1 | ../Drivers/CMSIS/Device/ST/STM32F7xx/Include | ../Drivers/CMSIS/Include ||  || USE_HAL_DRIVER | STM32F767xx ||  || Drivers | Core/Startup | Middlewares | Core ||  ||  || ${workspace_loc:/${ProjName}/STM32F767ZITX_FLASH.ld} || true || NonSecure ||  || secure_nsclib.o ||  || None ||  ||  || " valueType="string" />
++							<option id="com.st.stm32cube.ide.mcu.debug.option.cpuclock.221816990.spi128" name="Cpu clock frequence" superClass="com.st.stm32cube.ide.mcu.debug.option.cpuclock" useByScannerDiscovery="false" value="216" valueType="string" />
++							<targetPlatform archList="all" binaryParser="org.eclipse.cdt.core.ELF" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.targetplatform.542230455.spi128" isAbstract="false" osList="all" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.targetplatform" />
++							<builder buildPath="${workspace_loc:/${ProjName}/Vehicle_Comms_Debug}_spi128" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.builder.1391215119.spi128" keepEnvironmentInBuildfile="false" managedBuildOn="true" name="Gnu Make Builder" parallelBuildOn="true" parallelizationNumber="optimal" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.builder" />
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.350465684.spi128" name="MCU/MPU GCC Assembler" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler">
++								<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.option.debuglevel.1251839985.spi128" name="Debug level" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.option.debuglevel" value="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.option.debuglevel.value.g3" valueType="enumerated" />
++								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.option.definedsymbols.578820165.spi128" name="Define symbols (-D)" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.option.definedsymbols" valueType="definedSymbols">
++									<listOptionValue builtIn="false" value="DEBUG" />
++									<listOptionValue builtIn="false" value="AMS_ENABLE_TUNING_CAN=0" />
++								<listOptionValue builtIn="false" value="AMS_ADBMS_SPI_PRESCALER_DIV=128" /><listOptionValue builtIn="false" value="AMS_ADBMS_SPI_DMA=0" /></option>
++								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.option.includepaths.1211713501.spi128" name="Include paths (-I)" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.option.includepaths" valueType="includePath">
++									<listOptionValue builtIn="false" value="../Core/Inc" />
++									<listOptionValue builtIn="false" value="../Drivers/STM32F7xx_HAL_Driver/Inc" />
++									<listOptionValue builtIn="false" value="../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy" />
++									<listOptionValue builtIn="false" value="../Middlewares/Third_Party/FreeRTOS/Source/include" />
++									<listOptionValue builtIn="false" value="../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2" />
++									<listOptionValue builtIn="false" value="../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1" />
++									<listOptionValue builtIn="false" value="../Drivers/CMSIS/Device/ST/STM32F7xx/Include" />
++									<listOptionValue builtIn="false" value="../Drivers/CMSIS/Include" />
++								</option>
++								<inputType id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.input.101323373.spi128" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.input" />
++							</tool>
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.285063348.spi128" name="MCU/MPU GCC Compiler" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler">
++								<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.debuglevel.1802091526.spi128" name="Debug level" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.debuglevel" useByScannerDiscovery="false" value="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.debuglevel.value.g3" valueType="enumerated" />
++								<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.optimization.level.373591316.spi128" name="Optimization level" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.optimization.level" useByScannerDiscovery="false" />
++								<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.misc.2026072001.spi128" name="Other flags" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.misc" useByScannerDiscovery="false" value="-Wall -Wextra" valueType="string" />
++								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.definedsymbols.1585973699.spi128" name="Define symbols (-D)" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.definedsymbols" useByScannerDiscovery="false" valueType="definedSymbols">
++									<listOptionValue builtIn="false" value="DEBUG" />
++									<listOptionValue builtIn="false" value="USE_HAL_DRIVER" />
++									<listOptionValue builtIn="false" value="STM32F767xx" />
++									<listOptionValue builtIn="false" value="AMS_BUILD_PROFILE=4" />
++									<listOptionValue builtIn="false" value="DER26_CAN_BITRATE_KBPS=1000" />
++									<listOptionValue builtIn="false" value="AMS_ENABLE_TUNING_CAN=0" />
++								<listOptionValue builtIn="false" value="AMS_ADBMS_SPI_PRESCALER_DIV=128" /><listOptionValue builtIn="false" value="AMS_ADBMS_SPI_DMA=0" /></option>
++								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.includepaths.1163737927.spi128" name="Include paths (-I)" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.includepaths" useByScannerDiscovery="false" valueType="includePath">
++									<listOptionValue builtIn="false" value="../Core/Inc" />
++									<listOptionValue builtIn="false" value="../Drivers/STM32F7xx_HAL_Driver/Inc" />
++									<listOptionValue builtIn="false" value="../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy" />
++									<listOptionValue builtIn="false" value="../Drivers/CMSIS/Device/ST/STM32F7xx/Include" />
++									<listOptionValue builtIn="false" value="../Drivers/CMSIS/Include" />
++									<listOptionValue builtIn="false" value="../Middlewares/Third_Party/FreeRTOS/Source/include" />
++									<listOptionValue builtIn="false" value="../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2" />
++									<listOptionValue builtIn="false" value="../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1" />
++								</option>
++								<inputType id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.input.c.570807813.spi128" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.input.c" />
++							</tool>
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.cpp.compiler.2033883525.spi128" name="MCU/MPU G++ Compiler" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.cpp.compiler">
++								<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.cpp.compiler.option.debuglevel.1154233864.spi128" name="Debug level" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.cpp.compiler.option.debuglevel" useByScannerDiscovery="false" value="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.cpp.compiler.option.debuglevel.value.g3" valueType="enumerated" />
++								<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.cpp.compiler.option.optimization.level.101443159.spi128" name="Optimization level" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.cpp.compiler.option.optimization.level" useByScannerDiscovery="false" />
++							</tool>
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.linker.33578096.spi128" name="MCU/MPU GCC Linker" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.linker">
++								<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.linker.option.script.1546866343.spi128" name="Linker Script (-T)" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.linker.option.script" value="${workspace_loc:/${ProjName}/STM32F767ZITX_FLASH.ld}" valueType="string" />
++								<inputType id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.linker.input.1692302104.spi128" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.linker.input">
++									<additionalInput kind="additionalinputdependency" paths="$(USER_OBJS)" />
++									<additionalInput kind="additionalinput" paths="$(LIBS)" />
++								</inputType>
++							</tool>
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.cpp.linker.575746391.spi128" name="MCU/MPU G++ Linker" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.cpp.linker" />
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.archiver.139140520.spi128" name="MCU/MPU GCC Archiver" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.archiver" />
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.size.369574729.spi128" name="MCU Size" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.size" />
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objdump.listfile.417052232.spi128" name="MCU Output Converter list file" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objdump.listfile" />
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.hex.924590491.spi128" name="MCU Output Converter Hex" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.hex" />
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.binary.390426747.spi128" name="MCU Output Converter Binary" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.binary" />
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.verilog.564672384.spi128" name="MCU Output Converter Verilog" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.verilog" />
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.srec.292420896.spi128" name="MCU Output Converter Motorola S-rec" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.srec" />
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.symbolsrec.2085257014.spi128" name="MCU Output Converter Motorola S-rec with symbols" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.symbolsrec" />
++						</toolChain>
++					</folderInfo>
++					<sourceEntries>
++						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Core" />
++						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Middlewares" />
++						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Drivers" />
++					</sourceEntries>
++				</configuration>
++			</storageModule>
++			<storageModule moduleId="org.eclipse.cdt.core.externalSettings" />
++		</cconfiguration>
++		<cconfiguration id="com.st.stm32cube.ide.mcu.gnu.managedbuild.config.exe.debug.616168893.dma256">
++			<storageModule buildSystemId="org.eclipse.cdt.managedbuilder.core.configurationDataProvider" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.config.exe.debug.616168893.dma256" moduleId="org.eclipse.cdt.core.settings" name="VEHICLE COMMS 1M SPI256 DMA Debug">
++				<externalSettings />
++				<extensions>
++					<extension id="org.eclipse.cdt.core.ELF.dma256" point="org.eclipse.cdt.core.BinaryParser" />
++					<extension id="org.eclipse.cdt.core.GASErrorParser.dma256" point="org.eclipse.cdt.core.ErrorParser" />
++					<extension id="org.eclipse.cdt.core.GmakeErrorParser.dma256" point="org.eclipse.cdt.core.ErrorParser" />
++					<extension id="org.eclipse.cdt.core.GLDErrorParser.dma256" point="org.eclipse.cdt.core.ErrorParser" />
++					<extension id="org.eclipse.cdt.core.CWDLocator.dma256" point="org.eclipse.cdt.core.ErrorParser" />
++					<extension id="org.eclipse.cdt.core.GCCErrorParser.dma256" point="org.eclipse.cdt.core.ErrorParser" />
++				</extensions>
++			</storageModule>
++			<storageModule moduleId="cdtBuildSystem" version="4.0.0">
++				<configuration artifactExtension="elf" artifactName="${ProjName}" buildArtefactType="org.eclipse.cdt.build.core.buildArtefactType.exe" buildProperties="org.eclipse.cdt.build.core.buildArtefactType=org.eclipse.cdt.build.core.buildArtefactType.exe,org.eclipse.cdt.build.core.buildType=org.eclipse.cdt.build.core.buildType.debug" cleanCommand="rm -rf" description="Five SMBs; 1 Mbit/s ECU bus; no charging; BMS_OK and balancing inhibited" errorParsers="org.eclipse.cdt.core.GASErrorParser;org.eclipse.cdt.core.GmakeErrorParser;org.eclipse.cdt.core.GLDErrorParser;org.eclipse.cdt.core.CWDLocator;org.eclipse.cdt.core.GCCErrorParser" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.config.exe.debug.616168893.dma256" name="VEHICLE COMMS 1M SPI256 DMA Debug" parent="com.st.stm32cube.ide.mcu.gnu.managedbuild.config.exe.debug">
++					<folderInfo id="com.st.stm32cube.ide.mcu.gnu.managedbuild.config.exe.debug.616168893..dma256" name="/" resourcePath="">
++						<toolChain id="com.st.stm32cube.ide.mcu.gnu.managedbuild.toolchain.exe.debug.334188844.dma256" name="MCU ARM GCC" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.toolchain.exe.debug">
++							<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.target_mcu.150424282.dma256" name="MCU" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.target_mcu" useByScannerDiscovery="true" value="STM32F767ZITx" valueType="string" />
++							<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.target_cpuid.2083765812.dma256" name="CPU" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.target_cpuid" useByScannerDiscovery="false" value="0" valueType="string" />
++							<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.target_coreid.1519747212.dma256" name="Core" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.target_coreid" useByScannerDiscovery="false" value="0" valueType="string" />
++							<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.fpu.1110505566.dma256" name="Floating-point unit" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.fpu" useByScannerDiscovery="true" value="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.fpu.value.fpv5-d16" valueType="enumerated" />
++							<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.floatabi.1802554443.dma256" name="Floating-point ABI" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.floatabi" useByScannerDiscovery="true" value="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.floatabi.value.hard" valueType="enumerated" />
++							<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.target_board.577431893.dma256" name="Board" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.target_board" useByScannerDiscovery="false" value="genericBoard" valueType="string" />
++							<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.defaults.47761206.dma256" name="Defaults" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.defaults" useByScannerDiscovery="false" value="com.st.stm32cube.ide.common.services.build.inputs.revA.1.0.6 || Debug || true || Executable || com.st.stm32cube.ide.mcu.gnu.managedbuild.option.toolchain.value.workspace || STM32F767ZITx || 0 || 0 || arm-none-eabi- || ${gnu_tools_for_stm32_compiler_path} || ../Core/Inc | ../Drivers/STM32F7xx_HAL_Driver/Inc | ../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy | ../Drivers/CMSIS/Device/ST/STM32F7xx/Include | ../Drivers/CMSIS/Include | ../Middlewares/Third_Party/FreeRTOS/Source/include | ../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 | ../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1 || ../Core/Inc | ../Drivers/STM32F7xx_HAL_Driver/Inc | ../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy | ../Middlewares/Third_Party/FreeRTOS/Source/include | ../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 | ../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1 | ../Drivers/CMSIS/Device/ST/STM32F7xx/Include | ../Drivers/CMSIS/Include ||  || USE_HAL_DRIVER | STM32F767xx ||  || Drivers | Core/Startup | Middlewares | Core ||  ||  || ${workspace_loc:/${ProjName}/STM32F767ZITX_FLASH.ld} || true || NonSecure ||  || secure_nsclib.o ||  || None ||  ||  || " valueType="string" />
++							<option id="com.st.stm32cube.ide.mcu.debug.option.cpuclock.221816990.dma256" name="Cpu clock frequence" superClass="com.st.stm32cube.ide.mcu.debug.option.cpuclock" useByScannerDiscovery="false" value="216" valueType="string" />
++							<targetPlatform archList="all" binaryParser="org.eclipse.cdt.core.ELF" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.targetplatform.542230455.dma256" isAbstract="false" osList="all" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.targetplatform" />
++							<builder buildPath="${workspace_loc:/${ProjName}/Vehicle_Comms_Debug}_dma256" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.builder.1391215119.dma256" keepEnvironmentInBuildfile="false" managedBuildOn="true" name="Gnu Make Builder" parallelBuildOn="true" parallelizationNumber="optimal" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.builder" />
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.350465684.dma256" name="MCU/MPU GCC Assembler" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler">
++								<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.option.debuglevel.1251839985.dma256" name="Debug level" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.option.debuglevel" value="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.option.debuglevel.value.g3" valueType="enumerated" />
++								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.option.definedsymbols.578820165.dma256" name="Define symbols (-D)" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.option.definedsymbols" valueType="definedSymbols">
++									<listOptionValue builtIn="false" value="DEBUG" />
++									<listOptionValue builtIn="false" value="AMS_ENABLE_TUNING_CAN=0" />
++								<listOptionValue builtIn="false" value="AMS_ADBMS_SPI_PRESCALER_DIV=256" /><listOptionValue builtIn="false" value="AMS_ADBMS_SPI_DMA=1" /></option>
++								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.option.includepaths.1211713501.dma256" name="Include paths (-I)" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.option.includepaths" valueType="includePath">
++									<listOptionValue builtIn="false" value="../Core/Inc" />
++									<listOptionValue builtIn="false" value="../Drivers/STM32F7xx_HAL_Driver/Inc" />
++									<listOptionValue builtIn="false" value="../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy" />
++									<listOptionValue builtIn="false" value="../Middlewares/Third_Party/FreeRTOS/Source/include" />
++									<listOptionValue builtIn="false" value="../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2" />
++									<listOptionValue builtIn="false" value="../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1" />
++									<listOptionValue builtIn="false" value="../Drivers/CMSIS/Device/ST/STM32F7xx/Include" />
++									<listOptionValue builtIn="false" value="../Drivers/CMSIS/Include" />
++								</option>
++								<inputType id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.input.101323373.dma256" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.input" />
++							</tool>
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.285063348.dma256" name="MCU/MPU GCC Compiler" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler">
++								<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.debuglevel.1802091526.dma256" name="Debug level" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.debuglevel" useByScannerDiscovery="false" value="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.debuglevel.value.g3" valueType="enumerated" />
++								<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.optimization.level.373591316.dma256" name="Optimization level" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.optimization.level" useByScannerDiscovery="false" />
++								<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.misc.2026072001.dma256" name="Other flags" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.misc" useByScannerDiscovery="false" value="-Wall -Wextra" valueType="string" />
++								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.definedsymbols.1585973699.dma256" name="Define symbols (-D)" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.definedsymbols" useByScannerDiscovery="false" valueType="definedSymbols">
++									<listOptionValue builtIn="false" value="DEBUG" />
++									<listOptionValue builtIn="false" value="USE_HAL_DRIVER" />
++									<listOptionValue builtIn="false" value="STM32F767xx" />
++									<listOptionValue builtIn="false" value="AMS_BUILD_PROFILE=4" />
++									<listOptionValue builtIn="false" value="DER26_CAN_BITRATE_KBPS=1000" />
++									<listOptionValue builtIn="false" value="AMS_ENABLE_TUNING_CAN=0" />
++								<listOptionValue builtIn="false" value="AMS_ADBMS_SPI_PRESCALER_DIV=256" /><listOptionValue builtIn="false" value="AMS_ADBMS_SPI_DMA=1" /></option>
++								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.includepaths.1163737927.dma256" name="Include paths (-I)" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.includepaths" useByScannerDiscovery="false" valueType="includePath">
++									<listOptionValue builtIn="false" value="../Core/Inc" />
++									<listOptionValue builtIn="false" value="../Drivers/STM32F7xx_HAL_Driver/Inc" />
++									<listOptionValue builtIn="false" value="../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy" />
++									<listOptionValue builtIn="false" value="../Drivers/CMSIS/Device/ST/STM32F7xx/Include" />
++									<listOptionValue builtIn="false" value="../Drivers/CMSIS/Include" />
++									<listOptionValue builtIn="false" value="../Middlewares/Third_Party/FreeRTOS/Source/include" />
++									<listOptionValue builtIn="false" value="../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2" />
++									<listOptionValue builtIn="false" value="../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1" />
++								</option>
++								<inputType id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.input.c.570807813.dma256" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.input.c" />
++							</tool>
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.cpp.compiler.2033883525.dma256" name="MCU/MPU G++ Compiler" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.cpp.compiler">
++								<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.cpp.compiler.option.debuglevel.1154233864.dma256" name="Debug level" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.cpp.compiler.option.debuglevel" useByScannerDiscovery="false" value="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.cpp.compiler.option.debuglevel.value.g3" valueType="enumerated" />
++								<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.cpp.compiler.option.optimization.level.101443159.dma256" name="Optimization level" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.cpp.compiler.option.optimization.level" useByScannerDiscovery="false" />
++							</tool>
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.linker.33578096.dma256" name="MCU/MPU GCC Linker" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.linker">
++								<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.linker.option.script.1546866343.dma256" name="Linker Script (-T)" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.linker.option.script" value="${workspace_loc:/${ProjName}/STM32F767ZITX_FLASH.ld}" valueType="string" />
++								<inputType id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.linker.input.1692302104.dma256" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.linker.input">
++									<additionalInput kind="additionalinputdependency" paths="$(USER_OBJS)" />
++									<additionalInput kind="additionalinput" paths="$(LIBS)" />
++								</inputType>
++							</tool>
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.cpp.linker.575746391.dma256" name="MCU/MPU G++ Linker" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.cpp.linker" />
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.archiver.139140520.dma256" name="MCU/MPU GCC Archiver" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.archiver" />
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.size.369574729.dma256" name="MCU Size" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.size" />
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objdump.listfile.417052232.dma256" name="MCU Output Converter list file" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objdump.listfile" />
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.hex.924590491.dma256" name="MCU Output Converter Hex" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.hex" />
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.binary.390426747.dma256" name="MCU Output Converter Binary" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.binary" />
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.verilog.564672384.dma256" name="MCU Output Converter Verilog" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.verilog" />
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.srec.292420896.dma256" name="MCU Output Converter Motorola S-rec" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.srec" />
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.symbolsrec.2085257014.dma256" name="MCU Output Converter Motorola S-rec with symbols" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.symbolsrec" />
++						</toolChain>
++					</folderInfo>
++					<sourceEntries>
++						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Core" />
++						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Middlewares" />
++						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Drivers" />
++					</sourceEntries>
++				</configuration>
++			</storageModule>
++			<storageModule moduleId="org.eclipse.cdt.core.externalSettings" />
++		</cconfiguration>
++		<cconfiguration id="com.st.stm32cube.ide.mcu.gnu.managedbuild.config.exe.debug.616168893.dma128">
++			<storageModule buildSystemId="org.eclipse.cdt.managedbuilder.core.configurationDataProvider" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.config.exe.debug.616168893.dma128" moduleId="org.eclipse.cdt.core.settings" name="VEHICLE COMMS 1M SPI128 DMA Debug">
++				<externalSettings />
++				<extensions>
++					<extension id="org.eclipse.cdt.core.ELF.dma128" point="org.eclipse.cdt.core.BinaryParser" />
++					<extension id="org.eclipse.cdt.core.GASErrorParser.dma128" point="org.eclipse.cdt.core.ErrorParser" />
++					<extension id="org.eclipse.cdt.core.GmakeErrorParser.dma128" point="org.eclipse.cdt.core.ErrorParser" />
++					<extension id="org.eclipse.cdt.core.GLDErrorParser.dma128" point="org.eclipse.cdt.core.ErrorParser" />
++					<extension id="org.eclipse.cdt.core.CWDLocator.dma128" point="org.eclipse.cdt.core.ErrorParser" />
++					<extension id="org.eclipse.cdt.core.GCCErrorParser.dma128" point="org.eclipse.cdt.core.ErrorParser" />
++				</extensions>
++			</storageModule>
++			<storageModule moduleId="cdtBuildSystem" version="4.0.0">
++				<configuration artifactExtension="elf" artifactName="${ProjName}" buildArtefactType="org.eclipse.cdt.build.core.buildArtefactType.exe" buildProperties="org.eclipse.cdt.build.core.buildArtefactType=org.eclipse.cdt.build.core.buildArtefactType.exe,org.eclipse.cdt.build.core.buildType=org.eclipse.cdt.build.core.buildType.debug" cleanCommand="rm -rf" description="Five SMBs; 1 Mbit/s ECU bus; no charging; BMS_OK and balancing inhibited" errorParsers="org.eclipse.cdt.core.GASErrorParser;org.eclipse.cdt.core.GmakeErrorParser;org.eclipse.cdt.core.GLDErrorParser;org.eclipse.cdt.core.CWDLocator;org.eclipse.cdt.core.GCCErrorParser" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.config.exe.debug.616168893.dma128" name="VEHICLE COMMS 1M SPI128 DMA Debug" parent="com.st.stm32cube.ide.mcu.gnu.managedbuild.config.exe.debug">
++					<folderInfo id="com.st.stm32cube.ide.mcu.gnu.managedbuild.config.exe.debug.616168893..dma128" name="/" resourcePath="">
++						<toolChain id="com.st.stm32cube.ide.mcu.gnu.managedbuild.toolchain.exe.debug.334188844.dma128" name="MCU ARM GCC" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.toolchain.exe.debug">
++							<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.target_mcu.150424282.dma128" name="MCU" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.target_mcu" useByScannerDiscovery="true" value="STM32F767ZITx" valueType="string" />
++							<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.target_cpuid.2083765812.dma128" name="CPU" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.target_cpuid" useByScannerDiscovery="false" value="0" valueType="string" />
++							<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.target_coreid.1519747212.dma128" name="Core" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.target_coreid" useByScannerDiscovery="false" value="0" valueType="string" />
++							<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.fpu.1110505566.dma128" name="Floating-point unit" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.fpu" useByScannerDiscovery="true" value="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.fpu.value.fpv5-d16" valueType="enumerated" />
++							<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.floatabi.1802554443.dma128" name="Floating-point ABI" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.floatabi" useByScannerDiscovery="true" value="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.floatabi.value.hard" valueType="enumerated" />
++							<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.target_board.577431893.dma128" name="Board" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.target_board" useByScannerDiscovery="false" value="genericBoard" valueType="string" />
++							<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.defaults.47761206.dma128" name="Defaults" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.defaults" useByScannerDiscovery="false" value="com.st.stm32cube.ide.common.services.build.inputs.revA.1.0.6 || Debug || true || Executable || com.st.stm32cube.ide.mcu.gnu.managedbuild.option.toolchain.value.workspace || STM32F767ZITx || 0 || 0 || arm-none-eabi- || ${gnu_tools_for_stm32_compiler_path} || ../Core/Inc | ../Drivers/STM32F7xx_HAL_Driver/Inc | ../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy | ../Drivers/CMSIS/Device/ST/STM32F7xx/Include | ../Drivers/CMSIS/Include | ../Middlewares/Third_Party/FreeRTOS/Source/include | ../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 | ../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1 || ../Core/Inc | ../Drivers/STM32F7xx_HAL_Driver/Inc | ../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy | ../Middlewares/Third_Party/FreeRTOS/Source/include | ../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 | ../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1 | ../Drivers/CMSIS/Device/ST/STM32F7xx/Include | ../Drivers/CMSIS/Include ||  || USE_HAL_DRIVER | STM32F767xx ||  || Drivers | Core/Startup | Middlewares | Core ||  ||  || ${workspace_loc:/${ProjName}/STM32F767ZITX_FLASH.ld} || true || NonSecure ||  || secure_nsclib.o ||  || None ||  ||  || " valueType="string" />
++							<option id="com.st.stm32cube.ide.mcu.debug.option.cpuclock.221816990.dma128" name="Cpu clock frequence" superClass="com.st.stm32cube.ide.mcu.debug.option.cpuclock" useByScannerDiscovery="false" value="216" valueType="string" />
++							<targetPlatform archList="all" binaryParser="org.eclipse.cdt.core.ELF" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.targetplatform.542230455.dma128" isAbstract="false" osList="all" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.targetplatform" />
++							<builder buildPath="${workspace_loc:/${ProjName}/Vehicle_Comms_Debug}_dma128" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.builder.1391215119.dma128" keepEnvironmentInBuildfile="false" managedBuildOn="true" name="Gnu Make Builder" parallelBuildOn="true" parallelizationNumber="optimal" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.builder" />
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.350465684.dma128" name="MCU/MPU GCC Assembler" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler">
++								<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.option.debuglevel.1251839985.dma128" name="Debug level" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.option.debuglevel" value="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.option.debuglevel.value.g3" valueType="enumerated" />
++								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.option.definedsymbols.578820165.dma128" name="Define symbols (-D)" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.option.definedsymbols" valueType="definedSymbols">
++									<listOptionValue builtIn="false" value="DEBUG" />
++									<listOptionValue builtIn="false" value="AMS_ENABLE_TUNING_CAN=0" />
++								<listOptionValue builtIn="false" value="AMS_ADBMS_SPI_PRESCALER_DIV=128" /><listOptionValue builtIn="false" value="AMS_ADBMS_SPI_DMA=1" /></option>
++								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.option.includepaths.1211713501.dma128" name="Include paths (-I)" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.option.includepaths" valueType="includePath">
++									<listOptionValue builtIn="false" value="../Core/Inc" />
++									<listOptionValue builtIn="false" value="../Drivers/STM32F7xx_HAL_Driver/Inc" />
++									<listOptionValue builtIn="false" value="../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy" />
++									<listOptionValue builtIn="false" value="../Middlewares/Third_Party/FreeRTOS/Source/include" />
++									<listOptionValue builtIn="false" value="../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2" />
++									<listOptionValue builtIn="false" value="../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1" />
++									<listOptionValue builtIn="false" value="../Drivers/CMSIS/Device/ST/STM32F7xx/Include" />
++									<listOptionValue builtIn="false" value="../Drivers/CMSIS/Include" />
++								</option>
++								<inputType id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.input.101323373.dma128" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.input" />
++							</tool>
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.285063348.dma128" name="MCU/MPU GCC Compiler" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler">
++								<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.debuglevel.1802091526.dma128" name="Debug level" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.debuglevel" useByScannerDiscovery="false" value="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.debuglevel.value.g3" valueType="enumerated" />
++								<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.optimization.level.373591316.dma128" name="Optimization level" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.optimization.level" useByScannerDiscovery="false" />
++								<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.misc.2026072001.dma128" name="Other flags" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.misc" useByScannerDiscovery="false" value="-Wall -Wextra" valueType="string" />
++								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.definedsymbols.1585973699.dma128" name="Define symbols (-D)" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.definedsymbols" useByScannerDiscovery="false" valueType="definedSymbols">
++									<listOptionValue builtIn="false" value="DEBUG" />
++									<listOptionValue builtIn="false" value="USE_HAL_DRIVER" />
++									<listOptionValue builtIn="false" value="STM32F767xx" />
++									<listOptionValue builtIn="false" value="AMS_BUILD_PROFILE=4" />
++									<listOptionValue builtIn="false" value="DER26_CAN_BITRATE_KBPS=1000" />
++									<listOptionValue builtIn="false" value="AMS_ENABLE_TUNING_CAN=0" />
++								<listOptionValue builtIn="false" value="AMS_ADBMS_SPI_PRESCALER_DIV=128" /><listOptionValue builtIn="false" value="AMS_ADBMS_SPI_DMA=1" /></option>
++								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.includepaths.1163737927.dma128" name="Include paths (-I)" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.includepaths" useByScannerDiscovery="false" valueType="includePath">
++									<listOptionValue builtIn="false" value="../Core/Inc" />
++									<listOptionValue builtIn="false" value="../Drivers/STM32F7xx_HAL_Driver/Inc" />
++									<listOptionValue builtIn="false" value="../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy" />
++									<listOptionValue builtIn="false" value="../Drivers/CMSIS/Device/ST/STM32F7xx/Include" />
++									<listOptionValue builtIn="false" value="../Drivers/CMSIS/Include" />
++									<listOptionValue builtIn="false" value="../Middlewares/Third_Party/FreeRTOS/Source/include" />
++									<listOptionValue builtIn="false" value="../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2" />
++									<listOptionValue builtIn="false" value="../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1" />
++								</option>
++								<inputType id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.input.c.570807813.dma128" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.input.c" />
++							</tool>
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.cpp.compiler.2033883525.dma128" name="MCU/MPU G++ Compiler" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.cpp.compiler">
++								<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.cpp.compiler.option.debuglevel.1154233864.dma128" name="Debug level" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.cpp.compiler.option.debuglevel" useByScannerDiscovery="false" value="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.cpp.compiler.option.debuglevel.value.g3" valueType="enumerated" />
++								<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.cpp.compiler.option.optimization.level.101443159.dma128" name="Optimization level" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.cpp.compiler.option.optimization.level" useByScannerDiscovery="false" />
++							</tool>
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.linker.33578096.dma128" name="MCU/MPU GCC Linker" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.linker">
++								<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.linker.option.script.1546866343.dma128" name="Linker Script (-T)" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.linker.option.script" value="${workspace_loc:/${ProjName}/STM32F767ZITX_FLASH.ld}" valueType="string" />
++								<inputType id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.linker.input.1692302104.dma128" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.linker.input">
++									<additionalInput kind="additionalinputdependency" paths="$(USER_OBJS)" />
++									<additionalInput kind="additionalinput" paths="$(LIBS)" />
++								</inputType>
++							</tool>
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.cpp.linker.575746391.dma128" name="MCU/MPU G++ Linker" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.cpp.linker" />
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.archiver.139140520.dma128" name="MCU/MPU GCC Archiver" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.archiver" />
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.size.369574729.dma128" name="MCU Size" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.size" />
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objdump.listfile.417052232.dma128" name="MCU Output Converter list file" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objdump.listfile" />
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.hex.924590491.dma128" name="MCU Output Converter Hex" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.hex" />
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.binary.390426747.dma128" name="MCU Output Converter Binary" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.binary" />
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.verilog.564672384.dma128" name="MCU Output Converter Verilog" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.verilog" />
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.srec.292420896.dma128" name="MCU Output Converter Motorola S-rec" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.srec" />
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.symbolsrec.2085257014.dma128" name="MCU Output Converter Motorola S-rec with symbols" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.symbolsrec" />
+ 						</toolChain>
+ 					</folderInfo>
+ 					<sourceEntries>
+--- a/Core/Inc/ams_build_profile.h
++++ b/Core/Inc/ams_build_profile.h
+@@ -53,7 +53,7 @@
+     (((AMS_BUILD_PROFILE != AMS_PROFILE_TESTDAY) || AMS_TESTDAY_BALANCE_RELEASE_ALLOWED) && \
+      ((AMS_BUILD_PROFILE != AMS_PROFILE_BENCH_VALIDATION) || AMS_BENCH_VALIDATION_BALANCE_RELEASE_ALLOWED) && \
+      (AMS_BUILD_PROFILE != AMS_PROFILE_CHARGE_REVIEW))
+-#define AMS_BUILD_CONFIG_FINGERPRINT 0xA5055714u
++#define AMS_BUILD_CONFIG_FINGERPRINT (0xA5055714u ^ ((AMS_ADBMS_SPI_PRESCALER_DIV ^ 256u) << 8u) ^ (AMS_ADBMS_SPI_DMA ? 0x00000080u : 0u))
+ 
+ #ifndef AMS_BUILD_PROFILE
+ #define AMS_BUILD_PROFILE AMS_PROFILE_BENCH
+@@ -156,6 +156,17 @@
+ #define AMS_ADBMS_SPI_PRESCALER_DIV 256
+ #endif
+ 
++/* DMA candidates are restricted to the inhibited communications profile. */
++#ifndef AMS_ADBMS_SPI_DMA
++#define AMS_ADBMS_SPI_DMA 0
++#endif
++#if AMS_ADBMS_SPI_DMA != 0 && AMS_ADBMS_SPI_DMA != 1
++#error "AMS_ADBMS_SPI_DMA must be 0 or 1"
++#endif
++#if AMS_ADBMS_SPI_DMA && AMS_BUILD_PROFILE != AMS_PROFILE_TESTDAY
++#error "SPI DMA requires inhibited TESTDAY communications profile"
++#endif
++
+ /* Enable the silicon measurement/diagnostic products without allowing them to
+  * replace raw C-voltage safety authority.  FC=3 is the datasheet 21 Hz IIR. */
+ #ifndef AMS_ADBMS_IIR_FC
+--- a/Core/Inc/ams_vehicle_project.h
++++ b/Core/Inc/ams_vehicle_project.h
+@@ -41,8 +41,8 @@
+ #error "Installed vehicle variant has no fan task"
+ #endif
+ #if AMS_BUILD_PROFILE == 3
+-#define AMS_SOURCE_REVISION "DER26-AMS-v0.5.57-VEHICLE-1M-TIMING4-WAITOPT-GATED"
++#define AMS_SOURCE_REVISION "DER26-AMS-v0.5.57-VEHICLE-1M-TIMING5-SPI-DMA-GATED"
+ #else
+-#define AMS_SOURCE_REVISION "DER26-AMS-v0.5.57-VEHICLE-COMMS-1M-TIMING4-WAITOPT-INHIBITED"
++#define AMS_SOURCE_REVISION "DER26-AMS-v0.5.57-VEHICLE-COMMS-1M-TIMING5-SPI-DMA-INHIBITED"
+ #endif
+ #endif
+--- /dev/null
++++ b/Core/Inc/ext_drivers/ams_spi6_transport.h
+@@ -0,0 +1,27 @@
++#ifndef AMS_SPI6_TRANSPORT_H
++#define AMS_SPI6_TRANSPORT_H
++#include "main.h"
++#include "ams_build_profile.h"
++#ifndef AMS_ADBMS_SPI_DMA
++#define AMS_ADBMS_SPI_DMA 0
++#endif
++typedef struct {
++    uint32_t started, completed, errors, timeouts, polling, quarantined;
++} ams_spi6_dma_stats_t;
++#if AMS_ADBMS_SPI_DMA
++ams_spi6_dma_stats_t ams_spi6_dma_stats(void);
++void ams_spi6_dma_init(void);
++void ams_spi6_dma_irq(void);
++HAL_StatusTypeDef ams_spi6_transfer(SPI_HandleTypeDef *, uint8_t *, uint8_t *, uint16_t, uint32_t);
++#else
++static inline ams_spi6_dma_stats_t ams_spi6_dma_stats(void)
++{
++    ams_spi6_dma_stats_t empty={0}; return empty;
++}
++static inline HAL_StatusTypeDef ams_spi6_transfer(SPI_HandleTypeDef *h,
++    uint8_t *tx, uint8_t *rx, uint16_t n, uint32_t timeout)
++{
++    return rx ? HAL_SPI_TransmitReceive(h,tx,rx,n,timeout) : HAL_SPI_Transmit(h,tx,n,timeout);
++}
++#endif
++#endif
+--- a/Core/Src/ext_drivers/adbms6830.c
++++ b/Core/Src/ext_drivers/adbms6830.c
+@@ -14,6 +14,7 @@
+ #include "ext_drivers/adbms6830_functions.h"
+ #include "ext_drivers/thermistor_model.h"
+ #include "ams_build_profile.h"
++#include "ext_drivers/ams_spi6_transport.h"
+ 
+ static unsigned char shared_buf[BUFSZ] = {0};
+ static uint8_t write_buf[BUFSZ] = {0};
+@@ -4355,7 +4356,7 @@
+         adbms6830_set_cs(dev, 0);
+     }
+ 
+-    status = HAL_SPI_Transmit(dev->hspi, data, len, adbms6830_frame_timeout_ms(dev, len));
++    status = ams_spi6_transfer(dev->hspi, data, NULL, len, adbms6830_frame_timeout_ms(dev, len));
+ 
+     if(use_cs)
+     {
+@@ -4783,7 +4784,7 @@
+         adbms6830_set_cs(dev, 0);
+     }
+ 
+-    status = HAL_SPI_TransmitReceive(dev->hspi,
++    status = ams_spi6_transfer(dev->hspi,
+                                      spi_txrx_tx_buf,
+                                      spi_txrx_rx_buf,
+                                      total_len,
+@@ -5055,7 +5056,7 @@
+ 
+     adbms_spi_lock();
+     adbms6830_set_cs(dev, 0u);
+-    status = HAL_SPI_Transmit(dev->hspi, cmd_frame, sizeof(cmd_frame), adbms6830_frame_timeout_ms(dev, sizeof(cmd_frame)));
++    status = ams_spi6_transfer(dev->hspi, cmd_frame, NULL, sizeof(cmd_frame), adbms6830_frame_timeout_ms(dev, sizeof(cmd_frame)));
+     if(status == HAL_OK)
+     {
+         adbms6830_note_counter_increment(dev);
+@@ -5063,7 +5064,7 @@
+ 
+         while(__HAL_TIM_GET_COUNTER(dev->htim) < timeout_us)
+         {
+-            status = HAL_SPI_TransmitReceive(dev->hspi, &tx, &rx, 1u, adbms6830_frame_timeout_ms(dev, 1u));
++            status = ams_spi6_transfer(dev->hspi, &tx, &rx, 1u, adbms6830_frame_timeout_ms(dev, 1u));
+             if(status != HAL_OK)
+             {
+                 break;
+--- /dev/null
++++ b/Core/Src/ext_drivers/ams_spi6_transport.c
+@@ -0,0 +1,159 @@
++/* Exclusive SPI6 DMA2 stream 5 TX / stream 6 RX, channel 1 (RM0410).
++ * Called under the existing recursive SPI mutex, including CS ownership.
++ * No HAL SPI DMA callbacks: their completion paths can poll in interrupt context.
++ * DMA IRQ only records flags and releases a static semaphore. */
++#include "ext_drivers/ams_spi6_transport.h"
++#if AMS_ADBMS_SPI_DMA
++#include "FreeRTOS.h"
++#include "task.h"
++#include "semphr.h"
++#include <string.h>
++#include <stdbool.h>
++#if AMS_BUILD_PROFILE != AMS_PROFILE_TESTDAY
++#error "SPI DMA is a bench-only candidate; use vehicle comms profile 4"
++#endif
++#define TX_FLAGS (DMA_HISR_FEIF5|DMA_HISR_DMEIF5|DMA_HISR_TEIF5|DMA_HISR_HTIF5|DMA_HISR_TCIF5)
++#define RX_FLAGS (DMA_HISR_FEIF6|DMA_HISR_DMEIF6|DMA_HISR_TEIF6|DMA_HISR_HTIF6|DMA_HISR_TCIF6)
++#define ERR_FLAGS (DMA_HISR_FEIF5|DMA_HISR_DMEIF5|DMA_HISR_TEIF5|DMA_HISR_FEIF6|DMA_HISR_DMEIF6|DMA_HISR_TEIF6)
++#define DONE_FLAGS (DMA_HISR_TCIF5|DMA_HISR_TCIF6)
++/* Dedicated SRAM, whole cache lines. Linker excludes this bank from heap/stack. */
++static uint8_t dma_tx[512] __attribute__((section(".spi_dma"),aligned(32)));
++static uint8_t dma_rx[512] __attribute__((section(".spi_dma"),aligned(32)));
++static StaticSemaphore_t completion_storage;
++static SemaphoreHandle_t completion;
++static volatile uint32_t events;
++static volatile bool active;
++static bool quarantined;
++static ams_spi6_dma_stats_t stats;
++
++ams_spi6_dma_stats_t ams_spi6_dma_stats(void)
++{
++    taskENTER_CRITICAL();
++    ams_spi6_dma_stats_t copy=stats;
++    copy.quarantined=quarantined;
++    taskEXIT_CRITICAL();
++    return copy;
++}
++
++void ams_spi6_dma_init(void)
++{
++    __HAL_RCC_DMA2_CLK_ENABLE();
++    completion = xSemaphoreCreateBinaryStatic(&completion_storage);
++    HAL_NVIC_SetPriority(DMA2_Stream5_IRQn,6,0);
++    HAL_NVIC_SetPriority(DMA2_Stream6_IRQn,6,0);
++    HAL_NVIC_EnableIRQ(DMA2_Stream5_IRQn);
++    HAL_NVIC_EnableIRQ(DMA2_Stream6_IRQn);
++}
++
++void ams_spi6_dma_irq(void)
++{
++    uint32_t flags = DMA2->HISR & (TX_FLAGS|RX_FLAGS);
++    DMA2->HIFCR = flags;
++    if(active && flags) {
++        events |= flags;
++        if(flags & ERR_FLAGS) SPI6->CR2 &= ~(SPI_CR2_RXDMAEN|SPI_CR2_TXDMAEN);
++        BaseType_t higher = pdFALSE;
++        xSemaphoreGiveFromISR(completion,&higher);
++        portYIELD_FROM_ISR(higher);
++    }
++}
++
++/* Finite stream shutdown: never return buffers to service while EN remains set.
++ * Quarantine persists until MCU reset rather than resetting unrelated DMA2 users. */
++static bool stop_streams(void)
++{
++    SPI6->CR2 &= ~(SPI_CR2_RXDMAEN|SPI_CR2_TXDMAEN);
++    DMA2_Stream5->CR &= ~DMA_SxCR_EN;
++    DMA2_Stream6->CR &= ~DMA_SxCR_EN;
++    for(unsigned i=0;i<1024;i++)
++        if(!((DMA2_Stream5->CR|DMA2_Stream6->CR)&DMA_SxCR_EN)) return true;
++    quarantined=true;
++    return false;
++}
++
++HAL_StatusTypeDef ams_spi6_transfer(SPI_HandleTypeDef *h, uint8_t *tx,
++    uint8_t *rx, uint16_t n, uint32_t timeout)
++{
++    if(!h || !tx || !n || n>sizeof(dma_tx)) return HAL_ERROR;
++    if(h->Instance==SPI6 && (quarantined || active)) return HAL_ERROR;
++    /* Four-byte commands and pre-kernel calls retain the proven polling path. */
++    if(h->Instance!=SPI6 || n<16 || xTaskGetSchedulerState()!=taskSCHEDULER_RUNNING) {
++        stats.polling++;
++        return rx ? HAL_SPI_TransmitReceive(h,tx,rx,n,timeout) : HAL_SPI_Transmit(h,tx,n,timeout);
++    }
++    if(!completion || quarantined || active || h->State!=HAL_SPI_STATE_READY ||
++       __get_IPSR()!=0 || __get_PRIMASK()!=0 || __get_BASEPRI()!=0) return HAL_ERROR;
++    if(h->Init.DataSize!=SPI_DATASIZE_8BIT ||
++       h->Init.Direction!=SPI_DIRECTION_2LINES || h->Init.Mode!=SPI_MODE_MASTER) return HAL_ERROR;
++    if(!stop_streams()) return HAL_ERROR;
++    memcpy(dma_tx,tx,n);
++    memset(dma_rx,0,n);
++    if(SCB->CCR & SCB_CCR_DC_Msk) {
++        SCB_CleanDCache_by_Addr((uint32_t*)dma_tx,512);
++        SCB_CleanInvalidateDCache_by_Addr((uint32_t*)dma_rx,512);
++    }
++    __DSB();
++    while(xSemaphoreTake(completion,0)==pdTRUE) {}
++    DMA2->HIFCR=TX_FLAGS|RX_FLAGS;
++    HAL_NVIC_ClearPendingIRQ(DMA2_Stream5_IRQn);
++    HAL_NVIC_ClearPendingIRQ(DMA2_Stream6_IRQn);
++    uint32_t cr1=SPI6->CR1, cr2=SPI6->CR2;
++    /* Full duplex byte transfers; RX drains the FIFO even for writes. */
++    DMA2_Stream5->CR=(1u<<DMA_SxCR_CHSEL_Pos)|DMA_SxCR_DIR_0|DMA_SxCR_MINC|DMA_SxCR_TCIE|DMA_SxCR_TEIE|DMA_SxCR_DMEIE;
++    DMA2_Stream6->CR=(1u<<DMA_SxCR_CHSEL_Pos)|DMA_SxCR_MINC|DMA_SxCR_TCIE|DMA_SxCR_TEIE|DMA_SxCR_DMEIE;
++    DMA2_Stream5->FCR=0; DMA2_Stream6->FCR=0;
++    DMA2_Stream5->PAR=(uint32_t)&SPI6->DR; DMA2_Stream6->PAR=(uint32_t)&SPI6->DR;
++    DMA2_Stream5->M0AR=(uint32_t)dma_tx; DMA2_Stream6->M0AR=(uint32_t)dma_rx;
++    DMA2_Stream5->NDTR=n; DMA2_Stream6->NDTR=n;
++    events=0; active=true; stats.started++; h->State=HAL_SPI_STATE_BUSY_TX_RX;
++    __DMB();
++    uint32_t start=HAL_GetTick();
++    SPI6->CR2=cr2|SPI_CR2_FRXTH;
++    SPI6->CR1=cr1|SPI_CR1_SPE;
++    DMA2_Stream6->CR |= DMA_SxCR_EN;
++    DMA2_Stream5->CR |= DMA_SxCR_EN;
++    SPI6->CR2 |= SPI_CR2_RXDMAEN|SPI_CR2_TXDMAEN;
++    HAL_StatusTypeDef result=HAL_TIMEOUT;
++    for(;;) {
++        uint32_t e=events;
++        if(e & ERR_FLAGS) { result=HAL_ERROR; break; }
++        if((e & DONE_FLAGS)==DONE_FLAGS) { result=HAL_OK; break; }
++        uint32_t elapsed=HAL_GetTick()-start;
++        if(elapsed>=timeout) break;
++        TickType_t ticks=pdMS_TO_TICKS(timeout-elapsed)+1;
++        (void)xSemaphoreTake(completion,ticks);
++    }
++    /* RX TC follows the final received byte, but BSY may lag a few cycles.
++     * Bounded task-side tail; never the HAL 100 ms IRQ polling loop. */
++    if(result==HAL_OK) {
++        unsigned i;
++        for(i=0;i<1024 && (SPI6->SR & SPI_SR_BSY);i++) {}
++        if((SPI6->SR & (SPI_SR_BSY|SPI_SR_OVR|SPI_SR_MODF))!=0) result=HAL_ERROR;
++    }
++    taskENTER_CRITICAL();
++    active=false;
++    if((events & ERR_FLAGS) || (DMA2->HISR & ERR_FLAGS) ||
++       (result==HAL_OK && (DMA2_Stream5->NDTR || DMA2_Stream6->NDTR))) result=HAL_ERROR;
++    bool stopped=stop_streams();
++    DMA2->HIFCR=TX_FLAGS|RX_FLAGS;
++    HAL_NVIC_ClearPendingIRQ(DMA2_Stream5_IRQn);
++    HAL_NVIC_ClearPendingIRQ(DMA2_Stream6_IRQn);
++    taskEXIT_CRITICAL();
++    if(!stopped) result=HAL_ERROR;
++    if(result!=HAL_OK) {
++        __HAL_RCC_SPI6_FORCE_RESET(); __DSB(); __HAL_RCC_SPI6_RELEASE_RESET();
++        SPI6->CR1=cr1 & ~SPI_CR1_SPE;
++    }
++    SPI6->CR2=cr2 & ~(SPI_CR2_RXDMAEN|SPI_CR2_TXDMAEN);
++    h->State=HAL_SPI_STATE_READY;
++    if(result==HAL_OK) stats.completed++;
++    else if(result==HAL_TIMEOUT) stats.timeouts++;
++    else stats.errors++;
++    if(result==HAL_OK && rx) {
++        __DSB();
++        if(SCB->CCR & SCB_CCR_DC_Msk) SCB_InvalidateDCache_by_Addr((uint32_t*)dma_rx,512);
++        memcpy(rx,dma_rx,n);
++    }
++    return result;
++}
++#endif
+--- a/Core/Src/main.c
++++ b/Core/Src/main.c
+@@ -23,6 +23,7 @@
+ /* Private includes ----------------------------------------------------------*/
+ /* USER CODE BEGIN Includes */
+ #include "app.h"
++#include "ext_drivers/ams_spi6_transport.h"
+ #include "ext_drivers/ams_safety.h"
+ /* USER CODE END Includes */
+ 
+@@ -440,6 +441,9 @@
+     Error_Handler();
+   }
+   /* USER CODE BEGIN SPI6_Init 2 */
++#if AMS_ADBMS_SPI_DMA
++  ams_spi6_dma_init();
++#endif
+ 
+   /* USER CODE END SPI6_Init 2 */
+ 
+--- a/Core/Src/stm32f7xx_it.c
++++ b/Core/Src/stm32f7xx_it.c
+@@ -23,6 +23,7 @@
+ /* Private includes ----------------------------------------------------------*/
+ /* USER CODE BEGIN Includes */
+ #include "app.h"
++#include "ext_drivers/ams_spi6_transport.h"
+ #include "ext_drivers/ams_safety.h"
+ /* USER CODE END Includes */
+ 
+@@ -312,4 +313,10 @@
+     }
+ }
+ #endif /* AMS_ENABLE_CLI */
++
++#if AMS_ADBMS_SPI_DMA
++void DMA2_Stream5_IRQHandler(void) { ams_spi6_dma_irq(); }
++void DMA2_Stream6_IRQHandler(void) { ams_spi6_dma_irq(); }
++#endif
++
+ /* USER CODE END 1 */
+--- a/Core/Src/tasks/cli_task.c
++++ b/Core/Src/tasks/cli_task.c
+@@ -1,3 +1,4 @@
++#include "ext_drivers/ams_spi6_transport.h"
+ #include "ams_task_schedule.h"
+ #include "ams_diag_budget.h"
+ /**
+@@ -5670,6 +5671,14 @@
+                      (unsigned long)session->reference_reuse_count,
+                      (unsigned long)session->aux_short_wait_count);
+             ret |= cli_printline(cli, outline);
++            ams_spi6_dma_stats_t dma_stats=ams_spi6_dma_stats();
++            snprintf(outline, CLI_LINESZ,
++                     "SPI DMA en:%u start/ok:%lu/%lu err/timeout:%lu/%lu poll:%lu quarantine:%lu",
++                     (unsigned)AMS_ADBMS_SPI_DMA,
++                     (unsigned long)dma_stats.started, (unsigned long)dma_stats.completed,
++                     (unsigned long)dma_stats.errors, (unsigned long)dma_stats.timeouts,
++                     (unsigned long)dma_stats.polling, (unsigned long)dma_stats.quarantined);
++            ret |= cli_printline(cli, outline);
+             snprintf(outline, CLI_LINESZ,
+                      "session waits:%lu interrupted:%lu requested_us:0x%08lX%08lX duration last/max:%lu/%luus",
+                      (unsigned long)session->long_wait_count,
+--- a/STM32F767ZITX_FLASH.ld
++++ b/STM32F767ZITX_FLASH.ld
+@@ -44,13 +44,16 @@
+ /* Memories definition */
+ MEMORY
+ {
+-  RAM    (xrw)    : ORIGIN = 0x20000000,   LENGTH = 512K
++  SPI_DMA (xrw) : ORIGIN = 0x2007F000, LENGTH = 4K
++  RAM    (xrw)    : ORIGIN = 0x20000000,   LENGTH = 508K
+   FLASH    (rx)    : ORIGIN = 0x8000000,   LENGTH = 2048K
+ }
+ 
+ /* Sections */
+ SECTIONS
+ {
++  .spi_dma (NOLOAD) : { . = ALIGN(32); *(.spi_dma) . = ALIGN(32); } >SPI_DMA
++  ASSERT(SIZEOF(.spi_dma) <= 4096, "SPI DMA bank overflow")
+   /* The startup code into "FLASH" Rom type memory */
+   .isr_vector :
+   {
+--- a/STM32F767ZITX_RAM.ld
++++ b/STM32F767ZITX_RAM.ld
+@@ -44,13 +44,16 @@
+ /* Memories definition */
+ MEMORY
+ {
+-  RAM    (xrw)    : ORIGIN = 0x20000000,   LENGTH = 512K
++  SPI_DMA (xrw) : ORIGIN = 0x2007F000, LENGTH = 4K
++  RAM    (xrw)    : ORIGIN = 0x20000000,   LENGTH = 508K
+   FLASH    (rx)    : ORIGIN = 0x8000000,   LENGTH = 2048K
+ }
+ 
+ /* Sections */
+ SECTIONS
+ {
++  .spi_dma (NOLOAD) : { . = ALIGN(32); *(.spi_dma) . = ALIGN(32); } >SPI_DMA
++  ASSERT(SIZEOF(.spi_dma) <= 4096, "SPI DMA bank overflow")
+   /* The startup code into "RAM" Ram type memory */
+   .isr_vector :
+   {
+--- a/host_tests/Makefile
++++ b/host_tests/Makefile
+@@ -906,3 +906,11 @@
+ .PHONY: acquisition-sil
+ acquisition-sil:
+ 	python3 sil/run_acquisition_sil.py
++
++.PHONY: spi6-dma-test
++spi6-dma-test: | $(BUILD_DIR)
++	$(CC) -Idma_fakes $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=4 -DAMS_ADBMS_SPI_DMA=1 production/spi6_dma_test.c -o $(BUILD_DIR)/spi6_dma_test
++	$(BUILD_DIR)/spi6_dma_test
++	$(PYTHON) tools/check_spi_dma.py
++
++vehicle-ci: spi6-dma-test
+--- /dev/null
++++ b/host_tests/dma_fakes/FreeRTOS.h
+@@ -0,0 +1,15 @@
++#ifndef DMA_TEST_FREERTOS_H
++#define DMA_TEST_FREERTOS_H
++#include <stdint.h>
++typedef int BaseType_t;
++typedef uint32_t TickType_t;
++typedef struct { int token; } StaticSemaphore_t;
++typedef StaticSemaphore_t *SemaphoreHandle_t;
++#define pdFALSE 0
++#define pdTRUE 1
++#define pdMS_TO_TICKS(x) (x)
++#define taskSCHEDULER_RUNNING 2
++#define taskENTER_CRITICAL() ((void)0)
++#define taskEXIT_CRITICAL() ((void)0)
++#define portYIELD_FROM_ISR(x) ((void)(x))
++#endif
+--- /dev/null
++++ b/host_tests/dma_fakes/semphr.h
+@@ -0,0 +1,4 @@
++#include "FreeRTOS.h"
++SemaphoreHandle_t xSemaphoreCreateBinaryStatic(StaticSemaphore_t *);
++BaseType_t xSemaphoreTake(SemaphoreHandle_t,TickType_t);
++BaseType_t xSemaphoreGiveFromISR(SemaphoreHandle_t,BaseType_t *);
+--- /dev/null
++++ b/host_tests/dma_fakes/task.h
+@@ -0,0 +1,2 @@
++#include "FreeRTOS.h"
++BaseType_t xTaskGetSchedulerState(void);
+--- /dev/null
++++ b/host_tests/production/spi6_dma_test.c
+@@ -0,0 +1,93 @@
++/* Execute actual transport logic against fake MMIO and scheduler/IRQ events. */
++#include <assert.h>
++#include <stdio.h>
++#include "ext_drivers/ams_spi6_transport.h"
++#include "FreeRTOS.h"
++static SPI_TypeDef spi_regs;
++static DMA_TypeDef dma_regs;
++static DMA_Stream_TypeDef tx_regs,rx_regs;
++#undef SPI6
++#undef DMA2
++#undef DMA2_Stream5
++#undef DMA2_Stream6
++#define SPI6 (&spi_regs)
++#define DMA2 (&dma_regs)
++#define DMA2_Stream5 (&tx_regs)
++#define DMA2_Stream6 (&rx_regs)
++#define __DSB() ((void)0)
++#define __DMB() ((void)0)
++#define __get_IPSR() 0
++#define __get_PRIMASK() 0
++#define __get_BASEPRI() 0
++#define SCB_CleanDCache_by_Addr(a,b) ((void)0)
++#define SCB_CleanInvalidateDCache_by_Addr(a,b) ((void)0)
++#define SCB_InvalidateDCache_by_Addr(a,b) ((void)0)
++#undef __HAL_RCC_DMA2_CLK_ENABLE
++#undef __HAL_RCC_SPI6_FORCE_RESET
++#undef __HAL_RCC_SPI6_RELEASE_RESET
++#define __HAL_RCC_DMA2_CLK_ENABLE() ((void)0)
++#define __HAL_RCC_SPI6_FORCE_RESET() ((void)0)
++#define __HAL_RCC_SPI6_RELEASE_RESET() ((void)0)
++
++/* Avoid host dereference of Cortex system registers. */
++#undef SCB
++#define SCB fake_scb
++static SCB_Type fake_scb_storage;
++static SCB_Type *fake_scb=&fake_scb_storage;
++#include "Core/Src/ext_drivers/ams_spi6_transport.c"
++static unsigned now,polls,blocks,mode;
++static BaseType_t scheduler_state=taskSCHEDULER_RUNNING;
++uint32_t HAL_GetTick(void) { return now; }
++void HAL_NVIC_SetPriority(IRQn_Type n,uint32_t p,uint32_t sub) { assert(p>=5); }
++void HAL_NVIC_EnableIRQ(IRQn_Type n) {}
++void HAL_NVIC_ClearPendingIRQ(IRQn_Type n) {}
++BaseType_t xTaskGetSchedulerState(void) { return scheduler_state; }
++SemaphoreHandle_t xSemaphoreCreateBinaryStatic(StaticSemaphore_t *s) { s->token=0; return s; }
++BaseType_t xSemaphoreGiveFromISR(SemaphoreHandle_t s,BaseType_t *higher) { s->token=1; return pdTRUE; }
++BaseType_t xSemaphoreTake(SemaphoreHandle_t s,TickType_t ticks) {
++    if(s->token) { s->token=0; return pdTRUE; }
++    if(!ticks) return pdFALSE;
++    blocks++;
++    assert(active && (SPI6->CR2 & SPI_CR2_RXDMAEN));
++    if(mode==1) { now+=ticks; return pdFALSE; }
++    DMA2->HISR=(mode==2) ? DMA_HISR_TEIF6 : DONE_FLAGS;
++    if(mode==5 && tx_regs.NDTR) { DMA2->HISR=DMA_HISR_TCIF5; tx_regs.NDTR=0; }
++    else { tx_regs.NDTR=rx_regs.NDTR=0; }
++    if(mode==3) rx_regs.NDTR=1;
++    if(mode==4) spi_regs.SR=SPI_SR_BSY;
++    memset(dma_rx,0x5a,sizeof(dma_rx));
++    ams_spi6_dma_irq();
++    /* Real hardware clears HISR by the W1C HIFCR write. */
++    DMA2->HISR=0;
++    return pdTRUE;
++}
++HAL_StatusTypeDef HAL_SPI_Transmit(SPI_HandleTypeDef*h,uint8_t*t,uint16_t n,uint32_t ms) { polls++; return HAL_OK; }
++HAL_StatusTypeDef HAL_SPI_TransmitReceive(SPI_HandleTypeDef*h,uint8_t*t,uint8_t*r,uint16_t n,uint32_t ms) { polls++; return HAL_OK; }
++int main(void) {
++    SPI_HandleTypeDef h={0}; h.Instance=SPI6; h.State=HAL_SPI_STATE_READY;
++    h.Init.DataSize=SPI_DATASIZE_8BIT;h.Init.Direction=SPI_DIRECTION_2LINES;h.Init.Mode=SPI_MODE_MASTER;
++    uint8_t tx[44]={0},rx[44]={0};
++    ams_spi6_dma_init();
++    assert(ams_spi6_transfer(&h,tx,rx,4,3)==HAL_OK && polls==1);
++    assert(ams_spi6_transfer(&h,tx,rx,44,3)==HAL_OK && blocks==1 && rx[0]==0x5a);
++    mode=1; memset(rx,0xa5,sizeof(rx));
++    assert(ams_spi6_transfer(&h,tx,rx,44,3)==HAL_TIMEOUT);
++    assert(!active && h.State==HAL_SPI_STATE_READY && rx[0]==0xa5);
++    assert(!(tx_regs.CR & DMA_SxCR_EN) && !(rx_regs.CR & DMA_SxCR_EN));
++    /* A late interrupt after cleanup cannot authorize a subsequent transfer. */
++    DMA2->HISR=DONE_FLAGS; ams_spi6_dma_irq(); DMA2->HISR=0;
++    mode=2; assert(ams_spi6_transfer(&h,tx,rx,44,3)==HAL_ERROR);
++    mode=0; assert(ams_spi6_transfer(&h,tx,rx,44,3)==HAL_OK);
++    assert(ams_spi6_transfer(&h,tx,NULL,44,3)==HAL_OK);
++    mode=3; assert(ams_spi6_transfer(&h,tx,rx,44,3)==HAL_ERROR);
++    mode=4; assert(ams_spi6_transfer(&h,tx,rx,44,3)==HAL_ERROR);
++    spi_regs.SR=0;
++    mode=5; assert(ams_spi6_transfer(&h,tx,rx,44,3)==HAL_OK);
++    scheduler_state=0; assert(ams_spi6_transfer(&h,tx,rx,44,3)==HAL_OK);
++    scheduler_state=taskSCHEDULER_RUNNING;
++    active=true; assert(ams_spi6_transfer(&h,tx,rx,4,3)==HAL_ERROR); active=false;
++    ams_spi6_dma_stats_t st=ams_spi6_dma_stats();
++    assert(st.started==8 && st.completed==4 && st.errors==3 && st.timeouts==1);
++    quarantined=true; assert(ams_spi6_transfer(&h,tx,rx,4,3)==HAL_ERROR);
++    puts("PASS DMA success, suspension, timeout, error, late/split IRQ, reuse, writes, NDTR, BSY, pre-kernel fallback, counters and quarantine");
++}
+--- a/host_tests/sil/acquisition_sil.c
++++ b/host_tests/sil/acquisition_sil.c
+@@ -131,7 +131,13 @@
+     bad_pec=bad_counter=fail_spi=timer_stopped=false;extra_delay_once=0;last_cs=GPIO_PIN_SET;
+     spi.Instance=SPI6;
+     spi.Init.DataSize=SPI_DATASIZE_8BIT;
++    #if AMS_ADBMS_SPI_PRESCALER_DIV == 64
++    spi.Init.BaudRatePrescaler=SPI_BAUDRATEPRESCALER_64;
++#elif AMS_ADBMS_SPI_PRESCALER_DIV == 128
++    spi.Init.BaudRatePrescaler=SPI_BAUDRATEPRESCALER_128;
++#else
+     spi.Init.BaudRatePrescaler=SPI_BAUDRATEPRESCALER_256;
++#endif
+     tim.Instance=&timer;dev.htim=&tim;dev.hspi=&spi;
+     dev.ics=ics;dev.ics_capacity=count;dev.num_ics=count;dev.physical_chain_count=count;
+     dev.monitored_cell_count=15;dev.string=dev.write_string=STRING_B;
+@@ -168,7 +174,9 @@
+     uint8_t frame[4]={0,0x2c,0x59,0x90};
+     CHECK(adbms6830_spi_write_read(&dev,frame,4,response,40,1)==HAL_OK);
+     CHECK((uint32_t)(sim_us-dev.wake.activity_us)<3000u);
++#if AMS_ADBMS_SPI_PRESCALER_DIV == 256
+     CHECK((uint32_t)(HAL_GetTick()-dev.wake.activity_ms)>=3u);
++#endif
+     CHECK(adbms6830_rd48_checked(&dev,RDCFGA,response)==HAL_OK);
+     pause_every=0;
+ #endif
+--- /dev/null
++++ b/host_tests/tools/check_spi_dma.py
+@@ -0,0 +1,22 @@
++"""Native syntax and wire-rate SIL; not an ARM link or DMA electrical model."""
++from pathlib import Path
++import subprocess, shlex
++host=Path(__file__).resolve().parents[1]
++out=host.parent/'validation'
++dry=subprocess.check_output(['make','-n','adbms-wake-policy-test'],cwd=host,text=True).replace('\\\n',' ')
++command=next(shlex.split(x) for x in dry.splitlines() if x.startswith('cc '))
++flags=command[:command.index('production/adbms_wake_policy_test.c')]
++sources=['ext_drivers/ams_spi6_transport.c','ext_drivers/adbms6830.c','main.c','stm32f7xx_it.c','tasks/cli_task.c']
++for div in (256,128,64):
++    args=flags+[f'-DAMS_ADBMS_SPI_PRESCALER_DIV={div}','-DAMS_ADBMS_SPI_DMA=1','-D__ARM_ARCH_7EM__=1','-fsyntax-only']+['../Core/Src/'+x for x in sources]
++    subprocess.run(args,cwd=host,check=True)
++    cmd=[x.replace('production/adbms_wake_policy_test.c','sil/acquisition_sil.c') for x in command]
++    binary=host/'build'/f'spi_rate_sil_{div}'
++    cmd[cmd.index('-o')+1]=str(binary)
++    cmd += [f'-DAMS_ADBMS_SPI_PRESCALER_DIV={div}','-DSIL_CANDIDATE=1']
++    subprocess.run(cmd,cwd=host,check=True)
++    run=subprocess.run([str(binary)],cwd=host,text=True,capture_output=True)
++    (out/f'SPI_RATE_SIL_DIV{div}.csv').write_text(run.stdout)
++    (out/f'SPI_RATE_SIL_DIV{div}.stderr.txt').write_text(run.stderr)
++    run.check_returncode()
++print('PASS DMA target-source native syntax and production driver SIL at /256, /128 and /64')
+--- a/host_tests/tools/check_vehicle_variant.py
++++ b/host_tests/tools/check_vehicle_variant.py
+@@ -9,26 +9,31 @@
+ flags=args[:args.index('src/ams_host_test_runner.c')]
+ flags=[x for x in flags if not x.startswith(('-DAMS_BUILD_PROFILE=','-DAMS_HOST_VEHICLE_VARIANT_TEST='))]
+ configs=E.parse(repo/'.cproject').findall('.//cconfiguration')
+-assert len(configs)==4
++assert len(configs)==7
+ names=[c.find('.//configuration').get('name') for c in configs]
+ assert names == [
+     'VEHICLE COMMS 1M Debug', 'VEHICLE COMMS 1M Release',
+     'VEHICLE RELEASE GATED 1M Debug', 'VEHICLE RELEASE GATED 1M Release',
++    'VEHICLE COMMS 1M SPI128 POLL Debug', 'VEHICLE COMMS 1M SPI256 DMA Debug',
++    'VEHICLE COMMS 1M SPI128 DMA Debug',
+ ],names
+ builders=[b.get('buildPath') for c in configs for b in c.findall('.//builder') if b.get('buildPath')]
+-assert len(builders)==4 and len(set(builders))==4,builders
++assert len(builders)==7 and len(set(builders))==7,builders
+ assert all('/Vehicle_' in path for path in builders),builders
+ for i,c in enumerate(configs):
+     definitions=[x.get('value') for o in c.findall('.//option')
+                  if o.get('superClass','').endswith('.definedsymbols')
+                  for x in o.findall('listOptionValue')]
+     assert 'DER26_CAN_BITRATE_KBPS=1000' in definitions,definitions
+-    assert ('AMS_BUILD_PROFILE=4' if i<2 else 'AMS_BUILD_PROFILE=3') in definitions,definitions
++    assert ('AMS_BUILD_PROFILE=4' if i<2 or i>=4 else 'AMS_BUILD_PROFILE=3') in definitions,definitions
++    if i>=4:
++        assert f'AMS_ADBMS_SPI_PRESCALER_DIV={128 if i!=5 else 256}' in definitions
++        assert f'AMS_ADBMS_SPI_DMA={0 if i==4 else 1}' in definitions
+     assert not any('VALIDATED=1' in x or 'REVIEWED=1' in x for x in definitions)
+ assert 'CAN1.Prescaler=3' in next(repo.glob('*.ioc')).read_text()
+ assert 'CAN1.CalculateBaudRate=1000000' in next(repo.glob('*.ioc')).read_text()
+ assert E.parse(repo/'.project').findtext('name')=='DER26-AMS-VEHICLE-1M-CLI4'
+-print('PASS four CubeIDE configurations, identity, 1-Mbit/s runtime/project/Cube timing; no fabricated release evidence')
++print('PASS seven CubeIDE configurations, identity, 1-Mbit/s runtime/project/Cube timing; no fabricated release evidence')
+ probe=cwd/'build/vehicle_contract_probe.c'
+ probe.write_text('''#include "app.h"
+ _Static_assert(NSMBS==5 && ACCUMULATOR_PHYSICAL_CHAIN_COUNT==5,"five SMBs");

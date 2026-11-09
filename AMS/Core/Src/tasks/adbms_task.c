@@ -98,10 +98,12 @@ static void adbms_task_timing_init(void)
 #else
 #if defined(CoreDebug_DEMCR_TRCENA_Msk) && defined(DWT_CTRL_CYCCNTENA_Msk)
     CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
-    DWT->CYCCNT = 0u;
+    /* The passive task profiler may already own the monotonic cycle clock.
+     * Never reset its epoch when this task starts or restarts. */
+    if((DWT->CTRL & DWT_CTRL_CYCCNTENA_Msk)==0u) DWT->CYCCNT = 0u;
     DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
     adbms_task_dwt_ready = ((DWT->CTRL & DWT_CTRL_CYCCNTENA_Msk) != 0u);
-    adbms_task_dwt_last_cycles = 0u;
+    adbms_task_dwt_last_cycles = DWT->CYCCNT;
     adbms_task_dwt_epoch_cycles = 0u;
 #else
     adbms_task_dwt_ready = false;
@@ -678,6 +680,21 @@ static void adbms_task_run_periodic_diagnostics(app_data_t *data, bool after_acq
     }
 
     if(!after_acquisition) goto publish_diagnostic_fault;
+    /* A pending pair must expire even when an inflated cost estimate or
+     * sustained overload prevents admitting its next phase. Cancellation is
+     * metadata-only: every completed phase already restored normal CFGA. */
+    if(smb->therm_phase.pending &&
+       (uint32_t)(HAL_GetTick()-smb->therm_phase.started_ms)>1000u) {
+        smb->therm_phase.pending=false;
+        smb->therm_ow_health.valid_mask=0;
+        if(smb->therm_ow_health.fail_count!=UINT32_MAX) smb->therm_ow_health.fail_count++;
+        if(data->adbms_therm_ow_diag_count!=UINT32_MAX) data->adbms_therm_ow_diag_count++;
+        if(data->adbms_therm_ow_diag_fail_count!=UINT32_MAX) data->adbms_therm_ow_diag_fail_count++;
+        data->adbms_therm_attempt_tick[data->adbms_therm_ow_next_sensor]=osKernelGetTickCount();
+        data->adbms_therm_ow_last_tick=osKernelGetTickCount();
+        ams_diag_advance(false,&data->adbms_diag_retry[1],&data->adbms_therm_ow_next_sensor);
+    }
+
 
     if(!data->adbms_diag_coverage_started) {
         data->adbms_diag_coverage_start = osKernelGetTickCount();
@@ -797,7 +814,7 @@ static void adbms_task_run_periodic_diagnostics(app_data_t *data, bool after_acq
              * the faster AUX2 schedule could starve it under sustained load. */
             uint32_t therm_base = data->adbms_therm_ow_last_tick == 0u ?
                 data->adbms_diag_coverage_start : data->adbms_therm_ow_last_tick;
-            if((uint32_t)(now - therm_base) >=
+            if(smb->therm_phase.pending || (uint32_t)(now - therm_base) >=
                 AMS_ADBMS_THERM_OPEN_WIRE_PERIOD_MS + 2000u) goto try_therm_diag;
 #endif
             bool forced;
@@ -864,17 +881,22 @@ try_therm_diag:
     if(acc->smb_transport_ready && accumulator_final_ring_topology_valid(acc))
     {
         uint32_t now = osKernelGetTickCount();
-        if((data->adbms_therm_ow_last_tick == 0u) ||
+        if(smb->therm_phase.pending || (data->adbms_therm_ow_last_tick == 0u) ||
            ((uint32_t)(now - data->adbms_therm_ow_last_tick) >=
             AMS_ADBMS_THERM_OPEN_WIRE_PERIOD_MS))
         {
             uint8_t sensor = data->adbms_therm_ow_next_sensor;
             bool forced;
             uint32_t cost = data->adbms_diag_cost_ms[1];
-            if(cost < 60u) cost = 60u;
+            if(cost < 35u) cost = 35u; /* one restored stimulus phase, not the full pair */
             uint32_t due = data->adbms_therm_ow_last_tick == 0u ?
                 data->adbms_diag_coverage_start :
                 data->adbms_therm_ow_last_tick + AMS_ADBMS_THERM_OPEN_WIRE_PERIOD_MS;
+            uint32_t compact_cost=data->adbms_therm_compact_cost_ms;
+            if(compact_cost<60u) compact_cost=60u;
+            bool compact=!smb->therm_phase.pending && ams_diag_admit(now,
+                data->adbms_diag_scan_start,AMS_ADBMS_TASK_PERIOD_MS,compact_cost,due,2000u,&forced);
+            if(compact) cost=compact_cost;
             if(!ams_diag_admit(now, data->adbms_diag_scan_start,
                 AMS_ADBMS_TASK_PERIOD_MS, cost, due, 2000u, &forced)) {
                 if(data->adbms_diag_deferred[1] != UINT32_MAX) data->adbms_diag_deferred[1]++;
@@ -882,11 +904,23 @@ try_therm_diag:
             }
             if(forced && data->adbms_diag_forced[1] != UINT32_MAX) data->adbms_diag_forced[1]++;
             uint32_t started = osKernelGetTickCount();
-            HAL_StatusTypeDef therm_ow_status =
-                adbms6830_run_thermistor_open_wire(smb, sensor);
+            bool therm_complete;
+            uint32_t restore_fail_before=smb->therm_ow_health.config_restore_fail_count;
+            HAL_StatusTypeDef therm_ow_status;
+            if(compact) {
+                therm_complete=true;
+                therm_ow_status=adbms6830_run_thermistor_open_wire(smb,sensor);
+            } else therm_ow_status=adbms6830_thermistor_open_wire_step(smb, sensor, &therm_complete);
+            if(smb->therm_ow_health.config_restore_fail_count!=restore_fail_before) {
+                data->adbms_config_fault=true;
+                data->adbms_last_diag_status=HAL_ERROR;
+            }
             data->adbms_therm_attempt_tick[sensor] = osKernelGetTickCount();
             uint32_t duration = osKernelGetTickCount() - started;
-            if(duration > data->adbms_diag_cost_ms[1]) data->adbms_diag_cost_ms[1] = duration;
+            if(compact) {
+                if(duration>data->adbms_therm_compact_cost_ms) data->adbms_therm_compact_cost_ms=duration;
+            } else if(duration > data->adbms_diag_cost_ms[1]) data->adbms_diag_cost_ms[1] = duration;
+            if(!therm_complete) goto publish_diagnostic_fault;
             bool completed = smb->therm_ow_health.valid_mask == adbms_task_expected_ic_mask(smb);
             if(completed) {
                 data->adbms_therm_success_tick[sensor] = osKernelGetTickCount();
@@ -1697,6 +1731,11 @@ void adbms_task_fn(void *argument)
 #else
         bool voltage_scan_attempted = acc->smb_transport_ready &&
                                       accumulator_final_ring_topology_valid(acc);
+#if AMS_ENABLE_AUTO_TEMP_MUX_SCAN
+        /* Select/ACK muxes before C conversion; its independent conversion
+         * window covers the physical settling interval without extra wakes. */
+        (void)accumulator_prepare_temp(acc);
+#endif
         int voltage_scan_result = accumulator_read_volt(acc);
         taskENTER_CRITICAL();
         data->adbms_voltage_scan_attempted = voltage_scan_attempted;

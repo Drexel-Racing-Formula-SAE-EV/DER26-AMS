@@ -72,7 +72,7 @@ bool accumulator_final_ring_topology_valid(const accumulator_t *dev)
 int smb_read_voltage(adbms6830_driver_t* dev);
 static int smb_read_voltage_checked(adbms6830_driver_t *dev,
                                     bool *compatible_adi1_sent);
-int smb_read_temp(adbms6830_driver_t* dev);
+int smb_prepare_temp(adbms6830_driver_t* dev);
 
 static void accumulator_invalidate_apm_sample(accumulator_t *dev)
 {
@@ -683,21 +683,9 @@ static int smb_read_voltage_checked(adbms6830_driver_t *dev,
     if(!continuous_c_was_running)
 #endif
     {
-		if(adbms6830_wakeup_checked(dev) != HAL_OK)
-		{
-			return -1;
-		}
-
-		/* REFON is asserted in the verified production configuration. Together
-		 * with the checked wake inside the ADCV wrapper, this interval leaves
-		 * margin for a cold/reference transition before the first production
-		 * ADCV. The post-ECO continuous-C path pays it only when C has to be
-		 * (re)established, not on every 10 Hz readout. */
-		if(adbms6830_wait_cooperative(
-		       dev, ADBMS6830_REFERENCE_PRECONVERSION_WAIT_US) != HAL_OK)
-		{
-			return -1;
-		}
+        /* REFON maturity is verified once, then retained only with fresh,
+         * integrity-checked chain traffic. No per-scan reference/wake delay. */
+        if(adbms6830_prepare_reference(dev) != HAL_OK) return -1;
     }
 
 	// 2. START ADC CONVERSION
@@ -839,7 +827,6 @@ int accumulator_run_c_open_wire_diagnostic(
 }
 
 #define ACCUMULATOR_TEMP_MUX_SETTLE_US 3000u
-#define ACCUMULATOR_TEMP_AUX_GUARD_US  1000u
 #if AMS_TEMP_PULLUPS_TARGET_VALIDATED
 #define ACCUMULATOR_TEMP_TRANSACTION_ATTEMPTS 2u
 #else
@@ -863,9 +850,8 @@ static int accumulator_temp_select_checked(adbms6830_driver_t *dev,
         }
         if((attempt + 1u) < ACCUMULATOR_TEMP_TRANSACTION_ATTEMPTS)
         {
-            if((adbms6830_wakeup_checked(dev) != HAL_OK) ||
-               (adbms6830_wait_cooperative(dev,
-                                   ACCUMULATOR_TEMP_MUX_SETTLE_US) != HAL_OK))
+            if(adbms6830_wait_cooperative(dev,
+                                   ACCUMULATOR_TEMP_MUX_SETTLE_US) != HAL_OK)
             {
                 return -1;
             }
@@ -883,15 +869,14 @@ static int accumulator_temp_capture_checked(adbms6830_driver_t *dev,
     {
         if(mux_read_gpio_voltage(dev, sensor) == 0)
         {
-            return (adbms6830_wait_cooperative(dev,
-                                       ACCUMULATOR_TEMP_AUX_GUARD_US) == HAL_OK)
-                       ? 0 : -1;
+            /* Conversion is complete before the checked read. There is no
+             * silicon requirement for an extra millisecond after readback. */
+            return 0;
         }
         if((attempt + 1u) < ACCUMULATOR_TEMP_TRANSACTION_ATTEMPTS)
         {
-            if((adbms6830_wakeup_checked(dev) != HAL_OK) ||
-               (adbms6830_wait_cooperative(dev,
-                                   ACCUMULATOR_TEMP_MUX_SETTLE_US) != HAL_OK))
+            if(adbms6830_wait_cooperative(dev,
+                                   ACCUMULATOR_TEMP_MUX_SETTLE_US) != HAL_OK)
             {
                 return -1;
             }
@@ -900,7 +885,7 @@ static int accumulator_temp_capture_checked(adbms6830_driver_t *dev,
     return -1;
 }
 
-int smb_read_temp(adbms6830_driver_t* dev)
+int smb_prepare_temp(adbms6830_driver_t* dev)
 {
     uint8_t selected[ADBMS6830_MUX_COUNT];
 
@@ -909,6 +894,8 @@ int smb_read_temp(adbms6830_driver_t* dev)
         return -1;
     }
 
+    dev->temp_prepare_attempted=true;
+    dev->temp_prepare_ok=false;
     dev->temp_visit_generation++;
     memset(dev->temp_select_last_ms, 0, sizeof(dev->temp_select_last_ms));
     memset(dev->temp_capture_last_ms, 0, sizeof(dev->temp_capture_last_ms));
@@ -964,8 +951,41 @@ int smb_read_temp(adbms6830_driver_t* dev)
         }
     }
 
+    memcpy(dev->temp_prepared_sensors,selected,sizeof(selected));
+    dev->temp_prepared_integrity_epoch=dev->diagnostic_integrity_epoch;
+    dev->temp_prepared_tick=HAL_GetTick();
+    dev->temp_prepared_us=dev->time_us_fn ? dev->time_us_fn(dev->runtime_hook_ctx) : HAL_GetTick()*1000u;
+    dev->temp_prepare_ok=true;
+    return 0;
+}
+
+int smb_read_temp(adbms6830_driver_t *dev)
+{
+    if(!dev) return -1;
+    if(!dev->temp_prepare_attempted) (void)smb_prepare_temp(dev);
+    dev->temp_prepare_attempted=false; /* consume once, including failures */
+    bool prepared_ok=dev->temp_prepare_ok;
+    dev->temp_prepare_ok=false;
+    if(!prepared_ok || (uint32_t)(HAL_GetTick()-dev->temp_prepared_tick)>200u ||
+       dev->diagnostic_integrity_epoch!=dev->temp_prepared_integrity_epoch ||
+       !dev->ics || dev->num_ics<=0 || dev->num_ics>(int)ADBMS6830_MAX_TRACKED_ICS ||
+       dev->num_ics>dev->ics_capacity) return -1;
+    uint8_t selected[ADBMS6830_MUX_COUNT];
+    memcpy(selected,dev->temp_prepared_sensors,sizeof(selected));
+    uint16_t expected=(uint16_t)((1u<<(uint8_t)dev->num_ics)-1u);
+    for(uint8_t mux=0;mux<ADBMS6830_MUX_COUNT;mux++) {
+        if((dev->mux_selection_valid_mask[mux] & expected)!=expected) return -1;
+        for(uint8_t ic=0;ic<(uint8_t)dev->num_ics;ic++)
+            if(dev->mux_selected_channel[ic][mux] != selected[mux]%(NTEMPS / ADBMS6830_MUX_COUNT)) return -1;
+    }
+    uint32_t now_us=dev->time_us_fn ? dev->time_us_fn(dev->runtime_hook_ctx) : HAL_GetTick()*1000u;
+    uint32_t elapsed=now_us-dev->temp_prepared_us;
+    /* A coarse-only clock may overstate elapsed by almost one millisecond. */
+    uint32_t settle_required=ACCUMULATOR_TEMP_MUX_SETTLE_US+(dev->time_us_fn ? 0u : 1000u);
+    uint32_t remaining=elapsed<settle_required ? settle_required-elapsed : 0u;
+    dev->temp_settle_saved_us=elapsed<ACCUMULATOR_TEMP_MUX_SETTLE_US ? elapsed : ACCUMULATOR_TEMP_MUX_SETTLE_US;
     uint32_t settle_start = osKernelGetTickCount();
-    HAL_StatusTypeDef settle_status = adbms6830_wait_cooperative(dev, ACCUMULATOR_TEMP_MUX_SETTLE_US);
+    HAL_StatusTypeDef settle_status = remaining ? adbms6830_wait_cooperative(dev, remaining) : HAL_OK;
     dev->temp_settle_last_ms = osKernelGetTickCount() - settle_start;
     if(settle_status != HAL_OK)
     {
@@ -986,6 +1006,19 @@ int smb_read_temp(adbms6830_driver_t* dev)
     return 0;
 }
 
+int accumulator_prepare_temp(accumulator_t *dev)
+{
+    if(!dev) return -1;
+    adbms_spi_lock();
+    dev->smb.temp_prepare_attempted=false;
+    dev->smb.temp_prepare_ok=false;
+    int status=-1;
+    if(dev->smb_transport_ready && accumulator_final_ring_topology_valid(dev))
+        status=smb_prepare_temp(&dev->smb);
+    adbms_spi_unlock();
+    return status;
+}
+
 int accumulator_read_temp(accumulator_t *dev)
 {
     if(dev == NULL)
@@ -994,6 +1027,7 @@ int accumulator_read_temp(accumulator_t *dev)
     }
     uint32_t step_start = osKernelGetTickCount();
     adbms_spi_lock();
+    if(!dev->smb.temp_prepare_attempted)
     {
         /* An early topology/transport rejection is not a successful repeat
          * of the preceding step. Clear only current-attempt products. */

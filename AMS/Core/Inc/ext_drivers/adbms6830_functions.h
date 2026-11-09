@@ -55,6 +55,7 @@ void adbms6830_adcv(adbms6830_driver_t *dev, RD rd, CONT cont, DCP dcp, RSTF rst
 
 void adbms6830_wakeup(adbms6830_driver_t* dev);
 HAL_StatusTypeDef adbms6830_wakeup_checked(adbms6830_driver_t* dev);
+HAL_StatusTypeDef adbms6830_prepare_reference(adbms6830_driver_t *dev);
 void adbms6830_wakeup_cold(adbms6830_driver_t* dev);
 
 HAL_StatusTypeDef adbms6830_us_delay(adbms6830_driver_t* dev, uint16_t microseconds);
@@ -85,6 +86,7 @@ void adbms6830_transaction_session_end(adbms6830_driver_t *dev, bool owned);
 HAL_StatusTypeDef adbms6830_unmute_checked(adbms6830_driver_t *dev);
 HAL_StatusTypeDef adbms6830_run_startup_post(adbms6830_driver_t *dev);
 HAL_StatusTypeDef adbms6830_run_aux2_redundancy(adbms6830_driver_t *dev, uint8_t sensor_num);
+HAL_StatusTypeDef adbms6830_thermistor_open_wire_step(adbms6830_driver_t *dev, uint8_t sensor, bool *complete);
 HAL_StatusTypeDef adbms6830_run_thermistor_open_wire(adbms6830_driver_t *dev, uint8_t sensor_num);
 HAL_StatusTypeDef adbms6830_run_s_periodic_diagnostic(adbms6830_driver_t *dev);
 

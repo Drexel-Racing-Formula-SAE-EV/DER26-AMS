@@ -55,6 +55,8 @@ const ams_build_manifest_t ams_build_manifest = {
     .threshold_revision = "host-test"
 };
 static uint32_t fake_tick = 0;
+static bool fake_phased_diag_timing=false, fake_completing_diag_step=false;
+static uint32_t fake_compact_diag_calls;
 static GPIO_PinState bms_pin_state = GPIO_PIN_RESET;
 static uint32_t tx_count = 0;
 static struct { uint32_t ide, stdid, extid, dlc; uint8_t data[8]; } tx_log[AMS_HOST_TX_LOG_CAPACITY];
@@ -534,13 +536,26 @@ HAL_StatusTypeDef adbms6830_verify_balance_readback(adbms6830_driver_t *dev){
 void adbms6830_adcv(adbms6830_driver_t *dev, RD rd, CONT cont, DCP dcp, RSTF rstf, OW_C_S owcs){(void)dev;(void)rd;(void)cont;(void)dcp;(void)rstf;(void)owcs;}
 void adbms6830_wakeup(adbms6830_driver_t* dev){(void)dev;}
 HAL_StatusTypeDef adbms6830_wakeup_checked(adbms6830_driver_t* dev){return (dev != NULL) ? HAL_OK : HAL_ERROR;}
+/* System fixtures stub silicon; real reference logic is covered by the production driver SIL. */
+HAL_StatusTypeDef adbms6830_prepare_reference(adbms6830_driver_t* dev){return (dev != NULL) ? HAL_OK : HAL_ERROR;}
 HAL_StatusTypeDef adbms6830_mute_checked(adbms6830_driver_t *dev){ if(dev){ dev->health.mute_count++; return HAL_OK; } return HAL_ERROR; }
 HAL_StatusTypeDef adbms6830_transaction_session_begin(adbms6830_driver_t *dev, bool *owned){ if(!dev || !owned) return HAL_ERROR; *owned = !dev->session.active; dev->session.active = true; return HAL_OK; }
 void adbms6830_transaction_session_end(adbms6830_driver_t *dev, bool owned){ if(dev && owned) dev->session.active = false; }
 HAL_StatusTypeDef adbms6830_unmute_checked(adbms6830_driver_t *dev){ if(dev){ dev->health.unmute_count++; return HAL_OK; } return HAL_ERROR; }
 HAL_StatusTypeDef adbms6830_run_startup_post(adbms6830_driver_t *dev){ if(dev){ dev->post.passed = true; dev->post.stage = ADBMS6830_POST_PASS; return HAL_OK; } return HAL_ERROR; }
-HAL_StatusTypeDef adbms6830_run_aux2_redundancy(adbms6830_driver_t *dev, uint8_t sensor_num){ if(!dev || sensor_num>=ADBMS6830_TEMP_SENSOR_COUNT) return HAL_ERROR; dev->aux2_health.sensor=sensor_num; dev->aux2_health.valid_mask=(dev->num_ics>=16)?UINT16_MAX:(uint16_t)((1u<<(uint8_t)dev->num_ics)-1u); dev->aux2_health.disagree_mask=0u; dev->aux2_health.count++; return HAL_OK; }
-HAL_StatusTypeDef adbms6830_run_thermistor_open_wire(adbms6830_driver_t *dev, uint8_t sensor_num){ if(!dev || sensor_num>=ADBMS6830_TEMP_SENSOR_COUNT) return HAL_ERROR; dev->therm_ow_health.sensor=sensor_num; dev->therm_ow_health.valid_mask=(dev->num_ics>=16)?UINT16_MAX:(uint16_t)((1u<<(uint8_t)dev->num_ics)-1u); dev->therm_ow_health.suspect_mask=0u; dev->therm_ow_health.count++; return HAL_OK; }
+HAL_StatusTypeDef adbms6830_run_aux2_redundancy(adbms6830_driver_t *dev, uint8_t sensor_num){ if(fake_phased_diag_timing) fake_tick+=20; if(!dev || sensor_num>=ADBMS6830_TEMP_SENSOR_COUNT) return HAL_ERROR; dev->aux2_health.sensor=sensor_num; dev->aux2_health.valid_mask=(dev->num_ics>=16)?UINT16_MAX:(uint16_t)((1u<<(uint8_t)dev->num_ics)-1u); dev->aux2_health.disagree_mask=0u; dev->aux2_health.count++; return HAL_OK; }
+HAL_StatusTypeDef adbms6830_thermistor_open_wire_step(adbms6830_driver_t *dev, uint8_t sensor, bool *complete) {
+ if(!complete || !dev) return HAL_ERROR;
+ if(fake_phased_diag_timing) {
+   fake_tick+=25;
+   if(!dev->therm_phase.pending) { dev->therm_phase.pending=true; dev->therm_phase.started_ms=fake_tick; dev->therm_ow_health.valid_mask=0; *complete=false; return HAL_OK; }
+   dev->therm_phase.pending=false;
+ }
+ *complete=true; fake_completing_diag_step=true;
+ HAL_StatusTypeDef result=adbms6830_run_thermistor_open_wire(dev,sensor);
+ fake_completing_diag_step=false; return result;
+}
+HAL_StatusTypeDef adbms6830_run_thermistor_open_wire(adbms6830_driver_t *dev, uint8_t sensor_num){ if(fake_phased_diag_timing && !fake_completing_diag_step) { fake_tick+=32; fake_compact_diag_calls++; } if(!dev || sensor_num>=ADBMS6830_TEMP_SENSOR_COUNT) return HAL_ERROR; dev->therm_ow_health.sensor=sensor_num; dev->therm_ow_health.valid_mask=(dev->num_ics>=16)?UINT16_MAX:(uint16_t)((1u<<(uint8_t)dev->num_ics)-1u); dev->therm_ow_health.suspect_mask=0u; dev->therm_ow_health.count++; return HAL_OK; }
 HAL_StatusTypeDef adbms6830_run_s_periodic_diagnostic(adbms6830_driver_t *dev){ return dev ? HAL_OK : HAL_ERROR; }
 HAL_StatusTypeDef adbms6830_wait_cooperative(adbms6830_driver_t *dev, uint32_t microseconds){ return (dev != NULL && microseconds <= UINT16_MAX) ? adbms6830_us_delay(dev, (uint16_t)microseconds) : HAL_ERROR; }
 void adbms6830_bind_runtime_hooks(adbms6830_driver_t *dev, adbms6830_cooperative_wait_fn_t wait_fn, adbms6830_time_us_fn_t time_fn, void *ctx){ if(dev){ dev->cooperative_wait_fn=wait_fn; dev->time_us_fn=time_fn; dev->runtime_hook_ctx=ctx; } }
@@ -2114,6 +2129,44 @@ static void test_diagnostics_elapsed_time_not_scan_count(void)
     fake_tick = 599u;
     adbms_task_run_periodic_diagnostics(&app, false);
     CHECK(app.adbms_status_diag_count == 1u);
+}
+
+static void test_phased_diagnostic_admission(void)
+{
+    init_fake_app(); fake_phased_diag_timing=true; fake_compact_diag_calls=0;
+    adbms_task_run_periodic_diagnostics(&app,true);
+    unsigned pending_seen=0, resumed_seen=0;
+    for(unsigned scan=1;scan<=250;scan++) {
+        fake_tick=scan*100;
+        app.adbms_diag_scan_start=fake_tick;
+        adbms_task_run_periodic_diagnostics(&app,false);
+        fake_tick=app.adbms_diag_scan_start+(scan%3==0 ? 95 : (scan%5==0 ? 25 : 55));
+        bool before=app.acc.smb.therm_phase.pending;
+        uint32_t old=app.adbms_therm_ow_diag_count+app.adbms_aux2_diag_count+app.adbms_config_diag_count+app.adbms_open_wire_diag_count;
+        uint32_t start=fake_tick;
+        adbms_task_run_periodic_diagnostics(&app,true);
+        uint32_t after=app.adbms_therm_ow_diag_count+app.adbms_aux2_diag_count+app.adbms_config_diag_count+app.adbms_open_wire_diag_count;
+        CHECK(after-old<=1);
+        if(scan%3==0) CHECK(fake_tick==start); /* overdue advisory work cannot force an overrun */
+        if(!before && app.acc.smb.therm_phase.pending) {
+            pending_seen++; CHECK(app.adbms_therm_completed_mask==0 || app.adbms_therm_ow_diag_count>0);
+        }
+        if(before && !app.acc.smb.therm_phase.pending) resumed_seen++;
+        CHECK(fake_tick-app.adbms_diag_scan_start<=100);
+    }
+    CHECK(pending_seen>0 && resumed_seen>0 && app.adbms_therm_ow_diag_count>0);
+    CHECK(app.adbms_diag_deferred[0]+app.adbms_diag_deferred[1]>0);
+    CHECK(app.adbms_aux2_diag_count>0 && app.adbms_config_diag_count>0);
+    CHECK(fake_compact_diag_calls>0);
+    app.acc.smb.therm_phase.pending=true;
+    app.acc.smb.therm_phase.started_ms=fake_tick-1001;
+    app.adbms_diag_cost_ms[1]=500;
+    app.adbms_diag_scan_start=fake_tick-95;
+    uint32_t old_fail=app.adbms_therm_ow_diag_fail_count;
+    adbms_task_run_periodic_diagnostics(&app,true);
+    CHECK(!app.acc.smb.therm_phase.pending && app.adbms_therm_ow_diag_fail_count==old_fail+1);
+    fake_phased_diag_timing=false;
+    puts("PASS production diagnostic scheduler: mixed budgets, status/config collisions, pending phases, strict admission and coverage");
 }
 
 static void test_adbms_voltage_scan_timing_contract(void)
@@ -12606,6 +12659,9 @@ static void test_vehicle_variant(void)
 #endif
 
 int main(void){
+#if defined(AMS_HOST_DIAG_SCHEDULER_TEST)
+    test_phased_diagnostic_admission(); return 0;
+#endif
 #if defined(AMS_HOST_VEHICLE_VARIANT_TEST)
     test_vehicle_variant();return 0;
 #endif

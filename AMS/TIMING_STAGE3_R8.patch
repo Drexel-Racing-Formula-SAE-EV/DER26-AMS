@@ -1,0 +1,1768 @@
+--- a/.cproject
++++ b/.cproject
+@@ -871,6 +871,303 @@
+ 							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.verilog.564672384.spi64dma" name="MCU Output Converter Verilog" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.verilog" />
+ 							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.srec.292420896.spi64dma" name="MCU Output Converter Motorola S-rec" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.srec" />
+ 							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.symbolsrec.2085257014.spi64dma" name="MCU Output Converter Motorola S-rec with symbols" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.symbolsrec" />
++						</toolChain>
++					</folderInfo>
++					<sourceEntries>
++						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Core" />
++						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Middlewares" />
++						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Drivers" />
++					</sourceEntries>
++				</configuration>
++			</storageModule>
++			<storageModule moduleId="org.eclipse.cdt.core.externalSettings" />
++		</cconfiguration>
++		<cconfiguration id="com.st.stm32cube.ide.mcu.gnu.managedbuild.config.exe.debug.616168893.diag">
++			<storageModule buildSystemId="org.eclipse.cdt.managedbuilder.core.configurationDataProvider" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.config.exe.debug.616168893.diag" moduleId="org.eclipse.cdt.core.settings" name="VEHICLE COMMS 1M SPI64 DMA DIAG Debug">
++				<externalSettings />
++				<extensions>
++					<extension id="org.eclipse.cdt.core.ELF.diag" point="org.eclipse.cdt.core.BinaryParser" />
++					<extension id="org.eclipse.cdt.core.GASErrorParser.diag" point="org.eclipse.cdt.core.ErrorParser" />
++					<extension id="org.eclipse.cdt.core.GmakeErrorParser.diag" point="org.eclipse.cdt.core.ErrorParser" />
++					<extension id="org.eclipse.cdt.core.GLDErrorParser.diag" point="org.eclipse.cdt.core.ErrorParser" />
++					<extension id="org.eclipse.cdt.core.CWDLocator.diag" point="org.eclipse.cdt.core.ErrorParser" />
++					<extension id="org.eclipse.cdt.core.GCCErrorParser.diag" point="org.eclipse.cdt.core.ErrorParser" />
++				</extensions>
++			</storageModule>
++			<storageModule moduleId="cdtBuildSystem" version="4.0.0">
++				<configuration artifactExtension="elf" artifactName="${ProjName}" buildArtefactType="org.eclipse.cdt.build.core.buildArtefactType.exe" buildProperties="org.eclipse.cdt.build.core.buildArtefactType=org.eclipse.cdt.build.core.buildArtefactType.exe,org.eclipse.cdt.build.core.buildType=org.eclipse.cdt.build.core.buildType.debug" cleanCommand="rm -rf" description="Five SMBs; 1 Mbit/s ECU bus; no charging; BMS_OK and balancing inhibited" errorParsers="org.eclipse.cdt.core.GASErrorParser;org.eclipse.cdt.core.GmakeErrorParser;org.eclipse.cdt.core.GLDErrorParser;org.eclipse.cdt.core.CWDLocator;org.eclipse.cdt.core.GCCErrorParser" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.config.exe.debug.616168893.diag" name="VEHICLE COMMS 1M SPI64 DMA DIAG Debug" parent="com.st.stm32cube.ide.mcu.gnu.managedbuild.config.exe.debug">
++					<folderInfo id="com.st.stm32cube.ide.mcu.gnu.managedbuild.config.exe.debug.616168893..diag" name="/" resourcePath="">
++						<toolChain id="com.st.stm32cube.ide.mcu.gnu.managedbuild.toolchain.exe.debug.334188844.diag" name="MCU ARM GCC" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.toolchain.exe.debug">
++							<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.target_mcu.150424282.diag" name="MCU" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.target_mcu" useByScannerDiscovery="true" value="STM32F767ZITx" valueType="string" />
++							<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.target_cpuid.2083765812.diag" name="CPU" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.target_cpuid" useByScannerDiscovery="false" value="0" valueType="string" />
++							<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.target_coreid.1519747212.diag" name="Core" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.target_coreid" useByScannerDiscovery="false" value="0" valueType="string" />
++							<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.fpu.1110505566.diag" name="Floating-point unit" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.fpu" useByScannerDiscovery="true" value="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.fpu.value.fpv5-d16" valueType="enumerated" />
++							<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.floatabi.1802554443.diag" name="Floating-point ABI" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.floatabi" useByScannerDiscovery="true" value="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.floatabi.value.hard" valueType="enumerated" />
++							<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.target_board.577431893.diag" name="Board" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.target_board" useByScannerDiscovery="false" value="genericBoard" valueType="string" />
++							<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.defaults.47761206.diag" name="Defaults" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.defaults" useByScannerDiscovery="false" value="com.st.stm32cube.ide.common.services.build.inputs.revA.1.0.6 || Debug || true || Executable || com.st.stm32cube.ide.mcu.gnu.managedbuild.option.toolchain.value.workspace || STM32F767ZITx || 0 || 0 || arm-none-eabi- || ${gnu_tools_for_stm32_compiler_path} || ../Core/Inc | ../Drivers/STM32F7xx_HAL_Driver/Inc | ../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy | ../Drivers/CMSIS/Device/ST/STM32F7xx/Include | ../Drivers/CMSIS/Include | ../Middlewares/Third_Party/FreeRTOS/Source/include | ../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 | ../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1 || ../Core/Inc | ../Drivers/STM32F7xx_HAL_Driver/Inc | ../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy | ../Middlewares/Third_Party/FreeRTOS/Source/include | ../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 | ../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1 | ../Drivers/CMSIS/Device/ST/STM32F7xx/Include | ../Drivers/CMSIS/Include ||  || USE_HAL_DRIVER | STM32F767xx ||  || Drivers | Core/Startup | Middlewares | Core ||  ||  || ${workspace_loc:/${ProjName}/STM32F767ZITX_FLASH.ld} || true || NonSecure ||  || secure_nsclib.o ||  || None ||  ||  || " valueType="string" />
++							<option id="com.st.stm32cube.ide.mcu.debug.option.cpuclock.221816990.diag" name="Cpu clock frequence" superClass="com.st.stm32cube.ide.mcu.debug.option.cpuclock" useByScannerDiscovery="false" value="216" valueType="string" />
++							<targetPlatform archList="all" binaryParser="org.eclipse.cdt.core.ELF" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.targetplatform.542230455.diag" isAbstract="false" osList="all" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.targetplatform" />
++							<builder buildPath="${workspace_loc:/${ProjName}/Vehicle_Comms_Debug}_diag" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.builder.1391215119.diag" keepEnvironmentInBuildfile="false" managedBuildOn="true" name="Gnu Make Builder" parallelBuildOn="true" parallelizationNumber="optimal" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.builder" />
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.350465684.diag" name="MCU/MPU GCC Assembler" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler">
++								<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.option.debuglevel.1251839985.diag" name="Debug level" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.option.debuglevel" value="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.option.debuglevel.value.g3" valueType="enumerated" />
++								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.option.definedsymbols.578820165.diag" name="Define symbols (-D)" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.option.definedsymbols" valueType="definedSymbols">
++									<listOptionValue builtIn="false" value="DEBUG" />
++									<listOptionValue builtIn="false" value="AMS_ENABLE_TUNING_CAN=0" />
++								<listOptionValue builtIn="false" value="AMS_ADBMS_SPI_PRESCALER_DIV=64" /><listOptionValue builtIn="false" value="AMS_ADBMS_SPI_DMA=1" /><listOptionValue builtIn="false" value="AMS_ENABLE_ADBMS_AUX2_REDUNDANCY=1" /><listOptionValue builtIn="false" value="AMS_ENABLE_ADBMS_THERM_OPEN_WIRE_DIAG=1" /><listOptionValue builtIn="false" value="AMS_BENCHMARK_ICACHE=0" /><listOptionValue builtIn="false" value="AMS_BENCHMARK_DCACHE=0" /></option>
++								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.option.includepaths.1211713501.diag" name="Include paths (-I)" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.option.includepaths" valueType="includePath">
++									<listOptionValue builtIn="false" value="../Core/Inc" />
++									<listOptionValue builtIn="false" value="../Drivers/STM32F7xx_HAL_Driver/Inc" />
++									<listOptionValue builtIn="false" value="../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy" />
++									<listOptionValue builtIn="false" value="../Middlewares/Third_Party/FreeRTOS/Source/include" />
++									<listOptionValue builtIn="false" value="../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2" />
++									<listOptionValue builtIn="false" value="../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1" />
++									<listOptionValue builtIn="false" value="../Drivers/CMSIS/Device/ST/STM32F7xx/Include" />
++									<listOptionValue builtIn="false" value="../Drivers/CMSIS/Include" />
++								</option>
++								<inputType id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.input.101323373.diag" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.input" />
++							</tool>
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.285063348.diag" name="MCU/MPU GCC Compiler" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler">
++								<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.debuglevel.1802091526.diag" name="Debug level" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.debuglevel" useByScannerDiscovery="false" value="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.debuglevel.value.g3" valueType="enumerated" />
++								<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.optimization.level.373591316.diag" name="Optimization level" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.optimization.level" useByScannerDiscovery="false" />
++								<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.misc.2026072001.diag" name="Other flags" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.misc" useByScannerDiscovery="false" value="-Wall -Wextra" valueType="string" />
++								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.definedsymbols.1585973699.diag" name="Define symbols (-D)" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.definedsymbols" useByScannerDiscovery="false" valueType="definedSymbols">
++									<listOptionValue builtIn="false" value="DEBUG" />
++									<listOptionValue builtIn="false" value="USE_HAL_DRIVER" />
++									<listOptionValue builtIn="false" value="STM32F767xx" />
++									<listOptionValue builtIn="false" value="AMS_BUILD_PROFILE=4" />
++									<listOptionValue builtIn="false" value="DER26_CAN_BITRATE_KBPS=1000" />
++									<listOptionValue builtIn="false" value="AMS_ENABLE_TUNING_CAN=0" />
++								<listOptionValue builtIn="false" value="AMS_ADBMS_SPI_PRESCALER_DIV=64" /><listOptionValue builtIn="false" value="AMS_ADBMS_SPI_DMA=1" /><listOptionValue builtIn="false" value="AMS_ENABLE_ADBMS_AUX2_REDUNDANCY=1" /><listOptionValue builtIn="false" value="AMS_ENABLE_ADBMS_THERM_OPEN_WIRE_DIAG=1" /><listOptionValue builtIn="false" value="AMS_BENCHMARK_ICACHE=0" /><listOptionValue builtIn="false" value="AMS_BENCHMARK_DCACHE=0" /></option>
++								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.includepaths.1163737927.diag" name="Include paths (-I)" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.includepaths" useByScannerDiscovery="false" valueType="includePath">
++									<listOptionValue builtIn="false" value="../Core/Inc" />
++									<listOptionValue builtIn="false" value="../Drivers/STM32F7xx_HAL_Driver/Inc" />
++									<listOptionValue builtIn="false" value="../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy" />
++									<listOptionValue builtIn="false" value="../Drivers/CMSIS/Device/ST/STM32F7xx/Include" />
++									<listOptionValue builtIn="false" value="../Drivers/CMSIS/Include" />
++									<listOptionValue builtIn="false" value="../Middlewares/Third_Party/FreeRTOS/Source/include" />
++									<listOptionValue builtIn="false" value="../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2" />
++									<listOptionValue builtIn="false" value="../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1" />
++								</option>
++								<inputType id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.input.c.570807813.diag" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.input.c" />
++							</tool>
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.cpp.compiler.2033883525.diag" name="MCU/MPU G++ Compiler" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.cpp.compiler">
++								<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.cpp.compiler.option.debuglevel.1154233864.diag" name="Debug level" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.cpp.compiler.option.debuglevel" useByScannerDiscovery="false" value="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.cpp.compiler.option.debuglevel.value.g3" valueType="enumerated" />
++								<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.cpp.compiler.option.optimization.level.101443159.diag" name="Optimization level" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.cpp.compiler.option.optimization.level" useByScannerDiscovery="false" />
++							</tool>
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.linker.33578096.diag" name="MCU/MPU GCC Linker" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.linker">
++								<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.linker.option.script.1546866343.diag" name="Linker Script (-T)" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.linker.option.script" value="${workspace_loc:/${ProjName}/STM32F767ZITX_FLASH.ld}" valueType="string" />
++								<inputType id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.linker.input.1692302104.diag" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.linker.input">
++									<additionalInput kind="additionalinputdependency" paths="$(USER_OBJS)" />
++									<additionalInput kind="additionalinput" paths="$(LIBS)" />
++								</inputType>
++							</tool>
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.cpp.linker.575746391.diag" name="MCU/MPU G++ Linker" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.cpp.linker" />
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.archiver.139140520.diag" name="MCU/MPU GCC Archiver" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.archiver" />
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.size.369574729.diag" name="MCU Size" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.size" />
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objdump.listfile.417052232.diag" name="MCU Output Converter list file" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objdump.listfile" />
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.hex.924590491.diag" name="MCU Output Converter Hex" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.hex" />
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.binary.390426747.diag" name="MCU Output Converter Binary" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.binary" />
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.verilog.564672384.diag" name="MCU Output Converter Verilog" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.verilog" />
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.srec.292420896.diag" name="MCU Output Converter Motorola S-rec" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.srec" />
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.symbolsrec.2085257014.diag" name="MCU Output Converter Motorola S-rec with symbols" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.symbolsrec" />
++						</toolChain>
++					</folderInfo>
++					<sourceEntries>
++						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Core" />
++						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Middlewares" />
++						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Drivers" />
++					</sourceEntries>
++				</configuration>
++			</storageModule>
++			<storageModule moduleId="org.eclipse.cdt.core.externalSettings" />
++		</cconfiguration>
++		<cconfiguration id="com.st.stm32cube.ide.mcu.gnu.managedbuild.config.exe.debug.616168893.icache">
++			<storageModule buildSystemId="org.eclipse.cdt.managedbuilder.core.configurationDataProvider" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.config.exe.debug.616168893.icache" moduleId="org.eclipse.cdt.core.settings" name="VEHICLE COMMS 1M SPI64 DMA DIAG ICACHE Debug">
++				<externalSettings />
++				<extensions>
++					<extension id="org.eclipse.cdt.core.ELF.icache" point="org.eclipse.cdt.core.BinaryParser" />
++					<extension id="org.eclipse.cdt.core.GASErrorParser.icache" point="org.eclipse.cdt.core.ErrorParser" />
++					<extension id="org.eclipse.cdt.core.GmakeErrorParser.icache" point="org.eclipse.cdt.core.ErrorParser" />
++					<extension id="org.eclipse.cdt.core.GLDErrorParser.icache" point="org.eclipse.cdt.core.ErrorParser" />
++					<extension id="org.eclipse.cdt.core.CWDLocator.icache" point="org.eclipse.cdt.core.ErrorParser" />
++					<extension id="org.eclipse.cdt.core.GCCErrorParser.icache" point="org.eclipse.cdt.core.ErrorParser" />
++				</extensions>
++			</storageModule>
++			<storageModule moduleId="cdtBuildSystem" version="4.0.0">
++				<configuration artifactExtension="elf" artifactName="${ProjName}" buildArtefactType="org.eclipse.cdt.build.core.buildArtefactType.exe" buildProperties="org.eclipse.cdt.build.core.buildArtefactType=org.eclipse.cdt.build.core.buildArtefactType.exe,org.eclipse.cdt.build.core.buildType=org.eclipse.cdt.build.core.buildType.debug" cleanCommand="rm -rf" description="Five SMBs; 1 Mbit/s ECU bus; no charging; BMS_OK and balancing inhibited" errorParsers="org.eclipse.cdt.core.GASErrorParser;org.eclipse.cdt.core.GmakeErrorParser;org.eclipse.cdt.core.GLDErrorParser;org.eclipse.cdt.core.CWDLocator;org.eclipse.cdt.core.GCCErrorParser" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.config.exe.debug.616168893.icache" name="VEHICLE COMMS 1M SPI64 DMA DIAG ICACHE Debug" parent="com.st.stm32cube.ide.mcu.gnu.managedbuild.config.exe.debug">
++					<folderInfo id="com.st.stm32cube.ide.mcu.gnu.managedbuild.config.exe.debug.616168893..icache" name="/" resourcePath="">
++						<toolChain id="com.st.stm32cube.ide.mcu.gnu.managedbuild.toolchain.exe.debug.334188844.icache" name="MCU ARM GCC" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.toolchain.exe.debug">
++							<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.target_mcu.150424282.icache" name="MCU" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.target_mcu" useByScannerDiscovery="true" value="STM32F767ZITx" valueType="string" />
++							<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.target_cpuid.2083765812.icache" name="CPU" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.target_cpuid" useByScannerDiscovery="false" value="0" valueType="string" />
++							<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.target_coreid.1519747212.icache" name="Core" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.target_coreid" useByScannerDiscovery="false" value="0" valueType="string" />
++							<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.fpu.1110505566.icache" name="Floating-point unit" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.fpu" useByScannerDiscovery="true" value="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.fpu.value.fpv5-d16" valueType="enumerated" />
++							<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.floatabi.1802554443.icache" name="Floating-point ABI" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.floatabi" useByScannerDiscovery="true" value="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.floatabi.value.hard" valueType="enumerated" />
++							<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.target_board.577431893.icache" name="Board" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.target_board" useByScannerDiscovery="false" value="genericBoard" valueType="string" />
++							<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.defaults.47761206.icache" name="Defaults" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.defaults" useByScannerDiscovery="false" value="com.st.stm32cube.ide.common.services.build.inputs.revA.1.0.6 || Debug || true || Executable || com.st.stm32cube.ide.mcu.gnu.managedbuild.option.toolchain.value.workspace || STM32F767ZITx || 0 || 0 || arm-none-eabi- || ${gnu_tools_for_stm32_compiler_path} || ../Core/Inc | ../Drivers/STM32F7xx_HAL_Driver/Inc | ../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy | ../Drivers/CMSIS/Device/ST/STM32F7xx/Include | ../Drivers/CMSIS/Include | ../Middlewares/Third_Party/FreeRTOS/Source/include | ../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 | ../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1 || ../Core/Inc | ../Drivers/STM32F7xx_HAL_Driver/Inc | ../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy | ../Middlewares/Third_Party/FreeRTOS/Source/include | ../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 | ../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1 | ../Drivers/CMSIS/Device/ST/STM32F7xx/Include | ../Drivers/CMSIS/Include ||  || USE_HAL_DRIVER | STM32F767xx ||  || Drivers | Core/Startup | Middlewares | Core ||  ||  || ${workspace_loc:/${ProjName}/STM32F767ZITX_FLASH.ld} || true || NonSecure ||  || secure_nsclib.o ||  || None ||  ||  || " valueType="string" />
++							<option id="com.st.stm32cube.ide.mcu.debug.option.cpuclock.221816990.icache" name="Cpu clock frequence" superClass="com.st.stm32cube.ide.mcu.debug.option.cpuclock" useByScannerDiscovery="false" value="216" valueType="string" />
++							<targetPlatform archList="all" binaryParser="org.eclipse.cdt.core.ELF" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.targetplatform.542230455.icache" isAbstract="false" osList="all" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.targetplatform" />
++							<builder buildPath="${workspace_loc:/${ProjName}/Vehicle_Comms_Debug}_icache" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.builder.1391215119.icache" keepEnvironmentInBuildfile="false" managedBuildOn="true" name="Gnu Make Builder" parallelBuildOn="true" parallelizationNumber="optimal" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.builder" />
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.350465684.icache" name="MCU/MPU GCC Assembler" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler">
++								<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.option.debuglevel.1251839985.icache" name="Debug level" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.option.debuglevel" value="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.option.debuglevel.value.g3" valueType="enumerated" />
++								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.option.definedsymbols.578820165.icache" name="Define symbols (-D)" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.option.definedsymbols" valueType="definedSymbols">
++									<listOptionValue builtIn="false" value="DEBUG" />
++									<listOptionValue builtIn="false" value="AMS_ENABLE_TUNING_CAN=0" />
++								<listOptionValue builtIn="false" value="AMS_ADBMS_SPI_PRESCALER_DIV=64" /><listOptionValue builtIn="false" value="AMS_ADBMS_SPI_DMA=1" /><listOptionValue builtIn="false" value="AMS_ENABLE_ADBMS_AUX2_REDUNDANCY=1" /><listOptionValue builtIn="false" value="AMS_ENABLE_ADBMS_THERM_OPEN_WIRE_DIAG=1" /><listOptionValue builtIn="false" value="AMS_BENCHMARK_ICACHE=1" /><listOptionValue builtIn="false" value="AMS_BENCHMARK_DCACHE=0" /></option>
++								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.option.includepaths.1211713501.icache" name="Include paths (-I)" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.option.includepaths" valueType="includePath">
++									<listOptionValue builtIn="false" value="../Core/Inc" />
++									<listOptionValue builtIn="false" value="../Drivers/STM32F7xx_HAL_Driver/Inc" />
++									<listOptionValue builtIn="false" value="../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy" />
++									<listOptionValue builtIn="false" value="../Middlewares/Third_Party/FreeRTOS/Source/include" />
++									<listOptionValue builtIn="false" value="../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2" />
++									<listOptionValue builtIn="false" value="../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1" />
++									<listOptionValue builtIn="false" value="../Drivers/CMSIS/Device/ST/STM32F7xx/Include" />
++									<listOptionValue builtIn="false" value="../Drivers/CMSIS/Include" />
++								</option>
++								<inputType id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.input.101323373.icache" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.input" />
++							</tool>
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.285063348.icache" name="MCU/MPU GCC Compiler" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler">
++								<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.debuglevel.1802091526.icache" name="Debug level" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.debuglevel" useByScannerDiscovery="false" value="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.debuglevel.value.g3" valueType="enumerated" />
++								<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.optimization.level.373591316.icache" name="Optimization level" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.optimization.level" useByScannerDiscovery="false" />
++								<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.misc.2026072001.icache" name="Other flags" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.misc" useByScannerDiscovery="false" value="-Wall -Wextra" valueType="string" />
++								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.definedsymbols.1585973699.icache" name="Define symbols (-D)" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.definedsymbols" useByScannerDiscovery="false" valueType="definedSymbols">
++									<listOptionValue builtIn="false" value="DEBUG" />
++									<listOptionValue builtIn="false" value="USE_HAL_DRIVER" />
++									<listOptionValue builtIn="false" value="STM32F767xx" />
++									<listOptionValue builtIn="false" value="AMS_BUILD_PROFILE=4" />
++									<listOptionValue builtIn="false" value="DER26_CAN_BITRATE_KBPS=1000" />
++									<listOptionValue builtIn="false" value="AMS_ENABLE_TUNING_CAN=0" />
++								<listOptionValue builtIn="false" value="AMS_ADBMS_SPI_PRESCALER_DIV=64" /><listOptionValue builtIn="false" value="AMS_ADBMS_SPI_DMA=1" /><listOptionValue builtIn="false" value="AMS_ENABLE_ADBMS_AUX2_REDUNDANCY=1" /><listOptionValue builtIn="false" value="AMS_ENABLE_ADBMS_THERM_OPEN_WIRE_DIAG=1" /><listOptionValue builtIn="false" value="AMS_BENCHMARK_ICACHE=1" /><listOptionValue builtIn="false" value="AMS_BENCHMARK_DCACHE=0" /></option>
++								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.includepaths.1163737927.icache" name="Include paths (-I)" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.includepaths" useByScannerDiscovery="false" valueType="includePath">
++									<listOptionValue builtIn="false" value="../Core/Inc" />
++									<listOptionValue builtIn="false" value="../Drivers/STM32F7xx_HAL_Driver/Inc" />
++									<listOptionValue builtIn="false" value="../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy" />
++									<listOptionValue builtIn="false" value="../Drivers/CMSIS/Device/ST/STM32F7xx/Include" />
++									<listOptionValue builtIn="false" value="../Drivers/CMSIS/Include" />
++									<listOptionValue builtIn="false" value="../Middlewares/Third_Party/FreeRTOS/Source/include" />
++									<listOptionValue builtIn="false" value="../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2" />
++									<listOptionValue builtIn="false" value="../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1" />
++								</option>
++								<inputType id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.input.c.570807813.icache" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.input.c" />
++							</tool>
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.cpp.compiler.2033883525.icache" name="MCU/MPU G++ Compiler" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.cpp.compiler">
++								<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.cpp.compiler.option.debuglevel.1154233864.icache" name="Debug level" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.cpp.compiler.option.debuglevel" useByScannerDiscovery="false" value="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.cpp.compiler.option.debuglevel.value.g3" valueType="enumerated" />
++								<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.cpp.compiler.option.optimization.level.101443159.icache" name="Optimization level" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.cpp.compiler.option.optimization.level" useByScannerDiscovery="false" />
++							</tool>
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.linker.33578096.icache" name="MCU/MPU GCC Linker" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.linker">
++								<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.linker.option.script.1546866343.icache" name="Linker Script (-T)" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.linker.option.script" value="${workspace_loc:/${ProjName}/STM32F767ZITX_FLASH.ld}" valueType="string" />
++								<inputType id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.linker.input.1692302104.icache" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.linker.input">
++									<additionalInput kind="additionalinputdependency" paths="$(USER_OBJS)" />
++									<additionalInput kind="additionalinput" paths="$(LIBS)" />
++								</inputType>
++							</tool>
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.cpp.linker.575746391.icache" name="MCU/MPU G++ Linker" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.cpp.linker" />
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.archiver.139140520.icache" name="MCU/MPU GCC Archiver" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.archiver" />
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.size.369574729.icache" name="MCU Size" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.size" />
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objdump.listfile.417052232.icache" name="MCU Output Converter list file" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objdump.listfile" />
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.hex.924590491.icache" name="MCU Output Converter Hex" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.hex" />
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.binary.390426747.icache" name="MCU Output Converter Binary" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.binary" />
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.verilog.564672384.icache" name="MCU Output Converter Verilog" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.verilog" />
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.srec.292420896.icache" name="MCU Output Converter Motorola S-rec" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.srec" />
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.symbolsrec.2085257014.icache" name="MCU Output Converter Motorola S-rec with symbols" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.symbolsrec" />
++						</toolChain>
++					</folderInfo>
++					<sourceEntries>
++						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Core" />
++						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Middlewares" />
++						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Drivers" />
++					</sourceEntries>
++				</configuration>
++			</storageModule>
++			<storageModule moduleId="org.eclipse.cdt.core.externalSettings" />
++		</cconfiguration>
++		<cconfiguration id="com.st.stm32cube.ide.mcu.gnu.managedbuild.config.exe.debug.616168893.dcache">
++			<storageModule buildSystemId="org.eclipse.cdt.managedbuilder.core.configurationDataProvider" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.config.exe.debug.616168893.dcache" moduleId="org.eclipse.cdt.core.settings" name="VEHICLE COMMS 1M SPI64 DMA DIAG ICACHE DCACHE Debug">
++				<externalSettings />
++				<extensions>
++					<extension id="org.eclipse.cdt.core.ELF.dcache" point="org.eclipse.cdt.core.BinaryParser" />
++					<extension id="org.eclipse.cdt.core.GASErrorParser.dcache" point="org.eclipse.cdt.core.ErrorParser" />
++					<extension id="org.eclipse.cdt.core.GmakeErrorParser.dcache" point="org.eclipse.cdt.core.ErrorParser" />
++					<extension id="org.eclipse.cdt.core.GLDErrorParser.dcache" point="org.eclipse.cdt.core.ErrorParser" />
++					<extension id="org.eclipse.cdt.core.CWDLocator.dcache" point="org.eclipse.cdt.core.ErrorParser" />
++					<extension id="org.eclipse.cdt.core.GCCErrorParser.dcache" point="org.eclipse.cdt.core.ErrorParser" />
++				</extensions>
++			</storageModule>
++			<storageModule moduleId="cdtBuildSystem" version="4.0.0">
++				<configuration artifactExtension="elf" artifactName="${ProjName}" buildArtefactType="org.eclipse.cdt.build.core.buildArtefactType.exe" buildProperties="org.eclipse.cdt.build.core.buildArtefactType=org.eclipse.cdt.build.core.buildArtefactType.exe,org.eclipse.cdt.build.core.buildType=org.eclipse.cdt.build.core.buildType.debug" cleanCommand="rm -rf" description="Five SMBs; 1 Mbit/s ECU bus; no charging; BMS_OK and balancing inhibited" errorParsers="org.eclipse.cdt.core.GASErrorParser;org.eclipse.cdt.core.GmakeErrorParser;org.eclipse.cdt.core.GLDErrorParser;org.eclipse.cdt.core.CWDLocator;org.eclipse.cdt.core.GCCErrorParser" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.config.exe.debug.616168893.dcache" name="VEHICLE COMMS 1M SPI64 DMA DIAG ICACHE DCACHE Debug" parent="com.st.stm32cube.ide.mcu.gnu.managedbuild.config.exe.debug">
++					<folderInfo id="com.st.stm32cube.ide.mcu.gnu.managedbuild.config.exe.debug.616168893..dcache" name="/" resourcePath="">
++						<toolChain id="com.st.stm32cube.ide.mcu.gnu.managedbuild.toolchain.exe.debug.334188844.dcache" name="MCU ARM GCC" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.toolchain.exe.debug">
++							<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.target_mcu.150424282.dcache" name="MCU" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.target_mcu" useByScannerDiscovery="true" value="STM32F767ZITx" valueType="string" />
++							<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.target_cpuid.2083765812.dcache" name="CPU" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.target_cpuid" useByScannerDiscovery="false" value="0" valueType="string" />
++							<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.target_coreid.1519747212.dcache" name="Core" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.target_coreid" useByScannerDiscovery="false" value="0" valueType="string" />
++							<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.fpu.1110505566.dcache" name="Floating-point unit" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.fpu" useByScannerDiscovery="true" value="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.fpu.value.fpv5-d16" valueType="enumerated" />
++							<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.floatabi.1802554443.dcache" name="Floating-point ABI" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.floatabi" useByScannerDiscovery="true" value="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.floatabi.value.hard" valueType="enumerated" />
++							<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.target_board.577431893.dcache" name="Board" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.target_board" useByScannerDiscovery="false" value="genericBoard" valueType="string" />
++							<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.defaults.47761206.dcache" name="Defaults" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.option.defaults" useByScannerDiscovery="false" value="com.st.stm32cube.ide.common.services.build.inputs.revA.1.0.6 || Debug || true || Executable || com.st.stm32cube.ide.mcu.gnu.managedbuild.option.toolchain.value.workspace || STM32F767ZITx || 0 || 0 || arm-none-eabi- || ${gnu_tools_for_stm32_compiler_path} || ../Core/Inc | ../Drivers/STM32F7xx_HAL_Driver/Inc | ../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy | ../Drivers/CMSIS/Device/ST/STM32F7xx/Include | ../Drivers/CMSIS/Include | ../Middlewares/Third_Party/FreeRTOS/Source/include | ../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 | ../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1 || ../Core/Inc | ../Drivers/STM32F7xx_HAL_Driver/Inc | ../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy | ../Middlewares/Third_Party/FreeRTOS/Source/include | ../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 | ../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1 | ../Drivers/CMSIS/Device/ST/STM32F7xx/Include | ../Drivers/CMSIS/Include ||  || USE_HAL_DRIVER | STM32F767xx ||  || Drivers | Core/Startup | Middlewares | Core ||  ||  || ${workspace_loc:/${ProjName}/STM32F767ZITX_FLASH.ld} || true || NonSecure ||  || secure_nsclib.o ||  || None ||  ||  || " valueType="string" />
++							<option id="com.st.stm32cube.ide.mcu.debug.option.cpuclock.221816990.dcache" name="Cpu clock frequence" superClass="com.st.stm32cube.ide.mcu.debug.option.cpuclock" useByScannerDiscovery="false" value="216" valueType="string" />
++							<targetPlatform archList="all" binaryParser="org.eclipse.cdt.core.ELF" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.targetplatform.542230455.dcache" isAbstract="false" osList="all" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.targetplatform" />
++							<builder buildPath="${workspace_loc:/${ProjName}/Vehicle_Comms_Debug}_dcache" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.builder.1391215119.dcache" keepEnvironmentInBuildfile="false" managedBuildOn="true" name="Gnu Make Builder" parallelBuildOn="true" parallelizationNumber="optimal" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.builder" />
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.350465684.dcache" name="MCU/MPU GCC Assembler" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler">
++								<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.option.debuglevel.1251839985.dcache" name="Debug level" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.option.debuglevel" value="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.option.debuglevel.value.g3" valueType="enumerated" />
++								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.option.definedsymbols.578820165.dcache" name="Define symbols (-D)" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.option.definedsymbols" valueType="definedSymbols">
++									<listOptionValue builtIn="false" value="DEBUG" />
++									<listOptionValue builtIn="false" value="AMS_ENABLE_TUNING_CAN=0" />
++								<listOptionValue builtIn="false" value="AMS_ADBMS_SPI_PRESCALER_DIV=64" /><listOptionValue builtIn="false" value="AMS_ADBMS_SPI_DMA=1" /><listOptionValue builtIn="false" value="AMS_ENABLE_ADBMS_AUX2_REDUNDANCY=1" /><listOptionValue builtIn="false" value="AMS_ENABLE_ADBMS_THERM_OPEN_WIRE_DIAG=1" /><listOptionValue builtIn="false" value="AMS_BENCHMARK_ICACHE=1" /><listOptionValue builtIn="false" value="AMS_BENCHMARK_DCACHE=1" /></option>
++								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.option.includepaths.1211713501.dcache" name="Include paths (-I)" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.option.includepaths" valueType="includePath">
++									<listOptionValue builtIn="false" value="../Core/Inc" />
++									<listOptionValue builtIn="false" value="../Drivers/STM32F7xx_HAL_Driver/Inc" />
++									<listOptionValue builtIn="false" value="../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy" />
++									<listOptionValue builtIn="false" value="../Middlewares/Third_Party/FreeRTOS/Source/include" />
++									<listOptionValue builtIn="false" value="../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2" />
++									<listOptionValue builtIn="false" value="../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1" />
++									<listOptionValue builtIn="false" value="../Drivers/CMSIS/Device/ST/STM32F7xx/Include" />
++									<listOptionValue builtIn="false" value="../Drivers/CMSIS/Include" />
++								</option>
++								<inputType id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.input.101323373.dcache" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.input" />
++							</tool>
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.285063348.dcache" name="MCU/MPU GCC Compiler" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler">
++								<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.debuglevel.1802091526.dcache" name="Debug level" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.debuglevel" useByScannerDiscovery="false" value="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.debuglevel.value.g3" valueType="enumerated" />
++								<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.optimization.level.373591316.dcache" name="Optimization level" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.optimization.level" useByScannerDiscovery="false" />
++								<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.misc.2026072001.dcache" name="Other flags" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.misc" useByScannerDiscovery="false" value="-Wall -Wextra" valueType="string" />
++								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.definedsymbols.1585973699.dcache" name="Define symbols (-D)" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.definedsymbols" useByScannerDiscovery="false" valueType="definedSymbols">
++									<listOptionValue builtIn="false" value="DEBUG" />
++									<listOptionValue builtIn="false" value="USE_HAL_DRIVER" />
++									<listOptionValue builtIn="false" value="STM32F767xx" />
++									<listOptionValue builtIn="false" value="AMS_BUILD_PROFILE=4" />
++									<listOptionValue builtIn="false" value="DER26_CAN_BITRATE_KBPS=1000" />
++									<listOptionValue builtIn="false" value="AMS_ENABLE_TUNING_CAN=0" />
++								<listOptionValue builtIn="false" value="AMS_ADBMS_SPI_PRESCALER_DIV=64" /><listOptionValue builtIn="false" value="AMS_ADBMS_SPI_DMA=1" /><listOptionValue builtIn="false" value="AMS_ENABLE_ADBMS_AUX2_REDUNDANCY=1" /><listOptionValue builtIn="false" value="AMS_ENABLE_ADBMS_THERM_OPEN_WIRE_DIAG=1" /><listOptionValue builtIn="false" value="AMS_BENCHMARK_ICACHE=1" /><listOptionValue builtIn="false" value="AMS_BENCHMARK_DCACHE=1" /></option>
++								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.includepaths.1163737927.dcache" name="Include paths (-I)" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.includepaths" useByScannerDiscovery="false" valueType="includePath">
++									<listOptionValue builtIn="false" value="../Core/Inc" />
++									<listOptionValue builtIn="false" value="../Drivers/STM32F7xx_HAL_Driver/Inc" />
++									<listOptionValue builtIn="false" value="../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy" />
++									<listOptionValue builtIn="false" value="../Drivers/CMSIS/Device/ST/STM32F7xx/Include" />
++									<listOptionValue builtIn="false" value="../Drivers/CMSIS/Include" />
++									<listOptionValue builtIn="false" value="../Middlewares/Third_Party/FreeRTOS/Source/include" />
++									<listOptionValue builtIn="false" value="../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2" />
++									<listOptionValue builtIn="false" value="../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1" />
++								</option>
++								<inputType id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.input.c.570807813.dcache" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.input.c" />
++							</tool>
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.cpp.compiler.2033883525.dcache" name="MCU/MPU G++ Compiler" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.cpp.compiler">
++								<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.cpp.compiler.option.debuglevel.1154233864.dcache" name="Debug level" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.cpp.compiler.option.debuglevel" useByScannerDiscovery="false" value="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.cpp.compiler.option.debuglevel.value.g3" valueType="enumerated" />
++								<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.cpp.compiler.option.optimization.level.101443159.dcache" name="Optimization level" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.cpp.compiler.option.optimization.level" useByScannerDiscovery="false" />
++							</tool>
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.linker.33578096.dcache" name="MCU/MPU GCC Linker" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.linker">
++								<option id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.linker.option.script.1546866343.dcache" name="Linker Script (-T)" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.linker.option.script" value="${workspace_loc:/${ProjName}/STM32F767ZITX_FLASH.ld}" valueType="string" />
++								<inputType id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.linker.input.1692302104.dcache" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.linker.input">
++									<additionalInput kind="additionalinputdependency" paths="$(USER_OBJS)" />
++									<additionalInput kind="additionalinput" paths="$(LIBS)" />
++								</inputType>
++							</tool>
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.cpp.linker.575746391.dcache" name="MCU/MPU G++ Linker" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.cpp.linker" />
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.archiver.139140520.dcache" name="MCU/MPU GCC Archiver" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.archiver" />
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.size.369574729.dcache" name="MCU Size" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.size" />
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objdump.listfile.417052232.dcache" name="MCU Output Converter list file" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objdump.listfile" />
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.hex.924590491.dcache" name="MCU Output Converter Hex" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.hex" />
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.binary.390426747.dcache" name="MCU Output Converter Binary" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.binary" />
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.verilog.564672384.dcache" name="MCU Output Converter Verilog" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.verilog" />
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.srec.292420896.dcache" name="MCU Output Converter Motorola S-rec" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.srec" />
++							<tool id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.symbolsrec.2085257014.dcache" name="MCU Output Converter Motorola S-rec with symbols" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.objcopy.symbolsrec" />
+ 						</toolChain>
+ 					</folderInfo>
+ 					<sourceEntries>
+--- a/Core/Inc/FreeRTOSConfig.h
++++ b/Core/Inc/FreeRTOSConfig.h
+@@ -158,6 +158,11 @@
+ #define xPortSysTickHandler SysTick_Handler
+ 
+ /* USER CODE BEGIN Defines */
++#include "diagnostics/ams_perf.h"
++#define traceTASK_SWITCHED_IN() ams_perf_switch_in((const void*)pxCurrentTCB,pxCurrentTCB->pcTaskName)
++#define traceTASK_SWITCHED_OUT() ams_perf_switch_out()
++#define traceMOVED_TASK_TO_READY_STATE(tcb) ams_perf_ready((const void*)(tcb),(tcb)->pcTaskName)
++
+ /* Section where parameter definitions can be added (for instance, to override default ones in FreeRTOS.h) */
+ #define INCLUDE_xTaskGetCurrentTaskHandle 1
+ /* USER CODE END Defines */
+--- a/Core/Inc/ams_build_profile.h
++++ b/Core/Inc/ams_build_profile.h
+@@ -53,7 +53,7 @@
+     (((AMS_BUILD_PROFILE != AMS_PROFILE_TESTDAY) || AMS_TESTDAY_BALANCE_RELEASE_ALLOWED) && \
+      ((AMS_BUILD_PROFILE != AMS_PROFILE_BENCH_VALIDATION) || AMS_BENCH_VALIDATION_BALANCE_RELEASE_ALLOWED) && \
+      (AMS_BUILD_PROFILE != AMS_PROFILE_CHARGE_REVIEW))
+-#define AMS_BUILD_CONFIG_FINGERPRINT (0xA5055714u ^ ((AMS_ADBMS_SPI_PRESCALER_DIV ^ 256u) << 8u) ^ (AMS_ADBMS_SPI_DMA ? 0x00000080u : 0u))
++#define AMS_BUILD_CONFIG_FINGERPRINT (0xA5055714u ^ ((AMS_ADBMS_SPI_PRESCALER_DIV ^ 256u) << 8u) ^ (AMS_ADBMS_SPI_DMA ? 0x00000080u : 0u) ^ (AMS_BENCHMARK_ICACHE ? 0x20u : 0u) ^ (AMS_BENCHMARK_DCACHE ? 0x40u : 0u) ^ (AMS_ENABLE_ADBMS_THERM_OPEN_WIRE_DIAG ? 0x10u : 0u) ^ (AMS_ENABLE_ADBMS_AUX2_REDUNDANCY ? 0x08u : 0u))
+ 
+ #ifndef AMS_BUILD_PROFILE
+ #define AMS_BUILD_PROFILE AMS_PROFILE_BENCH
+@@ -931,6 +931,17 @@
+ #error "AMS_BENCHMARK_ICACHE must be 0 or 1"
+ #endif
+ 
++/* Explicit bench-only D-cache experiment; DMA buffers already own full cache lines. */
++#ifndef AMS_BENCHMARK_DCACHE
++#define AMS_BENCHMARK_DCACHE 0
++#endif
++#if AMS_BENCHMARK_DCACHE != 0 && AMS_BENCHMARK_DCACHE != 1
++#error "AMS_BENCHMARK_DCACHE must be 0 or 1"
++#endif
++#if AMS_BENCHMARK_DCACHE && AMS_BUILD_PROFILE != AMS_PROFILE_TESTDAY
++#error "D-cache benchmark requires inhibited profile 4"
++#endif
++
+ /* RAW-only telemetry decimation; selected AVG8/IIR estimators remain full-rate. */
+ #ifndef AMS_ADBMS_OPTIONAL_PRODUCT_DIVISOR
+ #define AMS_ADBMS_OPTIONAL_PRODUCT_DIVISOR 5u
+--- a/Core/Inc/ams_diag_budget.h
++++ b/Core/Inc/ams_diag_budget.h
+@@ -2,15 +2,16 @@
+ #define AMS_DIAG_BUDGET_H
+ #include <stdint.h>
+ #include <stdbool.h>
+-/* Cost is a measured high-water mark with a startup estimate. Deadline
+- * pressure permits one exceptional scan; it never creates a catch-up burst. */
++/* Advisory work never overrides the scan budget. Lateness is reported by
++ * forced (legacy field name), but does not authorize an over-budget job.
++ * Successful coverage ages expose overload instead of hiding it with retries. */
+ static inline bool ams_diag_admit(uint32_t now, uint32_t scan_start,
+     uint32_t period, uint32_t cost, uint32_t due, uint32_t max_deferral,
+     bool *forced)
+ {
+     uint32_t elapsed = now - scan_start;
+     *forced = (uint32_t)(now - due) >= max_deferral;
+-    return *forced || ((elapsed < period) && (cost <= period - elapsed));
++    return (elapsed < period) && (cost <= period - elapsed);
+ }
+ /* No position can monopolize the rotation: at most two attempts, on
+  * separate scheduled visits. Completed fault detections advance immediately. */
+--- a/Core/Inc/ams_vehicle_project.h
++++ b/Core/Inc/ams_vehicle_project.h
+@@ -41,8 +41,8 @@
+ #error "Installed vehicle variant has no fan task"
+ #endif
+ #if AMS_BUILD_PROFILE == 3
+-#define AMS_SOURCE_REVISION "DER26-AMS-v0.5.57-VEHICLE-1M-TIMING6-MUX-CLOCK-GATED"
++#define AMS_SOURCE_REVISION "DER26-AMS-v0.5.57-VEHICLE-1M-TIMING7-PHASED-GATED"
+ #else
+-#define AMS_SOURCE_REVISION "DER26-AMS-v0.5.57-VEHICLE-COMMS-1M-TIMING6-MUX-CLOCK-INHIBITED"
++#define AMS_SOURCE_REVISION "DER26-AMS-v0.5.57-VEHICLE-COMMS-1M-TIMING7-PHASED-INHIBITED"
+ #endif
+ #endif
+--- a/Core/Inc/app.h
++++ b/Core/Inc/app.h
+@@ -846,6 +846,7 @@
+     uint32_t adbms_diag_scan_start, adbms_diag_coverage_start;
+     bool adbms_diag_coverage_started;
+     uint32_t adbms_diag_cost_ms[2], adbms_diag_deferred[2], adbms_diag_forced[2];
++    uint32_t adbms_therm_compact_cost_ms;
+     uint8_t adbms_diag_retry[2];
+     uint32_t adbms_aux2_attempt_tick[24], adbms_aux2_success_tick[24];
+     uint32_t adbms_therm_attempt_tick[24], adbms_therm_success_tick[24];
+--- /dev/null
++++ b/Core/Inc/diagnostics/ams_perf.h
+@@ -0,0 +1,22 @@
++#ifndef AMS_PERF_H
++#define AMS_PERF_H
++#include <stdint.h>
++#include <stdbool.h>
++#define AMS_PERF_TASKS 16u
++typedef struct {
++    const void *task;
++    char name[16];
++    uint64_t cycles;
++    uint32_t slices, max_slice_cycles, max_unblock_cycles;
++} ams_perf_row_t;
++void ams_perf_init(void);
++void ams_perf_clear(void);
++void ams_perf_switch_in(const void *task, const char *name);
++void ams_perf_switch_out(void);
++void ams_perf_ready(const void *task, const char *name);
++void ams_perf_irq_enter(void);
++void ams_perf_irq_exit(void);
++bool ams_perf_get(unsigned index, ams_perf_row_t *out);
++uint64_t ams_perf_irq_cycles(void);
++uint32_t ams_perf_overflow(void);
++#endif
+--- a/Core/Inc/ext_drivers/accumulator.h
++++ b/Core/Inc/ext_drivers/accumulator.h
+@@ -309,6 +309,8 @@
+  * API and resynchronize SMB counter tracking after their transaction. */
+ int accumulator_read_apm(accumulator_t *dev, uint32_t now_ms);
+ int accumulator_read_temp(accumulator_t *dev);
++int accumulator_prepare_temp(accumulator_t *dev);
++int smb_prepare_temp(adbms6830_driver_t *dev);
+ int accumulator_set_temp_ch(accumulator_t *dev, uint8_t channel);
+ int accumulator_stat_temp(accumulator_t *dev);
+ int accumulator_set_mux_ch(accumulator_t *dev, uint8_t channel, uint8_t addr7);
+--- a/Core/Inc/ext_drivers/adbms6830_data.h
++++ b/Core/Inc/ext_drivers/adbms6830_data.h
+@@ -726,6 +726,7 @@
+   uint16_t valid_mask;
+   uint16_t suspect_mask;
+   int16_t baseline_raw[ADBMS6830_MAX_TRACKED_ICS];
++  int16_t pullup_baseline_raw[ADBMS6830_MAX_TRACKED_ICS];
+   int16_t pulldown_raw[ADBMS6830_MAX_TRACKED_ICS];
+   int16_t pullup_raw[ADBMS6830_MAX_TRACKED_ICS];
+   int16_t recovery_raw[ADBMS6830_MAX_TRACKED_ICS];
+@@ -736,6 +737,14 @@
+   uint32_t fail_count;
+   uint32_t config_restore_fail_count;
+ } adbms6830_therm_ow_health_t;
++
++typedef struct {
++  bool pending;
++  uint8_t sensor, string, count, physical;
++  uint32_t started_ms, integrity_epoch, fingerprint;
++  adbms6830_therm_ow_health_t first;
++} adbms6830_therm_phase_t;
++
+ 
+ typedef struct
+ {
+@@ -880,6 +889,11 @@
+   adbms6830_post_health_t post;
+   adbms6830_aux2_health_t aux2_health;
+   adbms6830_therm_ow_health_t therm_ow_health;
++  adbms6830_therm_phase_t therm_phase;
++  uint32_t diagnostic_integrity_epoch;
++  bool temp_prepare_attempted, temp_prepare_ok;
++  uint8_t temp_prepared_sensors[3];
++  uint32_t temp_prepared_tick, temp_prepared_us, temp_settle_saved_us, temp_prepared_integrity_epoch;
+ 
+   uint16_t last_acell_updated_mask[ADBMS6830_MAX_TRACKED_ICS];
+   uint16_t last_acell_pec_mask[ADBMS6830_MAX_TRACKED_ICS];
+--- a/Core/Inc/ext_drivers/adbms6830_functions.h
++++ b/Core/Inc/ext_drivers/adbms6830_functions.h
+@@ -86,6 +86,7 @@
+ HAL_StatusTypeDef adbms6830_unmute_checked(adbms6830_driver_t *dev);
+ HAL_StatusTypeDef adbms6830_run_startup_post(adbms6830_driver_t *dev);
+ HAL_StatusTypeDef adbms6830_run_aux2_redundancy(adbms6830_driver_t *dev, uint8_t sensor_num);
++HAL_StatusTypeDef adbms6830_thermistor_open_wire_step(adbms6830_driver_t *dev, uint8_t sensor, bool *complete);
+ HAL_StatusTypeDef adbms6830_run_thermistor_open_wire(adbms6830_driver_t *dev, uint8_t sensor_num);
+ HAL_StatusTypeDef adbms6830_run_s_periodic_diagnostic(adbms6830_driver_t *dev);
+ 
+--- /dev/null
++++ b/Core/Src/diagnostics/ams_perf.c
+@@ -0,0 +1,118 @@
++/* Passive DWT accounting. Task context excludes instrumented IRQ bodies.
++ * PendSV/SVC entry/exit and profiler overhead are not fully separated. */
++#include "diagnostics/ams_perf.h"
++#include "main.h"
++#include <string.h>
++#ifndef AMS_HOST_TEST
++#define AMS_HOST_TEST 0
++#endif
++static ams_perf_row_t rows[AMS_PERF_TASKS];
++static uint32_t ready_at[AMS_PERF_TASKS], slice_cycles[AMS_PERF_TASKS];
++static bool ready_pending[AMS_PERF_TASKS];
++static uint32_t last, depth, overflow;
++static int current=-1;
++static bool initialized;
++static uint64_t irq_total;
++#if AMS_HOST_TEST
++__attribute__((weak)) uint32_t SystemCoreClock=216000000u;
++__attribute__((weak)) uint32_t ams_perf_test_clock(void) { return 0; }
++#define CLOCK() ams_perf_test_clock()
++static uint32_t lock(void) { return 0; }
++static void unlock(uint32_t state) { (void)state; }
++#else
++#define CLOCK() DWT->CYCCNT
++static uint32_t lock(void) { uint32_t s=__get_PRIMASK(); __disable_irq(); return s; }
++static void unlock(uint32_t state) { __set_PRIMASK(state); }
++#endif
++static void checkpoint(uint32_t now)
++{
++    uint32_t elapsed=now-last; last=now;
++    if(depth) irq_total+=elapsed;
++    else if(current>=0) { rows[current].cycles+=elapsed; slice_cycles[current]+=elapsed; }
++}
++static int find(const void *task, const char *name)
++{
++    for(unsigned i=0;i<AMS_PERF_TASKS;i++) if(rows[i].task==task) return (int)i;
++    for(unsigned i=0;i<AMS_PERF_TASKS;i++) if(!rows[i].task) {
++        rows[i].task=task;
++        if(name) { strncpy(rows[i].name,name,15); rows[i].name[15]=0; }
++        return (int)i;
++    }
++    overflow++; return -1;
++}
++void ams_perf_init(void)
++{
++    uint32_t s=lock();
++    if(!initialized) {
++#if !AMS_HOST_TEST
++        CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
++        DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
++#endif
++        last=CLOCK(); initialized=true;
++    }
++    unlock(s);
++}
++void ams_perf_switch_in(const void *task, const char *name)
++{
++    if(!initialized || !task) return;
++    uint32_t s=lock(), now=CLOCK(); checkpoint(now);
++    current=find(task,name);
++    if(current>=0) {
++        if(ready_pending[current]) {
++            uint32_t delay=now-ready_at[current];
++            if(delay>rows[current].max_unblock_cycles) rows[current].max_unblock_cycles=delay;
++            ready_pending[current]=false;
++        }
++        rows[current].slices++; slice_cycles[current]=0;
++    }
++    unlock(s);
++}
++void ams_perf_clear(void)
++{
++    uint32_t s=lock();
++    for(unsigned i=0;i<AMS_PERF_TASKS;i++) {
++        rows[i].cycles=0; rows[i].slices=0;
++        rows[i].max_slice_cycles=rows[i].max_unblock_cycles=0;
++        ready_pending[i]=false; slice_cycles[i]=0;
++    }
++    if(current>=0) rows[current].slices=1;
++    irq_total=0; overflow=0; last=CLOCK();
++    unlock(s); /* Never reset the shared DWT counter. */
++}
++void ams_perf_switch_out(void)
++{
++    if(!initialized) return;
++    uint32_t s=lock(); checkpoint(CLOCK());
++    if(current>=0 && slice_cycles[current]>rows[current].max_slice_cycles)
++        rows[current].max_slice_cycles=slice_cycles[current];
++    current=-1; unlock(s);
++}
++void ams_perf_ready(const void *task, const char *name)
++{
++    if(!initialized || !task) return;
++    uint32_t s=lock(); int i=find(task,name);
++    if(i>=0 && !ready_pending[i]) { ready_at[i]=CLOCK(); ready_pending[i]=true; }
++    unlock(s);
++}
++void ams_perf_irq_enter(void)
++{
++    if(!initialized) return;
++    uint32_t s=lock(); checkpoint(CLOCK()); depth++; unlock(s);
++}
++void ams_perf_irq_exit(void)
++{
++    if(!initialized) return;
++    uint32_t s=lock(); checkpoint(CLOCK()); if(depth) depth--; unlock(s);
++}
++bool ams_perf_get(unsigned index, ams_perf_row_t *out)
++{
++    if(index>=AMS_PERF_TASKS || !out) return false;
++    uint32_t s=lock(); if(initialized) checkpoint(CLOCK());
++    *out=rows[index]; bool valid=out->task!=0; unlock(s); return valid;
++}
++uint64_t ams_perf_irq_cycles(void)
++{
++    uint32_t s=lock(); if(initialized) checkpoint(CLOCK());
++    uint64_t total=irq_total; unlock(s); return total;
++}
++uint32_t ams_perf_overflow(void) { return overflow; }
+--- a/Core/Src/ext_drivers/accumulator.c
++++ b/Core/Src/ext_drivers/accumulator.c
+@@ -72,7 +72,7 @@
+ int smb_read_voltage(adbms6830_driver_t* dev);
+ static int smb_read_voltage_checked(adbms6830_driver_t *dev,
+                                     bool *compatible_adi1_sent);
+-int smb_read_temp(adbms6830_driver_t* dev);
++int smb_prepare_temp(adbms6830_driver_t* dev);
+ 
+ static void accumulator_invalidate_apm_sample(accumulator_t *dev)
+ {
+@@ -885,7 +885,7 @@
+     return -1;
+ }
+ 
+-int smb_read_temp(adbms6830_driver_t* dev)
++int smb_prepare_temp(adbms6830_driver_t* dev)
+ {
+     uint8_t selected[ADBMS6830_MUX_COUNT];
+ 
+@@ -894,6 +894,8 @@
+         return -1;
+     }
+ 
++    dev->temp_prepare_attempted=true;
++    dev->temp_prepare_ok=false;
+     dev->temp_visit_generation++;
+     memset(dev->temp_select_last_ms, 0, sizeof(dev->temp_select_last_ms));
+     memset(dev->temp_capture_last_ms, 0, sizeof(dev->temp_capture_last_ms));
+@@ -949,8 +951,41 @@
+         }
+     }
+ 
++    memcpy(dev->temp_prepared_sensors,selected,sizeof(selected));
++    dev->temp_prepared_integrity_epoch=dev->diagnostic_integrity_epoch;
++    dev->temp_prepared_tick=HAL_GetTick();
++    dev->temp_prepared_us=dev->time_us_fn ? dev->time_us_fn(dev->runtime_hook_ctx) : HAL_GetTick()*1000u;
++    dev->temp_prepare_ok=true;
++    return 0;
++}
++
++int smb_read_temp(adbms6830_driver_t *dev)
++{
++    if(!dev) return -1;
++    if(!dev->temp_prepare_attempted) (void)smb_prepare_temp(dev);
++    dev->temp_prepare_attempted=false; /* consume once, including failures */
++    bool prepared_ok=dev->temp_prepare_ok;
++    dev->temp_prepare_ok=false;
++    if(!prepared_ok || (uint32_t)(HAL_GetTick()-dev->temp_prepared_tick)>200u ||
++       dev->diagnostic_integrity_epoch!=dev->temp_prepared_integrity_epoch ||
++       !dev->ics || dev->num_ics<=0 || dev->num_ics>(int)ADBMS6830_MAX_TRACKED_ICS ||
++       dev->num_ics>dev->ics_capacity) return -1;
++    uint8_t selected[ADBMS6830_MUX_COUNT];
++    memcpy(selected,dev->temp_prepared_sensors,sizeof(selected));
++    uint16_t expected=(uint16_t)((1u<<(uint8_t)dev->num_ics)-1u);
++    for(uint8_t mux=0;mux<ADBMS6830_MUX_COUNT;mux++) {
++        if((dev->mux_selection_valid_mask[mux] & expected)!=expected) return -1;
++        for(uint8_t ic=0;ic<(uint8_t)dev->num_ics;ic++)
++            if(dev->mux_selected_channel[ic][mux] != selected[mux]%(NTEMPS / ADBMS6830_MUX_COUNT)) return -1;
++    }
++    uint32_t now_us=dev->time_us_fn ? dev->time_us_fn(dev->runtime_hook_ctx) : HAL_GetTick()*1000u;
++    uint32_t elapsed=now_us-dev->temp_prepared_us;
++    /* A coarse-only clock may overstate elapsed by almost one millisecond. */
++    uint32_t settle_required=ACCUMULATOR_TEMP_MUX_SETTLE_US+(dev->time_us_fn ? 0u : 1000u);
++    uint32_t remaining=elapsed<settle_required ? settle_required-elapsed : 0u;
++    dev->temp_settle_saved_us=elapsed<ACCUMULATOR_TEMP_MUX_SETTLE_US ? elapsed : ACCUMULATOR_TEMP_MUX_SETTLE_US;
+     uint32_t settle_start = osKernelGetTickCount();
+-    HAL_StatusTypeDef settle_status = adbms6830_wait_cooperative(dev, ACCUMULATOR_TEMP_MUX_SETTLE_US);
++    HAL_StatusTypeDef settle_status = remaining ? adbms6830_wait_cooperative(dev, remaining) : HAL_OK;
+     dev->temp_settle_last_ms = osKernelGetTickCount() - settle_start;
+     if(settle_status != HAL_OK)
+     {
+@@ -971,6 +1006,19 @@
+     return 0;
+ }
+ 
++int accumulator_prepare_temp(accumulator_t *dev)
++{
++    if(!dev) return -1;
++    adbms_spi_lock();
++    dev->smb.temp_prepare_attempted=false;
++    dev->smb.temp_prepare_ok=false;
++    int status=-1;
++    if(dev->smb_transport_ready && accumulator_final_ring_topology_valid(dev))
++        status=smb_prepare_temp(&dev->smb);
++    adbms_spi_unlock();
++    return status;
++}
++
+ int accumulator_read_temp(accumulator_t *dev)
+ {
+     if(dev == NULL)
+@@ -979,6 +1027,7 @@
+     }
+     uint32_t step_start = osKernelGetTickCount();
+     adbms_spi_lock();
++    if(!dev->smb.temp_prepare_attempted)
+     {
+         /* An early topology/transport rejection is not a successful repeat
+          * of the preceding step. Clear only current-attempt products. */
+--- a/Core/Src/ext_drivers/adbms6830.c
++++ b/Core/Src/ext_drivers/adbms6830.c
+@@ -361,6 +361,7 @@
+ 
+ static void adbms6830_link_forget(adbms6830_driver_t *dev)
+ {
++    dev->diagnostic_integrity_epoch++;
+     dev->wake.reference_known = false;
+     dev->wake.activity_valid = false;
+     dev->wake.verified = false;
+@@ -7874,8 +7875,8 @@
+ #endif
+ }
+ 
+-HAL_StatusTypeDef adbms6830_run_thermistor_open_wire(adbms6830_driver_t *dev,
+-                                                      uint8_t sensor_num)
++static HAL_StatusTypeDef adbms6830_thermistor_measure(adbms6830_driver_t *dev,
++                                                      uint8_t sensor_num, uint8_t mode)
+ {
+ #if AMS_ENABLE_ADBMS_THERM_OPEN_WIRE_DIAG
+     HAL_StatusTypeDef status = HAL_OK;
+@@ -7896,6 +7897,7 @@
+     uint8_t adax_ow_down_cmd[2];
+     uint8_t adax_ow_up_cmd[2];
+     bool diagnostic_cfga_written = false;
++    bool pull_up=(mode==1u);
+ 
+     if(!adbms6830_topology_valid(dev) ||
+        (sensor_num >= ADBMS6830_TEMP_SENSOR_COUNT))
+@@ -7906,6 +7908,7 @@
+     dev->therm_ow_health.sensor = sensor_num;
+     dev->therm_ow_health.valid_mask = 0u;
+     dev->therm_ow_health.suspect_mask = 0u;
++    memset(dev->therm_ow_health.pullup_baseline_raw,0,sizeof(dev->therm_ow_health.pullup_baseline_raw));
+     memset(dev->therm_ow_health.baseline_raw, 0,
+            sizeof(dev->therm_ow_health.baseline_raw));
+     memset(dev->therm_ow_health.pulldown_raw, 0,
+@@ -7920,7 +7923,7 @@
+            sizeof(dev->therm_ow_health.pullup_delta_mv));
+     memset(dev->therm_ow_health.recovery_delta_mv, 0,
+            sizeof(dev->therm_ow_health.recovery_delta_mv));
+-    adbms6830_increment_u32_sat(&dev->therm_ow_health.count);
++
+ 
+     expected_mask = adbms6830_expected_ic_mask(dev);
+     mux_idx = sensor_num / SENSORS_PER_MUX;
+@@ -7963,8 +7966,8 @@
+             dev->ics[ic].tx_cfga.owrng = 0u;
+             dev->ics[ic].tx_cfga.owa = 7u;
+         }
++        diagnostic_cfga_written = true; /* Even a failed write may reach some ICs. */
+         status = adbms6830_wrcfga_checked(dev);
+-        diagnostic_cfga_written = (status == HAL_OK);
+     }
+ 
+     /* ADAX: command bit OW=1. PUP=0 uses the pull-down source; PUP=1 uses
+@@ -7980,7 +7983,7 @@
+     }
+     if(status == HAL_OK)
+     {
+-        status = adbms6830_cmd_checked(dev, adax_ow_down_cmd);
++        status = adbms6830_cmd_checked(dev, pull_up ? adax_ow_up_cmd : adax_ow_down_cmd);
+     }
+     if(status == HAL_OK)
+     {
+@@ -7990,28 +7993,16 @@
+     if(status == HAL_OK)
+     {
+         status = adbms6830_read_selected_auxa_raw(dev, gpio_ch,
+-                                                  pulldown,
+-                                                  &pulldown_valid_mask);
+-    }
+-
+-    if(status == HAL_OK)
+-    {
+-        status = adbms6830_wakeup_checked(dev);
+-    }
+-    if(status == HAL_OK)
+-    {
+-        status = adbms6830_cmd_checked(dev, adax_ow_up_cmd);
+-    }
+-    if(status == HAL_OK)
+-    {
+-        status = adbms6830_wait_cooperative(dev, 6000u);
+-    }
+-    if(status == HAL_OK)
+-    {
+-        status = adbms6830_read_selected_auxa_raw(dev, gpio_ch,
+-                                                  pullup,
+-                                                  &pullup_valid_mask);
+-    }
++                                                  pull_up ? pullup : pulldown,
++                                                  pull_up ? &pullup_valid_mask : &pulldown_valid_mask);
++    }
++
++    /* With enough scan budget, retain the original compact pair: one
++     * production/config restore, two stimuli, and fewer bus wakes. */
++    if(mode==2u && status==HAL_OK) status=adbms6830_cmd_checked(dev,adax_ow_up_cmd);
++    if(mode==2u && status==HAL_OK) status=adbms6830_wait_cooperative(dev,6000u);
++    if(mode==2u && status==HAL_OK)
++        status=adbms6830_read_selected_auxa_raw(dev,gpio_ch,pullup,&pullup_valid_mask);
+ 
+     /* Restore the exact production CFGA even when the stimulus failed. A
+      * failed restore is not merely an observational thermistor failure: it is
+@@ -8053,8 +8044,8 @@
+        (recovery_status == HAL_OK))
+     {
+         uint16_t combined_valid = (uint16_t)(baseline_valid_mask &
+-                                             pulldown_valid_mask &
+-                                             pullup_valid_mask &
++                                             (mode==2u ? (pullup_valid_mask & pulldown_valid_mask) :
++                                              (pull_up ? pullup_valid_mask : pulldown_valid_mask)) &
+                                              recovery_valid_mask);
+         dev->therm_ow_health.valid_mask = combined_valid;
+         for(uint8_t ic = 0u; ic < (uint8_t)dev->num_ics; ic++)
+@@ -8065,6 +8056,7 @@
+             int16_t recovery_delta = adbms6830_code_delta_mv(recovery[ic], baseline[ic]);
+ 
+             dev->therm_ow_health.baseline_raw[ic] = baseline[ic];
++            dev->therm_ow_health.pullup_baseline_raw[ic] = baseline[ic];
+             dev->therm_ow_health.pulldown_raw[ic] = pulldown[ic];
+             dev->therm_ow_health.pullup_raw[ic] = pullup[ic];
+             dev->therm_ow_health.recovery_raw[ic] = recovery[ic];
+@@ -8073,8 +8065,8 @@
+             dev->therm_ow_health.recovery_delta_mv[ic] = recovery_delta;
+ 
+             if(((combined_valid & bit) == 0u) ||
+-               ((uint16_t)down_delta < AMS_ADBMS_THERM_OW_MIN_DELTA_MV) ||
+-               ((uint16_t)up_delta < AMS_ADBMS_THERM_OW_MIN_DELTA_MV) ||
++               ((mode!=1u) && (uint16_t)down_delta < AMS_ADBMS_THERM_OW_MIN_DELTA_MV) ||
++               ((mode!=0u) && (uint16_t)up_delta < AMS_ADBMS_THERM_OW_MIN_DELTA_MV) ||
+                ((uint16_t)recovery_delta > AMS_ADBMS_THERM_OW_RECOVERY_TOL_MV))
+             {
+                 dev->therm_ow_health.suspect_mask |= bit;
+@@ -8092,16 +8084,95 @@
+         status = recovery_status;
+     }
+ 
+-    if(status != HAL_OK)
+-    {
+-        adbms6830_increment_u32_sat(&dev->therm_ow_health.fail_count);
+-    }
+     return status;
+ #else
+     (void)dev;
+     (void)sensor_num;
+     return HAL_OK;
+ #endif
++}
++
++/* Each phase restores production CFGA and takes an unstimulated recovery
++ * sample before returning. No stimulus/configuration is held across scans. */
++static HAL_StatusTypeDef adbms6830_thermistor_step_owned(adbms6830_driver_t *dev,
++    uint8_t sensor, bool *complete)
++{
++    if(!complete) return HAL_ERROR;
++    *complete=true;
++#if AMS_ENABLE_ADBMS_THERM_OPEN_WIRE_DIAG
++    if(!adbms6830_topology_valid(dev) || sensor>=ADBMS6830_TEMP_SENSOR_COUNT) {
++        if(dev) { dev->therm_phase.pending=false; dev->therm_ow_health.valid_mask=0; }
++        return HAL_ERROR;
++    }
++    adbms6830_therm_phase_t *phase=&dev->therm_phase;
++    uint32_t now=HAL_GetTick();
++    if(phase->pending && (phase->sensor!=sensor ||
++        (uint32_t)(now-phase->started_ms)>1000u ||
++        phase->integrity_epoch!=dev->diagnostic_integrity_epoch ||
++        phase->fingerprint!=adbms6830_config_expected_fingerprint(dev) ||
++        phase->string!=dev->string || phase->count!=(uint8_t)dev->num_ics ||
++        phase->physical!=dev->physical_chain_count)) {
++        phase->pending=false;
++        dev->therm_ow_health.valid_mask=0;
++        adbms6830_increment_u32_sat(&dev->therm_ow_health.fail_count);
++        return HAL_ERROR;
++    }
++    bool second=phase->pending;
++    if(!second) adbms6830_increment_u32_sat(&dev->therm_ow_health.count);
++    HAL_StatusTypeDef status=adbms6830_thermistor_measure(dev,sensor,second ? 1u : 0u);
++    if(!second && dev->therm_ow_health.valid_mask==adbms6830_expected_ic_mask(dev)) {
++        phase->first=dev->therm_ow_health;
++        phase->sensor=sensor; phase->started_ms=HAL_GetTick();
++        phase->integrity_epoch=dev->diagnostic_integrity_epoch;
++        phase->fingerprint=adbms6830_config_expected_fingerprint(dev);
++        phase->string=dev->string; phase->count=(uint8_t)dev->num_ics;
++        phase->physical=dev->physical_chain_count; phase->pending=true;
++        dev->therm_ow_health.valid_mask=0; /* a half-test is never complete coverage */
++        *complete=false;
++        return HAL_OK;
++    }
++    phase->pending=false;
++    if(second) {
++        dev->therm_ow_health.valid_mask &= phase->first.valid_mask;
++        dev->therm_ow_health.suspect_mask |= phase->first.suspect_mask;
++        for(uint8_t ic=0;ic<(uint8_t)dev->num_ics;ic++) {
++            dev->therm_ow_health.pullup_baseline_raw[ic]=dev->therm_ow_health.baseline_raw[ic];
++            dev->therm_ow_health.baseline_raw[ic]=phase->first.baseline_raw[ic];
++            dev->therm_ow_health.pulldown_raw[ic]=phase->first.pulldown_raw[ic];
++            dev->therm_ow_health.pulldown_delta_mv[ic]=phase->first.pulldown_delta_mv[ic];
++            if(phase->first.recovery_delta_mv[ic]>dev->therm_ow_health.recovery_delta_mv[ic])
++                dev->therm_ow_health.recovery_delta_mv[ic]=phase->first.recovery_delta_mv[ic];
++        }
++        if(dev->therm_ow_health.suspect_mask) status=HAL_ERROR;
++    }
++    if(status!=HAL_OK) adbms6830_increment_u32_sat(&dev->therm_ow_health.fail_count);
++    return status;
++#else
++    (void)dev; (void)sensor; return HAL_OK;
++#endif
++}
++
++HAL_StatusTypeDef adbms6830_thermistor_open_wire_step(adbms6830_driver_t *dev,
++    uint8_t sensor, bool *complete)
++{
++    adbms_spi_lock();
++    HAL_StatusTypeDef status=adbms6830_thermistor_step_owned(dev,sensor,complete);
++    adbms_spi_unlock();
++    return status;
++}
++
++HAL_StatusTypeDef adbms6830_run_thermistor_open_wire(adbms6830_driver_t *dev,
++    uint8_t sensor)
++{
++    if(!dev) return HAL_ERROR;
++    /* Compact pair when explicitly requested or admitted with enough budget. */
++    adbms_spi_lock();
++    dev->therm_phase.pending=false;
++    adbms6830_increment_u32_sat(&dev->therm_ow_health.count);
++    HAL_StatusTypeDef status=adbms6830_thermistor_measure(dev,sensor,2u);
++    if(status!=HAL_OK) adbms6830_increment_u32_sat(&dev->therm_ow_health.fail_count);
++    adbms_spi_unlock();
++    return status;
+ }
+ 
+ 
+--- a/Core/Src/main.c
++++ b/Core/Src/main.c
+@@ -23,6 +23,7 @@
+ /* Private includes ----------------------------------------------------------*/
+ /* USER CODE BEGIN Includes */
+ #include "app.h"
++#include "diagnostics/ams_perf.h"
+ #include "ext_drivers/ams_spi6_transport.h"
+ #include "ext_drivers/ams_safety.h"
+ /* USER CODE END Includes */
+@@ -110,6 +111,9 @@
+ #if AMS_BENCHMARK_ICACHE
+   SCB_EnableICache();
+ #endif
++#if AMS_BENCHMARK_DCACHE
++  SCB_EnableDCache();
++#endif
+   HAL_Init();
+ 
+   /* USER CODE BEGIN Init */
+@@ -122,6 +126,7 @@
+   SystemClock_Config();
+ 
+   /* USER CODE BEGIN SysInit */
++  ams_perf_init();
+ 
+   /* USER CODE END SysInit */
+ 
+--- a/Core/Src/stm32f7xx_it.c
++++ b/Core/Src/stm32f7xx_it.c
+@@ -23,6 +23,7 @@
+ /* Private includes ----------------------------------------------------------*/
+ /* USER CODE BEGIN Includes */
+ #include "app.h"
++#include "diagnostics/ams_perf.h"
+ #include "ext_drivers/ams_spi6_transport.h"
+ #include "ext_drivers/ams_safety.h"
+ /* USER CODE END Includes */
+@@ -170,10 +171,13 @@
+   */
+ void CAN1_TX_IRQHandler(void)
+ {
++  ams_perf_irq_enter();
+   /* TX-mailbox-empty notifications are enabled by canbus.c so the
+    * asynchronous scheduler can retire mailbox tokens and pump the next
+    * protected/detail frame without polling. */
+   canbus_irq_handler(&hcan1);
++
++  ams_perf_irq_exit();
+ }
+ 
+ /**
+@@ -181,6 +185,7 @@
+   */
+ void CAN1_RX0_IRQHandler(void)
+ {
++  ams_perf_irq_enter();
+   /* USER CODE BEGIN CAN1_RX0_IRQn 0 */
+ 
+   /* USER CODE END CAN1_RX0_IRQn 0 */
+@@ -188,6 +193,8 @@
+   /* USER CODE BEGIN CAN1_RX0_IRQn 1 */
+ 
+   /* USER CODE END CAN1_RX0_IRQn 1 */
++
++  ams_perf_irq_exit();
+ }
+ 
+ /**
+@@ -195,10 +202,13 @@
+   */
+ void CAN1_SCE_IRQHandler(void)
+ {
++  ams_perf_irq_enter();
+   /* Capture physical BOFF identity before HAL mutates/accumulates its sticky
+    * ErrorCode. Generic error decoding and flag clearing still belong to HAL. */
+   canbus_sce_irq_note(&hcan1);
+   canbus_irq_handler(&hcan1);
++
++  ams_perf_irq_exit();
+ }
+ 
+ /**
+@@ -206,6 +216,7 @@
+   */
+ void TIM2_IRQHandler(void)
+ {
++  ams_perf_irq_enter();
+   /* USER CODE BEGIN TIM2_IRQn 0 */
+ 
+   /* USER CODE END TIM2_IRQn 0 */
+@@ -213,6 +224,8 @@
+   /* USER CODE BEGIN TIM2_IRQn 1 */
+ 
+   /* USER CODE END TIM2_IRQn 1 */
++
++  ams_perf_irq_exit();
+ }
+ 
+ /**
+@@ -220,6 +233,7 @@
+   */
+ void USART3_IRQHandler(void)
+ {
++  ams_perf_irq_enter();
+   /* USER CODE BEGIN USART3_IRQn 0 */
+ 
+   /* USER CODE END USART3_IRQn 0 */
+@@ -229,6 +243,8 @@
+   /* USER CODE BEGIN USART3_IRQn 1 */
+ 
+   /* USER CODE END USART3_IRQn 1 */
++
++  ams_perf_irq_exit();
+ }
+ 
+ /**
+@@ -236,6 +252,7 @@
+   */
+ void TIM7_IRQHandler(void)
+ {
++  ams_perf_irq_enter();
+   /* USER CODE BEGIN TIM7_IRQn 0 */
+ 
+   /* USER CODE END TIM7_IRQn 0 */
+@@ -243,6 +260,8 @@
+   /* USER CODE BEGIN TIM7_IRQn 1 */
+ 
+   /* USER CODE END TIM7_IRQn 1 */
++
++  ams_perf_irq_exit();
+ }
+ 
+ /* USER CODE BEGIN 1 */
+@@ -315,8 +334,14 @@
+ #endif /* AMS_ENABLE_CLI */
+ 
+ #if AMS_ADBMS_SPI_DMA
+-void DMA2_Stream5_IRQHandler(void) { ams_spi6_dma_irq(); }
+-void DMA2_Stream6_IRQHandler(void) { ams_spi6_dma_irq(); }
++void DMA2_Stream5_IRQHandler(void) {
++  ams_perf_irq_enter(); ams_spi6_dma_irq(); 
++  ams_perf_irq_exit();
++}
++void DMA2_Stream6_IRQHandler(void) {
++  ams_perf_irq_enter(); ams_spi6_dma_irq(); 
++  ams_perf_irq_exit();
++}
+ #endif
+ 
+ /* USER CODE END 1 */
+--- a/Core/Src/tasks/adbms_task.c
++++ b/Core/Src/tasks/adbms_task.c
+@@ -98,10 +98,12 @@
+ #else
+ #if defined(CoreDebug_DEMCR_TRCENA_Msk) && defined(DWT_CTRL_CYCCNTENA_Msk)
+     CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+-    DWT->CYCCNT = 0u;
++    /* The passive task profiler may already own the monotonic cycle clock.
++     * Never reset its epoch when this task starts or restarts. */
++    if((DWT->CTRL & DWT_CTRL_CYCCNTENA_Msk)==0u) DWT->CYCCNT = 0u;
+     DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+     adbms_task_dwt_ready = ((DWT->CTRL & DWT_CTRL_CYCCNTENA_Msk) != 0u);
+-    adbms_task_dwt_last_cycles = 0u;
++    adbms_task_dwt_last_cycles = DWT->CYCCNT;
+     adbms_task_dwt_epoch_cycles = 0u;
+ #else
+     adbms_task_dwt_ready = false;
+@@ -678,6 +680,21 @@
+     }
+ 
+     if(!after_acquisition) goto publish_diagnostic_fault;
++    /* A pending pair must expire even when an inflated cost estimate or
++     * sustained overload prevents admitting its next phase. Cancellation is
++     * metadata-only: every completed phase already restored normal CFGA. */
++    if(smb->therm_phase.pending &&
++       (uint32_t)(HAL_GetTick()-smb->therm_phase.started_ms)>1000u) {
++        smb->therm_phase.pending=false;
++        smb->therm_ow_health.valid_mask=0;
++        if(smb->therm_ow_health.fail_count!=UINT32_MAX) smb->therm_ow_health.fail_count++;
++        if(data->adbms_therm_ow_diag_count!=UINT32_MAX) data->adbms_therm_ow_diag_count++;
++        if(data->adbms_therm_ow_diag_fail_count!=UINT32_MAX) data->adbms_therm_ow_diag_fail_count++;
++        data->adbms_therm_attempt_tick[data->adbms_therm_ow_next_sensor]=osKernelGetTickCount();
++        data->adbms_therm_ow_last_tick=osKernelGetTickCount();
++        ams_diag_advance(false,&data->adbms_diag_retry[1],&data->adbms_therm_ow_next_sensor);
++    }
++
+ 
+     if(!data->adbms_diag_coverage_started) {
+         data->adbms_diag_coverage_start = osKernelGetTickCount();
+@@ -797,7 +814,7 @@
+              * the faster AUX2 schedule could starve it under sustained load. */
+             uint32_t therm_base = data->adbms_therm_ow_last_tick == 0u ?
+                 data->adbms_diag_coverage_start : data->adbms_therm_ow_last_tick;
+-            if((uint32_t)(now - therm_base) >=
++            if(smb->therm_phase.pending || (uint32_t)(now - therm_base) >=
+                 AMS_ADBMS_THERM_OPEN_WIRE_PERIOD_MS + 2000u) goto try_therm_diag;
+ #endif
+             bool forced;
+@@ -864,17 +881,22 @@
+     if(acc->smb_transport_ready && accumulator_final_ring_topology_valid(acc))
+     {
+         uint32_t now = osKernelGetTickCount();
+-        if((data->adbms_therm_ow_last_tick == 0u) ||
++        if(smb->therm_phase.pending || (data->adbms_therm_ow_last_tick == 0u) ||
+            ((uint32_t)(now - data->adbms_therm_ow_last_tick) >=
+             AMS_ADBMS_THERM_OPEN_WIRE_PERIOD_MS))
+         {
+             uint8_t sensor = data->adbms_therm_ow_next_sensor;
+             bool forced;
+             uint32_t cost = data->adbms_diag_cost_ms[1];
+-            if(cost < 60u) cost = 60u;
++            if(cost < 35u) cost = 35u; /* one restored stimulus phase, not the full pair */
+             uint32_t due = data->adbms_therm_ow_last_tick == 0u ?
+                 data->adbms_diag_coverage_start :
+                 data->adbms_therm_ow_last_tick + AMS_ADBMS_THERM_OPEN_WIRE_PERIOD_MS;
++            uint32_t compact_cost=data->adbms_therm_compact_cost_ms;
++            if(compact_cost<60u) compact_cost=60u;
++            bool compact=!smb->therm_phase.pending && ams_diag_admit(now,
++                data->adbms_diag_scan_start,AMS_ADBMS_TASK_PERIOD_MS,compact_cost,due,2000u,&forced);
++            if(compact) cost=compact_cost;
+             if(!ams_diag_admit(now, data->adbms_diag_scan_start,
+                 AMS_ADBMS_TASK_PERIOD_MS, cost, due, 2000u, &forced)) {
+                 if(data->adbms_diag_deferred[1] != UINT32_MAX) data->adbms_diag_deferred[1]++;
+@@ -882,11 +904,23 @@
+             }
+             if(forced && data->adbms_diag_forced[1] != UINT32_MAX) data->adbms_diag_forced[1]++;
+             uint32_t started = osKernelGetTickCount();
+-            HAL_StatusTypeDef therm_ow_status =
+-                adbms6830_run_thermistor_open_wire(smb, sensor);
++            bool therm_complete;
++            uint32_t restore_fail_before=smb->therm_ow_health.config_restore_fail_count;
++            HAL_StatusTypeDef therm_ow_status;
++            if(compact) {
++                therm_complete=true;
++                therm_ow_status=adbms6830_run_thermistor_open_wire(smb,sensor);
++            } else therm_ow_status=adbms6830_thermistor_open_wire_step(smb, sensor, &therm_complete);
++            if(smb->therm_ow_health.config_restore_fail_count!=restore_fail_before) {
++                data->adbms_config_fault=true;
++                data->adbms_last_diag_status=HAL_ERROR;
++            }
+             data->adbms_therm_attempt_tick[sensor] = osKernelGetTickCount();
+             uint32_t duration = osKernelGetTickCount() - started;
+-            if(duration > data->adbms_diag_cost_ms[1]) data->adbms_diag_cost_ms[1] = duration;
++            if(compact) {
++                if(duration>data->adbms_therm_compact_cost_ms) data->adbms_therm_compact_cost_ms=duration;
++            } else if(duration > data->adbms_diag_cost_ms[1]) data->adbms_diag_cost_ms[1] = duration;
++            if(!therm_complete) goto publish_diagnostic_fault;
+             bool completed = smb->therm_ow_health.valid_mask == adbms_task_expected_ic_mask(smb);
+             if(completed) {
+                 data->adbms_therm_success_tick[sensor] = osKernelGetTickCount();
+@@ -1697,6 +1731,11 @@
+ #else
+         bool voltage_scan_attempted = acc->smb_transport_ready &&
+                                       accumulator_final_ring_topology_valid(acc);
++#if AMS_ENABLE_AUTO_TEMP_MUX_SCAN
++        /* Select/ACK muxes before C conversion; its independent conversion
++         * window covers the physical settling interval without extra wakes. */
++        (void)accumulator_prepare_temp(acc);
++#endif
+         int voltage_scan_result = accumulator_read_volt(acc);
+         taskENTER_CRITICAL();
+         data->adbms_voltage_scan_attempted = voltage_scan_attempted;
+--- a/Core/Src/tasks/cli_task.c
++++ b/Core/Src/tasks/cli_task.c
+@@ -1,4 +1,5 @@
+ #include "ext_drivers/ams_spi6_transport.h"
++#include "diagnostics/ams_perf.h"
+ #include "ams_task_schedule.h"
+ #include "ams_diag_budget.h"
+ /**
+@@ -61,6 +62,7 @@
+ int get_can_diag(int argc, char *argv[]);
+ int watchdog_control(int argc, char *argv[]);
+ int get_rtos_diag(int argc, char *argv[]);
++int get_perf_diag(int argc, char *argv[]);
+ int get_uart_diag(int argc, char *argv[]);
+ int recorder_control(int argc, char *argv[]);
+ int get_spi_debug(int argc, char *argv[]);
+@@ -246,6 +248,7 @@
+ 	{"charger", &get_charger, "gets charger CAN command/status/debug state"},
+ 	{"can", &get_can_diag, "CAN diagnostics: can [diag|recover]"},
+ 	{"wdg", &watchdog_control, "watchdog diagnostics/control: wdg [status|enable]"},
++	{"perf", &get_perf_diag, "passive task cycles/IRQ/unblock latency: perf [clear]"},
+ 	{"rtos", &get_rtos_diag, "RTOS stack/heap diagnostics: rtos"},
+ 	{"uart", &get_uart_diag, "CLI UART diagnostics/recovery: uart [status|recover|clear]"},
+ 	{"recorder", &recorder_control, "flight recorder: recorder [status|header|dump [n]|clear|trigger-test]"},
+@@ -5672,6 +5675,13 @@
+                      (unsigned long)session->aux_short_wait_count);
+             ret |= cli_printline(cli, outline);
+             ret |= cli_printline(cli,"SPI mux policy:STCOMM /256; normal rate restored after frame");
++            snprintf(outline,CLI_LINESZ,"diag enabled AUX2:%u THERM:%u compact_max_ms:%lu",
++                (unsigned)AMS_ENABLE_ADBMS_AUX2_REDUNDANCY,(unsigned)AMS_ENABLE_ADBMS_THERM_OPEN_WIRE_DIAG,
++                (unsigned long)data->adbms_therm_compact_cost_ms);
++            ret |= cli_printline(cli,outline);
++            snprintf(outline,CLI_LINESZ,"pipeline settle_saved_us:%lu therm_phase_pending:%u",
++                     (unsigned long)smb->temp_settle_saved_us,(unsigned)smb->therm_phase.pending);
++            ret |= cli_printline(cli,outline);
+             ams_spi6_dma_stats_t dma_stats=ams_spi6_dma_stats();
+             snprintf(outline, CLI_LINESZ,
+                      "SPI DMA en:%u start/ok:%lu/%lu err/timeout:%lu/%lu poll:%lu quarantine:%lu",
+@@ -5702,7 +5712,7 @@
+             (unsigned long)data->adbms_aux2_completed_mask, (unsigned long)aux_overdue,
+             (unsigned long)data->adbms_therm_completed_mask, (unsigned long)therm_overdue);
+         ret |= cli_printline(cli, outline);
+-        snprintf(outline, CLI_LINESZ, "diag cost max ms:%lu/%lu deferred:%lu/%lu forced:%lu/%lu (advisory)",
++        snprintf(outline, CLI_LINESZ, "diag cost max ms:%lu/%lu deferred:%lu/%lu late_admitted:%lu/%lu (advisory)",
+             (unsigned long)data->adbms_diag_cost_ms[0], (unsigned long)data->adbms_diag_cost_ms[1],
+             (unsigned long)data->adbms_diag_deferred[0], (unsigned long)data->adbms_diag_deferred[1],
+             (unsigned long)data->adbms_diag_forced[0], (unsigned long)data->adbms_diag_forced[1]);
+@@ -5807,8 +5817,9 @@
+              (unsigned long)data->adbms_therm_ow_diag_fail_count);
+     ret |= cli_printline(cli, outline);
+     snprintf(outline, CLI_LINESZ,
+-             "thermOW IC0 raw base/down/up/recover:%d/%d/%d/%d delta_mV down/up/recover:%d/%d/%d",
++             "thermOW IC0 baseD/baseU/down/up/recover:%d/%d/%d/%d/%d delta_mV D/U/R:%d/%d/%d",
+              (int)smb->therm_ow_health.baseline_raw[0],
++             (int)smb->therm_ow_health.pullup_baseline_raw[0],
+              (int)smb->therm_ow_health.pulldown_raw[0],
+              (int)smb->therm_ow_health.pullup_raw[0],
+              (int)smb->therm_ow_health.recovery_raw[0],
+@@ -7592,6 +7603,34 @@
+     return ret;
+ }
+ 
++int get_perf_diag(int argc, char *argv[])
++{
++    if(argc==2 && !strcmp(argv[1],"clear")) ams_perf_clear();
++    else if(argc!=1) return cli_printline(cli,"Usage: perf [clear]");
++    int ret=cli_printline(cli,"PERF cycles: task context excludes instrumented IRQ bodies; includes residual kernel/profiler overhead");
++    uint32_t cache_ccr=0;
++#if !(defined(AMS_HOST_TEST) && AMS_HOST_TEST)
++    cache_ccr=SCB->CCR;
++#endif
++    snprintf(outline,CLI_LINESZ,"core_hz:%lu cache_I:%u cache_D:%u",
++        (unsigned long)SystemCoreClock,(unsigned)((cache_ccr & SCB_CCR_IC_Msk)!=0),
++        (unsigned)((cache_ccr & SCB_CCR_DC_Msk)!=0));
++    ret |= cli_printline(cli,outline);
++    uint32_t mhz=SystemCoreClock/1000000u;
++    if(!mhz) return ret;
++    for(unsigned i=0;i<AMS_PERF_TASKS;i++) {
++        ams_perf_row_t row;
++        if(!ams_perf_get(i,&row)) continue;
++        snprintf(outline,CLI_LINESZ,"%s us:%llu slices:%lu max_slice_us:%lu max_unblock_us:%lu",
++            row.name,(unsigned long long)(row.cycles/mhz),(unsigned long)row.slices,
++            (unsigned long)(row.max_slice_cycles/mhz),(unsigned long)(row.max_unblock_cycles/mhz));
++        ret |= cli_printline(cli,outline);
++    }
++    snprintf(outline,CLI_LINESZ,"IRQ_us:%llu profiler_slots_overflow:%lu",
++        (unsigned long long)(ams_perf_irq_cycles()/mhz),(unsigned long)ams_perf_overflow());
++    return ret | cli_printline(cli,outline);
++}
++
+ int get_rtos_diag(int argc, char *argv[])
+ {
+     int ret = 0;
+--- a/Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1/port.c
++++ b/Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1/port.c
+@@ -477,6 +477,7 @@
+ 
+ void xPortSysTickHandler( void )
+ {
++    ams_perf_irq_enter();
+ 	/* The SysTick runs at the lowest interrupt priority, so when this interrupt
+ 	executes all interrupts must be unmasked.  There is therefore no need to
+ 	save and then restore the interrupt mask value as its value is already
+@@ -492,6 +493,8 @@
+ 		}
+ 	}
+ 	portENABLE_INTERRUPTS();
++
++    ams_perf_irq_exit();
+ }
+ /*-----------------------------------------------------------*/
+ 
+--- a/host_tests/Makefile
++++ b/host_tests/Makefile
+@@ -52,7 +52,8 @@
+ 	$(AMS_ROOT)/Core/Src/diagnostics/ams_runtime_manifest.c
+ RUNTIME_MANIFEST_UNIT_SRC := unit/runtime_manifest_test.c
+ RUNTIME_MANIFEST_UNIT_BIN = $(BUILD_DIR)/runtime_manifest_tests
+-SYSTEM_SRC := $(SRC) $(CAN_TX_SCHED_SRC) $(FLIGHT_RECORDER_SRC) $(RUNTIME_MANIFEST_SRC)
++PERF_SRC := $(AMS_ROOT)/Core/Src/diagnostics/ams_perf.c
++SYSTEM_SRC := $(PERF_SRC) $(SRC) $(CAN_TX_SCHED_SRC) $(FLIGHT_RECORDER_SRC) $(RUNTIME_MANIFEST_SRC)
+ MEASUREMENT_SRC := \
+ 	$(AMS_ROOT)/Core/Src/measurement/ams_measurement.c
+ POWER_SRC := \
+@@ -816,7 +817,7 @@
+ .PHONY: cli-async-test
+ cli-async-test: | make-build-dir
+ 	$(CC) $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=4 -ffunction-sections -fdata-sections \
+-		production/cli_async_test.c -Wl,--gc-sections -o "$(BUILD_DIR)/cli_async_test" $(LDLIBS)
++		production/cli_async_test.c $(PERF_SRC) -Wl,--gc-sections -o "$(BUILD_DIR)/cli_async_test" $(LDLIBS)
+ 	"$(BUILD_DIR)/cli_async_test"
+ .PHONY: ekf-refinement-test
+ ekf-refinement-test: | make-build-dir
+@@ -916,3 +917,32 @@
+ 	$(PYTHON) tools/check_spi_dma.py
+ 
+ vehicle-ci: spi6-dma-test
++
++.PHONY: therm-phase-test
++therm-phase-test: | make-build-dir
++	$(CC) $(CFLAGS_COMMON) -Wno-unused-variable -Werror -DAMS_BUILD_PROFILE=4 -DAMS_ENABLE_ADBMS_THERM_OPEN_WIRE_DIAG=1 -ffunction-sections -fdata-sections production/therm_phase_test.c $(AMS_ROOT)/Core/Src/ext_drivers/adbms_shared.c $(THERMISTOR_SRC) -Wl,--gc-sections -o $(BUILD_DIR)/therm_phase_test $(LDLIBS)
++	$(BUILD_DIR)/therm_phase_test
++vehicle-ci: therm-phase-test
++
++.PHONY: perf-test
++perf-test: | make-build-dir
++	$(CC) $(CFLAGS_COMMON) -Werror production/perf_test.c $(PERF_SRC) -o $(BUILD_DIR)/perf_test
++	$(BUILD_DIR)/perf_test
++vehicle-ci: perf-test
++
++.PHONY: diag-scheduler-test
++diag-scheduler-test: | make-build-dir
++	$(CC) $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=4 -DAMS_HOST_DIAG_SCHEDULER_TEST=1 -DAMS_ENABLE_ADBMS_THERM_OPEN_WIRE_DIAG=1 -DAMS_ENABLE_ADBMS_AUX2_REDUNDANCY=1 $(SYSTEM_SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC) $(POWER_SRC) -o $(BUILD_DIR)/diag_scheduler_test $(LDLIBS)
++	$(BUILD_DIR)/diag_scheduler_test
++vehicle-ci: diag-scheduler-test
++
++.PHONY: temp-pipeline-test
++temp-pipeline-test: | make-build-dir
++	$(CC) $(CFLAGS_COMMON) -Wno-unused-variable -Werror -DAMS_BUILD_PROFILE=4 -ffunction-sections -fdata-sections production/temp_pipeline_test.c $(AMS_ROOT)/Core/Src/ext_drivers/adbms_shared.c $(THERMISTOR_SRC) -Wl,--gc-sections -o $(BUILD_DIR)/temp_pipeline_test $(LDLIBS)
++	$(BUILD_DIR)/temp_pipeline_test
++vehicle-ci: temp-pipeline-test
++
++.PHONY: stage3-target-syntax
++stage3-target-syntax:
++	$(PYTHON) tools/check_timing_stage3.py
++vehicle-ci: stage3-target-syntax
+--- a/host_tests/include/reent.h
++++ b/host_tests/include/reent.h
+@@ -8,4 +8,7 @@
+  * parsing here, so a dummy definition is enough for the test harness.
+  */
+ struct _reent { int _ams_host_dummy; };
++extern struct _reent *_impure_ptr;
++#define _REENT_INIT_PTR(p) ((void)(p))
++void _reclaim_reent(struct _reent *p);
+ #endif
+--- a/host_tests/production/adbms_wake_policy_test.c
++++ b/host_tests/production/adbms_wake_policy_test.c
+@@ -19,6 +19,12 @@
+ static uint64_t last_mux_end_us;
+ static uint64_t model_aux_ready_us;
+ static bool reply_ref_off, reply_soak;
++static bool model_diag, model_no_stim;
++static int model_base_code=10000;
++static uint8_t model_cfga[5][6];
++static unsigned model_cfg_writes, model_fail_cfg_write;
++static int model_stimulus;
++static uint64_t model_stimulus_start;
+ static uint32_t timer_base;
+ static uint32_t extra_delay_once;
+ static bool timer_stopped;
+@@ -85,6 +91,16 @@
+ {
+     CHECK(test_lock_depth > 0);
+     wire_time(h,n,timeout);
++    if(model_diag && n>=12 && p[0]==0 && p[1]==1) {
++        unsigned count=(n-4)/8;
++        for(unsigned ic=0;ic<count;ic++) memcpy(model_cfga[ic],p+4+(count-1-ic)*8,6);
++        model_cfg_writes++;
++        if(model_cfg_writes==model_fail_cfg_write) return HAL_TIMEOUT;
++    }
++    if(model_diag && n==4 && (p[0]==4 || p[0]==5)) {
++        model_stimulus=p[0]==5 ? ((p[1]&0x80) ? 1 : -1) : 0;
++        model_stimulus_start=sim_us;
++    }
+     if(fail_spi) {
+         if(n>=2 && p[0]==0x07 && p[1]==0x23) {
+             CHECK(h->Init.BaudRatePrescaler==SPI_BAUDRATEPRESCALER_256);
+@@ -126,6 +142,15 @@
+         if(command==0x0002){ memset(p,0,6); p[0]=reply_ref_off?0:0x80; p[2]=reply_soak?0x80:0; } /* REFON, no soak */
+         if(command==0x0722){p[0]=0x67;p[1]=0x98;p[2]=0x77;p[3]=1;p[4]=0x1f;p[5]=0xff;}
+         if(command==0x0012 || command==0x0030){p[0]=p[1]=p[4]=p[5]=0;p[2]=0;p[3]=1;}
++        if(model_diag) {
++            if(command==0x0002) memcpy(p,model_cfga[(i-4)/8],6);
++            if(command==0x0026) memset(p,0,6);
++            if(command==0x0019) {
++                if(model_stimulus) CHECK(sim_us-model_stimulus_start>=6000u);
++                int16_t code=(int16_t)(model_base_code+(model_no_stim ? 0 : model_stimulus*300));
++                for(unsigned k=0;k<6;k+=2) { p[k]=(uint8_t)code; p[k+1]=(uint8_t)((uint16_t)code>>8); }
++            }
++        }
+         p[6]=(uint8_t)(((model_counter+(bad_counter?1u:0u))&63u)<<2);
+         uint16_t pec=pec10_calc(1,6,p); p[6]|=(uint8_t)(pec>>8);p[7]=(uint8_t)pec;
+         if(bad_pec) p[7]^=1;
+--- a/host_tests/production/diag_budget_test.c
++++ b/host_tests/production/diag_budget_test.c
+@@ -5,7 +5,8 @@
+  bool forced; uint32_t ticks[24]={0};
+  assert(ams_diag_admit(40,0,100,60,20,500,&forced) && !forced);
+  assert(!ams_diag_admit(41,0,100,60,20,500,&forced) && !forced);
+- assert(ams_diag_admit(520,500,100,200,20,500,&forced) && forced);
++ assert(!ams_diag_admit(520,500,100,200,20,500,&forced) && forced);
++ assert(ams_diag_admit(520,500,100,80,20,500,&forced) && forced);
+  assert(ams_diag_admit(10,UINT32_MAX-19,100,70,0,500,&forced) && !forced);
+  assert(ams_diag_overdue_mask(12000,0,ticks,0,12000)==0xffffff);
+  ticks[3]=11999;
+--- /dev/null
++++ b/host_tests/production/perf_test.c
+@@ -0,0 +1,31 @@
++#include <assert.h>
++#include <stdio.h>
++#include "diagnostics/ams_perf.h"
++static uint32_t clock_now;
++uint32_t ams_perf_test_clock(void) { return clock_now; }
++int main(void) {
++    int a,b; ams_perf_row_t row;
++    ams_perf_irq_enter(); /* safe before initialization */
++    ams_perf_init(); ams_perf_ready(&a,"ADBMS");
++    clock_now=10; ams_perf_switch_in(&a,"ADBMS");
++    clock_now=30; ams_perf_irq_enter();
++    clock_now=35; ams_perf_irq_enter();
++    clock_now=40; ams_perf_irq_exit();
++    clock_now=50; ams_perf_irq_exit();
++    clock_now=70; ams_perf_switch_out(); ams_perf_ready(&b,"CAN");
++    clock_now=90; ams_perf_switch_in(&b,"CAN");
++    clock_now=100; ams_perf_switch_out();
++    assert(ams_perf_get(0,&row) && row.cycles==40 && row.max_slice_cycles==40 && row.max_unblock_cycles==10);
++    assert(ams_perf_get(1,&row) && row.cycles==10 && row.max_unblock_cycles==20);
++    assert(ams_perf_irq_cycles()==20);
++    clock_now=UINT32_MAX-5; ams_perf_switch_in(&a,"ADBMS");
++    clock_now=4; ams_perf_switch_out();
++    assert(ams_perf_get(0,&row) && row.cycles==50 && row.slices==2);
++    ams_perf_clear();
++    assert(clock_now==4 && ams_perf_get(0,&row) && row.cycles==0 && row.max_slice_cycles==0);
++    assert(ams_perf_irq_cycles()==0);
++    int handles[20];
++    for(unsigned i=0;i<20;i++) ams_perf_ready(handles+i,"bounded");
++    assert(ams_perf_overflow()>0 && !ams_perf_get(16,&row));
++    puts("PASS task/IRQ accounting, nested IRQ exclusion, unblock latency, wrap and bounded slots");
++}
+--- a/host_tests/production/spi6_dma_test.c
++++ b/host_tests/production/spi6_dma_test.c
+@@ -19,9 +19,11 @@
+ #define __get_IPSR() 0
+ #define __get_PRIMASK() 0
+ #define __get_BASEPRI() 0
+-#define SCB_CleanDCache_by_Addr(a,b) ((void)0)
+-#define SCB_CleanInvalidateDCache_by_Addr(a,b) ((void)0)
+-#define SCB_InvalidateDCache_by_Addr(a,b) ((void)0)
++static unsigned cache_clean,cache_clean_invalidate,cache_invalidate;
++#define CACHE_CHECK(a,b) do { assert(((uintptr_t)(a)&31u)==0 && (b)==512); } while(0)
++#define SCB_CleanDCache_by_Addr(a,b) do { CACHE_CHECK(a,b); cache_clean++; } while(0)
++#define SCB_CleanInvalidateDCache_by_Addr(a,b) do { CACHE_CHECK(a,b); cache_clean_invalidate++; } while(0)
++#define SCB_InvalidateDCache_by_Addr(a,b) do { CACHE_CHECK(a,b); cache_invalidate++; } while(0)
+ #undef __HAL_RCC_DMA2_CLK_ENABLE
+ #undef __HAL_RCC_SPI6_FORCE_RESET
+ #undef __HAL_RCC_SPI6_RELEASE_RESET
+@@ -88,6 +90,9 @@
+     active=true; assert(ams_spi6_transfer(&h,tx,rx,4,3)==HAL_ERROR); active=false;
+     ams_spi6_dma_stats_t st=ams_spi6_dma_stats();
+     assert(st.started==8 && st.completed==4 && st.errors==3 && st.timeouts==1);
++    mode=0; fake_scb->CCR=SCB_CCR_DC_Msk;
++    assert(ams_spi6_transfer(&h,tx,rx,44,3)==HAL_OK);
++    assert(cache_clean==1 && cache_clean_invalidate==1 && cache_invalidate==1);
+     quarantined=true; assert(ams_spi6_transfer(&h,tx,rx,4,3)==HAL_ERROR);
+     puts("PASS DMA success, suspension, timeout, error, late/split IRQ, reuse, writes, NDTR, BSY, pre-kernel fallback, counters and quarantine");
+ }
+--- /dev/null
++++ b/host_tests/production/temp_pipeline_test.c
+@@ -0,0 +1,33 @@
++#define main unused_wake_fixture_main
++#include "adbms_wake_policy_test.c"
++#undef main
++int main(void) {
++    reset_dev(5); read_clean();
++    CHECK(smb_prepare_temp(&dev)==0); sim_us+=1500;
++    CHECK(smb_read_temp(&dev)==0 && dev.temp_settle_saved_us==1500);
++    CHECK(!dev.temp_prepare_attempted && !dev.temp_prepare_ok);
++    reset_dev(5); read_clean();
++    CHECK(smb_prepare_temp(&dev)==0);
++    CHECK(smb_read_voltage(&dev)==0);
++    CHECK(smb_read_temp(&dev)==0 && dev.temp_settle_saved_us==3000);
++    for(unsigned i=0;i<5;i++) CHECK(dev.last_temp_updated_mask[i]!=0 && dev.temp_scheduled_mask[i]==dev.temp_attempted_mask[i]);
++    reset_dev(5); read_clean(); fail_spi=true;
++    CHECK(smb_prepare_temp(&dev)!=0); uint32_t count=transfers;
++    fail_spi=false; CHECK(smb_read_temp(&dev)!=0 && transfers==count);
++    CHECK(smb_read_temp(&dev)==0); /* next explicit visit can recover */
++    reset_dev(5); read_clean(); CHECK(smb_prepare_temp(&dev)==0);
++    dev.mux_selected_channel[0][0]^=1; count=transfers;
++    CHECK(smb_read_temp(&dev)!=0 && transfers==count);
++    reset_dev(5); read_clean(); CHECK(smb_prepare_temp(&dev)==0);
++    sim_us+=201000; count=transfers;
++    CHECK(smb_read_temp(&dev)!=0 && transfers==count);
++    reset_dev(5); read_clean(); CHECK(smb_prepare_temp(&dev)==0);
++    adbms6830_link_forget(&dev); count=transfers;
++    CHECK(smb_read_temp(&dev)!=0 && transfers==count);
++    reset_dev(5); read_clean(); sim_us=(uint64_t)UINT32_MAX-1000;
++    CHECK(smb_prepare_temp(&dev)==0); sim_us+=5000;
++    CHECK(smb_read_temp(&dev)==0 && dev.temp_settle_saved_us==3000);
++    CHECK(test_lock_depth==0 && last_cs==GPIO_PIN_SET);
++    puts("PASS residual settling, voltage overlap, single-use preparation, no immediate failure retry, stale/mux/integrity rejection and clock wrap");
++    return failures ? 1 : 0;
++}
+--- /dev/null
++++ b/host_tests/production/therm_phase_test.c
+@@ -0,0 +1,56 @@
++#define main unused_wake_fixture_main
++#include "adbms_wake_policy_test.c"
++#undef main
++static void setup(void) {
++    reset_dev(5); model_diag=true; model_base_code=10000; model_no_stim=false; model_cfg_writes=model_fail_cfg_write=0; model_stimulus=0;
++    for(unsigned i=0;i<5;i++) dev.ics[i].tx_cfga.refon=1;
++    adbms6830_pack_cfga(&dev); adbms6830_pack_cfgb(&dev);
++    for(unsigned i=0;i<5;i++) memcpy(model_cfga[i],dev.ics[i].configa.tx_data,6);
++    read_clean(); sim_us+=5000;
++    for(unsigned i=0;i<5;i++) dev.last_temp_updated_mask[i]=0x123456;
++}
++static void restored(void) {
++    for(unsigned i=0;i<5;i++) {
++        CHECK((model_cfga[i][2]&0x80)==0 && !dev.ics[i].tx_cfga.soakon);
++        CHECK(dev.last_temp_updated_mask[i]==0x123456);
++    }
++    CHECK(test_lock_depth==0 && last_cs==GPIO_PIN_SET);
++}
++int main(void) {
++    setup(); bool complete; uint64_t start=sim_us;
++    CHECK(adbms6830_thermistor_open_wire_step(&dev,0,&complete)==HAL_OK && !complete);
++    uint64_t first=sim_us-start;
++    CHECK(dev.therm_phase.pending && dev.therm_ow_health.valid_mask==0);
++    restored(); sim_us+=100000; model_base_code=10500; start=sim_us;
++    CHECK(adbms6830_thermistor_open_wire_step(&dev,0,&complete)==HAL_OK && complete);
++    uint64_t second=sim_us-start;
++    CHECK(!dev.therm_phase.pending && dev.therm_ow_health.valid_mask==31);
++    CHECK(dev.therm_ow_health.suspect_mask==0 && dev.therm_ow_health.count==1);
++    CHECK(dev.therm_ow_health.baseline_raw[0]==10000 && dev.therm_ow_health.pullup_baseline_raw[0]==10500);
++    restored(); printf("THERM phase wall model: down=%llu up=%llu us\n",(unsigned long long)first,(unsigned long long)second);
++    setup(); CHECK(adbms6830_thermistor_open_wire_step(&dev,1,&complete)==HAL_OK && !complete);
++    sim_us+=1001000;
++    CHECK(adbms6830_thermistor_open_wire_step(&dev,1,&complete)!=HAL_OK && complete);
++    CHECK(dev.therm_ow_health.valid_mask==0); restored();
++    setup(); CHECK(adbms6830_thermistor_open_wire_step(&dev,1,&complete)==HAL_OK && !complete);
++    adbms6830_link_forget(&dev);
++    CHECK(adbms6830_thermistor_open_wire_step(&dev,1,&complete)!=HAL_OK && complete);
++    CHECK(dev.therm_ow_health.valid_mask==0); restored();
++    setup(); CHECK(adbms6830_thermistor_open_wire_step(&dev,1,&complete)==HAL_OK && !complete);
++    dev.ics[0].tx_cfga.cth^=1; adbms6830_pack_cfga(&dev);
++    CHECK(adbms6830_thermistor_open_wire_step(&dev,1,&complete)!=HAL_OK && complete);
++    CHECK(dev.therm_ow_health.valid_mask==0);
++    setup(); model_no_stim=true;
++    CHECK(adbms6830_thermistor_open_wire_step(&dev,0,&complete)==HAL_OK && !complete);
++    model_no_stim=false;
++    CHECK(adbms6830_thermistor_open_wire_step(&dev,0,&complete)==HAL_ERROR && complete);
++    CHECK(dev.therm_ow_health.valid_mask==31 && dev.therm_ow_health.suspect_mask==31);
++    restored();
++    setup(); model_fail_cfg_write=1;
++    CHECK(adbms6830_thermistor_open_wire_step(&dev,0,&complete)!=HAL_OK && complete);
++    CHECK(model_cfg_writes>=2); /* A failed stimulus write must still be restored. */
++    restored();
++    setup(); CHECK(adbms6830_run_thermistor_open_wire(&dev,2)==HAL_OK); restored();
++    puts("PASS two-phase completion, normal configuration between phases, no primary publication, timeout/integrity cancellation and partial-write restoration");
++    return failures ? 1 : 0;
++}
+--- a/host_tests/sil/acquisition_sil.c
++++ b/host_tests/sil/acquisition_sil.c
+@@ -224,6 +224,7 @@
+         for(unsigned scan=0;scan<200;scan++) {
+             uint64_t begin=sim_us;
+             adbms6830_session_begin_scan(&dev);
++            (void)smb_prepare_temp(&dev);
+             int rc=smb_read_voltage(&dev);
+             if(rc==0) {
+                 accepted++;
+--- a/host_tests/src/ams_host_test_runner.c
++++ b/host_tests/src/ams_host_test_runner.c
+@@ -55,6 +55,8 @@
+     .threshold_revision = "host-test"
+ };
+ static uint32_t fake_tick = 0;
++static bool fake_phased_diag_timing=false, fake_completing_diag_step=false;
++static uint32_t fake_compact_diag_calls;
+ static GPIO_PinState bms_pin_state = GPIO_PIN_RESET;
+ static uint32_t tx_count = 0;
+ static struct { uint32_t ide, stdid, extid, dlc; uint8_t data[8]; } tx_log[AMS_HOST_TX_LOG_CAPACITY];
+@@ -541,8 +543,19 @@
+ void adbms6830_transaction_session_end(adbms6830_driver_t *dev, bool owned){ if(dev && owned) dev->session.active = false; }
+ HAL_StatusTypeDef adbms6830_unmute_checked(adbms6830_driver_t *dev){ if(dev){ dev->health.unmute_count++; return HAL_OK; } return HAL_ERROR; }
+ HAL_StatusTypeDef adbms6830_run_startup_post(adbms6830_driver_t *dev){ if(dev){ dev->post.passed = true; dev->post.stage = ADBMS6830_POST_PASS; return HAL_OK; } return HAL_ERROR; }
+-HAL_StatusTypeDef adbms6830_run_aux2_redundancy(adbms6830_driver_t *dev, uint8_t sensor_num){ if(!dev || sensor_num>=ADBMS6830_TEMP_SENSOR_COUNT) return HAL_ERROR; dev->aux2_health.sensor=sensor_num; dev->aux2_health.valid_mask=(dev->num_ics>=16)?UINT16_MAX:(uint16_t)((1u<<(uint8_t)dev->num_ics)-1u); dev->aux2_health.disagree_mask=0u; dev->aux2_health.count++; return HAL_OK; }
+-HAL_StatusTypeDef adbms6830_run_thermistor_open_wire(adbms6830_driver_t *dev, uint8_t sensor_num){ if(!dev || sensor_num>=ADBMS6830_TEMP_SENSOR_COUNT) return HAL_ERROR; dev->therm_ow_health.sensor=sensor_num; dev->therm_ow_health.valid_mask=(dev->num_ics>=16)?UINT16_MAX:(uint16_t)((1u<<(uint8_t)dev->num_ics)-1u); dev->therm_ow_health.suspect_mask=0u; dev->therm_ow_health.count++; return HAL_OK; }
++HAL_StatusTypeDef adbms6830_run_aux2_redundancy(adbms6830_driver_t *dev, uint8_t sensor_num){ if(fake_phased_diag_timing) fake_tick+=20; if(!dev || sensor_num>=ADBMS6830_TEMP_SENSOR_COUNT) return HAL_ERROR; dev->aux2_health.sensor=sensor_num; dev->aux2_health.valid_mask=(dev->num_ics>=16)?UINT16_MAX:(uint16_t)((1u<<(uint8_t)dev->num_ics)-1u); dev->aux2_health.disagree_mask=0u; dev->aux2_health.count++; return HAL_OK; }
++HAL_StatusTypeDef adbms6830_thermistor_open_wire_step(adbms6830_driver_t *dev, uint8_t sensor, bool *complete) {
++ if(!complete || !dev) return HAL_ERROR;
++ if(fake_phased_diag_timing) {
++   fake_tick+=25;
++   if(!dev->therm_phase.pending) { dev->therm_phase.pending=true; dev->therm_phase.started_ms=fake_tick; dev->therm_ow_health.valid_mask=0; *complete=false; return HAL_OK; }
++   dev->therm_phase.pending=false;
++ }
++ *complete=true; fake_completing_diag_step=true;
++ HAL_StatusTypeDef result=adbms6830_run_thermistor_open_wire(dev,sensor);
++ fake_completing_diag_step=false; return result;
++}
++HAL_StatusTypeDef adbms6830_run_thermistor_open_wire(adbms6830_driver_t *dev, uint8_t sensor_num){ if(fake_phased_diag_timing && !fake_completing_diag_step) { fake_tick+=32; fake_compact_diag_calls++; } if(!dev || sensor_num>=ADBMS6830_TEMP_SENSOR_COUNT) return HAL_ERROR; dev->therm_ow_health.sensor=sensor_num; dev->therm_ow_health.valid_mask=(dev->num_ics>=16)?UINT16_MAX:(uint16_t)((1u<<(uint8_t)dev->num_ics)-1u); dev->therm_ow_health.suspect_mask=0u; dev->therm_ow_health.count++; return HAL_OK; }
+ HAL_StatusTypeDef adbms6830_run_s_periodic_diagnostic(adbms6830_driver_t *dev){ return dev ? HAL_OK : HAL_ERROR; }
+ HAL_StatusTypeDef adbms6830_wait_cooperative(adbms6830_driver_t *dev, uint32_t microseconds){ return (dev != NULL && microseconds <= UINT16_MAX) ? adbms6830_us_delay(dev, (uint16_t)microseconds) : HAL_ERROR; }
+ void adbms6830_bind_runtime_hooks(adbms6830_driver_t *dev, adbms6830_cooperative_wait_fn_t wait_fn, adbms6830_time_us_fn_t time_fn, void *ctx){ if(dev){ dev->cooperative_wait_fn=wait_fn; dev->time_us_fn=time_fn; dev->runtime_hook_ctx=ctx; } }
+@@ -2116,6 +2129,44 @@
+     fake_tick = 599u;
+     adbms_task_run_periodic_diagnostics(&app, false);
+     CHECK(app.adbms_status_diag_count == 1u);
++}
++
++static void test_phased_diagnostic_admission(void)
++{
++    init_fake_app(); fake_phased_diag_timing=true; fake_compact_diag_calls=0;
++    adbms_task_run_periodic_diagnostics(&app,true);
++    unsigned pending_seen=0, resumed_seen=0;
++    for(unsigned scan=1;scan<=250;scan++) {
++        fake_tick=scan*100;
++        app.adbms_diag_scan_start=fake_tick;
++        adbms_task_run_periodic_diagnostics(&app,false);
++        fake_tick=app.adbms_diag_scan_start+(scan%3==0 ? 95 : (scan%5==0 ? 25 : 55));
++        bool before=app.acc.smb.therm_phase.pending;
++        uint32_t old=app.adbms_therm_ow_diag_count+app.adbms_aux2_diag_count+app.adbms_config_diag_count+app.adbms_open_wire_diag_count;
++        uint32_t start=fake_tick;
++        adbms_task_run_periodic_diagnostics(&app,true);
++        uint32_t after=app.adbms_therm_ow_diag_count+app.adbms_aux2_diag_count+app.adbms_config_diag_count+app.adbms_open_wire_diag_count;
++        CHECK(after-old<=1);
++        if(scan%3==0) CHECK(fake_tick==start); /* overdue advisory work cannot force an overrun */
++        if(!before && app.acc.smb.therm_phase.pending) {
++            pending_seen++; CHECK(app.adbms_therm_completed_mask==0 || app.adbms_therm_ow_diag_count>0);
++        }
++        if(before && !app.acc.smb.therm_phase.pending) resumed_seen++;
++        CHECK(fake_tick-app.adbms_diag_scan_start<=100);
++    }
++    CHECK(pending_seen>0 && resumed_seen>0 && app.adbms_therm_ow_diag_count>0);
++    CHECK(app.adbms_diag_deferred[0]+app.adbms_diag_deferred[1]>0);
++    CHECK(app.adbms_aux2_diag_count>0 && app.adbms_config_diag_count>0);
++    CHECK(fake_compact_diag_calls>0);
++    app.acc.smb.therm_phase.pending=true;
++    app.acc.smb.therm_phase.started_ms=fake_tick-1001;
++    app.adbms_diag_cost_ms[1]=500;
++    app.adbms_diag_scan_start=fake_tick-95;
++    uint32_t old_fail=app.adbms_therm_ow_diag_fail_count;
++    adbms_task_run_periodic_diagnostics(&app,true);
++    CHECK(!app.acc.smb.therm_phase.pending && app.adbms_therm_ow_diag_fail_count==old_fail+1);
++    fake_phased_diag_timing=false;
++    puts("PASS production diagnostic scheduler: mixed budgets, status/config collisions, pending phases, strict admission and coverage");
+ }
+ 
+ static void test_adbms_voltage_scan_timing_contract(void)
+@@ -12608,6 +12659,9 @@
+ #endif
+ 
+ int main(void){
++#if defined(AMS_HOST_DIAG_SCHEDULER_TEST)
++    test_phased_diagnostic_admission(); return 0;
++#endif
+ #if defined(AMS_HOST_VEHICLE_VARIANT_TEST)
+     test_vehicle_variant();return 0;
+ #endif
+--- a/host_tests/tools/check_spi_dma.py
++++ b/host_tests/tools/check_spi_dma.py
+@@ -6,7 +6,7 @@
+ dry=subprocess.check_output(['make','-n','adbms-wake-policy-test'],cwd=host,text=True).replace('\\\n',' ')
+ command=next(shlex.split(x) for x in dry.splitlines() if x.startswith('cc '))
+ flags=command[:command.index('production/adbms_wake_policy_test.c')]
+-sources=['ext_drivers/ams_spi6_transport.c','ext_drivers/adbms6830.c','main.c','stm32f7xx_it.c','tasks/cli_task.c']
++sources=['ext_drivers/accumulator.c','diagnostics/ams_perf.c','ext_drivers/ams_spi6_transport.c','ext_drivers/adbms6830.c','main.c','stm32f7xx_it.c','tasks/cli_task.c']
+ for div in (256,128,64):
+     args=flags+[f'-DAMS_ADBMS_SPI_PRESCALER_DIV={div}','-DAMS_ADBMS_SPI_DMA=1','-D__ARM_ARCH_7EM__=1','-fsyntax-only']+['../Core/Src/'+x for x in sources]
+     subprocess.run(args,cwd=host,check=True)
+--- /dev/null
++++ b/host_tests/tools/check_timing_stage3.py
+@@ -0,0 +1,22 @@
++"""Parse target branches and kernel trace hooks with native GCC, not an ARM build.
++The host newlib shim supplies declarations only. No evidence gates are bypassed.
++"""
++from pathlib import Path
++import subprocess, shlex
++h=Path(__file__).resolve().parents[1]
++dry=subprocess.check_output(['make','-n','adbms-wake-policy-test'],cwd=h,text=True).replace('\\\n',' ')
++command=next(shlex.split(x) for x in dry.splitlines() if x.startswith('cc '))
++flags=[x for x in command[:command.index('production/adbms_wake_policy_test.c')] if x!='-DAMS_HOST_TEST=1']
++sources=['../Middlewares/Third_Party/FreeRTOS/Source/tasks.c',
++         '../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1/port.c']
++sources += ['../Core/Src/'+x for x in ['diagnostics/ams_perf.c','main.c',
++    'tasks/adbms_task.c','tasks/cli_task.c','ext_drivers/accumulator.c','ext_drivers/adbms6830.c']]
++args=flags+['-D__ARM_ARCH_7EM__=1','-D__VFP_FP__=1',
++    '-DAMS_ENABLE_ADBMS_THERM_OPEN_WIRE_DIAG=1','-DAMS_ENABLE_ADBMS_AUX2_REDUNDANCY=1',
++    '-DAMS_BENCHMARK_ICACHE=1','-DAMS_BENCHMARK_DCACHE=1','-fsyntax-only']+sources
++run=subprocess.run(args,cwd=h,text=True,capture_output=True)
++(h.parent/'validation/STAGE3_TARGET_SYNTAX.txt').write_text(
++    'Native target-branch syntax only; newlib shim declarations; no ARM link\n'+run.stdout+run.stderr+'\nexit='+str(run.returncode))
++if run.returncode: print(run.stdout+run.stderr)
++run.check_returncode()
++print('PASS target-branch native syntax: kernel trace hooks, cache candidate, phased driver/task and pipeline')
+--- a/host_tests/tools/check_vehicle_variant.py
++++ b/host_tests/tools/check_vehicle_variant.py
+@@ -9,7 +9,7 @@
+ flags=args[:args.index('src/ams_host_test_runner.c')]
+ flags=[x for x in flags if not x.startswith(('-DAMS_BUILD_PROFILE=','-DAMS_HOST_VEHICLE_VARIANT_TEST='))]
+ configs=E.parse(repo/'.cproject').findall('.//cconfiguration')
+-assert len(configs)==9
++assert len(configs)==12
+ names=[c.find('.//configuration').get('name') for c in configs]
+ assert names == [
+     'VEHICLE COMMS 1M Debug', 'VEHICLE COMMS 1M Release',
+@@ -17,9 +17,12 @@
+     'VEHICLE COMMS 1M SPI128 POLL Debug', 'VEHICLE COMMS 1M SPI256 DMA Debug',
+     'VEHICLE COMMS 1M SPI128 DMA Debug',
+     'VEHICLE COMMS 1M SPI64 POLL Debug', 'VEHICLE COMMS 1M SPI64 DMA Debug',
++    'VEHICLE COMMS 1M SPI64 DMA DIAG Debug',
++    'VEHICLE COMMS 1M SPI64 DMA DIAG ICACHE Debug',
++    'VEHICLE COMMS 1M SPI64 DMA DIAG ICACHE DCACHE Debug',
+ ],names
+ builders=[b.get('buildPath') for c in configs for b in c.findall('.//builder') if b.get('buildPath')]
+-assert len(builders)==9 and len(set(builders))==9,builders
++assert len(builders)==12 and len(set(builders))==12,builders
+ assert all('/Vehicle_' in path for path in builders),builders
+ for i,c in enumerate(configs):
+     definitions=[x.get('value') for o in c.findall('.//option')
+@@ -28,13 +31,18 @@
+     assert 'DER26_CAN_BITRATE_KBPS=1000' in definitions,definitions
+     assert ('AMS_BUILD_PROFILE=4' if i<2 or i>=4 else 'AMS_BUILD_PROFILE=3') in definitions,definitions
+     if i>=4:
+-        assert f'AMS_ADBMS_SPI_PRESCALER_DIV={[128,256,128,64,64][i-4]}' in definitions
+-        assert f'AMS_ADBMS_SPI_DMA={[0,1,1,0,1][i-4]}' in definitions
++        assert f'AMS_ADBMS_SPI_PRESCALER_DIV={[128,256,128,64,64,64,64,64][i-4]}' in definitions
++        assert f'AMS_ADBMS_SPI_DMA={[0,1,1,0,1,1,1,1][i-4]}' in definitions
++    if i>=9:
++        assert 'AMS_ENABLE_ADBMS_AUX2_REDUNDANCY=1' in definitions
++        assert 'AMS_ENABLE_ADBMS_THERM_OPEN_WIRE_DIAG=1' in definitions
++        assert f'AMS_BENCHMARK_ICACHE={0 if i==9 else 1}' in definitions
++        assert f'AMS_BENCHMARK_DCACHE={1 if i==11 else 0}' in definitions
+     assert not any('VALIDATED=1' in x or 'REVIEWED=1' in x for x in definitions)
+ assert 'CAN1.Prescaler=3' in next(repo.glob('*.ioc')).read_text()
+ assert 'CAN1.CalculateBaudRate=1000000' in next(repo.glob('*.ioc')).read_text()
+ assert E.parse(repo/'.project').findtext('name')=='DER26-AMS-VEHICLE-1M-CLI4'
+-print('PASS nine CubeIDE configurations, identity, 1-Mbit/s runtime/project/Cube timing; no fabricated release evidence')
++print('PASS twelve CubeIDE configurations, identity, 1-Mbit/s runtime/project/Cube timing; no fabricated release evidence')
+ probe=cwd/'build/vehicle_contract_probe.c'
+ probe.write_text('''#include "app.h"
+ _Static_assert(NSMBS==5 && ACCUMULATOR_PHYSICAL_CHAIN_COUNT==5,"five SMBs");

@@ -628,6 +628,10 @@ typedef struct
   uint32_t last_duration_us;
   uint32_t max_duration_us;
   uint32_t optional_voltage_epoch;
+  uint32_t reference_probe_count;
+  uint32_t reference_wait_count;
+  uint32_t reference_reuse_count;
+  uint32_t aux_short_wait_count;
   uint32_t frame_trace_sequence;
   adbms6830_frame_trace_t frame_trace[32];
   uint32_t session_count;
@@ -663,6 +667,11 @@ typedef struct
   uint32_t activity_us;
   uint32_t activity_ms;
   uint32_t verified_ms;
+  /* Independently verified CFGA reference state; not isoSPI readiness. */
+  bool reference_known;
+  bool aux_no_soak;
+  uint32_t reference_observed_us;
+  uint32_t reference_keepalive_ms;
 } adbms6830_wake_state_t;
 
 typedef enum
@@ -717,6 +726,7 @@ typedef struct
   uint16_t valid_mask;
   uint16_t suspect_mask;
   int16_t baseline_raw[ADBMS6830_MAX_TRACKED_ICS];
+  int16_t pullup_baseline_raw[ADBMS6830_MAX_TRACKED_ICS];
   int16_t pulldown_raw[ADBMS6830_MAX_TRACKED_ICS];
   int16_t pullup_raw[ADBMS6830_MAX_TRACKED_ICS];
   int16_t recovery_raw[ADBMS6830_MAX_TRACKED_ICS];
@@ -727,6 +737,14 @@ typedef struct
   uint32_t fail_count;
   uint32_t config_restore_fail_count;
 } adbms6830_therm_ow_health_t;
+
+typedef struct {
+  bool pending;
+  uint8_t sensor, string, count, physical;
+  uint32_t started_ms, integrity_epoch, fingerprint;
+  adbms6830_therm_ow_health_t first;
+} adbms6830_therm_phase_t;
+
 
 typedef struct
 {
@@ -871,6 +889,11 @@ typedef struct
   adbms6830_post_health_t post;
   adbms6830_aux2_health_t aux2_health;
   adbms6830_therm_ow_health_t therm_ow_health;
+  adbms6830_therm_phase_t therm_phase;
+  uint32_t diagnostic_integrity_epoch;
+  bool temp_prepare_attempted, temp_prepare_ok;
+  uint8_t temp_prepared_sensors[3];
+  uint32_t temp_prepared_tick, temp_prepared_us, temp_settle_saved_us, temp_prepared_integrity_epoch;
 
   uint16_t last_acell_updated_mask[ADBMS6830_MAX_TRACKED_ICS];
   uint16_t last_acell_pec_mask[ADBMS6830_MAX_TRACKED_ICS];

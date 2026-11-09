@@ -4,8 +4,27 @@
 #include <stdlib.h>
 #include <string.h>
 #include "ext_drivers/accumulator.h"
+/* Fake MMIO used by the real per-frame prescaler policy. */
+static SPI_TypeDef spi_regs;
+static RCC_TypeDef rcc_regs;
+#undef SPI6
+#define SPI6 (&spi_regs)
+#undef RCC
+#define RCC (&rcc_regs)
+#undef __HAL_RCC_SPI6_FORCE_RESET
+#undef __HAL_RCC_SPI6_RELEASE_RESET
+#define __HAL_RCC_SPI6_FORCE_RESET() do { spi_regs.SR=0; spi_regs.CR1=0; spi_regs.CR2=0; } while(0)
+#define __HAL_RCC_SPI6_RELEASE_RESET() ((void)0)
 static uint64_t sim_us;
 static uint64_t last_mux_end_us;
+static uint64_t model_aux_ready_us;
+static bool reply_ref_off, reply_soak;
+static bool model_diag, model_no_stim;
+static int model_base_code=10000;
+static uint8_t model_cfga[5][6];
+static unsigned model_cfg_writes, model_fail_cfg_write;
+static int model_stimulus;
+static uint64_t model_stimulus_start;
 static uint32_t timer_base;
 static uint32_t extra_delay_once;
 static bool timer_stopped;
@@ -67,17 +86,41 @@ static void wire_time(SPI_HandleTypeDef *h,uint16_t n,uint32_t timeout)
     if(timeout>largest_timeout) largest_timeout=timeout;
     transfers++; sim_us+=us;
 }
+GPIO_PinState HAL_GPIO_ReadPin(GPIO_TypeDef *p,uint16_t pin) { return last_cs; }
 HAL_StatusTypeDef HAL_SPI_Transmit(SPI_HandleTypeDef *h,uint8_t *p,uint16_t n,uint32_t timeout)
 {
     CHECK(test_lock_depth > 0);
     wire_time(h,n,timeout);
-    if(fail_spi) return HAL_TIMEOUT;
+    if(model_diag && n>=12 && p[0]==0 && p[1]==1) {
+        unsigned count=(n-4)/8;
+        for(unsigned ic=0;ic<count;ic++) memcpy(model_cfga[ic],p+4+(count-1-ic)*8,6);
+        model_cfg_writes++;
+        if(model_cfg_writes==model_fail_cfg_write) return HAL_TIMEOUT;
+    }
+    if(model_diag && n==4 && (p[0]==4 || p[0]==5)) {
+        model_stimulus=p[0]==5 ? ((p[1]&0x80) ? 1 : -1) : 0;
+        model_stimulus_start=sim_us;
+    }
+    if(fail_spi) {
+        if(n>=2 && p[0]==0x07 && p[1]==0x23) {
+            CHECK(h->Init.BaudRatePrescaler==SPI_BAUDRATEPRESCALER_256);
+            h->Instance->SR |= SPI_SR_BSY;
+            h->State=HAL_SPI_STATE_BUSY_TX;
+        }
+        return HAL_TIMEOUT;
+    }
     CHECK(n>=4);
     uint16_t pec=Pec15_Calc(2,p);
     CHECK(p[2]==(pec>>8) && p[3]==(pec&255));
-    if(p[0]==0x07u && p[1]==0x23u) last_mux_end_us=sim_us;
+    if(p[0]==0x07u && p[1]==0x23u) {
+        CHECK(h->Init.BaudRatePrescaler==SPI_BAUDRATEPRESCALER_256);
+        CHECK((h->Instance->CR1 & SPI_CR1_BR)==SPI_BAUDRATEPRESCALER_256);
+        last_mux_end_us=sim_us;
+    }
     if(p[0]==0x04u && p[1]>=0x11u && p[1]<=0x13u && last_mux_end_us!=0u)
         CHECK(sim_us-last_mux_end_us>=3000u);
+    if(p[0]==0x04u && p[1]>=0x11u && p[1]<=0x13u)
+        model_aux_ready_us=sim_us+1112u; /* datasheet slowest AUX period */
     if(p[0]==0 && (p[1]==0x27 || p[1]==0x2e)) model_counter=0;
     else model_counter=(model_counter%63u)+1u;
     return HAL_OK;
@@ -90,13 +133,24 @@ HAL_StatusTypeDef HAL_SPI_TransmitReceive(SPI_HandleTypeDef *h,uint8_t *tx,uint8
     memset(rx,0,n);
     CHECK(n>=12 && (n-4)%8==0);
     uint16_t command=(uint16_t)((tx[0]<<8)|tx[1]);
+    if(command==0x0019u && model_aux_ready_us) CHECK(sim_us>=model_aux_ready_us);
     for(unsigned i=4;i+7<n;i+=8)
     {
         uint8_t *p=rx+i;
         /* Coherent normal cells/AUX codes, status C counter, COMM ACK. */
         for(unsigned k=0;k<6;k+=2){p[k]=0xa8; p[k+1]=0x61;}
+        if(command==0x0002){ memset(p,0,6); p[0]=reply_ref_off?0:0x80; p[2]=reply_soak?0x80:0; } /* REFON, no soak */
         if(command==0x0722){p[0]=0x67;p[1]=0x98;p[2]=0x77;p[3]=1;p[4]=0x1f;p[5]=0xff;}
         if(command==0x0012 || command==0x0030){p[0]=p[1]=p[4]=p[5]=0;p[2]=0;p[3]=1;}
+        if(model_diag) {
+            if(command==0x0002) memcpy(p,model_cfga[(i-4)/8],6);
+            if(command==0x0026) memset(p,0,6);
+            if(command==0x0019) {
+                if(model_stimulus) CHECK(sim_us-model_stimulus_start>=6000u);
+                int16_t code=(int16_t)(model_base_code+(model_no_stim ? 0 : model_stimulus*300));
+                for(unsigned k=0;k<6;k+=2) { p[k]=(uint8_t)code; p[k+1]=(uint8_t)((uint16_t)code>>8); }
+            }
+        }
         p[6]=(uint8_t)(((model_counter+(bad_counter?1u:0u))&63u)<<2);
         uint16_t pec=pec10_calc(1,6,p); p[6]|=(uint8_t)(pec>>8);p[7]=(uint8_t)pec;
         if(bad_pec) p[7]^=1;
@@ -114,11 +168,14 @@ static void reset_dev(unsigned count)
     memset(&dev,0,sizeof(dev));memset(ics,0,sizeof(ics));
     memset(&spi,0,sizeof(spi));memset(&tim,0,sizeof(tim));
     sim_us=0; timer_base=0; edge_count=0;model_counter=0;transfers=0;largest_timeout=0;
-    last_mux_end_us=0;
+    last_mux_end_us=0; model_aux_ready_us=0; reply_ref_off=reply_soak=false;
     bad_pec=bad_counter=fail_spi=timer_stopped=false;extra_delay_once=0;last_cs=GPIO_PIN_SET;
+    memset(&spi_regs,0,sizeof(spi_regs));
     spi.Instance=SPI6;
+    spi.State=HAL_SPI_STATE_READY;
     spi.Init.DataSize=SPI_DATASIZE_8BIT;
     spi.Init.BaudRatePrescaler=SPI_BAUDRATEPRESCALER_256;
+    spi_regs.CR1=spi.Init.BaudRatePrescaler|SPI_CR1_SPE;
     tim.Instance=&timer;dev.htim=&tim;dev.hspi=&spi;
     dev.ics=ics;dev.ics_capacity=count;dev.num_ics=count;dev.physical_chain_count=count;
     dev.monitored_cell_count=15;dev.string=dev.write_string=STRING_B;
@@ -145,6 +202,77 @@ static void read_clean(void)
 }while(0)
 int main(void)
 {
+    const uint32_t rates[]={SPI_BAUDRATEPRESCALER_64,SPI_BAUDRATEPRESCALER_128,SPI_BAUDRATEPRESCALER_256};
+    for(unsigned rate=0;rate<3;rate++) {
+        reset_dev(5);
+        spi.Init.BaudRatePrescaler=rates[rate];
+        spi_regs.CR1=rates[rate]|SPI_CR1_SPE|SPI_CR1_CPOL|SPI_CR1_CPHA;
+        uint32_t original=spi_regs.CR1;
+        uint64_t start=sim_us;
+        CHECK(adbms6830_spi_write(&dev,STCOMM,sizeof(STCOMM),1)==HAL_OK);
+        CHECK(sim_us-start==247u); /* 13 bytes at /256, not the fast default */
+        CHECK(spi.Init.BaudRatePrescaler==rates[rate] && spi_regs.CR1==original);
+        CHECK(last_cs==GPIO_PIN_SET && test_lock_depth==0);
+        CHECK(dev.session.warm_wake_count==0 && dev.session.cold_wake_count==0);
+        fail_spi=true;
+        CHECK(adbms6830_spi_write(&dev,STCOMM,sizeof(STCOMM),1)==HAL_TIMEOUT);
+        CHECK(spi.Init.BaudRatePrescaler==rates[rate] && spi_regs.CR1==original);
+        CHECK(spi.State==HAL_SPI_STATE_READY && !(spi_regs.SR & SPI_SR_BSY));
+        CHECK(last_cs==GPIO_PIN_SET && test_lock_depth==0 && !dev.wake.verified);
+        fail_spi=false;
+        CHECK(adbms6830_spi_write(&dev,STCOMM,sizeof(STCOMM),1)==HAL_OK);
+        uint8_t comm_reply[40];
+        CHECK(adbms6830_spi_write_read(&dev,STCOMM,4,comm_reply,sizeof(comm_reply),1)==HAL_OK);
+        CHECK(spi_regs.CR1==original && spi.Init.BaudRatePrescaler==rates[rate]);
+        fail_spi=true;
+        CHECK(adbms6830_spi_write_read(&dev,STCOMM,4,comm_reply,sizeof(comm_reply),1)==HAL_TIMEOUT);
+        CHECK(spi_regs.CR1==original && spi.Init.BaudRatePrescaler==rates[rate]);
+        fail_spi=false;
+        CHECK(adbms6830_spi_write(&dev,STCOMM,sizeof(STCOMM),0)==HAL_ERROR);
+        last_cs=GPIO_PIN_RESET;
+        CHECK(adbms6830_spi_write(&dev,STCOMM,sizeof(STCOMM),1)==HAL_BUSY);
+        CHECK(spi_regs.CR1==original && spi.Init.BaudRatePrescaler==rates[rate]);
+        last_cs=GPIO_PIN_SET;
+        spi_regs.SR=SPI_SR_BSY;
+        CHECK(adbms6830_spi_write(&dev,STCOMM,sizeof(STCOMM),1)==HAL_BUSY);
+        CHECK(spi_regs.CR1==original && test_lock_depth==0);
+    }
+    puts("PASS mux /256 wire rate, success/timeout restoration, CS-high/idle guards and no added wakes");
+    /* No startup delay is skipped without a whole-chain REFON reply. */
+    reset_dev(5); read_clean();
+    uint64_t ref_start=sim_us;
+    CHECK(adbms6830_prepare_reference(&dev)==HAL_OK);
+    CHECK(sim_us-ref_start>=4500u);
+    uint32_t ref_transfers=transfers;
+    ref_start=sim_us;
+    CHECK(adbms6830_prepare_reference(&dev)==HAL_OK);
+    CHECK(sim_us==ref_start && transfers==ref_transfers);
+    /* Valid traffic renews watchdog evidence, not reference maturity. */
+    for(unsigned i=0;i<20;i++) { sim_us+=100000u; read_clean(); }
+    ref_start=sim_us;
+    CHECK(adbms6830_prepare_reference(&dev)==HAL_OK && sim_us==ref_start);
+    /* An unrelated reply after the evidence expires must not revive it. */
+    sim_us+=1000001u;
+    uint8_t ref_reply[40];
+    CHECK(adbms6830_rd48_checked(&dev,RDSID,ref_reply)==HAL_OK);
+    CHECK(!dev.wake.reference_known);
+    ref_start=sim_us;
+    CHECK(adbms6830_prepare_reference(&dev)==HAL_OK && sim_us-ref_start>=4500u);
+    uint8_t ref_cfg[30]={0};
+    CHECK(adbms6830_wr48_checked(&dev,WRCFGA,ref_cfg)==HAL_OK);
+    CHECK(!dev.wake.reference_known);
+    reply_ref_off=true;
+    CHECK(adbms6830_prepare_reference(&dev)==HAL_ERROR);
+    reply_ref_off=false; bad_pec=true;
+    CHECK(adbms6830_prepare_reference(&dev)==HAL_ERROR);
+    bad_pec=false;
+    CHECK(adbms6830_prepare_reference(&dev)==HAL_OK);
+    CHECK(adbms6830_cmd_checked(&dev,SRST)==HAL_OK);
+    CHECK(!dev.wake.reference_known);
+    reset_dev(5); reply_soak=true; read_clean(); sim_us+=10000u;
+    CHECK(smb_read_temp(&dev)!=0); /* no short wait under unmodelled soak */
+    CHECK(test_lock_depth==0u && last_cs==GPIO_PIN_SET);
+    puts("PASS reference maturity, reuse, stale proof, writes, reset, PEC, soak rejection");
     reset_dev(5); read_clean();
     poison_tx_on_acquire=true;
     uint8_t cfg_payload[30]={0};

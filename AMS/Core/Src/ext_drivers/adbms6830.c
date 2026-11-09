@@ -14,6 +14,7 @@
 #include "ext_drivers/adbms6830_functions.h"
 #include "ext_drivers/thermistor_model.h"
 #include "ams_build_profile.h"
+#include "ext_drivers/ams_spi6_transport.h"
 
 static unsigned char shared_buf[BUFSZ] = {0};
 static uint8_t write_buf[BUFSZ] = {0};
@@ -360,6 +361,8 @@ static uint32_t adbms6830_runtime_time_us(const adbms6830_driver_t *dev)
 
 static void adbms6830_link_forget(adbms6830_driver_t *dev)
 {
+    dev->diagnostic_integrity_epoch++;
+    dev->wake.reference_known = false;
     dev->wake.activity_valid = false;
     dev->wake.verified = false;
     dev->status_conversion_pending = false;
@@ -370,6 +373,15 @@ static bool adbms6830_link_matches(const adbms6830_driver_t *dev)
     return (dev->wake.string == dev->string) &&
            (dev->wake.physical_count == dev->physical_chain_count) &&
            (dev->wake.logical_count == (uint8_t)dev->num_ics);
+}
+
+/* Any verified reply proves a valid command reached the complete chain.
+ * REFON persists while commands service the >=1.8 s watchdog; use 1 s.
+ * Expired evidence cannot be revived by an unrelated successful read. */
+static bool adbms6830_reference_live(const adbms6830_driver_t *dev)
+{
+    return dev->wake.reference_known && adbms6830_link_matches(dev) &&
+        (uint32_t)(HAL_GetTick()-dev->wake.reference_keepalive_ms) < 1000u;
 }
 
 /* One physical-activity decision for standalone and coherent transfers.
@@ -4319,6 +4331,57 @@ static void adbms6830_trace_frame(adbms6830_driver_t *dev, uint32_t start,
     dev->session.frame_trace_sequence = seq + 1u;
 }
 
+/* STCOMM clocks the SMB ADG728 I2C bus at SCK/2. Its 400 kHz limit
+ * requires /256 at PCLK2=108 MHz, independently of the fast register rate.
+ * The caller owns the recursive SPI lock and starts/ends with CS high. */
+typedef struct {
+    uint32_t cr1, cr2, prescaler;
+} adbms6830_comm_clock_t;
+
+static bool adbms6830_is_comm_frame(const uint8_t *data, uint16_t len)
+{
+    return len >= 2u && data[0] == 0x07u && data[1] == 0x23u;
+}
+
+static HAL_StatusTypeDef adbms6830_comm_clock_begin(SPI_HandleTypeDef *h,
+                                                   adbms6830_comm_clock_t *saved)
+{
+    if(h->Instance != SPI6 || h->State != HAL_SPI_STATE_READY || h->Lock != HAL_UNLOCKED ||
+       (h->Instance->SR & SPI_SR_BSY) ||
+       (h->Instance->CR2 & (SPI_CR2_RXDMAEN|SPI_CR2_TXDMAEN))) return HAL_BUSY;
+    saved->cr1=h->Instance->CR1;
+    saved->cr2=h->Instance->CR2;
+    saved->prescaler=h->Init.BaudRatePrescaler;
+    h->Instance->CR1=saved->cr1 & ~SPI_CR1_SPE;
+    h->Instance->CR1=(saved->cr1 & ~(SPI_CR1_BR|SPI_CR1_SPE)) | SPI_BAUDRATEPRESCALER_256;
+    h->Init.BaudRatePrescaler=SPI_BAUDRATEPRESCALER_256;
+    if(saved->cr1 & SPI_CR1_SPE) h->Instance->CR1 |= SPI_CR1_SPE;
+    return HAL_OK;
+}
+
+static HAL_StatusTypeDef adbms6830_comm_clock_end(SPI_HandleTypeDef *h,
+    const adbms6830_comm_clock_t *saved, HAL_StatusTypeDef result)
+{
+    /* Never retime an active DMA transfer. The transport normally quiesces it
+     * before returning. A violation remains an error and invalidates the link. */
+    if(h->Instance->CR2 & (SPI_CR2_RXDMAEN|SPI_CR2_TXDMAEN)) return HAL_ERROR;
+    if(result != HAL_OK || (h->Instance->SR & SPI_SR_BSY)) {
+        if(result == HAL_OK) result=HAL_ERROR;
+        /* A failed polling transfer can leave BSY/handle state set. Stop the
+         * peripheral before restoring BR; no unbounded HAL abort/reinit. */
+        __HAL_RCC_SPI6_FORCE_RESET();
+        (void)RCC->APB2RSTR;
+        __HAL_RCC_SPI6_RELEASE_RESET();
+        h->Instance->CR2=saved->cr2;
+        h->State=HAL_SPI_STATE_READY;
+    }
+    h->Instance->CR1 &= ~SPI_CR1_SPE;
+    h->Instance->CR1=saved->cr1 & ~SPI_CR1_SPE;
+    h->Init.BaudRatePrescaler=saved->prescaler;
+    if(saved->cr1 & SPI_CR1_SPE) h->Instance->CR1 |= SPI_CR1_SPE;
+    return result;
+}
+
 HAL_StatusTypeDef adbms6830_spi_write(adbms6830_driver_t* dev,
                                          uint8_t* data,
                                          uint16_t len,
@@ -4332,7 +4395,19 @@ HAL_StatusTypeDef adbms6830_spi_write(adbms6830_driver_t* dev,
         return HAL_ERROR;
     }
 
+    bool comm_clock=adbms6830_is_comm_frame(data,len);
+    adbms6830_comm_clock_t saved_clock;
+    if(comm_clock && !use_cs) return HAL_ERROR;
     adbms_spi_lock();
+    if(comm_clock && (HAL_GPIO_ReadPin(dev->cs_port[dev->string],dev->cs_pin[dev->string])!=GPIO_PIN_SET ||
+                      adbms6830_comm_clock_begin(dev->hspi,&saved_clock)!=HAL_OK)) {
+        adbms6830_link_forget(dev);
+        adbms_spi_unlock();
+        return HAL_BUSY;
+    }
+    if(len >= 2u && ((data[0] == WRCFGA[0] && data[1] == WRCFGA[1]) ||
+                    (data[0] == SRST[0] && data[1] == SRST[1])))
+        dev->wake.reference_known = false;
     adbms6830_spi_debug_note_tx(dev, dev->spi_debug.last_op, data, data, len, 0u);
 
     uint32_t frame_start_us = adbms6830_runtime_time_us(dev);
@@ -4342,19 +4417,21 @@ HAL_StatusTypeDef adbms6830_spi_write(adbms6830_driver_t* dev,
         adbms6830_set_cs(dev, 0);
     }
 
-    status = HAL_SPI_Transmit(dev->hspi, data, len, adbms6830_frame_timeout_ms(dev, len));
+    status = ams_spi6_transfer(dev->hspi, data, NULL, len, adbms6830_frame_timeout_ms(dev, len));
 
     if(use_cs)
     {
         adbms6830_set_cs(dev, 1);
     }
 
+    uint32_t activity_lower=adbms6830_frame_activity_lower_bound(dev, frame_start_us, len);
+    if(comm_clock) status=adbms6830_comm_clock_end(dev->hspi,&saved_clock,status);
     adbms6830_trace_frame(dev, frame_start_us, status, len);
 
     if(status == HAL_OK)
     {
         adbms6830_session_note_activity(dev,
-            adbms6830_frame_activity_lower_bound(dev, frame_start_us, len), frame_start_ms);
+            activity_lower, frame_start_ms);
     }
 
     if(status != HAL_OK) adbms6830_link_forget(dev);
@@ -4657,6 +4734,23 @@ static HAL_StatusTypeDef adbms6830_rd48_checked_owned(adbms6830_driver_t* dev,
 
     if(adbms6830_last_read_integrity_ok(dev))
     {
+        bool ref_live = adbms6830_reference_live(dev);
+        dev->wake.reference_known = ref_live;
+        if(cmd[0] == RDCFGA[0] && cmd[1] == RDCFGA[1])
+        {
+            bool refon = true, no_soak = true;
+            for(uint8_t ic=0; ic<(uint8_t)dev->num_ics; ic++)
+            {
+                refon &= (rx_data[ic*RX_DATA] & 0x80u) != 0u;
+                no_soak &= (rx_data[ic*RX_DATA+2u] & 0x80u) == 0u;
+            }
+            dev->wake.reference_known = refon;
+            dev->wake.aux_no_soak = no_soak;
+            if(refon && !ref_live)
+                dev->wake.reference_observed_us = adbms6830_runtime_time_us(dev);
+        }
+        if(dev->wake.reference_known)
+            dev->wake.reference_keepalive_ms = dev->wake.activity_ms;
         dev->wake.verified = true;
         dev->wake.verified_ms = dev->wake.activity_ms;
     }
@@ -4678,6 +4772,39 @@ void adbms6830_set_cs(adbms6830_driver_t* dev, uint8_t state)
     HAL_GPIO_WritePin(dev->cs_port[dev->string], dev->cs_pin[dev->string], state);
 }
 
+
+/* Verify once after invalidation; otherwise no SPI and no wait in steady state.
+ * Reading REFON is proof of assertion, not proof that startup has completed.
+ * Start the conservative 4.5 ms maturity interval at that observation. */
+HAL_StatusTypeDef adbms6830_prepare_reference(adbms6830_driver_t *dev)
+{
+    HAL_StatusTypeDef status = HAL_OK;
+    uint8_t config[RX_DATA * ADBMS6830_MAX_TRACKED_ICS];
+    if(!adbms6830_topology_valid(dev)) return HAL_ERROR;
+    adbms_spi_lock();
+    if(!adbms6830_reference_live(dev))
+    {
+        adbms6830_increment_u32_sat(&dev->session.reference_probe_count);
+        dev->wake.reference_known = false;
+        status = adbms6830_rd48_checked(dev, RDCFGA, config);
+        if(status == HAL_OK && (!adbms6830_last_read_integrity_ok(dev) ||
+                               !adbms6830_reference_live(dev))) status = HAL_ERROR;
+    }
+    if(status == HAL_OK)
+    {
+        uint32_t age = adbms6830_runtime_time_us(dev)-dev->wake.reference_observed_us;
+        if(age < ADBMS6830_REFERENCE_PRECONVERSION_WAIT_US)
+        {
+            adbms6830_increment_u32_sat(&dev->session.reference_wait_count);
+            status = adbms6830_wait_cooperative(dev,
+                ADBMS6830_REFERENCE_PRECONVERSION_WAIT_US-age);
+        }
+        else adbms6830_increment_u32_sat(&dev->session.reference_reuse_count);
+        if(status == HAL_OK && !adbms6830_reference_live(dev)) status = HAL_BUSY;
+    }
+    adbms_spi_unlock();
+    return status;
+}
 
 HAL_StatusTypeDef adbms6830_spi_write_read(adbms6830_driver_t *dev,
                                            uint8_t* tx_Data,
@@ -4703,7 +4830,19 @@ HAL_StatusTypeDef adbms6830_spi_write_read(adbms6830_driver_t *dev,
     }
     total_len = (uint16_t)((uint16_t)tx_len + rx_len);
 
+    bool comm_clock=adbms6830_is_comm_frame(tx_Data,tx_len);
+    adbms6830_comm_clock_t saved_clock;
+    if(comm_clock && !use_cs) return HAL_ERROR;
     adbms_spi_lock();
+    if(comm_clock && (HAL_GPIO_ReadPin(dev->cs_port[dev->string],dev->cs_pin[dev->string])!=GPIO_PIN_SET ||
+                      adbms6830_comm_clock_begin(dev->hspi,&saved_clock)!=HAL_OK)) {
+        adbms6830_link_forget(dev);
+        adbms_spi_unlock();
+        return HAL_BUSY;
+    }
+    if(tx_len >= 2u && ((tx_Data[0] == WRCFGA[0] && tx_Data[1] == WRCFGA[1]) ||
+                       (tx_Data[0] == SRST[0] && tx_Data[1] == SRST[1])))
+        dev->wake.reference_known = false;
     memset(spi_txrx_tx_buf, ADBMS6830_SPI_DUMMY_BYTE, total_len);
     memset(spi_txrx_rx_buf, 0, total_len);
     memcpy(spi_txrx_tx_buf, tx_Data, tx_len);
@@ -4717,7 +4856,7 @@ HAL_StatusTypeDef adbms6830_spi_write_read(adbms6830_driver_t *dev,
         adbms6830_set_cs(dev, 0);
     }
 
-    status = HAL_SPI_TransmitReceive(dev->hspi,
+    status = ams_spi6_transfer(dev->hspi,
                                      spi_txrx_tx_buf,
                                      spi_txrx_rx_buf,
                                      total_len,
@@ -4728,13 +4867,15 @@ HAL_StatusTypeDef adbms6830_spi_write_read(adbms6830_driver_t *dev,
         adbms6830_set_cs(dev, 1);
     }
 
+    uint32_t activity_lower=adbms6830_frame_activity_lower_bound(dev, frame_start_us, total_len);
+    if(comm_clock) status=adbms6830_comm_clock_end(dev->hspi,&saved_clock,status);
     adbms6830_trace_frame(dev, frame_start_us, status, total_len);
 
     if(status == HAL_OK)
     {
         memcpy(rx_data, &spi_txrx_rx_buf[tx_len], rx_len);
         adbms6830_session_note_activity(dev,
-            adbms6830_frame_activity_lower_bound(dev, frame_start_us, total_len), frame_start_ms);
+            activity_lower, frame_start_ms);
     }
     else
     {
@@ -4989,7 +5130,7 @@ static HAL_StatusTypeDef adbms6830_poll_conversion_checked(
 
     adbms_spi_lock();
     adbms6830_set_cs(dev, 0u);
-    status = HAL_SPI_Transmit(dev->hspi, cmd_frame, sizeof(cmd_frame), adbms6830_frame_timeout_ms(dev, sizeof(cmd_frame)));
+    status = ams_spi6_transfer(dev->hspi, cmd_frame, NULL, sizeof(cmd_frame), adbms6830_frame_timeout_ms(dev, sizeof(cmd_frame)));
     if(status == HAL_OK)
     {
         adbms6830_note_counter_increment(dev);
@@ -4997,7 +5138,7 @@ static HAL_StatusTypeDef adbms6830_poll_conversion_checked(
 
         while(__HAL_TIM_GET_COUNTER(dev->htim) < timeout_us)
         {
-            status = HAL_SPI_TransmitReceive(dev->hspi, &tx, &rx, 1u, adbms6830_frame_timeout_ms(dev, 1u));
+            status = ams_spi6_transfer(dev->hspi, &tx, &rx, 1u, adbms6830_frame_timeout_ms(dev, 1u));
             if(status != HAL_OK)
             {
                 break;
@@ -7389,7 +7530,14 @@ static HAL_StatusTypeDef adbms6830_capture_aux_gpio_for_sensor(
         return HAL_ERROR;
     }
 
-    /* Trigger ADC conversion on the current GPIO channel */
+    status = adbms6830_prepare_reference(dev);
+    if(status != HAL_OK || !dev->wake.aux_no_soak)
+    {
+        dev->temp_debug.overall_status = (status != HAL_OK) ? status : HAL_ERROR;
+        return dev->temp_debug.overall_status;
+    }
+    /* Single GPIO AUX: minimum update rate 0.9 kHz => 1112 us.
+     * 1250 us includes margin; REFON mature and SOAKON=0 were verified. */
     uint8_t adax_cmd[2] = { ADAX_CMD_BYTE0, ADAX_CH[mux_idx] };
     /* Conservative age includes wake, command and conversion time. */
     uint32_t capture_tick = osKernelGetTickCount();
@@ -7405,7 +7553,8 @@ static HAL_StatusTypeDef adbms6830_capture_aux_gpio_for_sensor(
         dev->temp_debug.overall_status = status;
         return status;
     }
-    if(adbms6830_wait_cooperative(dev, 4000u) != HAL_OK)
+    adbms6830_increment_u32_sat(&dev->session.aux_short_wait_count);
+    if(adbms6830_wait_cooperative(dev, 1250u) != HAL_OK)
     {
         dev->temp_debug.overall_status = HAL_TIMEOUT;
         return HAL_TIMEOUT;
@@ -7594,17 +7743,16 @@ static HAL_StatusTypeDef adbms6830_capture_aux2_gpio_for_sensor(
     adax2_cmd[0] = 0x04u;
     adax2_cmd[1] = (uint8_t)(ADAX_CH[mux_idx] & 0x0Fu);
 
-    status = adbms6830_wakeup_checked(dev);
+    status = adbms6830_prepare_reference(dev);
     if(status == HAL_OK)
     {
         status = adbms6830_cmd_checked(dev, adax2_cmd);
     }
     if(status == HAL_OK)
     {
-        /* AUX2 updates at nominal 125 Hz. Allow one complete 8 ms period plus
-         * margin; cooperative waiting prevents the priority-11 ADBMS task from
-         * starving CAN/estimator/fan/IMD while the silicon converts. */
-        status = adbms6830_wait_cooperative(dev, 9000u);
+        /* AUX2 minimum update rate is 110 Hz, not nominal 125 Hz.
+         * 10 ms covers 9.091 ms plus margin; the reference is already ready. */
+        status = adbms6830_wait_cooperative(dev, 10000u);
     }
     if(status == HAL_OK)
     {
@@ -7727,8 +7875,8 @@ HAL_StatusTypeDef adbms6830_run_aux2_redundancy(adbms6830_driver_t *dev,
 #endif
 }
 
-HAL_StatusTypeDef adbms6830_run_thermistor_open_wire(adbms6830_driver_t *dev,
-                                                      uint8_t sensor_num)
+static HAL_StatusTypeDef adbms6830_thermistor_measure(adbms6830_driver_t *dev,
+                                                      uint8_t sensor_num, uint8_t mode)
 {
 #if AMS_ENABLE_ADBMS_THERM_OPEN_WIRE_DIAG
     HAL_StatusTypeDef status = HAL_OK;
@@ -7749,6 +7897,7 @@ HAL_StatusTypeDef adbms6830_run_thermistor_open_wire(adbms6830_driver_t *dev,
     uint8_t adax_ow_down_cmd[2];
     uint8_t adax_ow_up_cmd[2];
     bool diagnostic_cfga_written = false;
+    bool pull_up=(mode==1u);
 
     if(!adbms6830_topology_valid(dev) ||
        (sensor_num >= ADBMS6830_TEMP_SENSOR_COUNT))
@@ -7759,6 +7908,7 @@ HAL_StatusTypeDef adbms6830_run_thermistor_open_wire(adbms6830_driver_t *dev,
     dev->therm_ow_health.sensor = sensor_num;
     dev->therm_ow_health.valid_mask = 0u;
     dev->therm_ow_health.suspect_mask = 0u;
+    memset(dev->therm_ow_health.pullup_baseline_raw,0,sizeof(dev->therm_ow_health.pullup_baseline_raw));
     memset(dev->therm_ow_health.baseline_raw, 0,
            sizeof(dev->therm_ow_health.baseline_raw));
     memset(dev->therm_ow_health.pulldown_raw, 0,
@@ -7773,7 +7923,7 @@ HAL_StatusTypeDef adbms6830_run_thermistor_open_wire(adbms6830_driver_t *dev,
            sizeof(dev->therm_ow_health.pullup_delta_mv));
     memset(dev->therm_ow_health.recovery_delta_mv, 0,
            sizeof(dev->therm_ow_health.recovery_delta_mv));
-    adbms6830_increment_u32_sat(&dev->therm_ow_health.count);
+
 
     expected_mask = adbms6830_expected_ic_mask(dev);
     mux_idx = sensor_num / SENSORS_PER_MUX;
@@ -7816,8 +7966,8 @@ HAL_StatusTypeDef adbms6830_run_thermistor_open_wire(adbms6830_driver_t *dev,
             dev->ics[ic].tx_cfga.owrng = 0u;
             dev->ics[ic].tx_cfga.owa = 7u;
         }
+        diagnostic_cfga_written = true; /* Even a failed write may reach some ICs. */
         status = adbms6830_wrcfga_checked(dev);
-        diagnostic_cfga_written = (status == HAL_OK);
     }
 
     /* ADAX: command bit OW=1. PUP=0 uses the pull-down source; PUP=1 uses
@@ -7833,7 +7983,7 @@ HAL_StatusTypeDef adbms6830_run_thermistor_open_wire(adbms6830_driver_t *dev,
     }
     if(status == HAL_OK)
     {
-        status = adbms6830_cmd_checked(dev, adax_ow_down_cmd);
+        status = adbms6830_cmd_checked(dev, pull_up ? adax_ow_up_cmd : adax_ow_down_cmd);
     }
     if(status == HAL_OK)
     {
@@ -7843,28 +7993,16 @@ HAL_StatusTypeDef adbms6830_run_thermistor_open_wire(adbms6830_driver_t *dev,
     if(status == HAL_OK)
     {
         status = adbms6830_read_selected_auxa_raw(dev, gpio_ch,
-                                                  pulldown,
-                                                  &pulldown_valid_mask);
+                                                  pull_up ? pullup : pulldown,
+                                                  pull_up ? &pullup_valid_mask : &pulldown_valid_mask);
     }
 
-    if(status == HAL_OK)
-    {
-        status = adbms6830_wakeup_checked(dev);
-    }
-    if(status == HAL_OK)
-    {
-        status = adbms6830_cmd_checked(dev, adax_ow_up_cmd);
-    }
-    if(status == HAL_OK)
-    {
-        status = adbms6830_wait_cooperative(dev, 6000u);
-    }
-    if(status == HAL_OK)
-    {
-        status = adbms6830_read_selected_auxa_raw(dev, gpio_ch,
-                                                  pullup,
-                                                  &pullup_valid_mask);
-    }
+    /* With enough scan budget, retain the original compact pair: one
+     * production/config restore, two stimuli, and fewer bus wakes. */
+    if(mode==2u && status==HAL_OK) status=adbms6830_cmd_checked(dev,adax_ow_up_cmd);
+    if(mode==2u && status==HAL_OK) status=adbms6830_wait_cooperative(dev,6000u);
+    if(mode==2u && status==HAL_OK)
+        status=adbms6830_read_selected_auxa_raw(dev,gpio_ch,pullup,&pullup_valid_mask);
 
     /* Restore the exact production CFGA even when the stimulus failed. A
      * failed restore is not merely an observational thermistor failure: it is
@@ -7906,8 +8044,8 @@ HAL_StatusTypeDef adbms6830_run_thermistor_open_wire(adbms6830_driver_t *dev,
        (recovery_status == HAL_OK))
     {
         uint16_t combined_valid = (uint16_t)(baseline_valid_mask &
-                                             pulldown_valid_mask &
-                                             pullup_valid_mask &
+                                             (mode==2u ? (pullup_valid_mask & pulldown_valid_mask) :
+                                              (pull_up ? pullup_valid_mask : pulldown_valid_mask)) &
                                              recovery_valid_mask);
         dev->therm_ow_health.valid_mask = combined_valid;
         for(uint8_t ic = 0u; ic < (uint8_t)dev->num_ics; ic++)
@@ -7918,6 +8056,7 @@ HAL_StatusTypeDef adbms6830_run_thermistor_open_wire(adbms6830_driver_t *dev,
             int16_t recovery_delta = adbms6830_code_delta_mv(recovery[ic], baseline[ic]);
 
             dev->therm_ow_health.baseline_raw[ic] = baseline[ic];
+            dev->therm_ow_health.pullup_baseline_raw[ic] = baseline[ic];
             dev->therm_ow_health.pulldown_raw[ic] = pulldown[ic];
             dev->therm_ow_health.pullup_raw[ic] = pullup[ic];
             dev->therm_ow_health.recovery_raw[ic] = recovery[ic];
@@ -7926,8 +8065,8 @@ HAL_StatusTypeDef adbms6830_run_thermistor_open_wire(adbms6830_driver_t *dev,
             dev->therm_ow_health.recovery_delta_mv[ic] = recovery_delta;
 
             if(((combined_valid & bit) == 0u) ||
-               ((uint16_t)down_delta < AMS_ADBMS_THERM_OW_MIN_DELTA_MV) ||
-               ((uint16_t)up_delta < AMS_ADBMS_THERM_OW_MIN_DELTA_MV) ||
+               ((mode!=1u) && (uint16_t)down_delta < AMS_ADBMS_THERM_OW_MIN_DELTA_MV) ||
+               ((mode!=0u) && (uint16_t)up_delta < AMS_ADBMS_THERM_OW_MIN_DELTA_MV) ||
                ((uint16_t)recovery_delta > AMS_ADBMS_THERM_OW_RECOVERY_TOL_MV))
             {
                 dev->therm_ow_health.suspect_mask |= bit;
@@ -7945,16 +8084,95 @@ HAL_StatusTypeDef adbms6830_run_thermistor_open_wire(adbms6830_driver_t *dev,
         status = recovery_status;
     }
 
-    if(status != HAL_OK)
-    {
-        adbms6830_increment_u32_sat(&dev->therm_ow_health.fail_count);
-    }
     return status;
 #else
     (void)dev;
     (void)sensor_num;
     return HAL_OK;
 #endif
+}
+
+/* Each phase restores production CFGA and takes an unstimulated recovery
+ * sample before returning. No stimulus/configuration is held across scans. */
+static HAL_StatusTypeDef adbms6830_thermistor_step_owned(adbms6830_driver_t *dev,
+    uint8_t sensor, bool *complete)
+{
+    if(!complete) return HAL_ERROR;
+    *complete=true;
+#if AMS_ENABLE_ADBMS_THERM_OPEN_WIRE_DIAG
+    if(!adbms6830_topology_valid(dev) || sensor>=ADBMS6830_TEMP_SENSOR_COUNT) {
+        if(dev) { dev->therm_phase.pending=false; dev->therm_ow_health.valid_mask=0; }
+        return HAL_ERROR;
+    }
+    adbms6830_therm_phase_t *phase=&dev->therm_phase;
+    uint32_t now=HAL_GetTick();
+    if(phase->pending && (phase->sensor!=sensor ||
+        (uint32_t)(now-phase->started_ms)>1000u ||
+        phase->integrity_epoch!=dev->diagnostic_integrity_epoch ||
+        phase->fingerprint!=adbms6830_config_expected_fingerprint(dev) ||
+        phase->string!=dev->string || phase->count!=(uint8_t)dev->num_ics ||
+        phase->physical!=dev->physical_chain_count)) {
+        phase->pending=false;
+        dev->therm_ow_health.valid_mask=0;
+        adbms6830_increment_u32_sat(&dev->therm_ow_health.fail_count);
+        return HAL_ERROR;
+    }
+    bool second=phase->pending;
+    if(!second) adbms6830_increment_u32_sat(&dev->therm_ow_health.count);
+    HAL_StatusTypeDef status=adbms6830_thermistor_measure(dev,sensor,second ? 1u : 0u);
+    if(!second && dev->therm_ow_health.valid_mask==adbms6830_expected_ic_mask(dev)) {
+        phase->first=dev->therm_ow_health;
+        phase->sensor=sensor; phase->started_ms=HAL_GetTick();
+        phase->integrity_epoch=dev->diagnostic_integrity_epoch;
+        phase->fingerprint=adbms6830_config_expected_fingerprint(dev);
+        phase->string=dev->string; phase->count=(uint8_t)dev->num_ics;
+        phase->physical=dev->physical_chain_count; phase->pending=true;
+        dev->therm_ow_health.valid_mask=0; /* a half-test is never complete coverage */
+        *complete=false;
+        return HAL_OK;
+    }
+    phase->pending=false;
+    if(second) {
+        dev->therm_ow_health.valid_mask &= phase->first.valid_mask;
+        dev->therm_ow_health.suspect_mask |= phase->first.suspect_mask;
+        for(uint8_t ic=0;ic<(uint8_t)dev->num_ics;ic++) {
+            dev->therm_ow_health.pullup_baseline_raw[ic]=dev->therm_ow_health.baseline_raw[ic];
+            dev->therm_ow_health.baseline_raw[ic]=phase->first.baseline_raw[ic];
+            dev->therm_ow_health.pulldown_raw[ic]=phase->first.pulldown_raw[ic];
+            dev->therm_ow_health.pulldown_delta_mv[ic]=phase->first.pulldown_delta_mv[ic];
+            if(phase->first.recovery_delta_mv[ic]>dev->therm_ow_health.recovery_delta_mv[ic])
+                dev->therm_ow_health.recovery_delta_mv[ic]=phase->first.recovery_delta_mv[ic];
+        }
+        if(dev->therm_ow_health.suspect_mask) status=HAL_ERROR;
+    }
+    if(status!=HAL_OK) adbms6830_increment_u32_sat(&dev->therm_ow_health.fail_count);
+    return status;
+#else
+    (void)dev; (void)sensor; return HAL_OK;
+#endif
+}
+
+HAL_StatusTypeDef adbms6830_thermistor_open_wire_step(adbms6830_driver_t *dev,
+    uint8_t sensor, bool *complete)
+{
+    adbms_spi_lock();
+    HAL_StatusTypeDef status=adbms6830_thermistor_step_owned(dev,sensor,complete);
+    adbms_spi_unlock();
+    return status;
+}
+
+HAL_StatusTypeDef adbms6830_run_thermistor_open_wire(adbms6830_driver_t *dev,
+    uint8_t sensor)
+{
+    if(!dev) return HAL_ERROR;
+    /* Compact pair when explicitly requested or admitted with enough budget. */
+    adbms_spi_lock();
+    dev->therm_phase.pending=false;
+    adbms6830_increment_u32_sat(&dev->therm_ow_health.count);
+    HAL_StatusTypeDef status=adbms6830_thermistor_measure(dev,sensor,2u);
+    if(status!=HAL_OK) adbms6830_increment_u32_sat(&dev->therm_ow_health.fail_count);
+    adbms_spi_unlock();
+    return status;
 }
 
 

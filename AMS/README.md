@@ -1,6 +1,6 @@
-# Current update: v0.5.57-r4 wake/session fix
+# Current update: v0.5.57-r8 timing stage 3
 
-See [WAKEFIX_R4_REVIEW.md](WAKEFIX_R4_REVIEW.md) for corrections, test evidence and remaining timing work. Full native vehicle-ci passes. Source only; no ARM or hardware qualification.
+See [TIMING_STAGE3_R8_REVIEW.md](TIMING_STAGE3_R8_REVIEW.md): adaptive compact/phased diagnostics, partial-write restoration fix, temperature settling pipeline, passive task/IRQ profiling (`perf [clear]`) and opt-in cache/diagnostic bench presets. Twelve build configurations; standard configurations retain /256 polling with caches off. Retains /256 mux transactions and prior wake/DMA work. Full native vehicle-ci passes. Source only; no ARM or hardware qualification.
 
 # DER26 AMS v0.5.57 — Vehicle Main Branch (1 Mbps)
 

@@ -148,6 +148,12 @@ HAL_StatusTypeDef HAL_SPI_TransmitReceive(SPI_HandleTypeDef *hspi,
     return unit_spi_txrx_status;
 }
 
+/* Silicon-independent fixtures do not model external CS contention. */
+GPIO_PinState HAL_GPIO_ReadPin(GPIO_TypeDef *port, uint16_t pin)
+{
+    (void)port; (void)pin; return GPIO_PIN_SET;
+}
+
 void HAL_GPIO_WritePin(GPIO_TypeDef *GPIOx, uint16_t GPIO_Pin, GPIO_PinState PinState)
 {
     (void)GPIOx;

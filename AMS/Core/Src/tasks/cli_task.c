@@ -1,3 +1,5 @@
+#include "ext_drivers/ams_spi6_transport.h"
+#include "diagnostics/ams_perf.h"
 #include "ams_task_schedule.h"
 #include "ams_diag_budget.h"
 /**
@@ -60,6 +62,7 @@ int get_charger(int argc, char *argv[]);
 int get_can_diag(int argc, char *argv[]);
 int watchdog_control(int argc, char *argv[]);
 int get_rtos_diag(int argc, char *argv[]);
+int get_perf_diag(int argc, char *argv[]);
 int get_uart_diag(int argc, char *argv[]);
 int recorder_control(int argc, char *argv[]);
 int get_spi_debug(int argc, char *argv[]);
@@ -245,6 +248,7 @@ command_t cmds[] =
 	{"charger", &get_charger, "gets charger CAN command/status/debug state"},
 	{"can", &get_can_diag, "CAN diagnostics: can [diag|recover]"},
 	{"wdg", &watchdog_control, "watchdog diagnostics/control: wdg [status|enable]"},
+	{"perf", &get_perf_diag, "passive task cycles/IRQ/unblock latency: perf [clear]"},
 	{"rtos", &get_rtos_diag, "RTOS stack/heap diagnostics: rtos"},
 	{"uart", &get_uart_diag, "CLI UART diagnostics/recovery: uart [status|recover|clear]"},
 	{"recorder", &recorder_control, "flight recorder: recorder [status|header|dump [n]|clear|trigger-test]"},
@@ -5664,6 +5668,29 @@ static int get_spi_debug_locked(int argc, char *argv[])
                      (unsigned long)session->injected_gap_count);
             ret |= cli_printline(cli, outline);
             snprintf(outline, CLI_LINESZ,
+                     "waitopt ref probe/wait/reuse:%lu/%lu/%lu aux_short:%lu",
+                     (unsigned long)session->reference_probe_count,
+                     (unsigned long)session->reference_wait_count,
+                     (unsigned long)session->reference_reuse_count,
+                     (unsigned long)session->aux_short_wait_count);
+            ret |= cli_printline(cli, outline);
+            ret |= cli_printline(cli,"SPI mux policy:STCOMM /256; normal rate restored after frame");
+            snprintf(outline,CLI_LINESZ,"diag enabled AUX2:%u THERM:%u compact_max_ms:%lu",
+                (unsigned)AMS_ENABLE_ADBMS_AUX2_REDUNDANCY,(unsigned)AMS_ENABLE_ADBMS_THERM_OPEN_WIRE_DIAG,
+                (unsigned long)data->adbms_therm_compact_cost_ms);
+            ret |= cli_printline(cli,outline);
+            snprintf(outline,CLI_LINESZ,"pipeline settle_saved_us:%lu therm_phase_pending:%u",
+                     (unsigned long)smb->temp_settle_saved_us,(unsigned)smb->therm_phase.pending);
+            ret |= cli_printline(cli,outline);
+            ams_spi6_dma_stats_t dma_stats=ams_spi6_dma_stats();
+            snprintf(outline, CLI_LINESZ,
+                     "SPI DMA en:%u start/ok:%lu/%lu err/timeout:%lu/%lu poll:%lu quarantine:%lu",
+                     (unsigned)AMS_ADBMS_SPI_DMA,
+                     (unsigned long)dma_stats.started, (unsigned long)dma_stats.completed,
+                     (unsigned long)dma_stats.errors, (unsigned long)dma_stats.timeouts,
+                     (unsigned long)dma_stats.polling, (unsigned long)dma_stats.quarantined);
+            ret |= cli_printline(cli, outline);
+            snprintf(outline, CLI_LINESZ,
                      "session waits:%lu interrupted:%lu requested_us:0x%08lX%08lX duration last/max:%lu/%luus",
                      (unsigned long)session->long_wait_count,
                      (unsigned long)session->long_wait_interrupted_count,
@@ -5685,7 +5712,7 @@ static int get_spi_debug_locked(int argc, char *argv[])
             (unsigned long)data->adbms_aux2_completed_mask, (unsigned long)aux_overdue,
             (unsigned long)data->adbms_therm_completed_mask, (unsigned long)therm_overdue);
         ret |= cli_printline(cli, outline);
-        snprintf(outline, CLI_LINESZ, "diag cost max ms:%lu/%lu deferred:%lu/%lu forced:%lu/%lu (advisory)",
+        snprintf(outline, CLI_LINESZ, "diag cost max ms:%lu/%lu deferred:%lu/%lu late_admitted:%lu/%lu (advisory)",
             (unsigned long)data->adbms_diag_cost_ms[0], (unsigned long)data->adbms_diag_cost_ms[1],
             (unsigned long)data->adbms_diag_deferred[0], (unsigned long)data->adbms_diag_deferred[1],
             (unsigned long)data->adbms_diag_forced[0], (unsigned long)data->adbms_diag_forced[1]);
@@ -5790,8 +5817,9 @@ static int get_spi_debug_locked(int argc, char *argv[])
              (unsigned long)data->adbms_therm_ow_diag_fail_count);
     ret |= cli_printline(cli, outline);
     snprintf(outline, CLI_LINESZ,
-             "thermOW IC0 raw base/down/up/recover:%d/%d/%d/%d delta_mV down/up/recover:%d/%d/%d",
+             "thermOW IC0 baseD/baseU/down/up/recover:%d/%d/%d/%d/%d delta_mV D/U/R:%d/%d/%d",
              (int)smb->therm_ow_health.baseline_raw[0],
+             (int)smb->therm_ow_health.pullup_baseline_raw[0],
              (int)smb->therm_ow_health.pulldown_raw[0],
              (int)smb->therm_ow_health.pullup_raw[0],
              (int)smb->therm_ow_health.recovery_raw[0],
@@ -7573,6 +7601,34 @@ int get_uart_diag(int argc, char *argv[])
              (unsigned long)cli->stop_applied_tick);
     ret |= cli_printline(cli,outline);
     return ret;
+}
+
+int get_perf_diag(int argc, char *argv[])
+{
+    if(argc==2 && !strcmp(argv[1],"clear")) ams_perf_clear();
+    else if(argc!=1) return cli_printline(cli,"Usage: perf [clear]");
+    int ret=cli_printline(cli,"PERF cycles: task context excludes instrumented IRQ bodies; includes residual kernel/profiler overhead");
+    uint32_t cache_ccr=0;
+#if !(defined(AMS_HOST_TEST) && AMS_HOST_TEST)
+    cache_ccr=SCB->CCR;
+#endif
+    snprintf(outline,CLI_LINESZ,"core_hz:%lu cache_I:%u cache_D:%u",
+        (unsigned long)SystemCoreClock,(unsigned)((cache_ccr & SCB_CCR_IC_Msk)!=0),
+        (unsigned)((cache_ccr & SCB_CCR_DC_Msk)!=0));
+    ret |= cli_printline(cli,outline);
+    uint32_t mhz=SystemCoreClock/1000000u;
+    if(!mhz) return ret;
+    for(unsigned i=0;i<AMS_PERF_TASKS;i++) {
+        ams_perf_row_t row;
+        if(!ams_perf_get(i,&row)) continue;
+        snprintf(outline,CLI_LINESZ,"%s us:%llu slices:%lu max_slice_us:%lu max_unblock_us:%lu",
+            row.name,(unsigned long long)(row.cycles/mhz),(unsigned long)row.slices,
+            (unsigned long)(row.max_slice_cycles/mhz),(unsigned long)(row.max_unblock_cycles/mhz));
+        ret |= cli_printline(cli,outline);
+    }
+    snprintf(outline,CLI_LINESZ,"IRQ_us:%llu profiler_slots_overflow:%lu",
+        (unsigned long long)(ams_perf_irq_cycles()/mhz),(unsigned long)ams_perf_overflow());
+    return ret | cli_printline(cli,outline);
 }
 
 int get_rtos_diag(int argc, char *argv[])

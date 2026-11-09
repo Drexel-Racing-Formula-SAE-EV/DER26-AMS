@@ -2,15 +2,16 @@
 #define AMS_DIAG_BUDGET_H
 #include <stdint.h>
 #include <stdbool.h>
-/* Cost is a measured high-water mark with a startup estimate. Deadline
- * pressure permits one exceptional scan; it never creates a catch-up burst. */
+/* Advisory work never overrides the scan budget. Lateness is reported by
+ * forced (legacy field name), but does not authorize an over-budget job.
+ * Successful coverage ages expose overload instead of hiding it with retries. */
 static inline bool ams_diag_admit(uint32_t now, uint32_t scan_start,
     uint32_t period, uint32_t cost, uint32_t due, uint32_t max_deferral,
     bool *forced)
 {
     uint32_t elapsed = now - scan_start;
     *forced = (uint32_t)(now - due) >= max_deferral;
-    return *forced || ((elapsed < period) && (cost <= period - elapsed));
+    return (elapsed < period) && (cost <= period - elapsed);
 }
 /* No position can monopolize the rotation: at most two attempts, on
  * separate scheduled visits. Completed fault detections advance immediately. */

@@ -1,0 +1,5 @@
+DMA/256: exit 0
+
+DMA/128: exit 0
+
+DMA/64: exit 0

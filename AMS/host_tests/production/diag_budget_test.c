@@ -5,7 +5,8 @@ int main(void) {
  bool forced; uint32_t ticks[24]={0};
  assert(ams_diag_admit(40,0,100,60,20,500,&forced) && !forced);
  assert(!ams_diag_admit(41,0,100,60,20,500,&forced) && !forced);
- assert(ams_diag_admit(520,500,100,200,20,500,&forced) && forced);
+ assert(!ams_diag_admit(520,500,100,200,20,500,&forced) && forced);
+ assert(ams_diag_admit(520,500,100,80,20,500,&forced) && forced);
  assert(ams_diag_admit(10,UINT32_MAX-19,100,70,0,500,&forced) && !forced);
  assert(ams_diag_overdue_mask(12000,0,ticks,0,12000)==0xffffff);
  ticks[3]=11999;

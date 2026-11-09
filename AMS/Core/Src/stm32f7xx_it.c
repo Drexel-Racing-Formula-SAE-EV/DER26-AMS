@@ -23,6 +23,8 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "app.h"
+#include "diagnostics/ams_perf.h"
+#include "ext_drivers/ams_spi6_transport.h"
 #include "ext_drivers/ams_safety.h"
 /* USER CODE END Includes */
 
@@ -169,10 +171,13 @@ void DebugMon_Handler(void)
   */
 void CAN1_TX_IRQHandler(void)
 {
+  ams_perf_irq_enter();
   /* TX-mailbox-empty notifications are enabled by canbus.c so the
    * asynchronous scheduler can retire mailbox tokens and pump the next
    * protected/detail frame without polling. */
   canbus_irq_handler(&hcan1);
+
+  ams_perf_irq_exit();
 }
 
 /**
@@ -180,6 +185,7 @@ void CAN1_TX_IRQHandler(void)
   */
 void CAN1_RX0_IRQHandler(void)
 {
+  ams_perf_irq_enter();
   /* USER CODE BEGIN CAN1_RX0_IRQn 0 */
 
   /* USER CODE END CAN1_RX0_IRQn 0 */
@@ -187,6 +193,8 @@ void CAN1_RX0_IRQHandler(void)
   /* USER CODE BEGIN CAN1_RX0_IRQn 1 */
 
   /* USER CODE END CAN1_RX0_IRQn 1 */
+
+  ams_perf_irq_exit();
 }
 
 /**
@@ -194,10 +202,13 @@ void CAN1_RX0_IRQHandler(void)
   */
 void CAN1_SCE_IRQHandler(void)
 {
+  ams_perf_irq_enter();
   /* Capture physical BOFF identity before HAL mutates/accumulates its sticky
    * ErrorCode. Generic error decoding and flag clearing still belong to HAL. */
   canbus_sce_irq_note(&hcan1);
   canbus_irq_handler(&hcan1);
+
+  ams_perf_irq_exit();
 }
 
 /**
@@ -205,6 +216,7 @@ void CAN1_SCE_IRQHandler(void)
   */
 void TIM2_IRQHandler(void)
 {
+  ams_perf_irq_enter();
   /* USER CODE BEGIN TIM2_IRQn 0 */
 
   /* USER CODE END TIM2_IRQn 0 */
@@ -212,6 +224,8 @@ void TIM2_IRQHandler(void)
   /* USER CODE BEGIN TIM2_IRQn 1 */
 
   /* USER CODE END TIM2_IRQn 1 */
+
+  ams_perf_irq_exit();
 }
 
 /**
@@ -219,6 +233,7 @@ void TIM2_IRQHandler(void)
   */
 void USART3_IRQHandler(void)
 {
+  ams_perf_irq_enter();
   /* USER CODE BEGIN USART3_IRQn 0 */
 
   /* USER CODE END USART3_IRQn 0 */
@@ -228,6 +243,8 @@ void USART3_IRQHandler(void)
   /* USER CODE BEGIN USART3_IRQn 1 */
 
   /* USER CODE END USART3_IRQn 1 */
+
+  ams_perf_irq_exit();
 }
 
 /**
@@ -235,6 +252,7 @@ void USART3_IRQHandler(void)
   */
 void TIM7_IRQHandler(void)
 {
+  ams_perf_irq_enter();
   /* USER CODE BEGIN TIM7_IRQn 0 */
 
   /* USER CODE END TIM7_IRQn 0 */
@@ -242,6 +260,8 @@ void TIM7_IRQHandler(void)
   /* USER CODE BEGIN TIM7_IRQn 1 */
 
   /* USER CODE END TIM7_IRQn 1 */
+
+  ams_perf_irq_exit();
 }
 
 /* USER CODE BEGIN 1 */
@@ -312,4 +332,16 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
     }
 }
 #endif /* AMS_ENABLE_CLI */
+
+#if AMS_ADBMS_SPI_DMA
+void DMA2_Stream5_IRQHandler(void) {
+  ams_perf_irq_enter(); ams_spi6_dma_irq(); 
+  ams_perf_irq_exit();
+}
+void DMA2_Stream6_IRQHandler(void) {
+  ams_perf_irq_enter(); ams_spi6_dma_irq(); 
+  ams_perf_irq_exit();
+}
+#endif
+
 /* USER CODE END 1 */

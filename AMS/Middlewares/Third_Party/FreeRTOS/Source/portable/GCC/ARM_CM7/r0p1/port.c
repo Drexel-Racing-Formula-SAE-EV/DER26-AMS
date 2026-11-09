@@ -477,6 +477,7 @@ void xPortPendSVHandler( void )
 
 void xPortSysTickHandler( void )
 {
+    ams_perf_irq_enter();
 	/* The SysTick runs at the lowest interrupt priority, so when this interrupt
 	executes all interrupts must be unmasked.  There is therefore no need to
 	save and then restore the interrupt mask value as its value is already
@@ -492,6 +493,8 @@ void xPortSysTickHandler( void )
 		}
 	}
 	portENABLE_INTERRUPTS();
+
+    ams_perf_irq_exit();
 }
 /*-----------------------------------------------------------*/
 

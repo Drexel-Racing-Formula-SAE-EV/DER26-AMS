@@ -53,7 +53,7 @@
     (((AMS_BUILD_PROFILE != AMS_PROFILE_TESTDAY) || AMS_TESTDAY_BALANCE_RELEASE_ALLOWED) && \
      ((AMS_BUILD_PROFILE != AMS_PROFILE_BENCH_VALIDATION) || AMS_BENCH_VALIDATION_BALANCE_RELEASE_ALLOWED) && \
      (AMS_BUILD_PROFILE != AMS_PROFILE_CHARGE_REVIEW))
-#define AMS_BUILD_CONFIG_FINGERPRINT 0xA5055714u
+#define AMS_BUILD_CONFIG_FINGERPRINT (0xA5055714u ^ ((AMS_ADBMS_SPI_PRESCALER_DIV ^ 256u) << 8u) ^ (AMS_ADBMS_SPI_DMA ? 0x00000080u : 0u) ^ (AMS_BENCHMARK_ICACHE ? 0x20u : 0u) ^ (AMS_BENCHMARK_DCACHE ? 0x40u : 0u) ^ (AMS_ENABLE_ADBMS_THERM_OPEN_WIRE_DIAG ? 0x10u : 0u) ^ (AMS_ENABLE_ADBMS_AUX2_REDUNDANCY ? 0x08u : 0u))
 
 #ifndef AMS_BUILD_PROFILE
 #define AMS_BUILD_PROFILE AMS_PROFILE_BENCH
@@ -154,6 +154,17 @@
  * The code and CI support all three so the hardware A/B is a build-only change. */
 #ifndef AMS_ADBMS_SPI_PRESCALER_DIV
 #define AMS_ADBMS_SPI_PRESCALER_DIV 256
+#endif
+
+/* DMA candidates are restricted to the inhibited communications profile. */
+#ifndef AMS_ADBMS_SPI_DMA
+#define AMS_ADBMS_SPI_DMA 0
+#endif
+#if AMS_ADBMS_SPI_DMA != 0 && AMS_ADBMS_SPI_DMA != 1
+#error "AMS_ADBMS_SPI_DMA must be 0 or 1"
+#endif
+#if AMS_ADBMS_SPI_DMA && AMS_BUILD_PROFILE != AMS_PROFILE_TESTDAY
+#error "SPI DMA requires inhibited TESTDAY communications profile"
 #endif
 
 /* Enable the silicon measurement/diagnostic products without allowing them to
@@ -918,6 +929,17 @@
 #endif
 #if (AMS_BENCHMARK_ICACHE != 0) && (AMS_BENCHMARK_ICACHE != 1)
 #error "AMS_BENCHMARK_ICACHE must be 0 or 1"
+#endif
+
+/* Explicit bench-only D-cache experiment; DMA buffers already own full cache lines. */
+#ifndef AMS_BENCHMARK_DCACHE
+#define AMS_BENCHMARK_DCACHE 0
+#endif
+#if AMS_BENCHMARK_DCACHE != 0 && AMS_BENCHMARK_DCACHE != 1
+#error "AMS_BENCHMARK_DCACHE must be 0 or 1"
+#endif
+#if AMS_BENCHMARK_DCACHE && AMS_BUILD_PROFILE != AMS_PROFILE_TESTDAY
+#error "D-cache benchmark requires inhibited profile 4"
 #endif
 
 /* RAW-only telemetry decimation; selected AVG8/IIR estimators remain full-rate. */

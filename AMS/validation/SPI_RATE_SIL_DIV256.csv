@@ -1,0 +1,8 @@
+scenario,scans,accepted,rejected,temp_rejected,mean_us,max_us,over_100ms,transfers,restarts,warm_wakes
+nominal,200,200,0,0,39232,62507,0,5682,0,400
+tick_rounding,200,200,0,0,41485,65257,0,5682,0,400
+preemption_2p5ms,200,200,0,0,65132,112507,1,5682,0,360
+preemption_8ms,200,200,0,0,42351,62507,0,5935,59,459
+transient_pec,200,200,0,59,42602,62507,0,5640,59,459
+transient_timeout,200,200,0,59,42602,62507,0,5640,59,459
+persistent_pec,200,0,200,200,22752,22752,0,801,0,0

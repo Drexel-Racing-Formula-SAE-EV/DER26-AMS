@@ -158,6 +158,11 @@ standard names. */
 #define xPortSysTickHandler SysTick_Handler
 
 /* USER CODE BEGIN Defines */
+#include "diagnostics/ams_perf.h"
+#define traceTASK_SWITCHED_IN() ams_perf_switch_in((const void*)pxCurrentTCB,pxCurrentTCB->pcTaskName)
+#define traceTASK_SWITCHED_OUT() ams_perf_switch_out()
+#define traceMOVED_TASK_TO_READY_STATE(tcb) ams_perf_ready((const void*)(tcb),(tcb)->pcTaskName)
+
 /* Section where parameter definitions can be added (for instance, to override default ones in FreeRTOS.h) */
 #define INCLUDE_xTaskGetCurrentTaskHandle 1
 /* USER CODE END Defines */
