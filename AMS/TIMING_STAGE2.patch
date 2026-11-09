@@ -1,0 +1,584 @@
+--- Core/Inc/ams_build_profile.h
++++ Core/Inc/ams_build_profile.h
+@@ -911,4 +911,20 @@
+ #error "AMS_ADBMS_SCAN_HZ must be between 1 and 1000 Hz"
+ #endif
+ 
++
++/* Independent opt-in benchmark. Never enable D-cache implicitly. */
++#ifndef AMS_BENCHMARK_ICACHE
++#define AMS_BENCHMARK_ICACHE 0
++#endif
++#if (AMS_BENCHMARK_ICACHE != 0) && (AMS_BENCHMARK_ICACHE != 1)
++#error "AMS_BENCHMARK_ICACHE must be 0 or 1"
++#endif
++
++/* RAW-only telemetry decimation; selected AVG8/IIR estimators remain full-rate. */
++#ifndef AMS_ADBMS_OPTIONAL_PRODUCT_DIVISOR
++#define AMS_ADBMS_OPTIONAL_PRODUCT_DIVISOR 5u
++#endif
++#if AMS_ADBMS_OPTIONAL_PRODUCT_DIVISOR < 1 || AMS_ADBMS_OPTIONAL_PRODUCT_DIVISOR > 10
++#error "Optional product divisor must be 1..10"
++#endif
+ #endif /* INC_AMS_BUILD_PROFILE_H_ */
+--- Core/Inc/ams_vehicle_project.h
++++ Core/Inc/ams_vehicle_project.h
+@@ -41,8 +41,8 @@
+ #error "Installed vehicle variant has no fan task"
+ #endif
+ #if AMS_BUILD_PROFILE == 3
+-#define AMS_SOURCE_REVISION "DER26-AMS-v0.5.57-VEHICLE-1M-20261108-GATED"
++#define AMS_SOURCE_REVISION "DER26-AMS-v0.5.57-VEHICLE-1M-TIMING2-GATED"
+ #else
+-#define AMS_SOURCE_REVISION "DER26-AMS-v0.5.57-VEHICLE-COMMS-1M-20261108-INHIBITED"
++#define AMS_SOURCE_REVISION "DER26-AMS-v0.5.57-VEHICLE-COMMS-1M-TIMING2-INHIBITED"
+ #endif
+ #endif
+--- Core/Inc/ams_version.h
++++ Core/Inc/ams_version.h
+@@ -11,7 +11,7 @@
+ #define AMS_VERSION_STRING AMS_VERSION_STRINGIFY(AMS_VERSION_MAJOR) "." \
+     AMS_VERSION_STRINGIFY(AMS_VERSION_MINOR) "." AMS_VERSION_STRINGIFY(AMS_VERSION_PATCH)
+ #ifndef AMS_SOURCE_REVISION
+-#define AMS_SOURCE_REVISION "DER26-AMS-v" AMS_VERSION_STRING "-" AMS_RELEASE_DATE
++#define AMS_SOURCE_REVISION "DER26-AMS-v" AMS_VERSION_STRING "-timing-stage2-" AMS_RELEASE_DATE
+ #endif
+ 
+ /* GCC honors SOURCE_DATE_EPOCH for these built-ins. IDE builds without it
+--- Core/Inc/app.h
++++ Core/Inc/app.h
+@@ -843,6 +843,13 @@
+ 	uint32_t adbms_urgent_mute_request_count;
+ 	uint32_t adbms_urgent_mute_service_count;
+ 	uint32_t adbms_urgent_mute_fail_count;
++    uint32_t adbms_diag_scan_start, adbms_diag_coverage_start;
++    bool adbms_diag_coverage_started;
++    uint32_t adbms_diag_cost_ms[2], adbms_diag_deferred[2], adbms_diag_forced[2];
++    uint8_t adbms_diag_retry[2];
++    uint32_t adbms_aux2_attempt_tick[24], adbms_aux2_success_tick[24];
++    uint32_t adbms_therm_attempt_tick[24], adbms_therm_success_tick[24];
++    uint32_t adbms_aux2_completed_mask, adbms_therm_completed_mask;
+ 	uint32_t adbms_aux2_diag_count;
+ 	uint32_t adbms_aux2_diag_fail_count;
+ 	uint32_t adbms_aux2_next_due_tick;
+--- Core/Inc/ext_drivers/adbms6830_data.h
++++ Core/Inc/ext_drivers/adbms6830_data.h
+@@ -610,6 +610,12 @@
+ typedef HAL_StatusTypeDef (*adbms6830_cooperative_wait_fn_t)(void *ctx, uint32_t wait_us);
+ typedef uint32_t (*adbms6830_time_us_fn_t)(void *ctx);
+ 
++typedef struct {
++  uint32_t start_us, end_us;
++  uint16_t bytes;
++  uint8_t status, coherent;
++} adbms6830_frame_trace_t;
++
+ typedef struct
+ {
+   bool active;
+@@ -621,6 +627,9 @@
+   uint32_t max_gap_us;
+   uint32_t last_duration_us;
+   uint32_t max_duration_us;
++  uint32_t optional_voltage_epoch;
++  uint32_t frame_trace_sequence;
++  adbms6830_frame_trace_t frame_trace[32];
+   uint32_t session_count;
+   uint32_t full_wake_count;
+   uint32_t cold_wake_count;
+--- Core/Inc/ext_drivers/adbms_shared.h
++++ Core/Inc/ext_drivers/adbms_shared.h
+@@ -45,7 +45,7 @@
+  * exceed the 4.4 ms worst-case reference wake time. The documented redundant
+  * C-ADC/S-ADC sequence takes 8 ms to 16 ms depending on synchronization with
+  * the running C-ADC; use one additional millisecond of margin. */
+-#define ADBMS6830_REFERENCE_PRECONVERSION_WAIT_US 3000u
++#define ADBMS6830_REFERENCE_PRECONVERSION_WAIT_US 4500u
+ #define ADBMS6830_REDUNDANT_CONVERSION_WAIT_US    17000u
+ #define SPI_TIMEOUT 500
+ #define BUFSZ 512
+--- Core/Src/ext_drivers/accumulator.c
++++ Core/Src/ext_drivers/accumulator.c
+@@ -737,10 +737,14 @@
+ #endif
+ 
+ 	// 4. SNAP, READ, AND PARSE
++    bool optional_due = true;
++#if AMS_ESTIMATOR_VOLTAGE_SOURCE == AMS_ESTIMATOR_VOLTAGE_SOURCE_RAW
++    optional_due = (dev->session.optional_voltage_epoch++ % AMS_ADBMS_OPTIONAL_PRODUCT_DIVISOR) == 0u;
++#endif
+ 	if(adbms6830_read_cell_voltage_products(
+            dev,
+-           (AMS_ENABLE_ADBMS_AVG8_VOLTAGE != 0),
+-           (AMS_ENABLE_ADBMS_FILTERED_VOLTAGE != 0)) != HAL_OK)
++           optional_due && (AMS_ENABLE_ADBMS_AVG8_VOLTAGE != 0),
++           optional_due && (AMS_ENABLE_ADBMS_FILTERED_VOLTAGE != 0)) != HAL_OK)
+ 	{
+ 		return -1;
+ 	}
+--- Core/Src/ext_drivers/adbms6830.c
++++ Core/Src/ext_drivers/adbms6830.c
+@@ -4277,6 +4277,36 @@
+ 	}
+ }
+ 
++/* Lower bound on the last physical clock, not a late completion timestamp.
++ * SPI6 APB2 is bounded by 108 MHz on STM32F767. Floor division deliberately
++ * underestimates wire duration. Preemption can only move the real end later.
++ * Retain the original coarse ms age as an additional conservative wrap check. */
++static uint32_t adbms6830_frame_activity_lower_bound(adbms6830_driver_t *dev,
++    uint32_t start, uint16_t bytes)
++{
++    if(dev->hspi->Instance != SPI6 || dev->hspi->Init.DataSize != SPI_DATASIZE_8BIT)
++        return start;
++    uint32_t divisor = 1u << (((dev->hspi->Init.BaudRatePrescaler & SPI_CR1_BR) >> 3u) + 1u);
++    uint32_t wire_min_us = ((uint32_t)bytes * 8u * divisor) / 108u;
++    uint32_t observed = adbms6830_runtime_time_us(dev) - start;
++    return observed >= wire_min_us ? start + wire_min_us : start;
++}
++
++/* Owner-only bounded binary ring, readable through SWD; no UART/ISR work.
++ * end_us is software observation, NOT proof of last physical SCK activity. */
++static void adbms6830_trace_frame(adbms6830_driver_t *dev, uint32_t start,
++                                  HAL_StatusTypeDef status, uint16_t bytes)
++{
++    uint32_t seq = dev->session.frame_trace_sequence;
++    adbms6830_frame_trace_t *event = &dev->session.frame_trace[seq % 32u];
++    event->start_us = start;
++    event->end_us = adbms6830_runtime_time_us(dev);
++    event->bytes = bytes;
++    event->status = (uint8_t)status;
++    event->coherent = dev->session.coherent_snapshot_active;
++    dev->session.frame_trace_sequence = seq + 1u;
++}
++
+ HAL_StatusTypeDef adbms6830_spi_write(adbms6830_driver_t* dev,
+                                          uint8_t* data,
+                                          uint16_t len,
+@@ -4290,9 +4320,9 @@
+         return HAL_ERROR;
+     }
+ 
++    adbms_spi_lock();
+     adbms6830_spi_debug_note_tx(dev, dev->spi_debug.last_op, data, data, len, 0u);
+ 
+-    adbms_spi_lock();
+     uint32_t frame_start_us = adbms6830_runtime_time_us(dev);
+     uint32_t frame_start_ms = HAL_GetTick();
+     if(use_cs)
+@@ -4306,11 +4336,13 @@
+     {
+         adbms6830_set_cs(dev, 1);
+     }
+-    adbms_spi_unlock();
++
++    adbms6830_trace_frame(dev, frame_start_us, status, len);
+ 
+     if(status == HAL_OK)
+     {
+-        adbms6830_session_note_activity(dev, frame_start_us, frame_start_ms);
++        adbms6830_session_note_activity(dev,
++            adbms6830_frame_activity_lower_bound(dev, frame_start_us, len), frame_start_ms);
+     }
+ 
+     if(status != HAL_OK) adbms6830_link_forget(dev);
+@@ -4326,6 +4358,7 @@
+         }
+     }
+ 
++    adbms_spi_unlock();
+     return status;
+ }
+ 
+@@ -4628,13 +4661,13 @@
+     }
+     total_len = (uint16_t)((uint16_t)tx_len + rx_len);
+ 
++    adbms_spi_lock();
+     memset(spi_txrx_tx_buf, ADBMS6830_SPI_DUMMY_BYTE, total_len);
+     memset(spi_txrx_rx_buf, 0, total_len);
+     memcpy(spi_txrx_tx_buf, tx_Data, tx_len);
+ 
+     adbms6830_spi_debug_note_tx(dev, dev->spi_debug.last_op, tx_Data, spi_txrx_tx_buf, tx_len, rx_len);
+ 
+-    adbms_spi_lock();
+     uint32_t frame_start_us = adbms6830_runtime_time_us(dev);
+     uint32_t frame_start_ms = HAL_GetTick();
+     if(use_cs)
+@@ -4652,12 +4685,14 @@
+     {
+         adbms6830_set_cs(dev, 1);
+     }
+-    adbms_spi_unlock();
++
++    adbms6830_trace_frame(dev, frame_start_us, status, total_len);
+ 
+     if(status == HAL_OK)
+     {
+         memcpy(rx_data, &spi_txrx_rx_buf[tx_len], rx_len);
+-        adbms6830_session_note_activity(dev, frame_start_us, frame_start_ms);
++        adbms6830_session_note_activity(dev,
++            adbms6830_frame_activity_lower_bound(dev, frame_start_us, total_len), frame_start_ms);
+     }
+     else
+     {
+@@ -4682,6 +4717,7 @@
+ 
+     adbms6830_spi_debug_note_rx(dev, rx_data, rx_len, status);
+ 
++    adbms_spi_unlock();
+     return status;
+ }
+ 
+--- Core/Src/main.c
++++ Core/Src/main.c
+@@ -106,6 +106,9 @@
+   /* MCU Configuration--------------------------------------------------------*/
+ 
+   /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
++#if AMS_BENCHMARK_ICACHE
++  SCB_EnableICache();
++#endif
+   HAL_Init();
+ 
+   /* USER CODE BEGIN Init */
+--- Core/Src/tasks/adbms_task.c
++++ Core/Src/tasks/adbms_task.c
+@@ -1,4 +1,5 @@
+ #include "ams_task_schedule.h"
++#include "ams_diag_budget.h"
+ /*
+  * adbms_task.h
+  *
+@@ -678,6 +679,10 @@
+ 
+     if(!after_acquisition) goto publish_diagnostic_fault;
+ 
++    if(!data->adbms_diag_coverage_started) {
++        data->adbms_diag_coverage_start = osKernelGetTickCount();
++        data->adbms_diag_coverage_started = true;
++    }
+     schedule_now = osKernelGetTickCount();
+     if(adbms_tick_due(schedule_now, data->adbms_config_next_due_tick))
+     {
+@@ -765,6 +770,7 @@
+             data->adbms_open_wire_fault = true;
+         }
+         taskEXIT_CRITICAL();
++        goto publish_diagnostic_fault;
+     }
+ 
+ 
+@@ -786,17 +792,45 @@
+         else if(adbms_tick_due(now, data->adbms_aux2_next_due_tick))
+         {
+             const uint8_t sensor = data->adbms_aux2_next_sensor;
++#if AMS_ENABLE_ADBMS_THERM_OPEN_WIRE_DIAG
++            /* A heavily delayed thermistor test wins over AUX2 once; otherwise
++             * the faster AUX2 schedule could starve it under sustained load. */
++            uint32_t therm_base = data->adbms_therm_ow_last_tick == 0u ?
++                data->adbms_diag_coverage_start : data->adbms_therm_ow_last_tick;
++            if((uint32_t)(now - therm_base) >=
++                AMS_ADBMS_THERM_OPEN_WIRE_PERIOD_MS + 2000u) goto try_therm_diag;
++#endif
++            bool forced;
++            uint32_t cost = data->adbms_diag_cost_ms[0];
++            if(cost < 30u) cost = 30u;
++            if(!ams_diag_admit(now, data->adbms_diag_scan_start,
++                AMS_ADBMS_TASK_PERIOD_MS, cost, data->adbms_aux2_next_due_tick,
++                500u, &forced)) {
++                if(data->adbms_diag_deferred[0] != UINT32_MAX) data->adbms_diag_deferred[0]++;
++                goto try_therm_diag;
++            }
++            if(forced && data->adbms_diag_forced[0] != UINT32_MAX) data->adbms_diag_forced[0]++;
++            uint32_t started = osKernelGetTickCount();
+             HAL_StatusTypeDef aux2_status =
+                 adbms6830_run_aux2_redundancy(smb, sensor);
+ 
++            data->adbms_aux2_attempt_tick[sensor] = osKernelGetTickCount();
++            uint32_t duration = osKernelGetTickCount() - started;
++            if(duration > data->adbms_diag_cost_ms[0]) data->adbms_diag_cost_ms[0] = duration;
++            bool completed = smb->aux2_health.valid_mask == adbms_task_expected_ic_mask(smb);
++            if(completed) {
++                data->adbms_aux2_success_tick[sensor] = osKernelGetTickCount();
++                data->adbms_aux2_completed_mask |= 1UL << sensor;
++            }
+             /* Keep an absolute deadline while skipping elapsed slots. At the
+              * 10 Hz vehicle scan and 250 ms target this still gives the desired
+              * 300/200 ms cadence in steady state, but a long pause causes only
+              * one diagnostic instead of a catch-up burst. */
+             data->adbms_aux2_next_due_tick = adbms_next_future_due(
+                 now, data->adbms_aux2_next_due_tick, aux2_period_ms);
+-            data->adbms_aux2_next_sensor =
+-                (uint8_t)((sensor + 1u) % ADBMS6830_TEMP_SENSOR_COUNT);
++            /* One delayed retry for incomplete transport, then rotate fairly.
++             * A completed test reporting disagreement is not retried as a bus error. */
++            ams_diag_advance(completed, &data->adbms_diag_retry[0], &data->adbms_aux2_next_sensor);
+             if(data->adbms_aux2_diag_count != UINT32_MAX)
+             {
+                 data->adbms_aux2_diag_count++;
+@@ -809,6 +843,8 @@
+                  * temperature safety authority is not silently replaced. */
+                 data->adbms_aux2_diag_fail_count++;
+             }
++            /* One intrusive diagnostic per post-acquisition pass. */
++            goto publish_diagnostic_fault;
+         }
+     }
+     else
+@@ -820,6 +856,10 @@
+     }
+ #endif
+ 
++#if AMS_ENABLE_ADBMS_AUX2_REDUNDANCY
++try_therm_diag:
++#endif
++    ;
+ #if AMS_ENABLE_ADBMS_THERM_OPEN_WIRE_DIAG
+     if(acc->smb_transport_ready && accumulator_final_ring_topology_valid(acc))
+     {
+@@ -829,11 +869,31 @@
+             AMS_ADBMS_THERM_OPEN_WIRE_PERIOD_MS))
+         {
+             uint8_t sensor = data->adbms_therm_ow_next_sensor;
++            bool forced;
++            uint32_t cost = data->adbms_diag_cost_ms[1];
++            if(cost < 60u) cost = 60u;
++            uint32_t due = data->adbms_therm_ow_last_tick == 0u ?
++                data->adbms_diag_coverage_start :
++                data->adbms_therm_ow_last_tick + AMS_ADBMS_THERM_OPEN_WIRE_PERIOD_MS;
++            if(!ams_diag_admit(now, data->adbms_diag_scan_start,
++                AMS_ADBMS_TASK_PERIOD_MS, cost, due, 2000u, &forced)) {
++                if(data->adbms_diag_deferred[1] != UINT32_MAX) data->adbms_diag_deferred[1]++;
++                goto publish_diagnostic_fault;
++            }
++            if(forced && data->adbms_diag_forced[1] != UINT32_MAX) data->adbms_diag_forced[1]++;
++            uint32_t started = osKernelGetTickCount();
+             HAL_StatusTypeDef therm_ow_status =
+                 adbms6830_run_thermistor_open_wire(smb, sensor);
++            data->adbms_therm_attempt_tick[sensor] = osKernelGetTickCount();
++            uint32_t duration = osKernelGetTickCount() - started;
++            if(duration > data->adbms_diag_cost_ms[1]) data->adbms_diag_cost_ms[1] = duration;
++            bool completed = smb->therm_ow_health.valid_mask == adbms_task_expected_ic_mask(smb);
++            if(completed) {
++                data->adbms_therm_success_tick[sensor] = osKernelGetTickCount();
++                data->adbms_therm_completed_mask |= 1UL << sensor;
++            }
+             data->adbms_therm_ow_last_tick = now;
+-            data->adbms_therm_ow_next_sensor =
+-                (uint8_t)((sensor + 1u) % ADBMS6830_TEMP_SENSOR_COUNT);
++            ams_diag_advance(completed, &data->adbms_diag_retry[1], &data->adbms_therm_ow_next_sensor);
+             if(data->adbms_therm_ow_diag_count != UINT32_MAX)
+             {
+                 data->adbms_therm_ow_diag_count++;
+@@ -846,6 +906,7 @@
+                  * sample into the normal temperature image. */
+                 data->adbms_therm_ow_diag_fail_count++;
+             }
++            goto publish_diagnostic_fault;
+         }
+     }
+ #endif
+@@ -1485,6 +1546,7 @@
+ 	for(;;)
+ 	{
+ 	    entry = osKernelGetTickCount();
++        data->adbms_diag_scan_start = entry;
+         uint32_t scan_start_us = adbms_task_time_us(data);
+         uint32_t phase_start_us = scan_start_us;
+         uint32_t phase_elapsed_us[8] = {0u};
+--- Core/Src/tasks/cli_task.c
++++ Core/Src/tasks/cli_task.c
+@@ -1,4 +1,5 @@
+ #include "ams_task_schedule.h"
++#include "ams_diag_budget.h"
+ /**
+ * @file cli_task.c
+ * @author Cole Bardin (cab572@drexel.edu)
+@@ -5674,6 +5675,23 @@
+         }
+     }
+ 
++    if(data->adbms_diag_coverage_started) {
++        uint32_t now = osKernelGetTickCount();
++        uint32_t aux_overdue = !AMS_ENABLE_ADBMS_AUX2_REDUNDANCY ? 0u : ams_diag_overdue_mask(now, data->adbms_diag_coverage_start,
++            data->adbms_aux2_success_tick, data->adbms_aux2_completed_mask, 12000u);
++        uint32_t therm_overdue = !AMS_ENABLE_ADBMS_THERM_OPEN_WIRE_DIAG ? 0u : ams_diag_overdue_mask(now, data->adbms_diag_coverage_start,
++            data->adbms_therm_success_tick, data->adbms_therm_completed_mask, 144000u);
++        snprintf(outline, CLI_LINESZ, "diag coverage AUX2 done/overdue:%06lX/%06lX therm:%06lX/%06lX",
++            (unsigned long)data->adbms_aux2_completed_mask, (unsigned long)aux_overdue,
++            (unsigned long)data->adbms_therm_completed_mask, (unsigned long)therm_overdue);
++        ret |= cli_printline(cli, outline);
++        snprintf(outline, CLI_LINESZ, "diag cost max ms:%lu/%lu deferred:%lu/%lu forced:%lu/%lu (advisory)",
++            (unsigned long)data->adbms_diag_cost_ms[0], (unsigned long)data->adbms_diag_cost_ms[1],
++            (unsigned long)data->adbms_diag_deferred[0], (unsigned long)data->adbms_diag_deferred[1],
++            (unsigned long)data->adbms_diag_forced[0], (unsigned long)data->adbms_diag_forced[1]);
++        ret |= cli_printline(cli, outline);
++    }
++
+     snprintf(outline, CLI_LINESZ,
+              "task gaps ms CAN:%lu/%lu EST:%lu/%lu FAN:%lu/%lu IMD:%lu/%lu",
+              (unsigned long)data->heartbeat.last_gap_ms[AMS_HEARTBEAT_CAN],
+--- host_tests/production/adbms_wake_policy_test.c
++++ host_tests/production/adbms_wake_policy_test.c
+@@ -26,9 +26,23 @@
+ #undef __HAL_TIM_SET_COUNTER
+ #define __HAL_TIM_GET_COUNTER(h) timer_read(h)
+ #define __HAL_TIM_SET_COUNTER(h,v) timer_set(h,v)
++static unsigned test_lock_depth;
++static bool poison_on_unlock;
++static void test_spi_lock(void);
++static void test_spi_unlock(void);
++#define adbms_spi_lock test_spi_lock
++#define adbms_spi_unlock test_spi_unlock
+ /* Include the real source so static helpers are tested without exported APIs. */
+ #include "Core/Src/ext_drivers/adbms6830.c"
+ #include "Core/Src/ext_drivers/accumulator.c"
++
++static void test_spi_lock(void) { test_lock_depth++; }
++static void test_spi_unlock(void) {
++    CHECK(test_lock_depth > 0);
++    if(poison_on_unlock && test_lock_depth == 1u)
++        memset(spi_txrx_rx_buf, 0xcd, sizeof(spi_txrx_rx_buf));
++    test_lock_depth--;
++}
+ 
+ uint32_t HAL_GetTick(void){return (uint32_t)(sim_us/1000u);}
+ uint32_t osKernelGetTickCount(void){return HAL_GetTick();}
+@@ -49,6 +63,7 @@
+ }
+ HAL_StatusTypeDef HAL_SPI_Transmit(SPI_HandleTypeDef *h,uint8_t *p,uint16_t n,uint32_t timeout)
+ {
++    CHECK(test_lock_depth > 0);
+     wire_time(h,n,timeout);
+     if(fail_spi) return HAL_TIMEOUT;
+     CHECK(n>=4);
+@@ -63,6 +78,7 @@
+ }
+ HAL_StatusTypeDef HAL_SPI_TransmitReceive(SPI_HandleTypeDef *h,uint8_t *tx,uint8_t *rx,uint16_t n,uint32_t timeout)
+ {
++    CHECK(test_lock_depth > 0);
+     wire_time(h,n,timeout);
+     if(fail_spi) return HAL_TIMEOUT;
+     memset(rx,0,n);
+@@ -94,6 +110,8 @@
+     sim_us=0; timer_base=0; edge_count=0;model_counter=0;transfers=0;largest_timeout=0;
+     last_mux_end_us=0;
+     bad_pec=bad_counter=fail_spi=timer_stopped=false;extra_delay_once=0;last_cs=GPIO_PIN_SET;
++    spi.Instance=SPI6;
++    spi.Init.DataSize=SPI_DATASIZE_8BIT;
+     spi.Init.BaudRatePrescaler=SPI_BAUDRATEPRESCALER_256;
+     tim.Instance=&timer;dev.htim=&tim;dev.hspi=&spi;
+     dev.ics=ics;dev.ics_capacity=count;dev.num_ics=count;dev.physical_chain_count=count;
+@@ -125,6 +143,27 @@
+     CHECK(adbms6830_wakeup_checked(&dev)==HAL_OK);
+     CHECK(dev.session.cold_wake_count==1 && dev.session.warm_wake_count==0);
+     CHECK(sim_us>=10000 && sim_us<10100 && edge_count==10);
++    uint8_t command[4] = {0, 0x2c, 0x59, 0x90};
++    uint8_t reply[40];
++    CHECK(adbms6830_spi_write_read(&dev, command, 4, reply, 40, 1)==HAL_OK);
++    CHECK(dev.session.frame_trace_sequence == 1u);
++    CHECK(dev.session.frame_trace[0].bytes == 44u);
++    CHECK(dev.session.frame_trace[0].end_us - dev.session.frame_trace[0].start_us >= 834u);
++    for(unsigned j=0; j<40; j++)
++        CHECK(adbms6830_spi_write_read(&dev, command, 4, reply, 40, 1)==HAL_OK);
++    CHECK(dev.session.frame_trace_sequence == 41u);
++    CHECK(dev.session.frame_trace[8].status == HAL_OK);
++    uint32_t frame_start=(uint32_t)sim_us;
++    sim_us += 10000u; /* late observation must not become recent activity */
++    CHECK(adbms6830_frame_activity_lower_bound(&dev, frame_start, 44)==frame_start+834u);
++    frame_start=UINT32_MAX-400u; sim_us=(uint64_t)UINT32_MAX+1000u;
++    CHECK(adbms6830_frame_activity_lower_bound(&dev, frame_start, 44)==frame_start+834u);
++    sim_us=50000u;
++    poison_on_unlock = true;
++    CHECK(adbms6830_spi_write_read(&dev, command, 4, reply, 40, 1)==HAL_OK);
++    CHECK(reply[0] != 0xcd); /* RX must be copied before ownership release. */
++    CHECK(test_lock_depth == 0u);
++    poison_on_unlock = false;
+     uint32_t edges=edge_count;
+     CHECK(adbms6830_wakeup_checked(&dev)==HAL_OK && edge_count==edges);
+     read_clean(); sim_us+=100000;
+@@ -176,7 +215,19 @@
+     }
+     /* Real successful voltage+temperature production calls at 5 SMBs. */
+     reset_dev(5);read_clean();sim_us+=100000;before=sim_us;
+-    CHECK(smb_read_voltage(&dev)==0);CHECK(smb_read_temp(&dev)==0);
++    CHECK(smb_read_voltage(&dev)==0);
++#if AMS_ESTIMATOR_VOLTAGE_SOURCE == AMS_ESTIMATOR_VOLTAGE_SOURCE_RAW
++    if(AMS_ADBMS_OPTIONAL_PRODUCT_DIVISOR > 1u) {
++        uint64_t extra_start=sim_us;
++        uint32_t reads=dev.health.avg8_read_count;
++        CHECK(smb_read_voltage(&dev)==0);
++        CHECK(dev.health.avg8_read_count==reads);
++        CHECK(dev.last_acell_updated_mask[0]==0u);
++        CHECK(dev.last_cell_updated_mask[0]!=0u);
++        before += sim_us-extra_start;
++    }
++#endif
++    CHECK(smb_read_temp(&dev)==0);
+     printf("VOLT+TEMP nominal wire/delay model: %llu us\n",(unsigned long long)(sim_us-before));
+     CHECK(sim_us-before<70000u);
+     /* Status AUX conversion spans the scheduler gap, not a blocking 20 ms
+--- /dev/null
++++ Core/Inc/ams_diag_budget.h
+@@ -0,0 +1,32 @@
++#ifndef AMS_DIAG_BUDGET_H
++#define AMS_DIAG_BUDGET_H
++#include <stdint.h>
++#include <stdbool.h>
++/* Cost is a measured high-water mark with a startup estimate. Deadline
++ * pressure permits one exceptional scan; it never creates a catch-up burst. */
++static inline bool ams_diag_admit(uint32_t now, uint32_t scan_start,
++    uint32_t period, uint32_t cost, uint32_t due, uint32_t max_deferral,
++    bool *forced)
++{
++    uint32_t elapsed = now - scan_start;
++    *forced = (uint32_t)(now - due) >= max_deferral;
++    return *forced || ((elapsed < period) && (cost <= period - elapsed));
++}
++/* No position can monopolize the rotation: at most two attempts, on
++ * separate scheduled visits. Completed fault detections advance immediately. */
++static inline void ams_diag_advance(bool completed, uint8_t *retry, uint8_t *sensor)
++{
++    if(!completed && *retry == 0u) *retry = 1u;
++    else { *retry = 0u; *sensor = (uint8_t)((*sensor + 1u) % 24u); }
++}
++/* A missing result is not a pass. Zero is a valid timestamp. */
++static inline uint32_t ams_diag_overdue_mask(uint32_t now, uint32_t start,
++    const uint32_t completed[24], uint32_t seen, uint32_t max_age)
++{
++    uint32_t result = 0;
++    for(unsigned i=0;i<24;i++)
++        if((uint32_t)(now - ((seen & (1UL<<i)) ? completed[i] : start)) >= max_age)
++            result |= 1UL<<i;
++    return result;
++}
++#endif
+--- /dev/null
++++ host_tests/production/diag_budget_test.c
+@@ -0,0 +1,25 @@
++#include <assert.h>
++#include <stdint.h>
++#include "ams_diag_budget.h"
++int main(void) {
++ bool forced; uint32_t ticks[24]={0};
++ assert(ams_diag_admit(40,0,100,60,20,500,&forced) && !forced);
++ assert(!ams_diag_admit(41,0,100,60,20,500,&forced) && !forced);
++ assert(ams_diag_admit(520,500,100,200,20,500,&forced) && forced);
++ assert(ams_diag_admit(10,UINT32_MAX-19,100,70,0,500,&forced) && !forced);
++ assert(ams_diag_overdue_mask(12000,0,ticks,0,12000)==0xffffff);
++ ticks[3]=11999;
++ assert(ams_diag_overdue_mask(12000,0,ticks,1UL<<3,12000)==0xfffff7);
++ assert(ams_diag_overdue_mask(10,UINT32_MAX-19,ticks,0,31)==0);
++ assert(ams_diag_overdue_mask(11,UINT32_MAX-19,ticks,0,31)==0xffffff);
++ uint8_t retry=0, sensor=0;
++ uint32_t visited=0;
++ for(unsigned n=0;n<48;n++) {
++     visited |= 1UL<<sensor;
++     ams_diag_advance(false, &retry, &sensor);
++ }
++ assert(visited==0xffffff && retry==0 && sensor==0);
++ ams_diag_advance(true, &retry, &sensor);
++ assert(sensor==1 && retry==0);
++ return 0;
++}

@@ -33,17 +33,11 @@ int main(void)
             return 5;
         }
     }
-#if AMS_BUILD_PROFILE == AMS_PROFILE_CHARGE_REVIEW
+/* Both vehicle build configurations must use the same 27% startup prior. */
     if (AMS_EKF_DEFAULT_SOC_INIT != 0.27f)
     {
         return 6;
     }
-#else
-    if (AMS_EKF_DEFAULT_SOC_INIT != 1.0f)
-    {
-        return 7;
-    }
-#endif
 
 #if AMS_ESTIMATOR_DEFAULT_TOPOLOGY == AMS_ESTIMATOR_TOPOLOGY_PACK
     if((estimator.instance_count != 1u) ||

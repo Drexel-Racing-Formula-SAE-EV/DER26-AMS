@@ -34,16 +34,11 @@ extern "C" {
 #define AMS_EKF_CELL_CAPACITY_AH    4.2f
 #define AMS_EKF_DEFAULT_DT_S        0.1f
 
-/* Temporary, pack-specific initialization from the observed approximately
- * 3.55 V/cell rested-OCV estimate (~27% at 25 C). This is only a startup
- * prior, not a measurement or a retained last-known SoC. Replace with a
- * validated persistent/OCV initialization policy in a future release.
- * Keep unrelated firmware profiles on their existing startup assumption. */
-#if AMS_BUILD_PROFILE == AMS_PROFILE_CHARGE_REVIEW
+/* Temporary 27% startup prior from the earlier roughly 3.55 V/cell
+ * rested-OCV estimate (Molicel P42A, near 25 C). Applies to both vehicle
+ * configurations, including the five segment EKFs and the coulomb counter.
+ * This is not a present measurement or a persisted SoC. */
 #define AMS_EKF_DEFAULT_SOC_INIT    0.27f
-#else
-#define AMS_EKF_DEFAULT_SOC_INIT    1.0f
-#endif
 #define AMS_EKF_DEFAULT_R0_INIT_OHM 0.0147f
 
 #define AMS_HIL_CAN_ID_MEAS         0x200U

@@ -1,4 +1,5 @@
 #include "ams_task_schedule.h"
+#include "ams_diag_budget.h"
 /*
  * adbms_task.h
  *
@@ -678,6 +679,10 @@ static void adbms_task_run_periodic_diagnostics(app_data_t *data, bool after_acq
 
     if(!after_acquisition) goto publish_diagnostic_fault;
 
+    if(!data->adbms_diag_coverage_started) {
+        data->adbms_diag_coverage_start = osKernelGetTickCount();
+        data->adbms_diag_coverage_started = true;
+    }
     schedule_now = osKernelGetTickCount();
     if(adbms_tick_due(schedule_now, data->adbms_config_next_due_tick))
     {
@@ -765,6 +770,7 @@ static void adbms_task_run_periodic_diagnostics(app_data_t *data, bool after_acq
             data->adbms_open_wire_fault = true;
         }
         taskEXIT_CRITICAL();
+        goto publish_diagnostic_fault;
     }
 
 
@@ -786,17 +792,45 @@ static void adbms_task_run_periodic_diagnostics(app_data_t *data, bool after_acq
         else if(adbms_tick_due(now, data->adbms_aux2_next_due_tick))
         {
             const uint8_t sensor = data->adbms_aux2_next_sensor;
+#if AMS_ENABLE_ADBMS_THERM_OPEN_WIRE_DIAG
+            /* A heavily delayed thermistor test wins over AUX2 once; otherwise
+             * the faster AUX2 schedule could starve it under sustained load. */
+            uint32_t therm_base = data->adbms_therm_ow_last_tick == 0u ?
+                data->adbms_diag_coverage_start : data->adbms_therm_ow_last_tick;
+            if((uint32_t)(now - therm_base) >=
+                AMS_ADBMS_THERM_OPEN_WIRE_PERIOD_MS + 2000u) goto try_therm_diag;
+#endif
+            bool forced;
+            uint32_t cost = data->adbms_diag_cost_ms[0];
+            if(cost < 30u) cost = 30u;
+            if(!ams_diag_admit(now, data->adbms_diag_scan_start,
+                AMS_ADBMS_TASK_PERIOD_MS, cost, data->adbms_aux2_next_due_tick,
+                500u, &forced)) {
+                if(data->adbms_diag_deferred[0] != UINT32_MAX) data->adbms_diag_deferred[0]++;
+                goto try_therm_diag;
+            }
+            if(forced && data->adbms_diag_forced[0] != UINT32_MAX) data->adbms_diag_forced[0]++;
+            uint32_t started = osKernelGetTickCount();
             HAL_StatusTypeDef aux2_status =
                 adbms6830_run_aux2_redundancy(smb, sensor);
 
+            data->adbms_aux2_attempt_tick[sensor] = osKernelGetTickCount();
+            uint32_t duration = osKernelGetTickCount() - started;
+            if(duration > data->adbms_diag_cost_ms[0]) data->adbms_diag_cost_ms[0] = duration;
+            bool completed = smb->aux2_health.valid_mask == adbms_task_expected_ic_mask(smb);
+            if(completed) {
+                data->adbms_aux2_success_tick[sensor] = osKernelGetTickCount();
+                data->adbms_aux2_completed_mask |= 1UL << sensor;
+            }
             /* Keep an absolute deadline while skipping elapsed slots. At the
              * 10 Hz vehicle scan and 250 ms target this still gives the desired
              * 300/200 ms cadence in steady state, but a long pause causes only
              * one diagnostic instead of a catch-up burst. */
             data->adbms_aux2_next_due_tick = adbms_next_future_due(
                 now, data->adbms_aux2_next_due_tick, aux2_period_ms);
-            data->adbms_aux2_next_sensor =
-                (uint8_t)((sensor + 1u) % ADBMS6830_TEMP_SENSOR_COUNT);
+            /* One delayed retry for incomplete transport, then rotate fairly.
+             * A completed test reporting disagreement is not retried as a bus error. */
+            ams_diag_advance(completed, &data->adbms_diag_retry[0], &data->adbms_aux2_next_sensor);
             if(data->adbms_aux2_diag_count != UINT32_MAX)
             {
                 data->adbms_aux2_diag_count++;
@@ -809,6 +843,8 @@ static void adbms_task_run_periodic_diagnostics(app_data_t *data, bool after_acq
                  * temperature safety authority is not silently replaced. */
                 data->adbms_aux2_diag_fail_count++;
             }
+            /* One intrusive diagnostic per post-acquisition pass. */
+            goto publish_diagnostic_fault;
         }
     }
     else
@@ -820,6 +856,10 @@ static void adbms_task_run_periodic_diagnostics(app_data_t *data, bool after_acq
     }
 #endif
 
+#if AMS_ENABLE_ADBMS_AUX2_REDUNDANCY
+try_therm_diag:
+#endif
+    ;
 #if AMS_ENABLE_ADBMS_THERM_OPEN_WIRE_DIAG
     if(acc->smb_transport_ready && accumulator_final_ring_topology_valid(acc))
     {
@@ -829,11 +869,31 @@ static void adbms_task_run_periodic_diagnostics(app_data_t *data, bool after_acq
             AMS_ADBMS_THERM_OPEN_WIRE_PERIOD_MS))
         {
             uint8_t sensor = data->adbms_therm_ow_next_sensor;
+            bool forced;
+            uint32_t cost = data->adbms_diag_cost_ms[1];
+            if(cost < 60u) cost = 60u;
+            uint32_t due = data->adbms_therm_ow_last_tick == 0u ?
+                data->adbms_diag_coverage_start :
+                data->adbms_therm_ow_last_tick + AMS_ADBMS_THERM_OPEN_WIRE_PERIOD_MS;
+            if(!ams_diag_admit(now, data->adbms_diag_scan_start,
+                AMS_ADBMS_TASK_PERIOD_MS, cost, due, 2000u, &forced)) {
+                if(data->adbms_diag_deferred[1] != UINT32_MAX) data->adbms_diag_deferred[1]++;
+                goto publish_diagnostic_fault;
+            }
+            if(forced && data->adbms_diag_forced[1] != UINT32_MAX) data->adbms_diag_forced[1]++;
+            uint32_t started = osKernelGetTickCount();
             HAL_StatusTypeDef therm_ow_status =
                 adbms6830_run_thermistor_open_wire(smb, sensor);
+            data->adbms_therm_attempt_tick[sensor] = osKernelGetTickCount();
+            uint32_t duration = osKernelGetTickCount() - started;
+            if(duration > data->adbms_diag_cost_ms[1]) data->adbms_diag_cost_ms[1] = duration;
+            bool completed = smb->therm_ow_health.valid_mask == adbms_task_expected_ic_mask(smb);
+            if(completed) {
+                data->adbms_therm_success_tick[sensor] = osKernelGetTickCount();
+                data->adbms_therm_completed_mask |= 1UL << sensor;
+            }
             data->adbms_therm_ow_last_tick = now;
-            data->adbms_therm_ow_next_sensor =
-                (uint8_t)((sensor + 1u) % ADBMS6830_TEMP_SENSOR_COUNT);
+            ams_diag_advance(completed, &data->adbms_diag_retry[1], &data->adbms_therm_ow_next_sensor);
             if(data->adbms_therm_ow_diag_count != UINT32_MAX)
             {
                 data->adbms_therm_ow_diag_count++;
@@ -846,6 +906,7 @@ static void adbms_task_run_periodic_diagnostics(app_data_t *data, bool after_acq
                  * sample into the normal temperature image. */
                 data->adbms_therm_ow_diag_fail_count++;
             }
+            goto publish_diagnostic_fault;
         }
     }
 #endif
@@ -1485,6 +1546,7 @@ void adbms_task_fn(void *argument)
 	for(;;)
 	{
 	    entry = osKernelGetTickCount();
+        data->adbms_diag_scan_start = entry;
         uint32_t scan_start_us = adbms_task_time_us(data);
         uint32_t phase_start_us = scan_start_us;
         uint32_t phase_elapsed_us[8] = {0u};

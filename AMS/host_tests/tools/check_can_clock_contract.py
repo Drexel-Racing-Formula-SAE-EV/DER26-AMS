@@ -6,10 +6,10 @@ import re
 ROOT = Path(__file__).resolve().parents[2]
 app = (ROOT / "Core/Inc/app.h").read_text()
 main = (ROOT / "Core/Src/main.c").read_text()
-ioc = (ROOT / "DER26-AMS-75S-74OBS-DIAG-250.ioc").read_text()
+ioc = (ROOT / "DER26-AMS-VEHICLE-1M-CLI4.ioc").read_text()
 
 checks = {
-    "default 250 kbps": r"#define\s+DER26_CAN_BITRATE_KBPS\s+250u",
+    "default 1 Mbps": r"#define\s+DER26_CAN_BITRATE_KBPS\s+1000u",
     "1M prescaler 3": r"DER26_CAN_BITRATE_KBPS\s*==\s*1000u[\s\S]*?#define\s+DER26_CAN_PRESCALER\s+3u",
     "500k prescaler 6": r"DER26_CAN_BITRATE_KBPS\s*==\s*500u[\s\S]*?#define\s+DER26_CAN_PRESCALER\s+6u",
     "250k prescaler 12": r"DER26_CAN_BITRATE_KBPS\s*==\s*250u[\s\S]*?#define\s+DER26_CAN_PRESCALER\s+12u",
@@ -31,13 +31,12 @@ for token in [
     if token not in main:
         raise SystemExit(f"FAIL AMS target source missing: {token}")
 
-# CubeMX project is checked too so regeneration cannot silently restore old
-# 250-kbps/SJW1 timing or an HSI PLL source.
-for token in ["CAN1.Prescaler=12", "CAN1.CalculateBaudRate=250000", "CAN1.SJW=CAN_SJW_2TQ"]:
+# CubeMX must not silently fall back to a legacy charger 250-kbps rate.
+for token in ["CAN1.Prescaler=3", "CAN1.CalculateBaudRate=1000000", "CAN1.SJW=CAN_SJW_2TQ"]:
     if token not in ioc:
         raise SystemExit(f"FAIL AMS .ioc missing {token}")
 if "RCC.PLLSourceVirtual=RCC_PLLSOURCE_HSE" not in ioc and "RCC.PLLSource=RCC_PLLSOURCE_HSE" not in ioc:
     # CubeMX key varies by version; source check above remains authoritative.
     print("NOTE AMS .ioc HSE PLL key not recognized; generated main.c HSE gate passed")
 
-print("PASS charger AMS 54-MHz/HSE-derived 250k CAN timing contract (SJW=2)")
+print("PASS vehicle AMS 54-MHz/HSE-derived 1Mbps CAN timing contract (SJW=2)")

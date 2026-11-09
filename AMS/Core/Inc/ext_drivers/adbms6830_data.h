@@ -610,6 +610,12 @@ typedef struct
 typedef HAL_StatusTypeDef (*adbms6830_cooperative_wait_fn_t)(void *ctx, uint32_t wait_us);
 typedef uint32_t (*adbms6830_time_us_fn_t)(void *ctx);
 
+typedef struct {
+  uint32_t start_us, end_us;
+  uint16_t bytes;
+  uint8_t status, coherent;
+} adbms6830_frame_trace_t;
+
 typedef struct
 {
   bool active;
@@ -621,6 +627,9 @@ typedef struct
   uint32_t max_gap_us;
   uint32_t last_duration_us;
   uint32_t max_duration_us;
+  uint32_t optional_voltage_epoch;
+  uint32_t frame_trace_sequence;
+  adbms6830_frame_trace_t frame_trace[32];
   uint32_t session_count;
   uint32_t full_wake_count;
   uint32_t cold_wake_count;

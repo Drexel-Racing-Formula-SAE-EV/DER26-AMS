@@ -4,14 +4,26 @@ Host-side verification for DER26 AMS production logic. The harness compiles sele
 
 It complements target testing; it does **not** validate physical SPI/isoSPI timing, real sensor scaling, STM32 scheduling/WCET, EMI, wiring, or vehicle safety.
 
-## Quick start
+## Vehicle main-branch CI (v0.5.57-r1)
 
-From this directory:
+For the dedicated 1 Mbps vehicle firmware package, use:
 
 ```bash
-make clean
-make test
+make -j2 vehicle-ci
 ```
+
+This target includes project identity, four CubeIDE configurations, CAN clock,
+SoC initialization in both vehicle profiles, vehicle evidence/profile gates,
+UART/CAN/ADBMS timing and measurement integrity, plus portable ADBMS2950B
+driver regressions. Evidence macros are **synthetic and host-test only**.
+
+The inherited `make unit` target now **links** after adding host-only tick
+stubs; it still fails 68 assertions in legacy mixed-topology/bench fixtures.
+The inherited `make test`/`make ci` suites also contain unsupported profile
+and external-tools assumptions. They are **not** the vehicle release gate.
+These failures are retained rather than disabled or silently marked as passed.
+
+Other historical targets below are kept for cross-project test development.
 
 Useful focused targets include:
 

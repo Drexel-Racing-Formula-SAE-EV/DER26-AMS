@@ -26,9 +26,29 @@ static void timer_set(TIM_HandleTypeDef *h, uint32_t v){timer_base=(uint32_t)sim
 #undef __HAL_TIM_SET_COUNTER
 #define __HAL_TIM_GET_COUNTER(h) timer_read(h)
 #define __HAL_TIM_SET_COUNTER(h,v) timer_set(h,v)
+static unsigned test_lock_depth;
+static bool poison_on_unlock;
+static bool poison_tx_on_acquire;
+static void test_spi_lock(void);
+static void test_spi_unlock(void);
+#define adbms_spi_lock test_spi_lock
+#define adbms_spi_unlock test_spi_unlock
 /* Include the real source so static helpers are tested without exported APIs. */
 #include "Core/Src/ext_drivers/adbms6830.c"
 #include "Core/Src/ext_drivers/accumulator.c"
+
+static void test_spi_lock(void) {
+    /* Emulate another owner modifying the shared TX scratch before acquisition. */
+    if(poison_tx_on_acquire && test_lock_depth==0u)
+        memset(write_buf,0xcd,sizeof(write_buf));
+    test_lock_depth++;
+}
+static void test_spi_unlock(void) {
+    CHECK(test_lock_depth > 0);
+    if(poison_on_unlock && test_lock_depth == 1u)
+        memset(spi_txrx_rx_buf, 0xcd, sizeof(spi_txrx_rx_buf));
+    test_lock_depth--;
+}
 
 uint32_t HAL_GetTick(void){return (uint32_t)(sim_us/1000u);}
 uint32_t osKernelGetTickCount(void){return HAL_GetTick();}
@@ -49,6 +69,7 @@ static void wire_time(SPI_HandleTypeDef *h,uint16_t n,uint32_t timeout)
 }
 HAL_StatusTypeDef HAL_SPI_Transmit(SPI_HandleTypeDef *h,uint8_t *p,uint16_t n,uint32_t timeout)
 {
+    CHECK(test_lock_depth > 0);
     wire_time(h,n,timeout);
     if(fail_spi) return HAL_TIMEOUT;
     CHECK(n>=4);
@@ -63,6 +84,7 @@ HAL_StatusTypeDef HAL_SPI_Transmit(SPI_HandleTypeDef *h,uint8_t *p,uint16_t n,ui
 }
 HAL_StatusTypeDef HAL_SPI_TransmitReceive(SPI_HandleTypeDef *h,uint8_t *tx,uint8_t *rx,uint16_t n,uint32_t timeout)
 {
+    CHECK(test_lock_depth > 0);
     wire_time(h,n,timeout);
     if(fail_spi) return HAL_TIMEOUT;
     memset(rx,0,n);
@@ -94,6 +116,8 @@ static void reset_dev(unsigned count)
     sim_us=0; timer_base=0; edge_count=0;model_counter=0;transfers=0;largest_timeout=0;
     last_mux_end_us=0;
     bad_pec=bad_counter=fail_spi=timer_stopped=false;extra_delay_once=0;last_cs=GPIO_PIN_SET;
+    spi.Instance=SPI6;
+    spi.Init.DataSize=SPI_DATASIZE_8BIT;
     spi.Init.BaudRatePrescaler=SPI_BAUDRATEPRESCALER_256;
     tim.Instance=&timer;dev.htim=&tim;dev.hspi=&spi;
     dev.ics=ics;dev.ics_capacity=count;dev.num_ics=count;dev.physical_chain_count=count;
@@ -121,10 +145,84 @@ static void read_clean(void)
 }while(0)
 int main(void)
 {
+    reset_dev(5); read_clean();
+    poison_tx_on_acquire=true;
+    uint8_t cfg_payload[30]={0};
+    CHECK(adbms6830_cmd_checked(&dev,MUTE)==HAL_OK);
+    CHECK(adbms6830_wr48_checked(&dev,WRCFGA,cfg_payload)==HAL_OK);
+    CHECK(test_lock_depth==0u);
+    poison_tx_on_acquire=false;
+    puts("PASS command/write preparation protected against competing scratch owner");
+    /* Exhaust millisecond tick phases at the fine-clock boundary. A long
+     * HAL completion observation must not refresh the physical lower bound. */
+    for(unsigned phase=0; phase<1000; phase++) {
+        reset_dev(5);
+        uint32_t start=100000u+phase;
+        sim_us=start+834u+2999u;
+        uint32_t proof=adbms6830_frame_activity_lower_bound(&dev,start,44);
+        CHECK(proof==start+834u);
+        adbms6830_session_note_activity(&dev,proof,start/1000u);
+        adbms6830_session_open(&dev);
+        dev.session.coherent_snapshot_active=true;
+        uint32_t n=edge_count;
+        CHECK(adbms6830_session_require_awake(&dev)==HAL_OK);
+        CHECK(edge_count==n);
+        CHECK(dev.session.last_gap_us==2999u);
+        adbms6830_session_note_activity(&dev,(uint32_t)sim_us,HAL_GetTick());
+        CHECK(dev.session.last_gap_us==2999u);
+        /* Restore the physical proof for the exact-expiry assertion. */
+        adbms6830_session_note_activity(&dev,proof,start/1000u);
+        sim_us++;
+        CHECK(adbms6830_session_require_awake(&dev)==HAL_BUSY);
+        CHECK(edge_count==n); /* no wake spliced into SNAP */
+    }
+    /* A full microsecond wrap must not resurrect the cached awake proof. */
+    reset_dev(5); sim_us=100000u;
+    adbms6830_session_note_activity(&dev,(uint32_t)sim_us,HAL_GetTick());
+    adbms6830_session_open(&dev); dev.session.coherent_snapshot_active=true;
+    sim_us += (1ULL<<32)+100u;
+    CHECK(adbms6830_session_require_awake(&dev)==HAL_BUSY);
+    CHECK(edge_count==0);
+    /* Short intervals across both clocks' rollover remain legitimate. */
+    reset_dev(5); sim_us=((uint64_t)UINT32_MAX)*1000u+500u;
+    adbms6830_session_note_activity(&dev,(uint32_t)sim_us,HAL_GetTick());
+    adbms6830_session_open(&dev); dev.session.coherent_snapshot_active=true;
+    sim_us+=2500u;
+    CHECK(adbms6830_session_require_awake(&dev)==HAL_OK);
+    CHECK(edge_count==0);
+    /* Opening a logical session cannot renew an expired physical proof. */
+    reset_dev(5); sim_us=100000u;
+    adbms6830_session_note_activity(&dev,(uint32_t)sim_us,HAL_GetTick());
+    sim_us+=8000u;
+    adbms6830_session_open(&dev); dev.session.coherent_snapshot_active=true;
+    CHECK(adbms6830_session_require_awake(&dev)==HAL_BUSY);
+    CHECK(edge_count==0);
+    puts("PASS 1000 tick phases, exact idle boundary, clock wraps, session reopen");
     reset_dev(5);
     CHECK(adbms6830_wakeup_checked(&dev)==HAL_OK);
     CHECK(dev.session.cold_wake_count==1 && dev.session.warm_wake_count==0);
     CHECK(sim_us>=10000 && sim_us<10100 && edge_count==10);
+    uint8_t command[4] = {0, 0x2c, 0x59, 0x90};
+    uint8_t reply[40];
+    CHECK(adbms6830_spi_write_read(&dev, command, 4, reply, 40, 1)==HAL_OK);
+    CHECK(dev.session.frame_trace_sequence == 1u);
+    CHECK(dev.session.frame_trace[0].bytes == 44u);
+    CHECK(dev.session.frame_trace[0].end_us - dev.session.frame_trace[0].start_us >= 834u);
+    for(unsigned j=0; j<40; j++)
+        CHECK(adbms6830_spi_write_read(&dev, command, 4, reply, 40, 1)==HAL_OK);
+    CHECK(dev.session.frame_trace_sequence == 41u);
+    CHECK(dev.session.frame_trace[8].status == HAL_OK);
+    uint32_t frame_start=(uint32_t)sim_us;
+    sim_us += 10000u; /* late observation must not become recent activity */
+    CHECK(adbms6830_frame_activity_lower_bound(&dev, frame_start, 44)==frame_start+834u);
+    frame_start=UINT32_MAX-400u; sim_us=(uint64_t)UINT32_MAX+1000u;
+    CHECK(adbms6830_frame_activity_lower_bound(&dev, frame_start, 44)==frame_start+834u);
+    sim_us=50000u;
+    poison_on_unlock = true;
+    CHECK(adbms6830_spi_write_read(&dev, command, 4, reply, 40, 1)==HAL_OK);
+    CHECK(reply[0] != 0xcd); /* RX must be copied before ownership release. */
+    CHECK(test_lock_depth == 0u);
+    poison_on_unlock = false;
     uint32_t edges=edge_count;
     CHECK(adbms6830_wakeup_checked(&dev)==HAL_OK && edge_count==edges);
     read_clean(); sim_us+=100000;
@@ -176,7 +274,19 @@ int main(void)
     }
     /* Real successful voltage+temperature production calls at 5 SMBs. */
     reset_dev(5);read_clean();sim_us+=100000;before=sim_us;
-    CHECK(smb_read_voltage(&dev)==0);CHECK(smb_read_temp(&dev)==0);
+    CHECK(smb_read_voltage(&dev)==0);
+#if AMS_ESTIMATOR_VOLTAGE_SOURCE == AMS_ESTIMATOR_VOLTAGE_SOURCE_RAW
+    if(AMS_ADBMS_OPTIONAL_PRODUCT_DIVISOR > 1u) {
+        uint64_t extra_start=sim_us;
+        uint32_t reads=dev.health.avg8_read_count;
+        CHECK(smb_read_voltage(&dev)==0);
+        CHECK(dev.health.avg8_read_count==reads);
+        CHECK(dev.last_acell_updated_mask[0]==0u);
+        CHECK(dev.last_cell_updated_mask[0]!=0u);
+        before += sim_us-extra_start;
+    }
+#endif
+    CHECK(smb_read_temp(&dev)==0);
     printf("VOLT+TEMP nominal wire/delay model: %llu us\n",(unsigned long long)(sim_us-before));
     CHECK(sim_us-before<70000u);
     /* Status AUX conversion spans the scheduler gap, not a blocking 20 ms

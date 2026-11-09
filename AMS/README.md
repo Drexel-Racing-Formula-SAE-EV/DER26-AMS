@@ -1,3 +1,7 @@
+# Current update: v0.5.57-r4 wake/session fix
+
+See [WAKEFIX_R4_REVIEW.md](WAKEFIX_R4_REVIEW.md) for corrections, test evidence and remaining timing work. Full native vehicle-ci passes. Source only; no ARM or hardware qualification.
+
 # DER26 AMS v0.5.57 — Vehicle Main Branch (1 Mbps)
 
 **STM32CubeIDE source project** for the 1 Mbps AMS↔ECU vehicle bus. This is NOT
@@ -44,6 +48,16 @@ make vehicle-variant-test cli-async-test can-tx-scheduler-test vehicle-project-c
 make adbms-wake-policy-test measurement-integrity-test
 make apm-hardening-test apm-driver-regression
 ```
+
+## v0.5.57-r1 main-branch fixes
+
+The initial SoC prior is **27% in both vehicle profiles**. Legacy project/clock
+CI checks now validate the actual 1 Mbps vehicle `.ioc` and four CubeIDE
+configs; all four build directories are unique. `make unit` now links with
+host-only tick stubs, but its legacy assertions still fail; the supported
+vehicle gate is `make -j2 vehicle-ci`. AIR auxiliary feedback remains OFF
+because the hardware is not fitted. The dual-CAN charger gateway remains future
+work and is not part of this package. See `VEHICLE_MAIN_FIXES_v0.5.57-r1.md`.
 
 ## Status
 

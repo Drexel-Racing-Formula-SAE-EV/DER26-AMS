@@ -10,11 +10,20 @@ flags=args[:args.index('src/ams_host_test_runner.c')]
 flags=[x for x in flags if not x.startswith(('-DAMS_BUILD_PROFILE=','-DAMS_HOST_VEHICLE_VARIANT_TEST='))]
 configs=E.parse(repo/'.cproject').findall('.//cconfiguration')
 assert len(configs)==4
-for c in configs:
+names=[c.find('.//configuration').get('name') for c in configs]
+assert names == [
+    'VEHICLE COMMS 1M Debug', 'VEHICLE COMMS 1M Release',
+    'VEHICLE RELEASE GATED 1M Debug', 'VEHICLE RELEASE GATED 1M Release',
+],names
+builders=[b.get('buildPath') for c in configs for b in c.findall('.//builder') if b.get('buildPath')]
+assert len(builders)==4 and len(set(builders))==4,builders
+assert all('/Vehicle_' in path for path in builders),builders
+for i,c in enumerate(configs):
     definitions=[x.get('value') for o in c.findall('.//option')
                  if o.get('superClass','').endswith('.definedsymbols')
                  for x in o.findall('listOptionValue')]
     assert 'DER26_CAN_BITRATE_KBPS=1000' in definitions,definitions
+    assert ('AMS_BUILD_PROFILE=4' if i<2 else 'AMS_BUILD_PROFILE=3') in definitions,definitions
     assert not any('VALIDATED=1' in x or 'REVIEWED=1' in x for x in definitions)
 assert 'CAN1.Prescaler=3' in next(repo.glob('*.ioc')).read_text()
 assert 'CAN1.CalculateBaudRate=1000000' in next(repo.glob('*.ioc')).read_text()

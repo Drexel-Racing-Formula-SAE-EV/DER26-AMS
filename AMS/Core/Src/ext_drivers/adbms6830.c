@@ -372,6 +372,22 @@ static bool adbms6830_link_matches(const adbms6830_driver_t *dev)
            (dev->wake.logical_count == (uint8_t)dev->num_ics);
 }
 
+/* One physical-activity decision for standalone and coherent transfers.
+ * The microsecond clock owns the 3 ms idle limit. The independent HAL clock
+ * only rejects an old proof that aliases after a full microsecond wrap.
+ * activity_ms is deliberately sampled BEFORE the frame, so it must not be
+ * used as a second 3 ms idle test (wire time + tick rounding are not idle).
+ * A one-second coarse ceiling is far below the ~4295 s microsecond wrap;
+ * it cannot extend the fine-clock guard. Clock-hook changes invalidate proof.
+ */
+static bool adbms6830_link_recent(const adbms6830_driver_t *dev,
+                                uint32_t now_us, uint32_t now_ms)
+{
+    return dev->wake.activity_valid && adbms6830_link_matches(dev) &&
+           ((uint32_t)(now_ms - dev->wake.activity_ms) < 1000u) &&
+           ((uint32_t)(now_us - dev->wake.activity_us) < AMS_ADBMS_SESSION_GUARD_US);
+}
+
 static void adbms6830_session_note_activity(adbms6830_driver_t *dev, uint32_t now, uint32_t now_ms)
 {
     if(dev == NULL) return;
@@ -384,9 +400,8 @@ static void adbms6830_session_note_activity(adbms6830_driver_t *dev, uint32_t no
     dev->wake.logical_count = (uint8_t)dev->num_ics;
     if(dev->session.active)
     {
-        uint32_t gap = now - dev->session.last_activity_us;
-        dev->session.last_gap_us = gap;
-        if(gap > dev->session.max_gap_us) dev->session.max_gap_us = gap;
+        /* last/max gap are sampled by require_awake BEFORE the next frame.
+         * Do not overwrite idle-gap telemetry with frame-to-frame duration. */
         dev->session.last_activity_us = now;
     }
 }
@@ -488,15 +503,14 @@ static HAL_StatusTypeDef adbms6830_session_require_awake(adbms6830_driver_t *dev
     }
 
     now = adbms6830_runtime_time_us(dev);
-    gap = now - dev->session.last_activity_us;
+    gap = now - dev->wake.activity_us;
     dev->session.last_gap_us = gap;
     if(gap > dev->session.max_gap_us)
     {
         dev->session.max_gap_us = gap;
     }
 
-    if((gap < AMS_ADBMS_SESSION_GUARD_US) &&
-       dev->wake.activity_valid && adbms6830_link_matches(dev))
+    if(adbms6830_link_recent(dev, now, HAL_GetTick()))
     {
         /* This guard is deliberately advisory, not a scheduler lock. A higher
          * priority task or ISR can still preempt between this check and the
@@ -528,7 +542,8 @@ static HAL_StatusTypeDef adbms6830_session_require_awake(adbms6830_driver_t *dev
     {
         dev->session.guard_rewake_count++;
     }
-    dev->session.last_activity_us = adbms6830_runtime_time_us(dev);
+    /* wake_train records conservative physical activity; never refresh it
+     * from a potentially delayed software completion timestamp. */
 #else
     (void)dev;
 #endif
@@ -4197,11 +4212,8 @@ HAL_StatusTypeDef adbms6830_wakeup_checked(adbms6830_driver_t* dev)
 #if AMS_ENABLE_ADBMS_AWAKE_SESSION
     uint32_t now_us = adbms6830_runtime_time_us(dev);
     uint32_t now_ms = HAL_GetTick();
-    /* The independent millisecond age also rejects stale microsecond-cache
-     * reuse after its wrap. Zero is a valid timestamp, not a sentinel. */
-    if(dev->wake.activity_valid &&
-       ((uint32_t)(now_ms - dev->wake.activity_ms) < 3u) &&
-       ((uint32_t)(now_us - dev->wake.activity_us) < AMS_ADBMS_SESSION_GUARD_US))
+    /* Zero is a valid timestamp, not a sentinel. */
+    if(adbms6830_link_recent(dev, now_us, now_ms))
     {
         adbms6830_increment_u32_sat(&dev->session.skipped_wake_count);
         return HAL_OK;
@@ -4277,6 +4289,36 @@ void adbms6830_pack_clr_flag_data(adbms6830_driver_t* dev)
 	}
 }
 
+/* Lower bound on the last physical clock, not a late completion timestamp.
+ * SPI6 APB2 is bounded by 108 MHz on STM32F767. Floor division deliberately
+ * underestimates wire duration. Preemption can only move the real end later.
+ * Retain the original coarse ms age as an additional conservative wrap check. */
+static uint32_t adbms6830_frame_activity_lower_bound(adbms6830_driver_t *dev,
+    uint32_t start, uint16_t bytes)
+{
+    if(dev->hspi->Instance != SPI6 || dev->hspi->Init.DataSize != SPI_DATASIZE_8BIT)
+        return start;
+    uint32_t divisor = 1u << (((dev->hspi->Init.BaudRatePrescaler & SPI_CR1_BR) >> 3u) + 1u);
+    uint32_t wire_min_us = ((uint32_t)bytes * 8u * divisor) / 108u;
+    uint32_t observed = adbms6830_runtime_time_us(dev) - start;
+    return observed >= wire_min_us ? start + wire_min_us : start;
+}
+
+/* Owner-only bounded binary ring, readable through SWD; no UART/ISR work.
+ * end_us is software observation, NOT proof of last physical SCK activity. */
+static void adbms6830_trace_frame(adbms6830_driver_t *dev, uint32_t start,
+                                  HAL_StatusTypeDef status, uint16_t bytes)
+{
+    uint32_t seq = dev->session.frame_trace_sequence;
+    adbms6830_frame_trace_t *event = &dev->session.frame_trace[seq % 32u];
+    event->start_us = start;
+    event->end_us = adbms6830_runtime_time_us(dev);
+    event->bytes = bytes;
+    event->status = (uint8_t)status;
+    event->coherent = dev->session.coherent_snapshot_active;
+    dev->session.frame_trace_sequence = seq + 1u;
+}
+
 HAL_StatusTypeDef adbms6830_spi_write(adbms6830_driver_t* dev,
                                          uint8_t* data,
                                          uint16_t len,
@@ -4290,9 +4332,9 @@ HAL_StatusTypeDef adbms6830_spi_write(adbms6830_driver_t* dev,
         return HAL_ERROR;
     }
 
+    adbms_spi_lock();
     adbms6830_spi_debug_note_tx(dev, dev->spi_debug.last_op, data, data, len, 0u);
 
-    adbms_spi_lock();
     uint32_t frame_start_us = adbms6830_runtime_time_us(dev);
     uint32_t frame_start_ms = HAL_GetTick();
     if(use_cs)
@@ -4306,11 +4348,13 @@ HAL_StatusTypeDef adbms6830_spi_write(adbms6830_driver_t* dev,
     {
         adbms6830_set_cs(dev, 1);
     }
-    adbms_spi_unlock();
+
+    adbms6830_trace_frame(dev, frame_start_us, status, len);
 
     if(status == HAL_OK)
     {
-        adbms6830_session_note_activity(dev, frame_start_us, frame_start_ms);
+        adbms6830_session_note_activity(dev,
+            adbms6830_frame_activity_lower_bound(dev, frame_start_us, len), frame_start_ms);
     }
 
     if(status != HAL_OK) adbms6830_link_forget(dev);
@@ -4326,6 +4370,7 @@ HAL_StatusTypeDef adbms6830_spi_write(adbms6830_driver_t* dev,
         }
     }
 
+    adbms_spi_unlock();
     return status;
 }
 
@@ -4335,7 +4380,17 @@ void adbms6830_cmd(adbms6830_driver_t* dev, uint8_t cmd[CMDSZ])
     (void)adbms6830_cmd_checked(dev, cmd);
 }
 
-static HAL_StatusTypeDef adbms6830_cmd_checked(adbms6830_driver_t* dev, uint8_t cmd[CMDSZ])
+/* Recursive bus ownership covers the complete checked operation. */
+static HAL_StatusTypeDef adbms6830_cmd_checked_owned(adbms6830_driver_t *dev, uint8_t cmd[CMDSZ]);
+static HAL_StatusTypeDef adbms6830_cmd_checked(adbms6830_driver_t *dev, uint8_t cmd[CMDSZ])
+{
+    adbms_spi_lock();
+    HAL_StatusTypeDef result = adbms6830_cmd_checked_owned(dev, cmd);
+    adbms_spi_unlock();
+    return result;
+}
+
+static HAL_StatusTypeDef adbms6830_cmd_checked_owned(adbms6830_driver_t* dev, uint8_t cmd[CMDSZ])
 {
     uint16_t pec15;
     HAL_StatusTypeDef status;
@@ -4393,7 +4448,17 @@ void adbms6830_wr48(adbms6830_driver_t* dev, uint8_t cmd[CMDSZ], uint8_t* tx_dat
     (void)adbms6830_wr48_checked(dev, cmd, tx_data);
 }
 
-static HAL_StatusTypeDef adbms6830_wr48_checked(adbms6830_driver_t* dev,
+/* Recursive bus ownership covers the complete checked operation. */
+static HAL_StatusTypeDef adbms6830_wr48_checked_owned(adbms6830_driver_t *dev, uint8_t cmd[CMDSZ], uint8_t *tx_data);
+static HAL_StatusTypeDef adbms6830_wr48_checked(adbms6830_driver_t *dev, uint8_t cmd[CMDSZ], uint8_t *tx_data)
+{
+    adbms_spi_lock();
+    HAL_StatusTypeDef result = adbms6830_wr48_checked_owned(dev, cmd, tx_data);
+    adbms_spi_unlock();
+    return result;
+}
+
+static HAL_StatusTypeDef adbms6830_wr48_checked_owned(adbms6830_driver_t* dev,
                                                 uint8_t cmd[CMDSZ],
                                                 uint8_t* tx_data)
 {
@@ -4478,7 +4543,17 @@ void adbms6830_rd48(adbms6830_driver_t* dev, uint8_t cmd[CMDSZ], uint8_t* rx_dat
     (void)adbms6830_rd48_checked(dev, cmd, rx_data);
 }
 
-static HAL_StatusTypeDef adbms6830_rd48_checked(adbms6830_driver_t* dev,
+/* Recursive bus ownership covers the complete checked operation. */
+static HAL_StatusTypeDef adbms6830_rd48_checked_owned(adbms6830_driver_t *dev, uint8_t cmd[CMDSZ], uint8_t *rx_data);
+static HAL_StatusTypeDef adbms6830_rd48_checked(adbms6830_driver_t *dev, uint8_t cmd[CMDSZ], uint8_t *rx_data)
+{
+    adbms_spi_lock();
+    HAL_StatusTypeDef result = adbms6830_rd48_checked_owned(dev, cmd, rx_data);
+    adbms_spi_unlock();
+    return result;
+}
+
+static HAL_StatusTypeDef adbms6830_rd48_checked_owned(adbms6830_driver_t* dev,
                                                 uint8_t cmd[CMDSZ],
                                                 uint8_t* rx_data)
 {
@@ -4628,13 +4703,13 @@ HAL_StatusTypeDef adbms6830_spi_write_read(adbms6830_driver_t *dev,
     }
     total_len = (uint16_t)((uint16_t)tx_len + rx_len);
 
+    adbms_spi_lock();
     memset(spi_txrx_tx_buf, ADBMS6830_SPI_DUMMY_BYTE, total_len);
     memset(spi_txrx_rx_buf, 0, total_len);
     memcpy(spi_txrx_tx_buf, tx_Data, tx_len);
 
     adbms6830_spi_debug_note_tx(dev, dev->spi_debug.last_op, tx_Data, spi_txrx_tx_buf, tx_len, rx_len);
 
-    adbms_spi_lock();
     uint32_t frame_start_us = adbms6830_runtime_time_us(dev);
     uint32_t frame_start_ms = HAL_GetTick();
     if(use_cs)
@@ -4652,12 +4727,14 @@ HAL_StatusTypeDef adbms6830_spi_write_read(adbms6830_driver_t *dev,
     {
         adbms6830_set_cs(dev, 1);
     }
-    adbms_spi_unlock();
+
+    adbms6830_trace_frame(dev, frame_start_us, status, total_len);
 
     if(status == HAL_OK)
     {
         memcpy(rx_data, &spi_txrx_rx_buf[tx_len], rx_len);
-        adbms6830_session_note_activity(dev, frame_start_us, frame_start_ms);
+        adbms6830_session_note_activity(dev,
+            adbms6830_frame_activity_lower_bound(dev, frame_start_us, total_len), frame_start_ms);
     }
     else
     {
@@ -4682,6 +4759,7 @@ HAL_StatusTypeDef adbms6830_spi_write_read(adbms6830_driver_t *dev,
 
     adbms6830_spi_debug_note_rx(dev, rx_data, rx_len, status);
 
+    adbms_spi_unlock();
     return status;
 }
 

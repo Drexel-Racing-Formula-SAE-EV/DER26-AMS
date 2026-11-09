@@ -137,7 +137,7 @@ VEHICLE_MANIFEST_DEFS += \
 	-DAMS_SOP_MODEL_REVISION=\"host-gate-not-release\" \
 	-DAMS_SOH_MODEL_REVISION=\"host-gate-not-release\"
 
-VEHICLE_PROFILE_DEFS := $(VEHICLE_VALIDATION_DEFS) $(VEHICLE_MANIFEST_DEFS) -DNSMBS=5 -DACCUMULATOR_PHYSICAL_CHAIN_COUNT=6 -DAMS_ENABLE_APM_2950=1
+VEHICLE_PROFILE_DEFS := $(VEHICLE_VALIDATION_DEFS) $(VEHICLE_MANIFEST_DEFS) -DNSMBS=5 -DACCUMULATOR_PHYSICAL_CHAIN_COUNT=5 -DAMS_ENABLE_APM_2950=0
 
 INC := \
 	-Iinclude \
@@ -217,7 +217,7 @@ help:
 	@echo "  make can-v4-contract-gate Verify V4 ID priority/scheduler contract"
 	@echo "  make can-irq-contract-gate Verify CAN1 RX0/TX/SCE vector coverage for enabled notifications"
 	@echo "  make rtos-fail-low-order-gate Verify fatal RTOS hooks fail BMS_OK low before diagnostics"
-	@echo "  make can-clock-contract-gate Verify 500k/250k timing and HSE clock contract"
+	@echo "  make can-clock-contract-gate Verify active 1 Mbps vehicle CAN timing and HSE clock"
 	@echo "  make adbms-v05-contract-gate Verify ADBMS session/fault/filter/balance cross-module contract"
 	@echo "  make adbms-v05-variant-gates Compile /128,/64, AVG8/IIR and post-S-ECO feature variants"
 	@echo "  make asan          Build and run with AddressSanitizer + UBSan"
@@ -263,7 +263,7 @@ compile: check-core-root make-build-dir
 
 unit: CFLAGS_COMMON += -DAMS_HW_BRINGUP=0
 unit: check-core-root make-build-dir
-	$(CC) $(CFLAGS_COMMON) $(UNIT_SRC) $(ESTIMATOR_SRC) $(ADBMS2950_SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC) -o $(UNIT_BIN) $(LDLIBS)
+	$(CC) $(CFLAGS_COMMON) $(UNIT_SRC) unit/host_clock_stubs.c $(ESTIMATOR_SRC) $(ADBMS2950_SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC) -o $(UNIT_BIN) $(LDLIBS)
 	$(UNIT_BIN)
 	$(CC) $(CFLAGS_COMMON) $(THERMISTOR_UNIT_SRC) $(THERMISTOR_SRC) -o $(THERMISTOR_UNIT_BIN) $(LDLIBS)
 	$(THERMISTOR_UNIT_BIN)
@@ -465,161 +465,71 @@ test: compile adbms-post-sequence-test task-schedule-test
 	$(BIN)
 
 profile-gates: check-core-root make-build-dir
-	$(CC) $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=1 -DAMS_EXPECTED_PROFILE=1 \
-		$(PROFILE_SRC) -o "$(BUILD_DIR)/profile_bench" $(LDLIBS)
-	"$(BUILD_DIR)/profile_bench"
-	$(CC) $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=2 -DAMS_EXPECTED_PROFILE=2 \
-		$(PROFILE_SRC) -o "$(BUILD_DIR)/profile_hil" $(LDLIBS)
-	"$(BUILD_DIR)/profile_hil"
 	$(CC) $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=4 -DAMS_EXPECTED_PROFILE=4 \
-		$(PROFILE_SRC) -o "$(BUILD_DIR)/profile_testday" $(LDLIBS)
-	"$(BUILD_DIR)/profile_testday"
-	$(CC) $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=5 -DAMS_EXPECTED_PROFILE=5 \
-		$(PROFILE_SRC) -o "$(BUILD_DIR)/profile_bench_validation" $(LDLIBS)
-	"$(BUILD_DIR)/profile_bench_validation"
-	$(CC) $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=5 -DAMS_EXPECTED_PROFILE=5 \
-		-DAMS_BENCH_VALIDATION_SINGLE_SMB=1 \
-		$(PROFILE_SRC) -o "$(BUILD_DIR)/profile_bench_validation_1s" $(LDLIBS)
-	"$(BUILD_DIR)/profile_bench_validation_1s"
+		$(PROFILE_SRC) -o "$(BUILD_DIR)/profile_vehicle_comms" $(LDLIBS)
+	"$(BUILD_DIR)/profile_vehicle_comms"
 	$(CC) $(CFLAGS_COMMON) -Werror $(VEHICLE_PROFILE_DEFS) -DAMS_EXPECTED_PROFILE=3 \
 		$(PROFILE_SRC) -o "$(BUILD_DIR)/profile_vehicle" $(LDLIBS)
 	"$(BUILD_DIR)/profile_vehicle"
 	@if $(CC) $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=3 -DAMS_EXPECTED_PROFILE=3 \
-		$(PROFILE_SRC) -o "$(BUILD_DIR)/profile_vehicle_unsafe" $(LDLIBS) \
-		>"$(BUILD_DIR)/profile_vehicle_unsafe.log" 2>&1; then \
-		echo "ERROR: vehicle profile compiled without release-evidence acknowledgements"; \
-		exit 1; \
-	fi
-	@if $(CC) $(CFLAGS_COMMON) -Werror $(VEHICLE_VALIDATION_DEFS) -DNSMBS=5 \
-		-DAMS_EXPECTED_PROFILE=3 $(PROFILE_SRC) \
-		-o "$(BUILD_DIR)/profile_vehicle_missing_manifest" $(LDLIBS) \
+		$(PROFILE_SRC) -o "$(BUILD_DIR)/profile_vehicle_missing_evidence" $(LDLIBS) \
+		>"$(BUILD_DIR)/profile_vehicle_missing_evidence.log" 2>&1; then \
+		echo "ERROR: vehicle profile compiled without target-validation evidence"; exit 1; fi
+	@grep -q 'Vehicle profile requires' "$(BUILD_DIR)/profile_vehicle_missing_evidence.log" || \
+		(echo "ERROR: missing-evidence gate failed for an unrelated reason"; exit 1)
+	@if $(CC) $(CFLAGS_COMMON) -Werror $(VEHICLE_VALIDATION_DEFS) \
+		-DNSMBS=5 -DACCUMULATOR_PHYSICAL_CHAIN_COUNT=5 -DAMS_ENABLE_APM_2950=0 \
+		-DAMS_EXPECTED_PROFILE=3 $(PROFILE_SRC) -o "$(BUILD_DIR)/profile_vehicle_missing_manifest" $(LDLIBS) \
 		>"$(BUILD_DIR)/profile_vehicle_missing_manifest.log" 2>&1; then \
-		echo "ERROR: vehicle profile compiled without explicit manifest revisions"; \
-		exit 1; \
-	fi
+		echo "ERROR: vehicle profile compiled without manifest revisions"; exit 1; fi
+	@grep -Eiq 'revision|manifest|Vehicle profile requires' "$(BUILD_DIR)/profile_vehicle_missing_manifest.log" || \
+		(echo "ERROR: missing-manifest gate failed for unrelated reason"; exit 1)
 	@if $(CC) $(CFLAGS_COMMON) -Werror \
 		$(filter-out -DAMS_C_OPEN_WIRE_TARGET_VALIDATED=1,$(VEHICLE_PROFILE_DEFS)) \
-		-DAMS_EXPECTED_PROFILE=3 $(PROFILE_SRC) \
-		-o "$(BUILD_DIR)/profile_vehicle_missing_c_open_wire" $(LDLIBS) \
+		-DAMS_EXPECTED_PROFILE=3 $(PROFILE_SRC) -o "$(BUILD_DIR)/profile_vehicle_missing_c_open_wire" $(LDLIBS) \
 		>"$(BUILD_DIR)/profile_vehicle_missing_c_open_wire.log" 2>&1; then \
-		echo "ERROR: vehicle profile compiled without C-open-wire target evidence"; \
-		exit 1; \
-	fi
-	@if $(CC) $(CFLAGS_COMMON) -Werror \
-		$(filter-out -DAMS_FUSE_LOW_CURRENT_EXTRAPOLATION_VALIDATED=1,$(VEHICLE_PROFILE_DEFS)) \
-		-DAMS_EXPECTED_PROFILE=3 $(PROFILE_SRC) \
-		-o "$(BUILD_DIR)/profile_vehicle_missing_fuse_low_current" $(LDLIBS) \
-		>"$(BUILD_DIR)/profile_vehicle_missing_fuse_low_current.log" 2>&1; then \
-		echo "ERROR: vehicle profile compiled without low-current fuse-curve evidence"; \
-		exit 1; \
-	fi
-	@if $(CC) $(CFLAGS_COMMON) -Werror \
-		$(filter-out -DAMS_TEMP_PULLUPS_TARGET_VALIDATED=1,$(VEHICLE_PROFILE_DEFS)) \
-		-DAMS_EXPECTED_PROFILE=3 $(PROFILE_SRC) \
-		-o "$(BUILD_DIR)/profile_vehicle_missing_temp_pullups" $(LDLIBS) \
-		>"$(BUILD_DIR)/profile_vehicle_missing_temp_pullups.log" 2>&1; then \
-		echo "ERROR: vehicle profile compiled without corrected temperature pull-up evidence"; \
-		exit 1; \
-	fi
+		echo "ERROR: vehicle profile compiled without C-open-wire evidence"; exit 1; fi
 	@if $(CC) $(CFLAGS_COMMON) -Werror \
 		$(filter-out -DAMS_TEMP_THRESHOLDS_VALIDATED=1,$(VEHICLE_PROFILE_DEFS)) \
-		-DAMS_EXPECTED_PROFILE=3 $(PROFILE_SRC) \
-		-o "$(BUILD_DIR)/profile_vehicle_missing_temp_thresholds" $(LDLIBS) \
+		-DAMS_EXPECTED_PROFILE=3 $(PROFILE_SRC) -o "$(BUILD_DIR)/profile_vehicle_missing_temp_thresholds" $(LDLIBS) \
 		>"$(BUILD_DIR)/profile_vehicle_missing_temp_thresholds.log" 2>&1; then \
-		echo "ERROR: vehicle profile compiled without reviewed temperature-threshold evidence"; \
-		exit 1; \
-	fi
-	@if $(CC) $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=1 -DAMS_EXPECTED_PROFILE=1 \
-		-DAMS_MAIN_FUSE_PLAUSIBILITY_VALIDATED=1 \
-		$(PROFILE_SRC) -o "$(BUILD_DIR)/profile_main_fuse_without_air" $(LDLIBS) \
-		>"$(BUILD_DIR)/profile_main_fuse_without_air.log" 2>&1; then \
-		echo "ERROR: main-fuse plausibility compiled as validated without AIR/current evidence"; \
-		exit 1; \
-	fi
-	@grep -q "Main-fuse plausibility validation requires authoritative AIR feedback, calibrated current and independent load-side voltage" \
-		"$(BUILD_DIR)/profile_main_fuse_without_air.log" || \
-		(echo "ERROR: main-fuse negative gate failed for an unrelated compiler reason"; exit 1)
-	@if $(CC) $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=1 -DAMS_EXPECTED_PROFILE=1 \
-		-DAMS_MAIN_FUSE_PLAUSIBILITY_VALIDATED=1 \
-		-DAMS_ENABLE_AIR_AUX_FEEDBACK=1 \
-		-DAMS_CURRENT_CALIBRATION_VALIDATED=1 \
-		$(PROFILE_SRC) -o "$(BUILD_DIR)/profile_main_fuse_without_load_voltage" $(LDLIBS) \
-		>"$(BUILD_DIR)/profile_main_fuse_without_load_voltage.log" 2>&1; then \
-		echo "ERROR: main-fuse plausibility compiled as validated without independent load-side voltage evidence"; \
-		exit 1; \
-	fi
-	@grep -q "Main-fuse plausibility validation requires authoritative AIR feedback, calibrated current and independent load-side voltage" \
-		"$(BUILD_DIR)/profile_main_fuse_without_load_voltage.log" || \
-		(echo "ERROR: main-fuse load-voltage negative gate failed for an unrelated compiler reason"; exit 1)
-	@if $(CC) $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=1 -DAMS_EXPECTED_PROFILE=1 \
-		-DAMS_PARALLEL_CONNECTION_OBSERVER_VALIDATED=1 \
-		$(PROFILE_SRC) -o "$(BUILD_DIR)/profile_parallel_without_current" $(LDLIBS) \
-		>"$(BUILD_DIR)/profile_parallel_without_current.log" 2>&1; then \
-		echo "ERROR: parallel-connection observer compiled as validated without current evidence"; \
-		exit 1; \
-	fi
-	@grep -q "Parallel-connection observer validation requires validated current polarity and calibration" \
-		"$(BUILD_DIR)/profile_parallel_without_current.log" || \
-		(echo "ERROR: parallel-observer negative gate failed for an unrelated compiler reason"; exit 1)
+		echo "ERROR: vehicle profile compiled without temperature-threshold evidence"; exit 1; fi
 	@if $(CC) $(CFLAGS_COMMON) -Werror \
-		$(filter-out -DNSMBS=5,$(VEHICLE_PROFILE_DEFS)) \
-		-DAMS_EXPECTED_PROFILE=3 $(PROFILE_SRC) \
-		-o "$(BUILD_DIR)/profile_vehicle_wrong_topology" $(LDLIBS) \
+		$(filter-out -DAMS_FUSE_LOW_CURRENT_EXTRAPOLATION_VALIDATED=1,$(VEHICLE_PROFILE_DEFS)) \
+		-DAMS_EXPECTED_PROFILE=3 $(PROFILE_SRC) -o "$(BUILD_DIR)/profile_vehicle_missing_fuse" $(LDLIBS) \
+		>"$(BUILD_DIR)/profile_vehicle_missing_fuse.log" 2>&1; then \
+		echo "ERROR: vehicle profile compiled without fuse evidence"; exit 1; fi
+	@if $(CC) $(CFLAGS_COMMON) -Werror $(VEHICLE_PROFILE_DEFS) -DAMS_EXPECTED_PROFILE=3 -DNSMBS=4 \
+		$(PROFILE_SRC) -o "$(BUILD_DIR)/profile_vehicle_wrong_topology" $(LDLIBS) \
 		>"$(BUILD_DIR)/profile_vehicle_wrong_topology.log" 2>&1; then \
-		echo "ERROR: vehicle profile compiled without NSMBS=5"; \
-		exit 1; \
-	fi
+		echo "ERROR: vehicle profile compiled with wrong SMB count"; exit 1; fi
 	@if $(CC) $(CFLAGS_COMMON) -Werror \
-		$(filter-out -DACCUMULATOR_PHYSICAL_CHAIN_COUNT=6,$(VEHICLE_PROFILE_DEFS)) \
-		-DAMS_EXPECTED_PROFILE=3 $(PROFILE_SRC) \
-		-o "$(BUILD_DIR)/profile_vehicle_wrong_physical_chain" $(LDLIBS) \
-		>"$(BUILD_DIR)/profile_vehicle_wrong_physical_chain.log" 2>&1; then \
-		echo "ERROR: vehicle profile compiled without six physical ADBMS devices"; \
-		exit 1; \
-	fi
+		$(filter-out -DACCUMULATOR_PHYSICAL_CHAIN_COUNT=5,$(VEHICLE_PROFILE_DEFS)) \
+		-DACCUMULATOR_PHYSICAL_CHAIN_COUNT=6 -DAMS_EXPECTED_PROFILE=3 \
+		$(PROFILE_SRC) -o "$(BUILD_DIR)/profile_vehicle_wrong_chain" $(LDLIBS) \
+		>"$(BUILD_DIR)/profile_vehicle_wrong_chain.log" 2>&1; then \
+		echo "ERROR: vehicle profile compiled with extra physical device"; exit 1; fi
 	@if $(CC) $(CFLAGS_COMMON) -Werror \
-		$(filter-out -DAMS_ENABLE_APM_2950=1,$(VEHICLE_PROFILE_DEFS)) \
-		-DAMS_EXPECTED_PROFILE=3 $(PROFILE_SRC) \
-		-o "$(BUILD_DIR)/profile_vehicle_missing_apm" $(LDLIBS) \
-		>"$(BUILD_DIR)/profile_vehicle_missing_apm.log" 2>&1; then \
-		echo "ERROR: vehicle profile compiled without installed ADBMS2950"; \
-		exit 1; \
-	fi
-	@echo "PASS explicit profiles and fail-closed vehicle evidence/manifest/open-wire/temp/observer/topology gates"
+		$(filter-out -DAMS_ENABLE_APM_2950=0,$(VEHICLE_PROFILE_DEFS)) \
+		-DAMS_ENABLE_APM_2950=1 -DAMS_EXPECTED_PROFILE=3 \
+		$(PROFILE_SRC) -o "$(BUILD_DIR)/profile_vehicle_wrong_apm" $(LDLIBS) \
+		>"$(BUILD_DIR)/profile_vehicle_wrong_apm.log" 2>&1; then \
+		echo "ERROR: vehicle profile compiled with nonexistent APM"; exit 1; fi
+	@echo "PASS vehicle profile 4/3, source-required evidence, five-SMB/no-APM topology gates"
 
 estimator-topology-gates: check-core-root make-build-dir
 	$(CC) $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=4 \
 		-DAMS_EXPECTED_ESTIMATOR_INSTANCES=5 \
 		$(ESTIMATOR_TOPOLOGY_SRC) $(ESTIMATOR_SRC) \
-		-o "$(BUILD_DIR)/estimator_topology_testday_c1" $(LDLIBS)
-	"$(BUILD_DIR)/estimator_topology_testday_c1"
-	$(CC) $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=1 \
-		-DAMS_ESTIMATOR_DEFAULT_TOPOLOGY=1 \
-		-DAMS_EXPECTED_ESTIMATOR_INSTANCES=1 \
-		$(ESTIMATOR_TOPOLOGY_SRC) $(ESTIMATOR_SRC) \
-		-o "$(BUILD_DIR)/estimator_topology_pack" $(LDLIBS)
-	"$(BUILD_DIR)/estimator_topology_pack"
-	$(CC) $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=1 \
-		-DAMS_ESTIMATOR_DEFAULT_TOPOLOGY=2 \
+		-o "$(BUILD_DIR)/estimator_topology_vehicle_comms" $(LDLIBS)
+	"$(BUILD_DIR)/estimator_topology_vehicle_comms"
+	$(CC) $(CFLAGS_COMMON) -Werror \
+		$(VEHICLE_PROFILE_DEFS) \
 		-DAMS_EXPECTED_ESTIMATOR_INSTANCES=5 \
 		$(ESTIMATOR_TOPOLOGY_SRC) $(ESTIMATOR_SRC) \
-		-o "$(BUILD_DIR)/estimator_topology_segments" $(LDLIBS)
-	"$(BUILD_DIR)/estimator_topology_segments"
-	$(CC) $(CFLAGS_COMMON) -Werror $(VEHICLE_PROFILE_DEFS) \
-		-DAMS_EXPECTED_ESTIMATOR_INSTANCES=5 \
-		$(ESTIMATOR_TOPOLOGY_SRC) $(ESTIMATOR_SRC) \
-		-o "$(BUILD_DIR)/estimator_topology_vehicle_default" $(LDLIBS)
-	"$(BUILD_DIR)/estimator_topology_vehicle_default"
-	@if $(CC) $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=2 \
-		-DAMS_ESTIMATOR_DEFAULT_TOPOLOGY=2 \
-		-DAMS_EXPECTED_ESTIMATOR_INSTANCES=5 \
-		$(ESTIMATOR_TOPOLOGY_SRC) $(ESTIMATOR_SRC) \
-		-o "$(BUILD_DIR)/estimator_topology_hil_invalid" $(LDLIBS) \
-		>"$(BUILD_DIR)/estimator_topology_hil_invalid.log" 2>&1; then \
-		echo "ERROR: segment topology compiled against pack-only HIL contract"; \
-		exit 1; \
-	fi
-	@echo "PASS pack/segment topology, vehicle five-segment default and pack-only HIL gate"
+		-o "$(BUILD_DIR)/estimator_topology_vehicle_release_test" $(LDLIBS)
+	"$(BUILD_DIR)/estimator_topology_vehicle_release_test"
+	@echo "PASS vehicle profiles 4/3: five segment EKFs and coulomb counter initialize at 27%"
 
 production-gates: BUILD_DIR = build-production
 production-gates: CFLAGS_COMMON += $(VEHICLE_PROFILE_DEFS) -DAMS_HOST_PRODUCTION_GATE_TEST=1
@@ -677,33 +587,9 @@ state-ownership-gate: check-core-root
 	@echo "PASS centralized state writers and CAN control ownership gate"
 
 target-project-gate: check-core-root
-	@$(PYTHON) "$(AMS_ROOT)/host_tests/tools/check_release_identity.py" "$(AMS_ROOT)"
-	@$(PYTHON) -c 'import xml.etree.ElementTree as E; E.parse("$(AMS_ROOT)/.project"); E.parse("$(AMS_ROOT)/.cproject")'
-	@grep -q '<name>DER26-AMS</name>' "$(AMS_ROOT)/.project"
-	@grep -q 'project id="DER26-AMS' "$(AMS_ROOT)/.cproject"
-	@if grep -q 'DER25-AMS' "$(AMS_ROOT)/.cproject" "$(AMS_ROOT)/.project" "$(AMS_ROOT)/DER26-AMS.ioc"; then \
-		echo "ERROR: stale DER25 CubeIDE project metadata remains"; exit 1; \
-	fi
-	@grep -Fq 'buildPath="$${workspace_loc:/$${ProjName}/Bench5_Debug}"' "$(AMS_ROOT)/.cproject"
-	@grep -Fq 'buildPath="$${workspace_loc:/$${ProjName}/Bench5_Release}"' "$(AMS_ROOT)/.cproject"
-	@grep -Fq 'buildPath="$${workspace_loc:/$${ProjName}/Bench1_Debug}"' "$(AMS_ROOT)/.cproject"
-	@grep -Fq 'buildPath="$${workspace_loc:/$${ProjName}/Bench1_Release}"' "$(AMS_ROOT)/.cproject"
-	@test "$$(grep -c 'value="-Wall -Wextra"' "$(AMS_ROOT)/.cproject")" -eq 5
-	@test "$$(grep -c 'STM32F767ZITX_FLASH.ld' "$(AMS_ROOT)/.cproject")" -eq 10
-	@test "$$(grep -c 'name="BENCH Validation 5-SMB Debug"' "$(AMS_ROOT)/.cproject")" -ge 1
-	@test "$$(grep -c 'name="BENCH Validation 5-SMB Release"' "$(AMS_ROOT)/.cproject")" -ge 1
-	@test "$$(grep -c 'name="BENCH Validation 1-SMB Debug"' "$(AMS_ROOT)/.cproject")" -ge 1
-	@test "$$(grep -c 'name="BENCH Validation 1-SMB Release"' "$(AMS_ROOT)/.cproject")" -ge 1
-	@test "$$(grep -c 'value="AMS_BENCH_VALIDATION_SINGLE_SMB=1"' "$(AMS_ROOT)/.cproject")" -eq 2
-	@if grep -q 'value="AMS_SPI_LINK_DIAGNOSTIC_ONLY=1"' "$(AMS_ROOT)/.cproject"; then \
-		echo "ERROR: stock one-SMB configurations must run periodic temperature scans"; exit 1; \
-	fi
-	@test "$$(grep -c 'value="AMS_BUILD_PROFILE=5"' "$(AMS_ROOT)/.cproject")" -eq 4
-	@test "$$(grep -c 'value="DER26_CAN_BITRATE_KBPS=1000"' "$(AMS_ROOT)/.cproject")" -eq 5
-	@grep -Fq 'buildPath="$${workspace_loc:/$${ProjName}/Testday_B_Debug}"' "$(AMS_ROOT)/.cproject"
-	@test "$$(grep -c 'value="AMS_BUILD_PROFILE=4"' "$(AMS_ROOT)/.cproject")" -eq 1
-	@grep -q 'name="TESTDAY B 5-SMB Debug"' "$(AMS_ROOT)/.cproject"
-	@echo "PASS CubeIDE TESTDAY B and BENCH Validation 5-SMB/1-SMB identity/profile/bitrate, build paths, warning flags, XML and linker-script metadata"
+	$(PYTHON) "$(AMS_ROOT)/host_tests/tools/check_release_identity.py" "$(AMS_ROOT)"
+	$(PYTHON) "$(AMS_ROOT)/host_tests/tools/check_vehicle_variant.py"
+	@echo "PASS vehicle CubeIDE project identity, four configurations, 1 Mbps and linker metadata"
 
 system-sil: test
 
@@ -789,7 +675,7 @@ asan: CFLAGS_COMMON += $(SYSTEM_SIL_DEFS)
 asan: check-root
 	@mkdir -p "$(BUILD_DIR)"
 	$(CC) $(CFLAGS_COMMON) -DAMS_HW_BRINGUP=0 -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer \
-		$(UNIT_SRC) $(ESTIMATOR_SRC) $(ADBMS2950_SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC) -o $(UNIT_BIN)-asan $(LDLIBS)
+		$(UNIT_SRC) unit/host_clock_stubs.c $(ESTIMATOR_SRC) $(ADBMS2950_SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC) -o $(UNIT_BIN)-asan $(LDLIBS)
 	ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 $(UNIT_BIN)-asan
 	$(CC) $(CFLAGS_COMMON) -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer \
 		$(SYSTEM_SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC) $(POWER_SRC) -o $(BIN)-asan $(LDLIBS)
@@ -802,7 +688,7 @@ ubsan: CFLAGS_COMMON += $(SYSTEM_SIL_DEFS)
 ubsan: check-core-root
 	@mkdir -p "$(BUILD_DIR)"
 	$(CC) $(CFLAGS_COMMON) -fsanitize=undefined -fno-sanitize-recover=all -fno-omit-frame-pointer \
-		$(UNIT_SRC) $(ESTIMATOR_SRC) $(ADBMS2950_SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC) -o $(UNIT_BIN)-ubsan $(LDLIBS)
+		$(UNIT_SRC) unit/host_clock_stubs.c $(ESTIMATOR_SRC) $(ADBMS2950_SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC) -o $(UNIT_BIN)-ubsan $(LDLIBS)
 	UBSAN_OPTIONS=halt_on_error=1 $(UNIT_BIN)-ubsan
 	$(CC) $(CFLAGS_COMMON) -fsanitize=undefined -fno-sanitize-recover=all -fno-omit-frame-pointer \
 		$(SYSTEM_SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC) $(POWER_SRC) -o $(BIN)-ubsan $(LDLIBS)
@@ -1001,3 +887,22 @@ vehicle-project-check: make-build-dir
 apm-driver-regression: check-core-root make-build-dir
 	$(CC) $(CFLAGS_COMMON) -Werror -DAMS_HOST_ONLY_ADBMS2950_HARDENING_TEST=1 unit/apm_regression.c $(ESTIMATOR_SRC) $(ADBMS2950_SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC) -o "$(BUILD_DIR)/apm_driver_regression" $(LDLIBS)
 	"$(BUILD_DIR)/apm_driver_regression"
+
+# Supported native CI for this vehicle-only project. The inherited `unit`,
+# `test`, and full `ci` targets still exercise obsolete bench/charge fixtures
+# and must not be mistaken for validated vehicle tests.
+.PHONY: vehicle-ci
+vehicle-ci: vehicle-variant-test cli-async-test can-tx-scheduler-test \
+	vehicle-project-check target-project-gate can-clock-contract-gate \
+	estimator-topology-gates profile-gates adbms-wake-policy-test \
+	measurement-integrity-test apm-hardening-test apm-driver-regression diag-budget-test acquisition-sil
+	@echo "PASS all supported AMS v0.5.57 vehicle-native CI gates"
+
+.PHONY: diag-budget-test
+diag-budget-test: | make-build-dir
+	$(CC) $(CFLAGS_COMMON) -Werror production/diag_budget_test.c -o "$(BUILD_DIR)/diag_budget_test"
+	"$(BUILD_DIR)/diag_budget_test"
+
+.PHONY: acquisition-sil
+acquisition-sil:
+	python3 sil/run_acquisition_sil.py

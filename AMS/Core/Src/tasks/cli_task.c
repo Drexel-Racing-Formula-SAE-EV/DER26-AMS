@@ -1,4 +1,5 @@
 #include "ams_task_schedule.h"
+#include "ams_diag_budget.h"
 /**
 * @file cli_task.c
 * @author Cole Bardin (cab572@drexel.edu)
@@ -5672,6 +5673,23 @@ static int get_spi_debug_locked(int argc, char *argv[])
                      (unsigned long)session->max_duration_us);
             ret |= cli_printline(cli, outline);
         }
+    }
+
+    if(data->adbms_diag_coverage_started) {
+        uint32_t now = osKernelGetTickCount();
+        uint32_t aux_overdue = !AMS_ENABLE_ADBMS_AUX2_REDUNDANCY ? 0u : ams_diag_overdue_mask(now, data->adbms_diag_coverage_start,
+            data->adbms_aux2_success_tick, data->adbms_aux2_completed_mask, 12000u);
+        uint32_t therm_overdue = !AMS_ENABLE_ADBMS_THERM_OPEN_WIRE_DIAG ? 0u : ams_diag_overdue_mask(now, data->adbms_diag_coverage_start,
+            data->adbms_therm_success_tick, data->adbms_therm_completed_mask, 144000u);
+        snprintf(outline, CLI_LINESZ, "diag coverage AUX2 done/overdue:%06lX/%06lX therm:%06lX/%06lX",
+            (unsigned long)data->adbms_aux2_completed_mask, (unsigned long)aux_overdue,
+            (unsigned long)data->adbms_therm_completed_mask, (unsigned long)therm_overdue);
+        ret |= cli_printline(cli, outline);
+        snprintf(outline, CLI_LINESZ, "diag cost max ms:%lu/%lu deferred:%lu/%lu forced:%lu/%lu (advisory)",
+            (unsigned long)data->adbms_diag_cost_ms[0], (unsigned long)data->adbms_diag_cost_ms[1],
+            (unsigned long)data->adbms_diag_deferred[0], (unsigned long)data->adbms_diag_deferred[1],
+            (unsigned long)data->adbms_diag_forced[0], (unsigned long)data->adbms_diag_forced[1]);
+        ret |= cli_printline(cli, outline);
     }
 
     snprintf(outline, CLI_LINESZ,

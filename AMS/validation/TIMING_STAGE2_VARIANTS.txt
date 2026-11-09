@@ -1,0 +1,7 @@
+aux=0 therm=0 rc=0
+
+aux=0 therm=1 rc=0
+
+aux=1 therm=0 rc=0
+
+aux=1 therm=1 rc=0

@@ -911,4 +911,20 @@
 #error "AMS_ADBMS_SCAN_HZ must be between 1 and 1000 Hz"
 #endif
 
+
+/* Independent opt-in benchmark. Never enable D-cache implicitly. */
+#ifndef AMS_BENCHMARK_ICACHE
+#define AMS_BENCHMARK_ICACHE 0
+#endif
+#if (AMS_BENCHMARK_ICACHE != 0) && (AMS_BENCHMARK_ICACHE != 1)
+#error "AMS_BENCHMARK_ICACHE must be 0 or 1"
+#endif
+
+/* RAW-only telemetry decimation; selected AVG8/IIR estimators remain full-rate. */
+#ifndef AMS_ADBMS_OPTIONAL_PRODUCT_DIVISOR
+#define AMS_ADBMS_OPTIONAL_PRODUCT_DIVISOR 5u
+#endif
+#if AMS_ADBMS_OPTIONAL_PRODUCT_DIVISOR < 1 || AMS_ADBMS_OPTIONAL_PRODUCT_DIVISOR > 10
+#error "Optional product divisor must be 1..10"
+#endif
 #endif /* INC_AMS_BUILD_PROFILE_H_ */

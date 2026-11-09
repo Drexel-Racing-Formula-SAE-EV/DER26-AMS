@@ -1,0 +1,35 @@
+make: Entering directory '/workspace/scratch/43e64d7c85ca/work/ams-timing-r2/host_tests'
+make: Warning: File 'Makefile' has modification time 12236 s in the future
+cc -std=c11 -g -O0 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -Wno-missing-field-initializers -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -DSTM32F767xx -DUSE_HAL_DRIVER -DAMS_HOST_TEST=1 -Iinclude -I.. -I../Core/Inc -I../Core/Inc/tasks -I../Core/Inc/ext_drivers -I../Drivers/CMSIS/Include -I../Drivers/CMSIS/Device/ST/STM32F7xx/Include -I../Drivers/STM32F7xx_HAL_Driver/Inc -I../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy -I../Middlewares/Third_Party/FreeRTOS/Source/include -I../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1 -Wno-unused-variable -Werror -DAMS_BUILD_PROFILE=4 -ffunction-sections -fdata-sections \
+	production/adbms_wake_policy_test.c ../Core/Src/ext_drivers/adbms_shared.c \
+	../Core/Src/ext_drivers/thermistor_model.c \
+	-Wl,--gc-sections -o "build/adbms_wake_policy_test" -lm
+"build/adbms_wake_policy_test"
+TEMP 1 ICs: 21521 us, wakes 5, cold 1 warm 5
+TEMP 5 ICs: 28984 us, wakes 5, cold 1 warm 5
+VOLT+TEMP nominal wire/delay model: 66922 us
+STATUS completion nominal wire model: 4675 us
+PASS public temperature wrappers, stale boundary, zero and wrap
+PASS rolling sweep, duplicate rejection, failed visit, recovery, timestamp provenance and time filter
+PASS capture age, wrap, scheduled visits and transport rejection
+WAKE_AUDIT SID status:1 cold:0 warm:1 time_us:1335
+WAKE_AUDIT configuration status:1 cold:0 warm:1 time_us:2170
+WAKE_AUDIT status status:0 cold:0 warm:1 time_us:3005
+WAKE_AUDIT references status:1 cold:0 warm:2 time_us:25251
+WAKE_AUDIT mute status:1 cold:0 warm:1 time_us:1411
+WAKE_AUDIT unmute status:0 cold:0 warm:1 time_us:1411
+PASS nested/burst wake checks do not emit additional wake trains
+PASS production 6822/6830 wake/idle/integrity/timing regressions
+cc -std=c11 -g -O0 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -Wno-missing-field-initializers -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -DSTM32F767xx -DUSE_HAL_DRIVER -DAMS_HOST_TEST=1 -Iinclude -I.. -I../Core/Inc -I../Core/Inc/tasks -I../Core/Inc/ext_drivers -I../Drivers/CMSIS/Include -I../Drivers/CMSIS/Device/ST/STM32F7xx/Include -I../Drivers/STM32F7xx_HAL_Driver/Inc -I../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy -I../Middlewares/Third_Party/FreeRTOS/Source/include -I../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1 -Werror -DAMS_BUILD_PROFILE=4 -DAMS_HOST_VEHICLE_VARIANT_TEST=1 \
+	src/ams_host_test_runner.c ../Core/Src/ext_drivers/can_tx_scheduler.c ../Core/Src/diagnostics/ams_flight_recorder.c ../Core/Src/diagnostics/ams_runtime_manifest.c ../Core/Src/ext_drivers/air_monitor.c ../Core/Src/ext_drivers/main_fuse_monitor.c ../Core/Src/ext_drivers/parallel_connection_observer.c ../Core/Src/ext_drivers/thermistor_model.c ../Core/Src/soh/ams_soh.c ../Core/Src/sop/ams_sop.c ../Core/Src/sop/ams_fuse_observer.c ../Core/Src/sop/ams_power_strategy.c ../Core/Src/sop/ams_power_state.c ../Core/Src/sop/ams_power_can.c \
+	-o "build/vehicle_variant_tests" -lm
+"build/vehicle_variant_tests"
+PASS actual CAN task stages vehicle protected telemetry and loads hardware mailbox fixture
+PASS 1-Mbit/s vehicle variant, five-SMB/no-APM/no-fan topology, drive transitions, STOP, ECU RX, charge rejection and final-load disable
+cc -std=c11 -g -O0 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -Wno-missing-field-initializers -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -DSTM32F767xx -DUSE_HAL_DRIVER -DAMS_HOST_TEST=1 -Iinclude -I.. -I../Core/Inc -I../Core/Inc/tasks -I../Core/Inc/ext_drivers -I../Drivers/CMSIS/Include -I../Drivers/CMSIS/Device/ST/STM32F7xx/Include -I../Drivers/STM32F7xx_HAL_Driver/Inc -I../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy -I../Middlewares/Third_Party/FreeRTOS/Source/include -I../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1 -Werror -DAMS_BUILD_PROFILE=4 -fsyntax-only \
+	../Core/Src/app.c ../Core/Src/tasks/cli_task.c \
+	../Core/Src/tasks/error_task.c ../Core/Src/tasks/canbus_task.c \
+	../Core/Src/ext_drivers/canbus.c ../Core/Src/ext_drivers/cli.c \
+	../Core/Src/stm32f7xx_it.c ../Core/Src/tasks/adbms_task.c ../Core/Src/main.c
+make: warning:  Clock skew detected.  Your build may be incomplete.
+make: Leaving directory '/workspace/scratch/43e64d7c85ca/work/ams-timing-r2/host_tests'

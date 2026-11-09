@@ -737,10 +737,14 @@ static int smb_read_voltage_checked(adbms6830_driver_t *dev,
 #endif
 
 	// 4. SNAP, READ, AND PARSE
+    bool optional_due = true;
+#if AMS_ESTIMATOR_VOLTAGE_SOURCE == AMS_ESTIMATOR_VOLTAGE_SOURCE_RAW
+    optional_due = (dev->session.optional_voltage_epoch++ % AMS_ADBMS_OPTIONAL_PRODUCT_DIVISOR) == 0u;
+#endif
 	if(adbms6830_read_cell_voltage_products(
            dev,
-           (AMS_ENABLE_ADBMS_AVG8_VOLTAGE != 0),
-           (AMS_ENABLE_ADBMS_FILTERED_VOLTAGE != 0)) != HAL_OK)
+           optional_due && (AMS_ENABLE_ADBMS_AVG8_VOLTAGE != 0),
+           optional_due && (AMS_ENABLE_ADBMS_FILTERED_VOLTAGE != 0)) != HAL_OK)
 	{
 		return -1;
 	}

@@ -163,8 +163,10 @@ _Static_assert(AMS_PROFILE_BMS_RUNTIME_AUTHORITY_ALLOWED == 1,
 _Static_assert(AMS_PROFILE_BALANCE_RUNTIME_AUTHORITY_ALLOWED == 1,
                "vehicle balancing must remain available behind runtime gates");
 _Static_assert(NSMBS == 5, "vehicle profile requires five SMBs");
-_Static_assert(ACCUMULATOR_PHYSICAL_CHAIN_COUNT == 6,
-               "vehicle profile requires five physical chain devices");
+_Static_assert(ACCUMULATOR_PHYSICAL_CHAIN_COUNT == 5,
+               "vehicle profile requires five physical SMB devices");
+_Static_assert(AMS_ENABLE_APM_2950 == 0,
+               "vehicle profile excludes APM2950 hardware");
 #else
 #error "unsupported expected profile"
 #endif

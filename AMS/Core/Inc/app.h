@@ -843,6 +843,13 @@ struct app_data_t
 	uint32_t adbms_urgent_mute_request_count;
 	uint32_t adbms_urgent_mute_service_count;
 	uint32_t adbms_urgent_mute_fail_count;
+    uint32_t adbms_diag_scan_start, adbms_diag_coverage_start;
+    bool adbms_diag_coverage_started;
+    uint32_t adbms_diag_cost_ms[2], adbms_diag_deferred[2], adbms_diag_forced[2];
+    uint8_t adbms_diag_retry[2];
+    uint32_t adbms_aux2_attempt_tick[24], adbms_aux2_success_tick[24];
+    uint32_t adbms_therm_attempt_tick[24], adbms_therm_success_tick[24];
+    uint32_t adbms_aux2_completed_mask, adbms_therm_completed_mask;
 	uint32_t adbms_aux2_diag_count;
 	uint32_t adbms_aux2_diag_fail_count;
 	uint32_t adbms_aux2_next_due_tick;
