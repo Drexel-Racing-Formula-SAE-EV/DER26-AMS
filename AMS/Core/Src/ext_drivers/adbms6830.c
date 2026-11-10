@@ -5209,6 +5209,63 @@ static HAL_StatusTypeDef adbms6830_poll_conversion_checked(
     return status;
 }
 
+/* AUX-only cooperative ready polling. Primary C/S runs continuously and must
+ * NEVER use PLADC as a substitute for its existing acquisition policy.
+ * Readiness bits have no PEC: they permit the subsequent checked read only;
+ * they do not confer measurement validity. No new conversion is issued;
+ * the first poll uses the same activity-aware bridge readiness as a read. A preemption beyond the bounded window rejects it. */
+static HAL_StatusTypeDef adbms6830_wait_aux_ready(adbms6830_driver_t *dev,
+                                                 bool secondary,uint32_t limit_us)
+{
+#if !AMS_ADBMS_READY_POLL
+    (void)secondary;
+    return adbms6830_wait_cooperative(dev,limit_us);
+#else
+    if(!adbms6830_topology_valid(dev) || !dev->htim || !limit_us ||
+       dev->session.coherent_snapshot_active) return HAL_ERROR;
+    adbms_spi_lock();
+    uint32_t start=adbms6830_runtime_time_us(dev);
+    uint32_t epoch=dev->diagnostic_integrity_epoch;
+    HAL_StatusTypeDef result=adbms6830_wait_cooperative(dev,secondary ? 7000u : 1000u);
+    uint8_t frame[4]={0x07,secondary ? 0x1F : 0x1E,0,0};
+    uint8_t response[(2u*ADBMS6830_MAX_TRACKED_ICS+7u)/8u];
+    uint16_t pec=Pec15_Calc(2,frame); frame[2]=(uint8_t)(pec>>8);frame[3]=(uint8_t)pec;
+    uint16_t n=(uint16_t)((2u*dev->physical_chain_count+7u)/8u);
+    bool ready=false;
+    if(result==HAL_OK && dev->diagnostic_integrity_epoch==epoch &&
+       (uint32_t)(adbms6830_runtime_time_us(dev)-start)<limit_us+500u)
+        result=adbms6830_wakeup_checked(dev);
+    else if(result==HAL_OK) result=HAL_TIMEOUT;
+    for(unsigned attempts=0;result==HAL_OK && attempts<32;attempts++) {
+        uint32_t age=adbms6830_runtime_time_us(dev)-start;
+        if(age>=limit_us+500u) {result=HAL_TIMEOUT;break;}
+        /* Refuse to accept a poll from another wake/integrity epoch. */
+        if(dev->diagnostic_integrity_epoch!=epoch || !adbms6830_link_recent(dev,adbms6830_runtime_time_us(dev),HAL_GetTick())) {
+            result=HAL_TIMEOUT;break;
+        }
+        result=adbms6830_spi_write_read(dev,frame,4,response,n,1);
+        if(result!=HAL_OK) break;
+        adbms6830_note_counter_increment(dev);
+        adbms6830_increment_u32_sat(&dev->session.aux_poll_count);
+        age=adbms6830_runtime_time_us(dev)-start;
+        if(age>limit_us+500u) {result=HAL_TIMEOUT;break;}
+        if(response[n-1u]&1u) {ready=true;break;}
+        adbms6830_increment_u32_sat(&dev->session.aux_poll_busy_count);
+        if(age>=limit_us) {result=HAL_TIMEOUT;break;}
+        uint32_t pause=limit_us-age;
+        if(pause>250u) pause=250u;
+        result=adbms6830_wait_cooperative(dev,pause);
+    }
+    if(result==HAL_OK && !ready) result=HAL_TIMEOUT;
+    if(result!=HAL_OK) {
+        adbms6830_increment_u32_sat(&dev->session.aux_poll_fail_count);
+        adbms6830_link_forget(dev);
+    }
+    adbms_spi_unlock();
+    return result;
+#endif
+}
+
 HAL_StatusTypeDef adbms6830_start_adc_cell_voltage_measurement(adbms6830_driver_t *dev)
 {
 #if AMS_ENABLE_PERIODIC_S_DIAGNOSTIC && AMS_S_PATH_ECO_VALIDATED
@@ -5237,6 +5294,11 @@ HAL_StatusTypeDef adbms6830_start_adc_cell_voltage_measurement(adbms6830_driver_
     }
     return status;
 #else
+#if AMS_VOLTAGE_MODE == AMS_VOLTAGE_MODE_C_ONLY_MVP
+    /* Current hardware has no qualified S input network. Explicit C-only
+     * acquisition must not trigger the redundant C/S conversion sequence. */
+    return adbms6830_adcv_checked(dev,RD_OFF,CONTINUOUS,DCP_OFF,RSTF_OFF,OW_OFF_ALL_CH);
+#else
     /* Current Rev5 hardware intentionally keeps S observable because the
      * S2N-S15N routing defect is still under qualification. Published voltage
      * remains C-authoritative; there is no automatic S fallback. */
@@ -5246,6 +5308,7 @@ HAL_StatusTypeDef adbms6830_start_adc_cell_voltage_measurement(adbms6830_driver_
                                  DCP_OFF,
                                  RSTF_OFF,
                                  OW_OFF_ALL_CH);
+#endif
 #endif
 }
 
@@ -7554,7 +7617,7 @@ static HAL_StatusTypeDef adbms6830_capture_aux_gpio_for_sensor(
         return status;
     }
     adbms6830_increment_u32_sat(&dev->session.aux_short_wait_count);
-    if(adbms6830_wait_cooperative(dev, 1250u) != HAL_OK)
+    if(adbms6830_wait_aux_ready(dev, false, 1250u) != HAL_OK)
     {
         dev->temp_debug.overall_status = HAL_TIMEOUT;
         return HAL_TIMEOUT;
@@ -7752,7 +7815,7 @@ static HAL_StatusTypeDef adbms6830_capture_aux2_gpio_for_sensor(
     {
         /* AUX2 minimum update rate is 110 Hz, not nominal 125 Hz.
          * 10 ms covers 9.091 ms plus margin; the reference is already ready. */
-        status = adbms6830_wait_cooperative(dev, 10000u);
+        status = adbms6830_wait_aux_ready(dev, true, 10000u);
     }
     if(status == HAL_OK)
     {

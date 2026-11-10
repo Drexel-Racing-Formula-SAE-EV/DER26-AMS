@@ -19,6 +19,7 @@
 #include <string.h>
 
 #include "stm32f7xx_hal.h"
+#include "ams_build_profile.h"
 
 #define CLI_LINESZ 128
 #define MAXTOKS (CLI_LINESZ / 2)
@@ -64,6 +65,8 @@ typedef struct {
     volatile uint16_t tx_head, tx_tail, tx_used, tx_active_len;
     volatile uint32_t tx_start_tick, tx_bytes, tx_dropped, tx_errors, tx_aborts, tx_high_water;
     volatile bool tx_discard_pending;
+    volatile bool rx_dma_recover_pending;
+    volatile uint32_t rx_dma_events, rx_dma_overruns;
     HAL_StatusTypeDef ret;
     /* CLI-task-only bounded report staging. Never transmit UART while the
      * CLI owns the ADBMS transport lock. */
@@ -150,6 +153,11 @@ void cli_uart_note_error(cli_device_t *dev, uint32_t error_code);
 void cli_uart_diag_clear(cli_device_t *dev);
 int cli_printline(cli_device_t *dev, char *line);
 void cli_uart_tx_complete(cli_device_t *dev);
+#if AMS_CLI_UART_DMA
+void cli_uart_dma_rx_event(cli_device_t *dev);
+void cli_uart_dma_irq(cli_device_t *dev);
+void cli_uart_dma_tx_irq(cli_device_t *dev);
+#endif
 void cli_uart_service_tx(cli_device_t *dev);
 int tokenize(char *s, char *toks[], int maktoks, char *delim);
 

@@ -16,6 +16,10 @@ static RCC_TypeDef rcc_regs;
 #define __HAL_RCC_SPI6_FORCE_RESET() do { spi_regs.SR=0; spi_regs.CR1=0; spi_regs.CR2=0; } while(0)
 #define __HAL_RCC_SPI6_RELEASE_RESET() ((void)0)
 static uint64_t sim_us;
+#if AMS_ADBMS_READY_POLL
+static uint64_t model_poll_ready_us;
+static bool model_poll_stuck;
+#endif
 static uint64_t last_mux_end_us;
 static uint64_t model_aux_ready_us;
 static bool reply_ref_off, reply_soak;
@@ -121,6 +125,10 @@ HAL_StatusTypeDef HAL_SPI_Transmit(SPI_HandleTypeDef *h,uint8_t *p,uint16_t n,ui
         CHECK(sim_us-last_mux_end_us>=3000u);
     if(p[0]==0x04u && p[1]>=0x11u && p[1]<=0x13u)
         model_aux_ready_us=sim_us+1112u; /* datasheet slowest AUX period */
+#if AMS_ADBMS_READY_POLL
+    if(p[0]==0x04u && p[1]>=0x11u && p[1]<=0x13u) model_poll_ready_us=model_aux_ready_us;
+    if(p[0]==0x04u && p[1]>=1u && p[1]<=3u) model_poll_ready_us=sim_us+8000u;
+#endif
     if(p[0]==0 && (p[1]==0x27 || p[1]==0x2e)) model_counter=0;
     else model_counter=(model_counter%63u)+1u;
     return HAL_OK;
@@ -131,8 +139,16 @@ HAL_StatusTypeDef HAL_SPI_TransmitReceive(SPI_HandleTypeDef *h,uint8_t *tx,uint8
     wire_time(h,n,timeout);
     if(fail_spi) return HAL_TIMEOUT;
     memset(rx,0,n);
-    CHECK(n>=12 && (n-4)%8==0);
     uint16_t command=(uint16_t)((tx[0]<<8)|tx[1]);
+#if AMS_ADBMS_READY_POLL
+    if(command==0x071E || command==0x071F) {
+        CHECK(n==5 || n==6);
+        memset(rx+4,(!model_poll_stuck && sim_us>=model_poll_ready_us) ? 0xFF : 0,n-4);
+        model_counter=(model_counter%63u)+1u;
+        return HAL_OK;
+    }
+#endif
+    CHECK(n>=12 && (n-4)%8==0);
     if(command==0x0019u && model_aux_ready_us) CHECK(sim_us>=model_aux_ready_us);
     for(unsigned i=4;i+7<n;i+=8)
     {

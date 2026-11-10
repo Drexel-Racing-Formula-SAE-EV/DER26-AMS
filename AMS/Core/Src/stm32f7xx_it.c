@@ -276,6 +276,10 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
         return;
     }
 
+#if AMS_CLI_UART_DMA
+    cli_uart_dma_rx_event(cli);
+    return;
+#endif
     c = cli->c;
 
     cli_rx_byte(cli,c);
@@ -284,6 +288,23 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
      * the CLI task through cli_printline(). */
     (void)cli_uart_start_rx(cli);
 }
+
+#if AMS_CLI_UART_DMA
+void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart,uint16_t size)
+{
+    (void)size;
+    cli_device_t *cli=&app.board.cli;
+    if(huart && cli->huart && huart==cli->huart) cli_uart_dma_rx_event(cli);
+}
+void DMA1_Stream1_IRQHandler(void)
+{
+    ams_perf_irq_enter();cli_uart_dma_irq(&app.board.cli);ams_perf_irq_exit();
+}
+void DMA1_Stream3_IRQHandler(void)
+{
+    ams_perf_irq_enter();cli_uart_dma_tx_irq(&app.board.cli);ams_perf_irq_exit();
+}
+#endif
 
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
 {
@@ -303,6 +324,14 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
         return;
     }
 
+#if AMS_CLI_UART_DMA
+    /* HAL may already be aborting RX DMA asynchronously. Task service owns
+     * reinitialization; never start another DMA inside that error callback. */
+    cli->rx_dma_recover_pending=true;
+    cli->index=0;cli->rx_discard_line=true;
+    cli_uart_note_error(cli,HAL_UART_GetError(huart));
+    return;
+#endif
     error_code = HAL_UART_GetError(huart);
     cli_uart_note_error(cli, error_code);
 

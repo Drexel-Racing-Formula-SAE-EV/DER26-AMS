@@ -27,6 +27,7 @@ OWNER_BIN = $(BUILD_DIR)/bms_owner_test
 PROFILE_SRC := production/profile_compile_test.c
 ESTIMATOR_TOPOLOGY_SRC := production/estimator_topology_test.c
 ESTIMATOR_SRC := \
+	$(AMS_ROOT)/Core/Src/estimator/ams_thermal_observer.c \
 	$(AMS_ROOT)/Core/Src/estimator/ams_soc_ekf.c \
 	$(AMS_ROOT)/Core/Src/estimator/ams_estimator_lut.c
 
@@ -946,3 +947,27 @@ vehicle-ci: temp-pipeline-test
 stage3-target-syntax:
 	$(PYTHON) tools/check_timing_stage3.py
 vehicle-ci: stage3-target-syntax
+
+.PHONY: stage4-test
+stage4-test: | make-build-dir
+	$(CC) $(CFLAGS_COMMON) -Werror -Wno-unused-variable -DAMS_BUILD_PROFILE=4 -DAMS_CLI_UART_DMA=1 -ffunction-sections -fdata-sections production/uart_dma_test.c -Wl,--gc-sections -o $(BUILD_DIR)/uart_dma_test
+	$(BUILD_DIR)/uart_dma_test
+	$(CC) $(CFLAGS_COMMON) -Werror -Wno-unused-variable -DAMS_BUILD_PROFILE=4 -DAMS_CURRENT_PAIRED_START=1 -ffunction-sections -fdata-sections production/current_pair_test.c -Wl,--gc-sections -o $(BUILD_DIR)/current_pair_test $(LDLIBS)
+	$(BUILD_DIR)/current_pair_test
+	$(CC) $(CFLAGS_COMMON) -Werror -Wno-unused-variable -DAMS_BUILD_PROFILE=4 -DAMS_ADBMS_READY_POLL=1 -ffunction-sections -fdata-sections production/aux_ready_test.c $(AMS_ROOT)/Core/Src/ext_drivers/adbms_shared.c $(THERMISTOR_SRC) -Wl,--gc-sections -o $(BUILD_DIR)/aux_ready_test $(LDLIBS)
+	$(BUILD_DIR)/aux_ready_test
+	$(CC) $(CFLAGS_COMMON) -Werror -Wno-unused-variable -DAMS_BUILD_PROFILE=4 -DAMS_CURRENT_PAIRED_START=1 -DAMS_CURRENT_TIMER_TRIGGER=1 -ffunction-sections -fdata-sections production/current_pair_test.c -Wl,--gc-sections -o $(BUILD_DIR)/current_timer_test $(LDLIBS)
+	$(BUILD_DIR)/current_timer_test
+vehicle-ci: stage4-test
+
+.PHONY: thermal-observer-test
+thermal-observer-test: | make-build-dir
+	$(CC) -std=c11 -Wall -Wextra -Werror -pedantic -I$(AMS_ROOT)/Core/Inc unit/thermal_observer_test.c $(AMS_ROOT)/Core/Src/estimator/ams_thermal_observer.c -lm -o $(BUILD_DIR)/thermal_observer_test
+	$(BUILD_DIR)/thermal_observer_test
+vehicle-ci: thermal-observer-test
+
+.PHONY: thermal-integration-test
+thermal-integration-test: | make-build-dir
+	$(CC) $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=4 -DAMS_HOST_THERMAL_INTEGRATION_TEST=1 $(SYSTEM_SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC) $(POWER_SRC) -o $(BUILD_DIR)/thermal_integration_test $(LDLIBS)
+	$(BUILD_DIR)/thermal_integration_test
+vehicle-ci: thermal-integration-test

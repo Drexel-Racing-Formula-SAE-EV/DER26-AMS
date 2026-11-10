@@ -1,0 +1,618 @@
+--- a/Core/Inc/app.h
++++ b/Core/Inc/app.h
+@@ -27,6 +27,7 @@
+ #include "ext_drivers/ams_safety.h"
+ #include "ext_drivers/ams_tuning_telemetry.h"
+ #include "measurement/ams_measurement.h"
++#include "estimator/ams_thermal_observer.h"
+ #include "diagnostics/ams_flight_recorder.h"
+ #include "diagnostics/ams_runtime_manifest.h"
+ #include "sop/ams_power_state.h"
+@@ -951,6 +952,8 @@
+ 	board_t board;
+ 	accumulator_t acc;
+ 	ams_estimator_t estimator;
++    ams_thermal_config_t thermal_config;
++    ams_thermal_observer_t thermal_shadow[AMS_THERMAL_SEGMENTS];
+ 	ams_power_state_t power_state;
+ 	ams_power_can_snapshot_t power_can_snapshot;
+ 	ams_tuning_store_t tuning_store;
+--- a/Core/Inc/ams_version.h
++++ b/Core/Inc/ams_version.h
+@@ -5,7 +5,7 @@
+ #define AMS_VERSION_MAJOR 0
+ #define AMS_VERSION_MINOR 5
+ #define AMS_VERSION_PATCH 57
+-#define AMS_RELEASE_DATE "20261109"
++#define AMS_RELEASE_DATE "20261110"
+ #define AMS_VERSION_STRINGIFY_(value) #value
+ #define AMS_VERSION_STRINGIFY(value) AMS_VERSION_STRINGIFY_(value)
+ #define AMS_VERSION_STRING AMS_VERSION_STRINGIFY(AMS_VERSION_MAJOR) "." \
+--- a/Core/Src/tasks/cli_task.c
++++ b/Core/Src/tasks/cli_task.c
+@@ -7006,6 +7006,26 @@
+     }
+ 
+     int ret = 0;
++    ret |= cli_printline(cli, "Thermal R11: SHADOW_ONLY uncalibrated boundary:assumed_25C; no control authority");
++    for(uint8_t segment=0u;segment<AMS_THERMAL_SEGMENTS;segment++)
++    {
++        ams_thermal_observer_t thermal;
++        taskENTER_CRITICAL();
++        thermal=data->thermal_shadow[segment];
++        taskEXIT_CRITICAL();
++        snprintf(outline,CLI_LINESZ,
++            "Thermal S%u avail:%u flags:0x%lX core_dC:%ld surf_dC:%ld upper_dC:%ld",
++            (unsigned)segment,(unsigned)thermal.available,(unsigned long)thermal.flags,
++            (long)(thermal.core_c*10.0f),(long)(thermal.surface_c*10.0f),
++            (long)(thermal.core_upper_c*10.0f));
++        ret |= cli_printline(cli,outline);
++        snprintf(outline,CLI_LINESZ,
++            "Thermal sensors:%u predict:%lu correct:%lu reject:%lu tick:%lu",
++            (unsigned)thermal.usable_sensors,(unsigned long)thermal.predictions,
++            (unsigned long)thermal.corrections,(unsigned long)thermal.rejected,
++            (unsigned long)thermal.tick_ms);
++        ret |= cli_printline(cli,outline);
++    }
+     uint8_t active = data->estimator.active_index;
+     const ams_ekf_instance_t *inst = &data->estimator.inst[active];
+     const ams_resistance_soh_t *soh =
+--- a/Core/Src/tasks/estimator_task.c
++++ b/Core/Src/tasks/estimator_task.c
+@@ -12,6 +12,7 @@
+ #include "tasks/estimator_task.h"
+ 
+ #include "estimator/ams_soc_ekf.h"
++#include "estimator/ams_estimator_lut.h"
+ 
+ #include <math.h>
+ #include <stdint.h>
+@@ -30,6 +31,84 @@
+ static StaticTask_t estimator_task_tcb;
+ static StackType_t estimator_task_stack[ESTIMATOR_STACK_WORDS];
+ static TaskHandle_t estimator_task_handle = NULL;
++
++/* Separate advisory bank: no thermal-shadow output is fed back to EKF/SoP.
++ * Existing publication age reconstructs the actual thermistor sample tick;
++ * no driver access, bus ownership, conversions or wake activity is added. */
++static void estimator_update_thermal_shadow(app_data_t *data,
++    const ams_measurement_snapshot_t *m, uint32_t now)
++{
++    for(uint8_t seg=0u; seg<AMS_THERMAL_SEGMENTS; seg++)
++    {
++        ams_thermal_input_t input = {0};
++        input.now_ms=now;
++        input.source_ms=m ? m->voltage_complete_tick : now;
++        /* No measured boundary exists in the current snapshot contract.
++         * Explicit assumed bench boundary: always flagged, never authoritative. */
++        input.boundary_c=25.0f;
++        input.boundary_valid=true;
++        input.boundary_assumed=true;
++        if(m && seg<NSMBS)
++        {
++            input.surface_mask=m->temp_usable_mask[seg];
++            for(uint8_t sensor=0u; sensor<NTEMPS && sensor<AMS_THERMAL_SENSORS; sensor++)
++            {
++                input.surface_c[sensor]=(float)m->temp_deci_c[seg][sensor]*0.1f;
++                input.surface_tick[sensor]=m->publication_tick-m->temp_age_ms[seg][sensor];
++            }
++            input.current_valid=m->current.valid && m->current.sample_count>0u &&
++                (m->validity_flags&AMS_MEAS_VALID_CURRENT)!=0u &&
++                (uint32_t)(now-m->current.latest_sample_tick)<=100u &&
++                (uint32_t)(input.source_ms-m->current.end_tick)<=100u &&
++                (uint32_t)(m->current.end_tick-m->current.start_tick)<=1000u;
++            input.current_calibrated=m->current.calibration_record_confident &&
++                m->current.calibration_id!=0u;
++            for(uint8_t i=0u;i<data->estimator.instance_count && i<AMS_EKF_MAX_INSTANCES;i++)
++            {
++                const ams_ekf_instance_t *e=&data->estimator.inst[i];
++                /* No silent mapping from pack/split EKFs onto a full segment. */
++                if(e->cfg.first_series_group!=(uint16_t)(seg*NCELLS) ||
++                   e->cfg.series_group_count!=NCELLS) continue;
++                if(!isfinite(e->soc) || e->soc<0.0f || e->soc>1.0f ||
++                   !isfinite(e->t_core_C) || e->t_core_C<5.0f || e->t_core_C>40.0f)
++                    break;
++                float temp=e->t_core_C;
++                float invr1=ams_p42a_inv_r1_from_luts(
++                    ams_p42a_inv_c1(e->soc,temp),
++                    ams_p42a_neg_inv_tau1(e->soc,temp));
++                float parallel=e->cfg.parallel_cell_count;
++                if(e->valid && e->model_domain_flags==0u &&
++                   (uint32_t)(input.source_ms-e->last_voltage_tick)<=1000u &&
++                   input.current_valid &&
++                   (!data->thermal_shadow[seg].initialized ||
++                    input.source_ms==data->thermal_shadow[seg].tick_ms ||
++                    m->current.start_tick==data->thermal_shadow[seg].tick_ms) &&
++                   m->balancing_mask[seg]==0u &&
++                   (m->validity_flags&AMS_MEAS_BALANCE_RECOVERED)!=0u &&
++                   isfinite(parallel) && parallel>0.0f &&
++                   isfinite(m->current.rms_A) && m->current.rms_A>=0.0f &&
++                   isfinite(e->r0_ohm) && e->r0_ohm>0.0f &&
++                   isfinite(invr1) && invr1>0.0f)
++                {
++                    float icell=m->current.rms_A/parallel;
++                    /* Same per-cell irreversible heat terms as the existing
++                     * 2RC thermal model. Entropic/contact/balance heat remains
++                     * uncalibrated and is covered only by advisory margins. */
++                    input.heat_w=icell*icell*e->r0_ohm +
++                        e->vp1_V*e->vp1_V*invr1 + e->vp2_V*e->vp2_V/0.004f;
++                    input.heat_valid=true;
++                }
++                break;
++            }
++        }
++        ams_thermal_observer_t next=data->thermal_shadow[seg];
++        ams_thermal_step(&next,&data->thermal_config,&input);
++        /* Publish a coherent small per-segment record for CLI readers. */
++        taskENTER_CRITICAL();
++        data->thermal_shadow[seg]=next;
++        taskEXIT_CRITICAL();
++    }
++}
+ 
+ static bool collect_group_voltage_source(
+     const ams_measurement_snapshot_t *measurement,
+@@ -763,6 +842,8 @@
+ 
+     if(use_hil)
+     {
++        /* Pack-only HIL frames lack segment thermal provenance. */
++        estimator_update_thermal_shadow(data, NULL, now);
+ #if AMS_ENABLE_HIL_CAN
+         data->estimator.voltage_compare_sequence = 0u;
+         data->estimator.voltage_raw_valid_mask = 0u;
+@@ -906,6 +987,7 @@
+     if(!ams_measurement_store_copy_latest(&data->measurement_store,
+                                           &measurement))
+     {
++        estimator_update_thermal_shadow(data, NULL, now);
+         estimator_mark_instances_fault(&data->estimator,
+                                        AMS_EKF_FAULT_STALE_INPUT);
+         ams_estimator_refresh_summary(&data->estimator,
+@@ -917,11 +999,14 @@
+         return false;
+     }
+ 
++    estimator_update_thermal_shadow(data, &measurement, now);
++
+     /* A stopped ADBMS publisher must not leave the last advisory estimate
+      * healthy forever merely because the static snapshot remains readable. */
+     if((uint32_t)(now - measurement.publication_tick) >
+        ESTIMATOR_HW_TIMEOUT_TICKS)
+     {
++        estimator_update_thermal_shadow(data, NULL, now);
+         estimator_mark_instances_fault(&data->estimator,
+                                        AMS_EKF_FAULT_STALE_INPUT);
+         ams_estimator_refresh_summary(&data->estimator,
+@@ -1155,6 +1240,14 @@
+ 
+     ams_estimator_init_default(&data->estimator);
+     ams_power_state_init(&data->power_state);
++    ams_thermal_default_config(&data->thermal_config);
++    /* Keep thermal parameters aligned with the existing per-cell SoP model. */
++    data->thermal_config.cc=data->power_state.sop_config.core_thermal_capacity_j_per_k;
++    data->thermal_config.cs=data->power_state.sop_config.surface_thermal_capacity_j_per_k;
++    data->thermal_config.rcs=data->power_state.sop_config.core_surface_resistance_k_per_w;
++    data->thermal_config.rsa=data->power_state.sop_config.surface_ambient_resistance_k_per_w;
++    for(uint8_t i=0u;i<AMS_THERMAL_SEGMENTS;i++)
++        ams_thermal_init(&data->thermal_shadow[i]);
+     estimator_publish_power_snapshot(data);
+ 
+     uint32_t last_entry = osKernelGetTickCount();
+--- /dev/null
++++ b/Core/Inc/estimator/ams_thermal_observer.h
+@@ -0,0 +1,46 @@
++#ifndef AMS_THERMAL_OBSERVER_H
++#define AMS_THERMAL_OBSERVER_H
++#include <stdbool.h>
++#include <stdint.h>
++/* Shadow only: representative cell core/surface, never protection authority. */
++#define AMS_THERMAL_SEGMENTS 5u
++#define AMS_THERMAL_SENSORS 24u
++#define AMS_THERMAL_UNCALIBRATED (1u << 0)
++#define AMS_THERMAL_BOUNDARY_ASSUMED (1u << 1)
++#define AMS_THERMAL_CURRENT_INVALID (1u << 2)
++#define AMS_THERMAL_SURFACE_INVALID (1u << 3)
++#define AMS_THERMAL_BOUNDARY_INVALID (1u << 4)
++#define AMS_THERMAL_TIMING_INVALID (1u << 5)
++#define AMS_THERMAL_NUMERIC (1u << 6)
++#define AMS_THERMAL_CURRENT_UNCALIBRATED (1u << 7)
++#define AMS_THERMAL_MODEL_INVALID (1u << 8)
++#define AMS_THERMAL_INNOVATION_REJECT (1u << 9)
++typedef struct {
++    float cc, cs, rcs, rsa; /* per-cell J/K and K/W, same convention as SoP */
++    float process_variance_rate, measurement_variance;
++    float model_margin_c, innovation_gate_sigma;
++    uint32_t max_step_ms, max_surface_age_ms, sensor_mask;
++    uint8_t minimum_sensors;
++    bool calibrated;
++} ams_thermal_config_t;
++typedef struct {
++    uint32_t now_ms, source_ms;
++    float heat_w, boundary_c;
++    bool heat_valid, current_valid, current_calibrated, boundary_valid, boundary_assumed;
++    uint32_t surface_mask, surface_tick[AMS_THERMAL_SENSORS];
++    float surface_c[AMS_THERMAL_SENSORS];
++} ams_thermal_input_t;
++typedef struct {
++    float core_c, surface_c, p00, p01, p11;
++    float core_upper_c, innovation_c, heat_w;
++    uint32_t tick_ms, surface_tick[AMS_THERMAL_SENSORS], seen_mask;
++    uint32_t flags, predictions, corrections, rejected, duplicate_count;
++    uint8_t usable_sensors;
++    bool initialized, available;
++} ams_thermal_observer_t;
++void ams_thermal_default_config(ams_thermal_config_t *c);
++void ams_thermal_init(ams_thermal_observer_t *o);
++void ams_thermal_step(ams_thermal_observer_t *o,
++                      const ams_thermal_config_t *c,
++                      const ams_thermal_input_t *in);
++#endif
+--- /dev/null
++++ b/Core/Src/estimator/ams_thermal_observer.c
+@@ -0,0 +1,147 @@
++#include "estimator/ams_thermal_observer.h"
++#include <math.h>
++#include <stddef.h>
++#include <string.h>
++static bool positive(float v) { return isfinite(v) && v > 0.0f; }
++static bool temperature(float v) { return isfinite(v) && v >= -40.0f && v <= 120.0f; }
++static void inc(uint32_t *v) { if(*v != UINT32_MAX) ++*v; }
++void ams_thermal_default_config(ams_thermal_config_t *c)
++{
++    if(!c) return;
++    memset(c, 0, sizeof(*c));
++    c->cc=55.0f; c->cs=15.0f; c->rcs=1.5f; c->rsa=8.0f;
++    c->process_variance_rate=0.04f; c->measurement_variance=2.25f;
++    c->model_margin_c=5.0f; c->innovation_gate_sigma=5.0f;
++    c->max_step_ms=1000u; c->max_surface_age_ms=1000u;
++    c->sensor_mask=0x00ffffffu; c->minimum_sensors=12u;
++    /* These are provisional SoP model values, not installed-pack calibration. */
++    c->calibrated=false;
++}
++void ams_thermal_init(ams_thermal_observer_t *o)
++{
++    if(o) { memset(o,0,sizeof(*o)); o->flags=AMS_THERMAL_UNCALIBRATED; }
++}
++static bool config_ok(const ams_thermal_config_t *c)
++{
++    return c && positive(c->cc) && positive(c->cs) && positive(c->rcs) &&
++        positive(c->rsa) && positive(c->process_variance_rate) &&
++        positive(c->measurement_variance) && positive(c->innovation_gate_sigma) &&
++        isfinite(c->model_margin_c) && c->model_margin_c>=0.0f &&
++        c->max_step_ms>0u && c->max_step_ms<=10000u &&
++        c->max_surface_age_ms>0u && c->max_surface_age_ms<=60000u &&
++        c->minimum_sensors>0u && c->minimum_sensors<=AMS_THERMAL_SENSORS &&
++        (c->sensor_mask & ~0x00ffffffu)==0u;
++}
++void ams_thermal_step(ams_thermal_observer_t *o,
++                      const ams_thermal_config_t *c,
++                      const ams_thermal_input_t *in)
++{
++    if(!o || !in) return;
++    o->available=false;
++    o->flags=AMS_THERMAL_UNCALIBRATED;
++    if(!config_ok(c)) { o->flags|=AMS_THERMAL_MODEL_INVALID; return; }
++    o->flags=c->calibrated ? 0u : AMS_THERMAL_UNCALIBRATED;
++    if(in->boundary_assumed) o->flags|=AMS_THERMAL_BOUNDARY_ASSUMED;
++    if(!in->current_calibrated) o->flags|=AMS_THERMAL_CURRENT_UNCALIBRATED;
++    if(!in->current_valid) o->flags|=AMS_THERMAL_CURRENT_INVALID;
++    if(!in->heat_valid || !isfinite(in->heat_w) || in->heat_w<0.0f || in->heat_w>100.0f)
++        o->flags|=AMS_THERMAL_MODEL_INVALID;
++    if(!in->boundary_valid || !temperature(in->boundary_c))
++        o->flags|=AMS_THERMAL_BOUNDARY_INVALID;
++    if((uint32_t)(in->now_ms-in->source_ms)>c->max_step_ms)
++        o->flags|=AMS_THERMAL_TIMING_INVALID;
++
++    float all_sum=0.0f, fresh_sum=0.0f, fresh_sq=0.0f;
++    uint32_t new_mask=0u;
++    unsigned all_n=0u, fresh_n=0u;
++    for(unsigned s=0u;s<AMS_THERMAL_SENSORS;s++) {
++        uint32_t bit=1u<<s;
++        if(!(in->surface_mask & c->sensor_mask & bit) ||
++           (uint32_t)(in->now_ms-in->surface_tick[s])>c->max_surface_age_ms ||
++           !temperature(in->surface_c[s])) continue;
++        ++all_n; all_sum+=in->surface_c[s];
++        if(!(o->seen_mask&bit) || (int32_t)(in->surface_tick[s]-o->surface_tick[s])>0) {
++            ++fresh_n; fresh_sum+=in->surface_c[s];
++            fresh_sq+=in->surface_c[s]*in->surface_c[s]; new_mask|=bit;
++        }
++    }
++    o->usable_sensors=(uint8_t)all_n;
++    if(all_n<c->minimum_sensors) o->flags|=AMS_THERMAL_SURFACE_INVALID;
++    const uint32_t fatal=AMS_THERMAL_CURRENT_INVALID|AMS_THERMAL_SURFACE_INVALID|
++        AMS_THERMAL_BOUNDARY_INVALID|AMS_THERMAL_TIMING_INVALID|AMS_THERMAL_MODEL_INVALID;
++    if(o->flags&fatal) {
++        /* No invented zero heat or last-good extrapolation through unknown time. */
++        o->initialized=false;
++        return;
++    }
++    if(!o->initialized) {
++        /* Only seed on a genuinely new observation after a gap. */
++        if(fresh_n==0u) { o->flags|=AMS_THERMAL_SURFACE_INVALID; return; }
++        o->core_c=all_sum/(float)all_n; o->surface_c=o->core_c;
++        o->p00=25.0f; o->p01=0.0f; o->p11=c->measurement_variance;
++        o->tick_ms=in->source_ms; o->initialized=true;
++        /* Seeding consumes every included observation, not just the newest mux. */
++        for(unsigned s=0u;s<AMS_THERMAL_SENSORS;s++) {
++            uint32_t bit=1u<<s;
++            if((in->surface_mask&c->sensor_mask&bit) && temperature(in->surface_c[s]) &&
++               (uint32_t)(in->now_ms-in->surface_tick[s])<=c->max_surface_age_ms) {
++                o->surface_tick[s]=in->surface_tick[s]; o->seen_mask|=bit;
++            }
++        }
++    } else {
++        uint32_t elapsed=in->source_ms-o->tick_ms;
++        if(elapsed==0u) { inc(&o->duplicate_count); o->available=true; return; }
++        if(elapsed>c->max_step_ms) {
++            o->flags|=AMS_THERMAL_TIMING_INVALID; o->initialized=false; return;
++        }
++        float dt=(float)elapsed*0.001f, h=dt*0.5f;
++        float a=1.0f/(c->rcs*c->cc), b=1.0f/(c->rcs*c->cs), d=1.0f/(c->rsa*c->cs);
++        float m00=1.0f+h*a, m01=-h*a, m10=-h*b, m11=1.0f+h*(b+d);
++        float det=m00*m11-m01*m10;
++        float n00=1.0f-h*a, n01=h*a, n10=h*b, n11=1.0f-h*(b+d);
++        float f00=(m11*n00-m01*n10)/det, f01=(m11*n01-m01*n11)/det;
++        float f10=(-m10*n00+m00*n10)/det, f11=(-m10*n01+m00*n11)/det;
++        float u0=dt*in->heat_w/c->cc, u1=dt*d*in->boundary_c;
++        float core=f00*o->core_c+f01*o->surface_c+(m11*u0-m01*u1)/det;
++        float surface=f10*o->core_c+f11*o->surface_c+(-m10*u0+m00*u1)/det;
++        float q=c->process_variance_rate*dt;
++        float p00=f00*f00*o->p00+2.0f*f00*f01*o->p01+f01*f01*o->p11+q;
++        float p01=f00*f10*o->p00+(f00*f11+f01*f10)*o->p01+f01*f11*o->p11;
++        float p11=f10*f10*o->p00+2.0f*f10*f11*o->p01+f11*f11*o->p11+q;
++        inc(&o->predictions);
++        if(fresh_n>0u) {
++            float mean=fresh_sum/(float)fresh_n;
++            float spread=fmaxf(0.0f,fresh_sq/(float)fresh_n-mean*mean);
++            /* Spatial/model errors are correlated: no R/N confidence collapse.
++             * Age allowance is 1 C/s, provisional, not sensor accuracy. */
++            float age_s=(float)c->max_surface_age_ms*0.001f;
++            float r=c->measurement_variance+spread+age_s*age_s;
++            float innovation=mean-surface, variance=p11+r;
++            o->innovation_c=innovation;
++            if(innovation*innovation<=c->innovation_gate_sigma*c->innovation_gate_sigma*variance) {
++                float k0=p01/variance, k1=p11/variance;
++                core+=k0*innovation; surface+=k1*innovation;
++                /* Joseph covariance update with H=[0,1]. */
++                float old01=p01, old11=p11;
++                p00=p00-2.0f*k0*old01+k0*k0*(old11+r);
++                p01=(1.0f-k1)*(old01-k0*old11)+k0*k1*r;
++                p11=(1.0f-k1)*(1.0f-k1)*old11+k1*k1*r;
++                inc(&o->corrections);
++            } else { o->flags|=AMS_THERMAL_INNOVATION_REJECT; inc(&o->rejected); }
++            /* Rejected readings are consumed too; never retry as independent evidence. */
++            for(unsigned s=0u;s<AMS_THERMAL_SENSORS;s++) if(new_mask&(1u<<s)) {
++                o->surface_tick[s]=in->surface_tick[s]; o->seen_mask|=1u<<s;
++            }
++        }
++        if(!temperature(core) || !temperature(surface) || !positive(p00) ||
++           !positive(p11) || !isfinite(p01) || p00>10000.0f || p11>10000.0f ||
++           p00*p11-p01*p01 < -0.001f) {
++            o->flags|=AMS_THERMAL_NUMERIC; o->initialized=false; return;
++        }
++        o->core_c=core; o->surface_c=surface;
++        o->p00=p00; o->p01=p01; o->p11=p11; o->tick_ms=in->source_ms;
++    }
++    o->heat_w=in->heat_w;
++    o->core_upper_c=o->core_c+3.0f*sqrtf(o->p00)+c->model_margin_c;
++    o->available=true; /* availability is not calibration or authority */
++}
+--- a/host_tests/Makefile
++++ b/host_tests/Makefile
+@@ -27,6 +27,7 @@
+ PROFILE_SRC := production/profile_compile_test.c
+ ESTIMATOR_TOPOLOGY_SRC := production/estimator_topology_test.c
+ ESTIMATOR_SRC := \
++	$(AMS_ROOT)/Core/Src/estimator/ams_thermal_observer.c \
+ 	$(AMS_ROOT)/Core/Src/estimator/ams_soc_ekf.c \
+ 	$(AMS_ROOT)/Core/Src/estimator/ams_estimator_lut.c
+ 
+@@ -958,3 +959,15 @@
+ 	$(CC) $(CFLAGS_COMMON) -Werror -Wno-unused-variable -DAMS_BUILD_PROFILE=4 -DAMS_CURRENT_PAIRED_START=1 -DAMS_CURRENT_TIMER_TRIGGER=1 -ffunction-sections -fdata-sections production/current_pair_test.c -Wl,--gc-sections -o $(BUILD_DIR)/current_timer_test $(LDLIBS)
+ 	$(BUILD_DIR)/current_timer_test
+ vehicle-ci: stage4-test
++
++.PHONY: thermal-observer-test
++thermal-observer-test: | make-build-dir
++	$(CC) -std=c11 -Wall -Wextra -Werror -pedantic -I$(AMS_ROOT)/Core/Inc unit/thermal_observer_test.c $(AMS_ROOT)/Core/Src/estimator/ams_thermal_observer.c -lm -o $(BUILD_DIR)/thermal_observer_test
++	$(BUILD_DIR)/thermal_observer_test
++vehicle-ci: thermal-observer-test
++
++.PHONY: thermal-integration-test
++thermal-integration-test: | make-build-dir
++	$(CC) $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=4 -DAMS_HOST_THERMAL_INTEGRATION_TEST=1 $(SYSTEM_SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC) $(POWER_SRC) -o $(BUILD_DIR)/thermal_integration_test $(LDLIBS)
++	$(BUILD_DIR)/thermal_integration_test
++vehicle-ci: thermal-integration-test
+--- a/host_tests/src/ams_host_test_runner.c
++++ b/host_tests/src/ams_host_test_runner.c
+@@ -1572,6 +1572,7 @@
+ #include "Core/Src/measurement/ams_measurement.c"
+ #include "Core/Src/estimator/ams_estimator_lut.c"
+ #include "Core/Src/estimator/ams_soc_ekf.c"
++#include "Core/Src/estimator/ams_thermal_observer.c"
+ static uint32_t fake_uart_tx_while_spi_lock;
+ int cli_printline(cli_device_t *dev, char *line)
+ {
+@@ -12658,7 +12659,77 @@
+ }
+ #endif
+ 
++/* Production adapter integration: immutable thermistor provenance and
++ * no writes into the existing estimator/power/driver contracts. */
++static void test_thermal_shadow_adapter(void)
++{
++    static app_data_t a;
++    static ams_measurement_snapshot_t m;
++    static ams_estimator_t before;
++    static ams_power_state_t power_before;
++    memset(&a,0,sizeof(a)); memset(&m,0,sizeof(m));
++    ams_thermal_default_config(&a.thermal_config);
++    a.estimator.instance_count=AMS_THERMAL_SEGMENTS;
++    for(unsigned seg=0;seg<AMS_THERMAL_SEGMENTS;seg++) {
++        ams_thermal_init(&a.thermal_shadow[seg]);
++        ams_ekf_instance_t *e=&a.estimator.inst[seg];
++        e->cfg.first_series_group=seg*NCELLS;
++        e->cfg.series_group_count=NCELLS; e->cfg.parallel_cell_count=6;
++        e->valid=1; e->soc=0.5f; e->t_core_C=25; e->r0_ohm=0.015f;
++        e->last_voltage_tick=100;
++        if(seg<NSMBS) {
++            m.temp_usable_mask[seg]=0xffffffu;
++            for(unsigned sensor=0;sensor<NTEMPS;sensor++) m.temp_deci_c[seg][sensor]=250;
++        }
++    }
++    m.current.valid=true; m.current.sample_count=5;
++    m.current.rms_A=6; m.current.latest_sample_tick=100;
++    m.current.end_tick=100; m.current.start_tick=0;
++    m.publication_tick=100; m.voltage_complete_tick=100;
++    m.validity_flags=AMS_MEAS_VALID_CURRENT|AMS_MEAS_BALANCE_RECOVERED;
++    before=a.estimator; power_before=a.power_state;
++    estimator_update_thermal_shadow(&a,&m,100);
++    for(unsigned seg=0;seg<NSMBS && seg<5;seg++) {
++        CHECK(a.thermal_shadow[seg].available);
++        CHECK(fabsf(a.thermal_shadow[seg].heat_w-0.015f)<0.00001f);
++        CHECK(a.thermal_shadow[seg].flags&AMS_THERMAL_CURRENT_UNCALIBRATED);
++    }
++    CHECK(memcmp(&before,&a.estimator,sizeof(before))==0);
++    CHECK(memcmp(&power_before,&a.power_state,sizeof(power_before))==0);
++    m.publication_tick=200; m.voltage_complete_tick=200;
++    m.current.start_tick=100; m.current.end_tick=200; m.current.latest_sample_tick=200;
++    for(unsigned seg=0;seg<NSMBS;seg++)
++        for(unsigned sensor=0;sensor<NTEMPS;sensor++) m.temp_age_ms[seg][sensor]=100;
++    estimator_update_thermal_shadow(&a,&m,200);
++    CHECK(a.thermal_shadow[0].predictions==1 && a.thermal_shadow[0].corrections==0);
++    estimator_update_thermal_shadow(&a,&m,210);
++    CHECK(a.thermal_shadow[0].available && a.thermal_shadow[0].predictions==1);
++    m.publication_tick=300; m.voltage_complete_tick=300;
++    m.current.start_tick=200; m.current.end_tick=300; m.current.latest_sample_tick=300;
++    for(unsigned seg=0;seg<NSMBS;seg++)
++        for(unsigned sensor=0;sensor<NTEMPS;sensor++) m.temp_age_ms[seg][sensor]=200;
++    m.temp_age_ms[0][0]=0;
++    estimator_update_thermal_shadow(&a,&m,300);
++    CHECK(a.thermal_shadow[0].corrections==1);
++    CHECK(a.thermal_shadow[0].surface_tick[0]==300);
++    CHECK(a.thermal_shadow[0].surface_tick[1]==100);
++    /* Missing an entire current interval must not integrate the latest RMS
++     * value backward over that unobserved gap. */
++    m.publication_tick=500; m.voltage_complete_tick=500;
++    m.current.start_tick=400; m.current.end_tick=500; m.current.latest_sample_tick=500;
++    estimator_update_thermal_shadow(&a,&m,500);
++    CHECK(!a.thermal_shadow[0].available);
++    estimator_update_thermal_shadow(&a,NULL,600);
++    CHECK(!a.thermal_shadow[0].available);
++    CHECK(memcmp(&before,&a.estimator,sizeof(before))==0);
++    CHECK(memcmp(&power_before,&a.power_state,sizeof(power_before))==0);
++    puts("PASS thermal adapter: five segments, RMS/per-cell scaling, no repeat fusion, gap rejection, no estimator/power mutation");
++}
++
+ int main(void){
++#if defined(AMS_HOST_THERMAL_INTEGRATION_TEST)
++    test_thermal_shadow_adapter(); return 0;
++#endif
+ #if defined(AMS_HOST_DIAG_SCHEDULER_TEST)
+     test_phased_diagnostic_admission(); return 0;
+ #endif
+--- a/host_tests/tools/check_timing_stage3.py
++++ b/host_tests/tools/check_timing_stage3.py
+@@ -10,7 +10,7 @@
+ sources=['../Middlewares/Third_Party/FreeRTOS/Source/tasks.c',
+          '../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1/port.c']
+ sources += ['../Core/Src/'+x for x in ['diagnostics/ams_perf.c','main.c',
+-    'tasks/adbms_task.c','tasks/cli_task.c','ext_drivers/accumulator.c','ext_drivers/adbms6830.c','ext_drivers/cli.c','ext_drivers/current_sensor.c','stm32f7xx_it.c','stm32f7xx_hal_msp.c']]
++    'tasks/estimator_task.c','estimator/ams_thermal_observer.c','tasks/adbms_task.c','tasks/cli_task.c','ext_drivers/accumulator.c','ext_drivers/adbms6830.c','ext_drivers/cli.c','ext_drivers/current_sensor.c','stm32f7xx_it.c','stm32f7xx_hal_msp.c']]
+ sources += ['../Drivers/STM32F7xx_HAL_Driver/Src/'+x for x in ['stm32f7xx_hal_uart.c','stm32f7xx_hal_uart_ex.c','stm32f7xx_hal_dma.c']]
+ args=flags+['-D__ARM_ARCH_7EM__=1','-D__VFP_FP__=1',
+     '-DAMS_ENABLE_ADBMS_THERM_OPEN_WIRE_DIAG=1','-DAMS_ENABLE_ADBMS_AUX2_REDUNDANCY=1',
+--- /dev/null
++++ b/host_tests/unit/thermal_observer_test.c
+@@ -0,0 +1,90 @@
++#include "estimator/ams_thermal_observer.h"
++#include <assert.h>
++#include <math.h>
++#include <stdio.h>
++#include <string.h>
++static ams_thermal_config_t c;
++static ams_thermal_input_t in;
++static ams_thermal_observer_t o;
++static void sample(uint32_t t,float surface)
++{
++    in.now_ms=t; in.source_ms=t;
++    for(unsigned s=0;s<24;s++) { in.surface_c[s]=surface; in.surface_tick[s]=t; }
++}
++static void setup(uint32_t t)
++{
++    ams_thermal_default_config(&c); ams_thermal_init(&o);
++    memset(&in,0,sizeof(in));
++    in.heat_valid=true; in.current_valid=true; in.current_calibrated=true;
++    in.boundary_valid=true; in.boundary_assumed=true; in.boundary_c=25;
++    in.surface_mask=0xffffffu; sample(t,25);
++    ams_thermal_step(&o,&c,&in); assert(o.available);
++}
++int main(void)
++{
++    setup(100);
++    assert((o.flags&(AMS_THERMAL_UNCALIBRATED|AMS_THERMAL_BOUNDARY_ASSUMED))==3u);
++    float p=o.p11;
++    ams_thermal_step(&o,&c,&in);
++    assert(o.p11==p && o.corrections==0 && o.duplicate_count==1 && o.available);
++    /* Republishing cached thermistors must not reduce covariance. */
++    in.now_ms=200; in.source_ms=200;
++    ams_thermal_step(&o,&c,&in);
++    assert(o.predictions==1 && o.corrections==0);
++    assert(fabsf(o.core_c-25)<0.001f && fabsf(o.surface_c-25)<0.001f);
++    sample(300,25); ams_thermal_step(&o,&c,&in); assert(o.corrections==1);
++    /* Unknown current never becomes zero heat. */
++    in.heat_valid=false; sample(400,25); float core=o.core_c;
++    ams_thermal_step(&o,&c,&in);
++    assert(!o.available && (o.flags&AMS_THERMAL_MODEL_INVALID) && o.core_c==core);
++    in.heat_valid=true; sample(500,25); ams_thermal_step(&o,&c,&in); assert(o.available);
++    /* A stopped publisher cannot be made fresh by a later consumer tick. */
++    in.now_ms=2000; ams_thermal_step(&o,&c,&in); assert(!o.available);
++    setup(100); in.boundary_valid=false; sample(200,25);
++    ams_thermal_step(&o,&c,&in); assert(!o.available && (o.flags&AMS_THERMAL_BOUNDARY_INVALID));
++    setup(100); in.surface_mask=0x7ff; sample(200,25);
++    ams_thermal_step(&o,&c,&in); assert(!o.available && o.usable_sensors==11);
++    setup(100); in.heat_w=NAN; sample(200,25);
++    ams_thermal_step(&o,&c,&in); assert(!o.available);
++    setup(100); c.rcs=0; ams_thermal_step(&o,&c,&in);
++    assert(!o.available && (o.flags&AMS_THERMAL_MODEL_INVALID));
++    /* Timestamp rollover and genuine per-channel newness. */
++    setup(UINT32_MAX-50u); sample(49u,25); ams_thermal_step(&o,&c,&in);
++    assert(o.available && o.predictions==1 && o.corrections==1);
++    setup(100); sample(150,25); in.surface_tick[0]=99;
++    ams_thermal_step(&o,&c,&in); assert(o.surface_tick[0]==100);
++    /* Outlier consumption: cannot retry one rejected sample as new evidence. */
++    setup(100); sample(200,100); ams_thermal_step(&o,&c,&in);
++    assert(o.rejected==1 && (o.flags&AMS_THERMAL_INNOVATION_REJECT));
++    in.source_ms=300; in.now_ms=300; ams_thermal_step(&o,&c,&in);
++    assert(o.rejected==1 && o.corrections==0);
++    /* Steady-state energy balance: Ts=Ta+q*Rsa, Tc=Ts+q*Rcs. */
++    setup(100); o.surface_c=33; o.core_c=34.5f; in.heat_w=1;
++    for(unsigned k=2;k<1000;k++) {
++        sample(k*100u,33); ams_thermal_step(&o,&c,&in);
++        assert(o.available && fabsf(o.core_c-34.5f)<0.005f);
++        assert(o.p00*o.p11-o.p01*o.p01>=-0.001f);
++    }
++    /* Independent forward-Euler plant at 1 ms; observer 100 ms, fresh
++     * thermistors every 800 ms. Heating/rest pulses and cooling change. */
++    setup(100); double tc=25,ts=25; double max_error=0;
++    for(unsigned k=2;k<10000;k++) {
++        in.heat_w=(k<3500)?2.0f:0.0f;
++        in.boundary_c=(k<6500)?25.0f:20.0f;
++        for(unsigned j=0;j<100;j++) {
++            double flow=(tc-ts)/1.5;
++            double dc=(in.heat_w-flow)/55.0;
++            double ds=(flow-(ts-in.boundary_c)/8.0)/15.0;
++            tc+=0.001*dc; ts+=0.001*ds;
++        }
++        in.now_ms=k*100u; in.source_ms=in.now_ms;
++        if(k%8==0) sample(k*100u,(float)ts);
++        ams_thermal_step(&o,&c,&in); assert(o.available);
++        double error=fabs(o.core_c-tc); if(error>max_error) max_error=error;
++        assert(isfinite(o.core_upper_c) && o.core_upper_c>=o.core_c);
++        assert(o.p00*o.p11-o.p01*o.p01>=-0.001f);
++    }
++    assert(max_error<0.1);
++    printf("PASS thermal observer: faults, freshness, duplicates, rollover, Joseph PSD, equilibrium, independent plant max error %.5f C\n",max_error);
++    return 0;
++}

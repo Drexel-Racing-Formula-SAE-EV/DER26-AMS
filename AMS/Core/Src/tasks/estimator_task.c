@@ -12,6 +12,7 @@
 #include "tasks/estimator_task.h"
 
 #include "estimator/ams_soc_ekf.h"
+#include "estimator/ams_estimator_lut.h"
 
 #include <math.h>
 #include <stdint.h>
@@ -30,6 +31,84 @@ void estimator_task_fn(void *argument);
 static StaticTask_t estimator_task_tcb;
 static StackType_t estimator_task_stack[ESTIMATOR_STACK_WORDS];
 static TaskHandle_t estimator_task_handle = NULL;
+
+/* Separate advisory bank: no thermal-shadow output is fed back to EKF/SoP.
+ * Existing publication age reconstructs the actual thermistor sample tick;
+ * no driver access, bus ownership, conversions or wake activity is added. */
+static void estimator_update_thermal_shadow(app_data_t *data,
+    const ams_measurement_snapshot_t *m, uint32_t now)
+{
+    for(uint8_t seg=0u; seg<AMS_THERMAL_SEGMENTS; seg++)
+    {
+        ams_thermal_input_t input = {0};
+        input.now_ms=now;
+        input.source_ms=m ? m->voltage_complete_tick : now;
+        /* No measured boundary exists in the current snapshot contract.
+         * Explicit assumed bench boundary: always flagged, never authoritative. */
+        input.boundary_c=25.0f;
+        input.boundary_valid=true;
+        input.boundary_assumed=true;
+        if(m && seg<NSMBS)
+        {
+            input.surface_mask=m->temp_usable_mask[seg];
+            for(uint8_t sensor=0u; sensor<NTEMPS && sensor<AMS_THERMAL_SENSORS; sensor++)
+            {
+                input.surface_c[sensor]=(float)m->temp_deci_c[seg][sensor]*0.1f;
+                input.surface_tick[sensor]=m->publication_tick-m->temp_age_ms[seg][sensor];
+            }
+            input.current_valid=m->current.valid && m->current.sample_count>0u &&
+                (m->validity_flags&AMS_MEAS_VALID_CURRENT)!=0u &&
+                (uint32_t)(now-m->current.latest_sample_tick)<=100u &&
+                (uint32_t)(input.source_ms-m->current.end_tick)<=100u &&
+                (uint32_t)(m->current.end_tick-m->current.start_tick)<=1000u;
+            input.current_calibrated=m->current.calibration_record_confident &&
+                m->current.calibration_id!=0u;
+            for(uint8_t i=0u;i<data->estimator.instance_count && i<AMS_EKF_MAX_INSTANCES;i++)
+            {
+                const ams_ekf_instance_t *e=&data->estimator.inst[i];
+                /* No silent mapping from pack/split EKFs onto a full segment. */
+                if(e->cfg.first_series_group!=(uint16_t)(seg*NCELLS) ||
+                   e->cfg.series_group_count!=NCELLS) continue;
+                if(!isfinite(e->soc) || e->soc<0.0f || e->soc>1.0f ||
+                   !isfinite(e->t_core_C) || e->t_core_C<5.0f || e->t_core_C>40.0f)
+                    break;
+                float temp=e->t_core_C;
+                float invr1=ams_p42a_inv_r1_from_luts(
+                    ams_p42a_inv_c1(e->soc,temp),
+                    ams_p42a_neg_inv_tau1(e->soc,temp));
+                float parallel=e->cfg.parallel_cell_count;
+                if(e->valid && e->model_domain_flags==0u &&
+                   (uint32_t)(input.source_ms-e->last_voltage_tick)<=1000u &&
+                   input.current_valid &&
+                   (!data->thermal_shadow[seg].initialized ||
+                    input.source_ms==data->thermal_shadow[seg].tick_ms ||
+                    m->current.start_tick==data->thermal_shadow[seg].tick_ms) &&
+                   m->balancing_mask[seg]==0u &&
+                   (m->validity_flags&AMS_MEAS_BALANCE_RECOVERED)!=0u &&
+                   isfinite(parallel) && parallel>0.0f &&
+                   isfinite(m->current.rms_A) && m->current.rms_A>=0.0f &&
+                   isfinite(e->r0_ohm) && e->r0_ohm>0.0f &&
+                   isfinite(invr1) && invr1>0.0f)
+                {
+                    float icell=m->current.rms_A/parallel;
+                    /* Same per-cell irreversible heat terms as the existing
+                     * 2RC thermal model. Entropic/contact/balance heat remains
+                     * uncalibrated and is covered only by advisory margins. */
+                    input.heat_w=icell*icell*e->r0_ohm +
+                        e->vp1_V*e->vp1_V*invr1 + e->vp2_V*e->vp2_V/0.004f;
+                    input.heat_valid=true;
+                }
+                break;
+            }
+        }
+        ams_thermal_observer_t next=data->thermal_shadow[seg];
+        ams_thermal_step(&next,&data->thermal_config,&input);
+        /* Publish a coherent small per-segment record for CLI readers. */
+        taskENTER_CRITICAL();
+        data->thermal_shadow[seg]=next;
+        taskEXIT_CRITICAL();
+    }
+}
 
 static bool collect_group_voltage_source(
     const ams_measurement_snapshot_t *measurement,
@@ -763,6 +842,8 @@ bool estimator_task_update(app_data_t *data, uint32_t now, float cc_dt_s)
 
     if(use_hil)
     {
+        /* Pack-only HIL frames lack segment thermal provenance. */
+        estimator_update_thermal_shadow(data, NULL, now);
 #if AMS_ENABLE_HIL_CAN
         data->estimator.voltage_compare_sequence = 0u;
         data->estimator.voltage_raw_valid_mask = 0u;
@@ -906,6 +987,7 @@ bool estimator_task_update(app_data_t *data, uint32_t now, float cc_dt_s)
     if(!ams_measurement_store_copy_latest(&data->measurement_store,
                                           &measurement))
     {
+        estimator_update_thermal_shadow(data, NULL, now);
         estimator_mark_instances_fault(&data->estimator,
                                        AMS_EKF_FAULT_STALE_INPUT);
         ams_estimator_refresh_summary(&data->estimator,
@@ -917,11 +999,14 @@ bool estimator_task_update(app_data_t *data, uint32_t now, float cc_dt_s)
         return false;
     }
 
+    estimator_update_thermal_shadow(data, &measurement, now);
+
     /* A stopped ADBMS publisher must not leave the last advisory estimate
      * healthy forever merely because the static snapshot remains readable. */
     if((uint32_t)(now - measurement.publication_tick) >
        ESTIMATOR_HW_TIMEOUT_TICKS)
     {
+        estimator_update_thermal_shadow(data, NULL, now);
         estimator_mark_instances_fault(&data->estimator,
                                        AMS_EKF_FAULT_STALE_INPUT);
         ams_estimator_refresh_summary(&data->estimator,
@@ -1155,6 +1240,14 @@ void estimator_task_fn(void *argument)
 
     ams_estimator_init_default(&data->estimator);
     ams_power_state_init(&data->power_state);
+    ams_thermal_default_config(&data->thermal_config);
+    /* Keep thermal parameters aligned with the existing per-cell SoP model. */
+    data->thermal_config.cc=data->power_state.sop_config.core_thermal_capacity_j_per_k;
+    data->thermal_config.cs=data->power_state.sop_config.surface_thermal_capacity_j_per_k;
+    data->thermal_config.rcs=data->power_state.sop_config.core_surface_resistance_k_per_w;
+    data->thermal_config.rsa=data->power_state.sop_config.surface_ambient_resistance_k_per_w;
+    for(uint8_t i=0u;i<AMS_THERMAL_SEGMENTS;i++)
+        ams_thermal_init(&data->thermal_shadow[i]);
     estimator_publish_power_snapshot(data);
 
     uint32_t last_entry = osKernelGetTickCount();

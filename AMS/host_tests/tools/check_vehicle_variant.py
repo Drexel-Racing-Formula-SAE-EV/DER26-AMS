@@ -9,7 +9,7 @@ args=shlex.split(next(s for s in dry.splitlines() if s.startswith('cc ')))
 flags=args[:args.index('src/ams_host_test_runner.c')]
 flags=[x for x in flags if not x.startswith(('-DAMS_BUILD_PROFILE=','-DAMS_HOST_VEHICLE_VARIANT_TEST='))]
 configs=E.parse(repo/'.cproject').findall('.//cconfiguration')
-assert len(configs)==12
+assert len(configs)==16
 names=[c.find('.//configuration').get('name') for c in configs]
 assert names == [
     'VEHICLE COMMS 1M Debug', 'VEHICLE COMMS 1M Release',
@@ -20,9 +20,13 @@ assert names == [
     'VEHICLE COMMS 1M SPI64 DMA DIAG Debug',
     'VEHICLE COMMS 1M SPI64 DMA DIAG ICACHE Debug',
     'VEHICLE COMMS 1M SPI64 DMA DIAG ICACHE DCACHE Debug',
+    'VEHICLE COMMS 1M SPI64 DMA DIAG UARTDMA Debug',
+    'VEHICLE COMMS 1M SPI64 DMA DIAG ADCPAIR Debug',
+    'VEHICLE COMMS 1M SPI64 DMA DIAG AUXPOLL Debug',
+    'VEHICLE COMMS 1M SPI64 DMA DIAG ALLIO Debug',
 ],names
 builders=[b.get('buildPath') for c in configs for b in c.findall('.//builder') if b.get('buildPath')]
-assert len(builders)==12 and len(set(builders))==12,builders
+assert len(builders)==16 and len(set(builders))==16,builders
 assert all('/Vehicle_' in path for path in builders),builders
 for i,c in enumerate(configs):
     definitions=[x.get('value') for o in c.findall('.//option')
@@ -31,18 +35,22 @@ for i,c in enumerate(configs):
     assert 'DER26_CAN_BITRATE_KBPS=1000' in definitions,definitions
     assert ('AMS_BUILD_PROFILE=4' if i<2 or i>=4 else 'AMS_BUILD_PROFILE=3') in definitions,definitions
     if i>=4:
-        assert f'AMS_ADBMS_SPI_PRESCALER_DIV={[128,256,128,64,64,64,64,64][i-4]}' in definitions
-        assert f'AMS_ADBMS_SPI_DMA={[0,1,1,0,1,1,1,1][i-4]}' in definitions
+        assert f'AMS_ADBMS_SPI_PRESCALER_DIV={[128,256,128,64,64,64,64,64,64,64,64,64][i-4]}' in definitions
+        assert f'AMS_ADBMS_SPI_DMA={[0,1,1,0,1,1,1,1,1,1,1,1][i-4]}' in definitions
     if i>=9:
         assert 'AMS_ENABLE_ADBMS_AUX2_REDUNDANCY=1' in definitions
         assert 'AMS_ENABLE_ADBMS_THERM_OPEN_WIRE_DIAG=1' in definitions
-        assert f'AMS_BENCHMARK_ICACHE={0 if i==9 else 1}' in definitions
+        assert f'AMS_BENCHMARK_ICACHE={1 if i in (10,11) else 0}' in definitions
         assert f'AMS_BENCHMARK_DCACHE={1 if i==11 else 0}' in definitions
-    assert not any('VALIDATED=1' in x or 'REVIEWED=1' in x for x in definitions)
+    if i>=12:
+        assert f'AMS_CLI_UART_DMA={int(i in (12,15))}' in definitions
+        assert f'AMS_CURRENT_PAIRED_START={int(i in (13,15))}' in definitions
+        assert f'AMS_ADBMS_READY_POLL={int(i in (14,15))}' in definitions
+    assert not any('VALIDATED=1'  in x or 'REVIEWED=1' in x for x in definitions)
 assert 'CAN1.Prescaler=3' in next(repo.glob('*.ioc')).read_text()
 assert 'CAN1.CalculateBaudRate=1000000' in next(repo.glob('*.ioc')).read_text()
 assert E.parse(repo/'.project').findtext('name')=='DER26-AMS-VEHICLE-1M-CLI4'
-print('PASS twelve CubeIDE configurations, identity, 1-Mbit/s runtime/project/Cube timing; no fabricated release evidence')
+print('PASS sixteen CubeIDE configurations, identity, 1-Mbit/s runtime/project/Cube timing; no fabricated release evidence')
 probe=cwd/'build/vehicle_contract_probe.c'
 probe.write_text('''#include "app.h"
 _Static_assert(NSMBS==5 && ACCUMULATOR_PHYSICAL_CHAIN_COUNT==5,"five SMBs");
@@ -64,3 +72,7 @@ positive=subprocess.run(flags+evidence+['-fsyntax-only',str(probe)]+[str(repo/s)
 if positive.returncode: print(positive.stdout+positive.stderr)
 positive.check_returncode()
 print('PASS native drive-profile sources and full-75-cell/no-CLI/five-device contract with synthetic test-only evidence')
+for feature in ('AMS_CLI_UART_DMA','AMS_CURRENT_PAIRED_START','AMS_ADBMS_READY_POLL'):
+    blocked=subprocess.run(flags+evidence+[f'-D{feature}=1','-fsyntax-only',str(probe)],cwd=cwd,capture_output=True,text=True)
+    assert blocked.returncode!=0 and 'Stage 4 experiments require inhibited' in blocked.stderr,blocked.stderr
+print('PASS Stage 4 I/O experiments cannot be enabled in the gated driving profile')

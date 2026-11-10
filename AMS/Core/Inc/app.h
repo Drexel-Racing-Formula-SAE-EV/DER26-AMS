@@ -27,6 +27,7 @@
 #include "ext_drivers/ams_safety.h"
 #include "ext_drivers/ams_tuning_telemetry.h"
 #include "measurement/ams_measurement.h"
+#include "estimator/ams_thermal_observer.h"
 #include "diagnostics/ams_flight_recorder.h"
 #include "diagnostics/ams_runtime_manifest.h"
 #include "sop/ams_power_state.h"
@@ -951,6 +952,8 @@ struct app_data_t
 	board_t board;
 	accumulator_t acc;
 	ams_estimator_t estimator;
+    ams_thermal_config_t thermal_config;
+    ams_thermal_observer_t thermal_shadow[AMS_THERMAL_SEGMENTS];
 	ams_power_state_t power_state;
 	ams_power_can_snapshot_t power_can_snapshot;
 	ams_tuning_store_t tuning_store;

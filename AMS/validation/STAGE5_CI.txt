@@ -1,0 +1,275 @@
+make: Entering directory '/workspace/scratch/43e64d7c85ca/work/ams-timing-r10/host_tests'
+cc -std=c11 -g -O0 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -Wno-missing-field-initializers -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -DSTM32F767xx -DUSE_HAL_DRIVER -DAMS_HOST_TEST=1 -Iinclude -I.. -I../Core/Inc -I../Core/Inc/tasks -I../Core/Inc/ext_drivers -I../Drivers/CMSIS/Include -I../Drivers/CMSIS/Device/ST/STM32F7xx/Include -I../Drivers/STM32F7xx_HAL_Driver/Inc -I../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy -I../Middlewares/Third_Party/FreeRTOS/Source/include -I../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1 -Werror -DAMS_BUILD_PROFILE=4 -DAMS_HOST_VEHICLE_VARIANT_TEST=1 \
+	../Core/Src/diagnostics/ams_perf.c src/ams_host_test_runner.c ../Core/Src/ext_drivers/can_tx_scheduler.c ../Core/Src/diagnostics/ams_flight_recorder.c ../Core/Src/diagnostics/ams_runtime_manifest.c ../Core/Src/ext_drivers/air_monitor.c ../Core/Src/ext_drivers/main_fuse_monitor.c ../Core/Src/ext_drivers/parallel_connection_observer.c ../Core/Src/ext_drivers/thermistor_model.c ../Core/Src/soh/ams_soh.c ../Core/Src/sop/ams_sop.c ../Core/Src/sop/ams_fuse_observer.c ../Core/Src/sop/ams_power_strategy.c ../Core/Src/sop/ams_power_state.c ../Core/Src/sop/ams_power_can.c \
+	-o "build/vehicle_variant_tests" -lm
+"build/vehicle_variant_tests"
+PASS actual CAN task stages vehicle protected telemetry and loads hardware mailbox fixture
+PASS 1-Mbit/s vehicle variant, five-SMB/no-APM/no-fan topology, drive transitions, STOP, ECU RX, charge rejection and final-load disable
+cc -std=c11 -g -O0 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -Wno-missing-field-initializers -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -DSTM32F767xx -DUSE_HAL_DRIVER -DAMS_HOST_TEST=1 -Iinclude -I.. -I../Core/Inc -I../Core/Inc/tasks -I../Core/Inc/ext_drivers -I../Drivers/CMSIS/Include -I../Drivers/CMSIS/Device/ST/STM32F7xx/Include -I../Drivers/STM32F7xx_HAL_Driver/Inc -I../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy -I../Middlewares/Third_Party/FreeRTOS/Source/include -I../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1 -Werror -DAMS_BUILD_PROFILE=4 -fsyntax-only \
+	../Core/Src/app.c ../Core/Src/tasks/cli_task.c \
+	../Core/Src/tasks/error_task.c ../Core/Src/tasks/canbus_task.c \
+	../Core/Src/ext_drivers/canbus.c ../Core/Src/ext_drivers/cli.c \
+	../Core/Src/stm32f7xx_it.c ../Core/Src/tasks/adbms_task.c ../Core/Src/main.c
+cc -std=c11 -g -O0 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -Wno-missing-field-initializers -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -DSTM32F767xx -DUSE_HAL_DRIVER -DAMS_HOST_TEST=1 -Iinclude -I.. -I../Core/Inc -I../Core/Inc/tasks -I../Core/Inc/ext_drivers -I../Drivers/CMSIS/Include -I../Drivers/CMSIS/Device/ST/STM32F7xx/Include -I../Drivers/STM32F7xx_HAL_Driver/Inc -I../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy -I../Middlewares/Third_Party/FreeRTOS/Source/include -I../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1 -Werror -DAMS_BUILD_PROFILE=4 -ffunction-sections -fdata-sections \
+	production/cli_async_test.c ../Core/Src/diagnostics/ams_perf.c -Wl,--gc-sections -o "build/cli_async_test" -lm
+"build/cli_async_test"
+PASS real CLI IT TX wrap, ordering, CRLF and cooperative backpressure
+PASS bounded RX, CRLF, burst rejection, overflow rejection and stop bypass
+PASS cancellation and stalled TX have finite cooperative waits/recovery
+PASS failed IT start recovery and exact stop recognition
+cc -std=c11 -g -O0 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -Wno-missing-field-initializers -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -DSTM32F767xx -DUSE_HAL_DRIVER -DAMS_HOST_TEST=1 -Iinclude -I.. -I../Core/Inc -I../Core/Inc/tasks -I../Core/Inc/ext_drivers -I../Drivers/CMSIS/Include -I../Drivers/CMSIS/Device/ST/STM32F7xx/Include -I../Drivers/STM32F7xx_HAL_Driver/Inc -I../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy -I../Middlewares/Third_Party/FreeRTOS/Source/include -I../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1 -Werror unit/can_tx_scheduler_unit_test.c ../Core/Src/ext_drivers/can_tx_scheduler.c \
+	-o "build/can_tx_scheduler_unit_tests" -lm
+"build/can_tx_scheduler_unit_tests"
+PASS DER26 CAN V4 TX scheduler unit/stress tests
+python3 tools/check_vehicle_variant.py
+PASS sixteen CubeIDE configurations, identity, 1-Mbit/s runtime/project/Cube timing; no fabricated release evidence
+PASS drive release rejects missing validation evidence
+PASS native drive-profile sources and full-75-cell/no-CLI/five-device contract with synthetic test-only evidence
+PASS Stage 4 I/O experiments cannot be enabled in the gated driving profile
+python3 "../host_tests/tools/check_release_identity.py" ".."
+PASS canonical firmware/CLI identity, shared timestamp, CubeMX identity and PE4 CS_B contract
+python3 "../host_tests/tools/check_vehicle_variant.py"
+PASS sixteen CubeIDE configurations, identity, 1-Mbit/s runtime/project/Cube timing; no fabricated release evidence
+PASS drive release rejects missing validation evidence
+PASS native drive-profile sources and full-75-cell/no-CLI/five-device contract with synthetic test-only evidence
+PASS Stage 4 I/O experiments cannot be enabled in the gated driving profile
+PASS vehicle CubeIDE project identity, four configurations, 1 Mbps and linker metadata
+python3 tools/check_can_clock_contract.py
+PASS vehicle AMS 54-MHz/HSE-derived 1Mbps CAN timing contract (SJW=2)
+cc -std=c11 -g -O0 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -Wno-missing-field-initializers -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -DSTM32F767xx -DUSE_HAL_DRIVER -DAMS_HOST_TEST=1 -Iinclude -I.. -I../Core/Inc -I../Core/Inc/tasks -I../Core/Inc/ext_drivers -I../Drivers/CMSIS/Include -I../Drivers/CMSIS/Device/ST/STM32F7xx/Include -I../Drivers/STM32F7xx_HAL_Driver/Inc -I../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy -I../Middlewares/Third_Party/FreeRTOS/Source/include -I../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1 -Werror -DAMS_BUILD_PROFILE=4 \
+	-DAMS_EXPECTED_ESTIMATOR_INSTANCES=5 \
+	production/estimator_topology_test.c ../Core/Src/estimator/ams_soc_ekf.c ../Core/Src/estimator/ams_estimator_lut.c \
+	-o "build/estimator_topology_vehicle_comms" -lm
+"build/estimator_topology_vehicle_comms"
+cc -std=c11 -g -O0 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -Wno-missing-field-initializers -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -DSTM32F767xx -DUSE_HAL_DRIVER -DAMS_HOST_TEST=1 -Iinclude -I.. -I../Core/Inc -I../Core/Inc/tasks -I../Core/Inc/ext_drivers -I../Drivers/CMSIS/Include -I../Drivers/CMSIS/Device/ST/STM32F7xx/Include -I../Drivers/STM32F7xx_HAL_Driver/Inc -I../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy -I../Middlewares/Third_Party/FreeRTOS/Source/include -I../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1 -Werror \
+	-DAMS_BUILD_PROFILE=3 -DAMS_VEHICLE_PROFILE_REVIEWED=1 -DAMS_IMD_TARGET_VALIDATED=1 -DAMS_IWDG_TARGET_VALIDATED=1 -DAMS_CURRENT_POLARITY_VALIDATED=1 -DAMS_CURRENT_CALIBRATION_VALIDATED=1 -DAMS_BALANCE_TARGET_VALIDATED=1 -DAMS_CAN_VEHICLE_CONTRACT_VALIDATED=1 -DAMS_SOP_MODEL_VALIDATED=1 -DAMS_SOP_CALIBRATION_VALIDATED=1 -DAMS_SOP_CAN_CONTRACT_VALIDATED=1 -DAMS_MISSION_CAN_CONTRACT_VALIDATED=1 -DAMS_FUSE_MODEL_VALIDATED=1 -DAMS_FUSE_LOW_CURRENT_EXTRAPOLATION_VALIDATED=1 -DAMS_C_OPEN_WIRE_TARGET_VALIDATED=1 -DAMS_TEMP_PULLUPS_TARGET_VALIDATED=1 -DAMS_TEMP_THRESHOLDS_VALIDATED=1 -DAMS_BUILD_GIT_COMMIT=\"host-profile-gate\" -DAMS_CURRENT_CALIBRATION_REVISION=\"host-gate-not-release\" -DAMS_CAN_CONTRACT_REVISION=\"host-gate-not-release\" -DAMS_THRESHOLD_REVISION=\"host-gate-not-release\" -DAMS_ESTIMATOR_MODEL_REVISION=\"host-gate-not-release\" -DAMS_SOP_MODEL_REVISION=\"host-gate-not-release\" -DAMS_SOH_MODEL_REVISION=\"host-gate-not-release\" -DNSMBS=5 -DACCUMULATOR_PHYSICAL_CHAIN_COUNT=5 -DAMS_ENABLE_APM_2950=0 \
+	-DAMS_EXPECTED_ESTIMATOR_INSTANCES=5 \
+	production/estimator_topology_test.c ../Core/Src/estimator/ams_soc_ekf.c ../Core/Src/estimator/ams_estimator_lut.c \
+	-o "build/estimator_topology_vehicle_release_test" -lm
+"build/estimator_topology_vehicle_release_test"
+PASS vehicle profiles 4/3: five segment EKFs and coulomb counter initialize at 27%
+cc -std=c11 -g -O0 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -Wno-missing-field-initializers -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -DSTM32F767xx -DUSE_HAL_DRIVER -DAMS_HOST_TEST=1 -Iinclude -I.. -I../Core/Inc -I../Core/Inc/tasks -I../Core/Inc/ext_drivers -I../Drivers/CMSIS/Include -I../Drivers/CMSIS/Device/ST/STM32F7xx/Include -I../Drivers/STM32F7xx_HAL_Driver/Inc -I../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy -I../Middlewares/Third_Party/FreeRTOS/Source/include -I../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1 -Werror -DAMS_BUILD_PROFILE=4 -DAMS_EXPECTED_PROFILE=4 \
+	production/profile_compile_test.c -o "build/profile_vehicle_comms" -lm
+"build/profile_vehicle_comms"
+cc -std=c11 -g -O0 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -Wno-missing-field-initializers -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -DSTM32F767xx -DUSE_HAL_DRIVER -DAMS_HOST_TEST=1 -Iinclude -I.. -I../Core/Inc -I../Core/Inc/tasks -I../Core/Inc/ext_drivers -I../Drivers/CMSIS/Include -I../Drivers/CMSIS/Device/ST/STM32F7xx/Include -I../Drivers/STM32F7xx_HAL_Driver/Inc -I../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy -I../Middlewares/Third_Party/FreeRTOS/Source/include -I../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1 -Werror -DAMS_BUILD_PROFILE=3 -DAMS_VEHICLE_PROFILE_REVIEWED=1 -DAMS_IMD_TARGET_VALIDATED=1 -DAMS_IWDG_TARGET_VALIDATED=1 -DAMS_CURRENT_POLARITY_VALIDATED=1 -DAMS_CURRENT_CALIBRATION_VALIDATED=1 -DAMS_BALANCE_TARGET_VALIDATED=1 -DAMS_CAN_VEHICLE_CONTRACT_VALIDATED=1 -DAMS_SOP_MODEL_VALIDATED=1 -DAMS_SOP_CALIBRATION_VALIDATED=1 -DAMS_SOP_CAN_CONTRACT_VALIDATED=1 -DAMS_MISSION_CAN_CONTRACT_VALIDATED=1 -DAMS_FUSE_MODEL_VALIDATED=1 -DAMS_FUSE_LOW_CURRENT_EXTRAPOLATION_VALIDATED=1 -DAMS_C_OPEN_WIRE_TARGET_VALIDATED=1 -DAMS_TEMP_PULLUPS_TARGET_VALIDATED=1 -DAMS_TEMP_THRESHOLDS_VALIDATED=1 -DAMS_BUILD_GIT_COMMIT=\"host-profile-gate\" -DAMS_CURRENT_CALIBRATION_REVISION=\"host-gate-not-release\" -DAMS_CAN_CONTRACT_REVISION=\"host-gate-not-release\" -DAMS_THRESHOLD_REVISION=\"host-gate-not-release\" -DAMS_ESTIMATOR_MODEL_REVISION=\"host-gate-not-release\" -DAMS_SOP_MODEL_REVISION=\"host-gate-not-release\" -DAMS_SOH_MODEL_REVISION=\"host-gate-not-release\" -DNSMBS=5 -DACCUMULATOR_PHYSICAL_CHAIN_COUNT=5 -DAMS_ENABLE_APM_2950=0 -DAMS_EXPECTED_PROFILE=3 \
+	production/profile_compile_test.c -o "build/profile_vehicle" -lm
+"build/profile_vehicle"
+PASS vehicle profile 4/3, source-required evidence, five-SMB/no-APM topology gates
+cc -std=c11 -g -O0 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -Wno-missing-field-initializers -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -DSTM32F767xx -DUSE_HAL_DRIVER -DAMS_HOST_TEST=1 -Iinclude -I.. -I../Core/Inc -I../Core/Inc/tasks -I../Core/Inc/ext_drivers -I../Drivers/CMSIS/Include -I../Drivers/CMSIS/Device/ST/STM32F7xx/Include -I../Drivers/STM32F7xx_HAL_Driver/Inc -I../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy -I../Middlewares/Third_Party/FreeRTOS/Source/include -I../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1 -Wno-unused-variable -Werror -DAMS_BUILD_PROFILE=4 -ffunction-sections -fdata-sections \
+	production/adbms_wake_policy_test.c ../Core/Src/ext_drivers/adbms_shared.c \
+	../Core/Src/ext_drivers/thermistor_model.c \
+	-Wl,--gc-sections -o "build/adbms_wake_policy_test" -lm
+"build/adbms_wake_policy_test"
+PASS mux /256 wire rate, success/timeout restoration, CS-high/idle guards and no added wakes
+PASS reference maturity, reuse, stale proof, writes, reset, PEC, soak rejection
+PASS command/write preparation protected against competing scratch owner
+PASS 1000 tick phases, exact idle boundary, clock wraps, session reopen
+TEMP 1 ICs: 9971 us, wakes 2, cold 1 warm 2
+TEMP 5 ICs: 16234 us, wakes 2, cold 1 warm 2
+VOLT+TEMP nominal wire/delay model: 42672 us
+STATUS completion nominal wire model: 4675 us
+PASS public temperature wrappers, stale boundary, zero and wrap
+PASS rolling sweep, duplicate rejection, failed visit, recovery, timestamp provenance and time filter
+PASS capture age, wrap, scheduled visits and transport rejection
+WAKE_AUDIT SID status:1 cold:0 warm:1 time_us:1335
+WAKE_AUDIT configuration status:1 cold:0 warm:1 time_us:2170
+WAKE_AUDIT status status:0 cold:0 warm:1 time_us:3005
+WAKE_AUDIT references status:1 cold:0 warm:2 time_us:25251
+WAKE_AUDIT mute status:1 cold:0 warm:1 time_us:1411
+WAKE_AUDIT unmute status:0 cold:0 warm:1 time_us:1411
+PASS nested/burst wake checks do not emit additional wake trains
+PASS production 6822/6830 wake/idle/integrity/timing regressions
+cc -std=c11 -g -O0 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -Wno-missing-field-initializers -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -DSTM32F767xx -DUSE_HAL_DRIVER -DAMS_HOST_TEST=1 -Iinclude -I.. -I../Core/Inc -I../Core/Inc/tasks -I../Core/Inc/ext_drivers -I../Drivers/CMSIS/Include -I../Drivers/CMSIS/Device/ST/STM32F7xx/Include -I../Drivers/STM32F7xx_HAL_Driver/Inc -I../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy -I../Middlewares/Third_Party/FreeRTOS/Source/include -I../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1 -Werror -ffunction-sections -fdata-sections -DNSMBS=5 \
+	unit/measurement_integrity_test.c ../Core/Src/measurement/ams_measurement.c \
+	../Core/Src/sop/ams_sop.c \
+	../Core/Src/soh/ams_soh.c \
+	../Core/Src/estimator/ams_estimator_lut.c \
+	-Wl,--gc-sections -o "build/measurement_integrity_tests" -lm
+"build/measurement_integrity_tests"
+PASS late boundary rejection and clean recovery
+PASS carried uncertainty, extrema, sticky mixed range, next-window recovery
+PASS unknown uncertainty and late sample rejection
+PASS tick wrap and excessive gap rejection
+PASS rotation cannot hide a real-sample gap
+PASS stale rotation cannot charge a new window for an old interval
+PASS CAN calibration quality, immutable sequence/age, expiry and fallback
+PASS CAN per-reading expiry, aggregates, overflow and tick wrap
+PASS SoP and SoH reject unknown/zero uncertainty as calibrated
+PASS SoP/SoH effective cell/temperature freshness, mux cadence and tick wrap
+cc -std=c11 -g -O0 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -Wno-missing-field-initializers -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -DSTM32F767xx -DUSE_HAL_DRIVER -DAMS_HOST_TEST=1 -Iinclude -I.. -I../Core/Inc -I../Core/Inc/tasks -I../Core/Inc/ext_drivers -I../Drivers/CMSIS/Include -I../Drivers/CMSIS/Device/ST/STM32F7xx/Include -I../Drivers/STM32F7xx_HAL_Driver/Inc -I../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy -I../Middlewares/Third_Party/FreeRTOS/Source/include -I../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1 -Werror unit/apm_link_clock.c \
+	-DAMS_HOST_ONLY_ADBMS2950_HARDENING_TEST=1 \
+	unit/ams_unit_test_runner.c ../Core/Src/estimator/ams_soc_ekf.c ../Core/Src/estimator/ams_estimator_lut.c ../Core/Src/ext_drivers/adbms2950.c ../Core/Src/ext_drivers/air_monitor.c ../Core/Src/ext_drivers/main_fuse_monitor.c ../Core/Src/ext_drivers/parallel_connection_observer.c ../Core/Src/ext_drivers/thermistor_model.c \
+	-o "build/adbms2950_hardening_tests" -lm
+"build/adbms2950_hardening_tests"
+PASS ADBMS2950 calibration/phase freshness
+PASS ADBMS2950 masked config readback
+PASS ADBMS2950 COMM ACK/EEPROM probe
+PASS ADBMS2950 redundant diagnostic/CS timing
+PASS ADBMS2950 REFUP/snapshot/flags/CCNT reset
+ALL AMS UNIT TESTS PASSED
+cc -std=c11 -g -O0 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -Wno-missing-field-initializers -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -DSTM32F767xx -DUSE_HAL_DRIVER -DAMS_HOST_TEST=1 -Iinclude -I.. -I../Core/Inc -I../Core/Inc/tasks -I../Core/Inc/ext_drivers -I../Drivers/CMSIS/Include -I../Drivers/CMSIS/Device/ST/STM32F7xx/Include -I../Drivers/STM32F7xx_HAL_Driver/Inc -I../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy -I../Middlewares/Third_Party/FreeRTOS/Source/include -I../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1 -Werror -DAMS_HOST_ONLY_ADBMS2950_HARDENING_TEST=1 unit/apm_regression.c ../Core/Src/estimator/ams_soc_ekf.c ../Core/Src/estimator/ams_estimator_lut.c ../Core/Src/ext_drivers/adbms2950.c ../Core/Src/ext_drivers/air_monitor.c ../Core/Src/ext_drivers/main_fuse_monitor.c ../Core/Src/ext_drivers/parallel_connection_observer.c ../Core/Src/ext_drivers/thermistor_model.c -o "build/apm_driver_regression" -lm
+"build/apm_driver_regression"
+PASS ADBMS2950 calibration/phase freshness
+PASS ADBMS2950 masked config readback
+PASS ADBMS2950 COMM ACK/EEPROM probe
+PASS ADBMS2950 redundant diagnostic/CS timing
+PASS ADBMS2950 REFUP/snapshot/flags/CCNT reset
+ALL AMS UNIT TESTS PASSED
+PASS ADBMS2950 single-shot/continuous initialization
+Init single=1 continuous=150 calibrated=1 HAL=0 expected_ok=1 failures=0
+Init single=1 continuous=150 calibrated=0 HAL=1 expected_ok=0 failures=0
+Init single=0 continuous=150 calibrated=1 HAL=1 expected_ok=0 failures=0
+Init single=1 continuous=0 calibrated=1 HAL=1 expected_ok=0 failures=0
+Init single=1 continuous=135 calibrated=1 HAL=1 expected_ok=0 failures=0
+Init single=1 continuous=136 calibrated=1 HAL=0 expected_ok=1 failures=0
+Absent-device SID error/trace regression failures=0
+MED1 injection: HAL=1 sample_valid=0 current_valid=0 fault_mask=0x00020000
+Startup baseline persistent=0 status=0 valid=1 failures=0
+Startup baseline persistent=1 status=1 valid=0 failures=0
+Thermal baseline refusal failures=0
+Disabled-voltage sentinel isolation enabled=0 status=0 failures=0
+Disabled-voltage sentinel isolation enabled=1 status=1 failures=0
+Failed recovery preservation status=3 failures=0
+Primary diagnostic packet scenario=0 failures=0
+Primary diagnostic packet scenario=1 failures=0
+Primary diagnostic packet scenario=2 failures=0
+Existing test exit=0; independent FLAG mismatches=0/12
+cc -std=c11 -g -O0 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -Wno-missing-field-initializers -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -DSTM32F767xx -DUSE_HAL_DRIVER -DAMS_HOST_TEST=1 -Iinclude -I.. -I../Core/Inc -I../Core/Inc/tasks -I../Core/Inc/ext_drivers -I../Drivers/CMSIS/Include -I../Drivers/CMSIS/Device/ST/STM32F7xx/Include -I../Drivers/STM32F7xx_HAL_Driver/Inc -I../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy -I../Middlewares/Third_Party/FreeRTOS/Source/include -I../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1 -Werror production/diag_budget_test.c -o "build/diag_budget_test"
+"build/diag_budget_test"
+python3 sil/run_acquisition_sil.py
+{
+  "candidate": [
+    {
+      "scenario": "nominal",
+      "scans": "200",
+      "accepted": "200",
+      "rejected": "0",
+      "temp_rejected": "0",
+      "mean_us": "31232",
+      "max_us": "54507",
+      "over_100ms": "0",
+      "transfers": "5682",
+      "restarts": "0",
+      "warm_wakes": "400"
+    },
+    {
+      "scenario": "tick_rounding",
+      "scans": "200",
+      "accepted": "200",
+      "rejected": "0",
+      "temp_rejected": "0",
+      "mean_us": "33485",
+      "max_us": "57257",
+      "over_100ms": "0",
+      "transfers": "5682",
+      "restarts": "0",
+      "warm_wakes": "400"
+    },
+    {
+      "scenario": "preemption_2p5ms",
+      "scans": "200",
+      "accepted": "200",
+      "rejected": "0",
+      "temp_rejected": "0",
+      "mean_us": "57230",
+      "max_us": "104507",
+      "over_100ms": "1",
+      "transfers": "5682",
+      "restarts": "0",
+      "warm_wakes": "399"
+    },
+    {
+      "scenario": "preemption_8ms",
+      "scans": "200",
+      "accepted": "200",
+      "rejected": "0",
+      "temp_rejected": "0",
+      "mean_us": "34351",
+      "max_us": "54507",
+      "over_100ms": "0",
+      "transfers": "5935",
+      "restarts": "59",
+      "warm_wakes": "459"
+    },
+    {
+      "scenario": "transient_pec",
+      "scans": "200",
+      "accepted": "200",
+      "rejected": "0",
+      "temp_rejected": "59",
+      "mean_us": "34602",
+      "max_us": "54507",
+      "over_100ms": "0",
+      "transfers": "5640",
+      "restarts": "59",
+      "warm_wakes": "459"
+    },
+    {
+      "scenario": "transient_timeout",
+      "scans": "200",
+      "accepted": "200",
+      "rejected": "0",
+      "temp_rejected": "59",
+      "mean_us": "34602",
+      "max_us": "54507",
+      "over_100ms": "0",
+      "transfers": "5640",
+      "restarts": "59",
+      "warm_wakes": "459"
+    },
+    {
+      "scenario": "persistent_pec",
+      "scans": "200",
+      "accepted": "0",
+      "rejected": "200",
+      "temp_rejected": "200",
+      "mean_us": "22752",
+      "max_us": "22752",
+      "over_100ms": "0",
+      "transfers": "801",
+      "restarts": "0",
+      "warm_wakes": "0"
+    }
+  ]
+}
+cc -Idma_fakes -std=c11 -g -O0 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -Wno-missing-field-initializers -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -DSTM32F767xx -DUSE_HAL_DRIVER -DAMS_HOST_TEST=1 -Iinclude -I.. -I../Core/Inc -I../Core/Inc/tasks -I../Core/Inc/ext_drivers -I../Drivers/CMSIS/Include -I../Drivers/CMSIS/Device/ST/STM32F7xx/Include -I../Drivers/STM32F7xx_HAL_Driver/Inc -I../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy -I../Middlewares/Third_Party/FreeRTOS/Source/include -I../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1 -Werror -DAMS_BUILD_PROFILE=4 -DAMS_ADBMS_SPI_DMA=1 production/spi6_dma_test.c -o build/spi6_dma_test
+build/spi6_dma_test
+PASS DMA success, suspension, timeout, error, late/split IRQ, reuse, writes, NDTR, BSY, pre-kernel fallback, counters and quarantine
+cc -Idma_fakes -std=c11 -g -O0 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -Wno-missing-field-initializers -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -DSTM32F767xx -DUSE_HAL_DRIVER -DAMS_HOST_TEST=1 -Iinclude -I.. -I../Core/Inc -I../Core/Inc/tasks -I../Core/Inc/ext_drivers -I../Drivers/CMSIS/Include -I../Drivers/CMSIS/Device/ST/STM32F7xx/Include -I../Drivers/STM32F7xx_HAL_Driver/Inc -I../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy -I../Middlewares/Third_Party/FreeRTOS/Source/include -I../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1 -Wno-unused-variable -Werror -DAMS_BUILD_PROFILE=4 -DAMS_ADBMS_SPI_DMA=1 -ffunction-sections -fdata-sections production/mux_dma_test.c ../Core/Src/ext_drivers/adbms_shared.c ../Core/Src/ext_drivers/thermistor_model.c -Wl,--gc-sections -o build/mux_dma_test -lm
+build/mux_dma_test
+PASS integrated fast DMA reads / slow polling mux / fast DMA reads, including mux timeout recovery
+python3 tools/check_spi_dma.py
+PASS DMA target-source native syntax and production driver SIL at /256, /128 and /64
+cc -std=c11 -g -O0 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -Wno-missing-field-initializers -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -DSTM32F767xx -DUSE_HAL_DRIVER -DAMS_HOST_TEST=1 -Iinclude -I.. -I../Core/Inc -I../Core/Inc/tasks -I../Core/Inc/ext_drivers -I../Drivers/CMSIS/Include -I../Drivers/CMSIS/Device/ST/STM32F7xx/Include -I../Drivers/STM32F7xx_HAL_Driver/Inc -I../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy -I../Middlewares/Third_Party/FreeRTOS/Source/include -I../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1 -Wno-unused-variable -Werror -DAMS_BUILD_PROFILE=4 -DAMS_ENABLE_ADBMS_THERM_OPEN_WIRE_DIAG=1 -ffunction-sections -fdata-sections production/therm_phase_test.c ../Core/Src/ext_drivers/adbms_shared.c ../Core/Src/ext_drivers/thermistor_model.c -Wl,--gc-sections -o build/therm_phase_test -lm
+build/therm_phase_test
+THERM phase wall model: down=25155 up=25155 us
+PASS two-phase completion, normal configuration between phases, no primary publication, timeout/integrity cancellation and partial-write restoration
+cc -std=c11 -g -O0 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -Wno-missing-field-initializers -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -DSTM32F767xx -DUSE_HAL_DRIVER -DAMS_HOST_TEST=1 -Iinclude -I.. -I../Core/Inc -I../Core/Inc/tasks -I../Core/Inc/ext_drivers -I../Drivers/CMSIS/Include -I../Drivers/CMSIS/Device/ST/STM32F7xx/Include -I../Drivers/STM32F7xx_HAL_Driver/Inc -I../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy -I../Middlewares/Third_Party/FreeRTOS/Source/include -I../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1 -Werror production/perf_test.c ../Core/Src/diagnostics/ams_perf.c -o build/perf_test
+build/perf_test
+PASS task/IRQ accounting, nested IRQ exclusion, unblock latency, wrap and bounded slots
+cc -std=c11 -g -O0 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -Wno-missing-field-initializers -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -DSTM32F767xx -DUSE_HAL_DRIVER -DAMS_HOST_TEST=1 -Iinclude -I.. -I../Core/Inc -I../Core/Inc/tasks -I../Core/Inc/ext_drivers -I../Drivers/CMSIS/Include -I../Drivers/CMSIS/Device/ST/STM32F7xx/Include -I../Drivers/STM32F7xx_HAL_Driver/Inc -I../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy -I../Middlewares/Third_Party/FreeRTOS/Source/include -I../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1 -Werror -DAMS_BUILD_PROFILE=4 -DAMS_HOST_DIAG_SCHEDULER_TEST=1 -DAMS_ENABLE_ADBMS_THERM_OPEN_WIRE_DIAG=1 -DAMS_ENABLE_ADBMS_AUX2_REDUNDANCY=1 ../Core/Src/diagnostics/ams_perf.c src/ams_host_test_runner.c ../Core/Src/ext_drivers/can_tx_scheduler.c ../Core/Src/diagnostics/ams_flight_recorder.c ../Core/Src/diagnostics/ams_runtime_manifest.c ../Core/Src/ext_drivers/air_monitor.c ../Core/Src/ext_drivers/main_fuse_monitor.c ../Core/Src/ext_drivers/parallel_connection_observer.c ../Core/Src/ext_drivers/thermistor_model.c ../Core/Src/soh/ams_soh.c ../Core/Src/sop/ams_sop.c ../Core/Src/sop/ams_fuse_observer.c ../Core/Src/sop/ams_power_strategy.c ../Core/Src/sop/ams_power_state.c ../Core/Src/sop/ams_power_can.c -o build/diag_scheduler_test -lm
+build/diag_scheduler_test
+PASS production diagnostic scheduler: mixed budgets, status/config collisions, pending phases, strict admission and coverage
+cc -std=c11 -g -O0 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -Wno-missing-field-initializers -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -DSTM32F767xx -DUSE_HAL_DRIVER -DAMS_HOST_TEST=1 -Iinclude -I.. -I../Core/Inc -I../Core/Inc/tasks -I../Core/Inc/ext_drivers -I../Drivers/CMSIS/Include -I../Drivers/CMSIS/Device/ST/STM32F7xx/Include -I../Drivers/STM32F7xx_HAL_Driver/Inc -I../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy -I../Middlewares/Third_Party/FreeRTOS/Source/include -I../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1 -Wno-unused-variable -Werror -DAMS_BUILD_PROFILE=4 -ffunction-sections -fdata-sections production/temp_pipeline_test.c ../Core/Src/ext_drivers/adbms_shared.c ../Core/Src/ext_drivers/thermistor_model.c -Wl,--gc-sections -o build/temp_pipeline_test -lm
+build/temp_pipeline_test
+PASS residual settling, voltage overlap, single-use preparation, no immediate failure retry, stale/mux/integrity rejection and clock wrap
+python3 tools/check_timing_stage3.py
+PASS target-branch native syntax: kernel/cache, driver/task/pipeline, UART DMA IRQs, paired ADC and AUX polling
+cc -std=c11 -g -O0 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -Wno-missing-field-initializers -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -DSTM32F767xx -DUSE_HAL_DRIVER -DAMS_HOST_TEST=1 -Iinclude -I.. -I../Core/Inc -I../Core/Inc/tasks -I../Core/Inc/ext_drivers -I../Drivers/CMSIS/Include -I../Drivers/CMSIS/Device/ST/STM32F7xx/Include -I../Drivers/STM32F7xx_HAL_Driver/Inc -I../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy -I../Middlewares/Third_Party/FreeRTOS/Source/include -I../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1 -Werror -Wno-unused-variable -DAMS_BUILD_PROFILE=4 -DAMS_CLI_UART_DMA=1 -ffunction-sections -fdata-sections production/uart_dma_test.c -Wl,--gc-sections -o build/uart_dma_test
+build/uart_dma_test
+PASS real circular RX parser: wrap, IDLE/HT duplicate suppression, stop bypass, cache alignment
+PASS ambiguous delayed RX discarded through delimiter; task-side error/stopped-stream recovery
+PASS real DMA TX queue: 32KB ordering, wrap/backpressure, finite stall shutdown and late callback
+PASS failed bounded stream shutdown quarantines DMA and forbids buffer reuse
+cc -std=c11 -g -O0 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -Wno-missing-field-initializers -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -DSTM32F767xx -DUSE_HAL_DRIVER -DAMS_HOST_TEST=1 -Iinclude -I.. -I../Core/Inc -I../Core/Inc/tasks -I../Core/Inc/ext_drivers -I../Drivers/CMSIS/Include -I../Drivers/CMSIS/Device/ST/STM32F7xx/Include -I../Drivers/STM32F7xx_HAL_Driver/Inc -I../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy -I../Middlewares/Third_Party/FreeRTOS/Source/include -I../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1 -Werror -Wno-unused-variable -DAMS_BUILD_PROFILE=4 -DAMS_CURRENT_PAIRED_START=1 -ffunction-sections -fdata-sections production/current_pair_test.c -Wl,--gc-sections -o build/current_pair_test -lm
+build/current_pair_test
+PASS actual current ADC path: both starts before polling, shared timeout/wrap, cleanup and atomic pair rejection
+cc -std=c11 -g -O0 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -Wno-missing-field-initializers -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -DSTM32F767xx -DUSE_HAL_DRIVER -DAMS_HOST_TEST=1 -Iinclude -I.. -I../Core/Inc -I../Core/Inc/tasks -I../Core/Inc/ext_drivers -I../Drivers/CMSIS/Include -I../Drivers/CMSIS/Device/ST/STM32F7xx/Include -I../Drivers/STM32F7xx_HAL_Driver/Inc -I../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy -I../Middlewares/Third_Party/FreeRTOS/Source/include -I../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1 -Werror -Wno-unused-variable -DAMS_BUILD_PROFILE=4 -DAMS_ADBMS_READY_POLL=1 -ffunction-sections -fdata-sections production/aux_ready_test.c ../Core/Src/ext_drivers/adbms_shared.c ../Core/Src/ext_drivers/thermistor_model.c -Wl,--gc-sections -o build/aux_ready_test -lm
+build/aux_ready_test
+PASS AUX2 simulated 8ms readiness: 8342us, 1 warm wake(s), counter integrity retained
+PASS bounded AUX polling: 1/5-device propagation, busy/ready, timeout, transport failure, fine-clock wrap; no continuous C/S polling
+cc -std=c11 -g -O0 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -Wno-missing-field-initializers -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -DSTM32F767xx -DUSE_HAL_DRIVER -DAMS_HOST_TEST=1 -Iinclude -I.. -I../Core/Inc -I../Core/Inc/tasks -I../Core/Inc/ext_drivers -I../Drivers/CMSIS/Include -I../Drivers/CMSIS/Device/ST/STM32F7xx/Include -I../Drivers/STM32F7xx_HAL_Driver/Inc -I../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy -I../Middlewares/Third_Party/FreeRTOS/Source/include -I../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1 -Werror -Wno-unused-variable -DAMS_BUILD_PROFILE=4 -DAMS_CURRENT_PAIRED_START=1 -DAMS_CURRENT_TIMER_TRIGGER=1 -ffunction-sections -fdata-sections production/current_pair_test.c -Wl,--gc-sections -o build/current_timer_test -lm
+build/current_timer_test
+PASS actual current ADC path: both starts before polling, shared timeout/wrap, cleanup and atomic pair rejection
+PASS all supported AMS v0.5.57 vehicle-native CI gates
+make: Leaving directory '/workspace/scratch/43e64d7c85ca/work/ams-timing-r10/host_tests'

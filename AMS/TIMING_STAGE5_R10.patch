@@ -1,0 +1,237 @@
+--- a/.cproject
++++ b/.cproject
+@@ -1507,7 +1507,7 @@
+ 								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.option.definedsymbols.578820165.diag" name="Define symbols (-D)" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.option.definedsymbols" valueType="definedSymbols">
+ 									<listOptionValue builtIn="false" value="DEBUG" />
+ 									<listOptionValue builtIn="false" value="AMS_ENABLE_TUNING_CAN=0" />
+-								<listOptionValue builtIn="false" value="AMS_ADBMS_SPI_PRESCALER_DIV=64" /><listOptionValue builtIn="false" value="AMS_ADBMS_SPI_DMA=1" /><listOptionValue builtIn="false" value="AMS_ENABLE_ADBMS_AUX2_REDUNDANCY=1" /><listOptionValue builtIn="false" value="AMS_ENABLE_ADBMS_THERM_OPEN_WIRE_DIAG=1" /><listOptionValue builtIn="false" value="AMS_BENCHMARK_ICACHE=0" /><listOptionValue builtIn="false" value="AMS_BENCHMARK_DCACHE=0" /><listOptionValue builtIn="false" value="AMS_CLI_UART_DMA=1" /><listOptionValue builtIn="false" value="AMS_CURRENT_PAIRED_START=1" /><listOptionValue builtIn="false" value="AMS_ADBMS_READY_POLL=1" /></option>
++								<listOptionValue builtIn="false" value="AMS_ADBMS_SPI_PRESCALER_DIV=64" /><listOptionValue builtIn="false" value="AMS_ADBMS_SPI_DMA=1" /><listOptionValue builtIn="false" value="AMS_ENABLE_ADBMS_AUX2_REDUNDANCY=1" /><listOptionValue builtIn="false" value="AMS_ENABLE_ADBMS_THERM_OPEN_WIRE_DIAG=1" /><listOptionValue builtIn="false" value="AMS_BENCHMARK_ICACHE=0" /><listOptionValue builtIn="false" value="AMS_BENCHMARK_DCACHE=0" /><listOptionValue builtIn="false" value="AMS_CLI_UART_DMA=1" /><listOptionValue builtIn="false" value="AMS_CURRENT_PAIRED_START=1" /><listOptionValue builtIn="false" value="AMS_ADBMS_READY_POLL=1" /><listOptionValue builtIn="false" value="AMS_CURRENT_TIMER_TRIGGER=1" /></option>
+ 								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.option.includepaths.1211713501.diag" name="Include paths (-I)" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.option.includepaths" valueType="includePath">
+ 									<listOptionValue builtIn="false" value="../Core/Inc" />
+ 									<listOptionValue builtIn="false" value="../Drivers/STM32F7xx_HAL_Driver/Inc" />
+@@ -1531,7 +1531,7 @@
+ 									<listOptionValue builtIn="false" value="AMS_BUILD_PROFILE=4" />
+ 									<listOptionValue builtIn="false" value="DER26_CAN_BITRATE_KBPS=1000" />
+ 									<listOptionValue builtIn="false" value="AMS_ENABLE_TUNING_CAN=0" />
+-								<listOptionValue builtIn="false" value="AMS_ADBMS_SPI_PRESCALER_DIV=64" /><listOptionValue builtIn="false" value="AMS_ADBMS_SPI_DMA=1" /><listOptionValue builtIn="false" value="AMS_ENABLE_ADBMS_AUX2_REDUNDANCY=1" /><listOptionValue builtIn="false" value="AMS_ENABLE_ADBMS_THERM_OPEN_WIRE_DIAG=1" /><listOptionValue builtIn="false" value="AMS_BENCHMARK_ICACHE=0" /><listOptionValue builtIn="false" value="AMS_BENCHMARK_DCACHE=0" /><listOptionValue builtIn="false" value="AMS_CLI_UART_DMA=1" /><listOptionValue builtIn="false" value="AMS_CURRENT_PAIRED_START=1" /><listOptionValue builtIn="false" value="AMS_ADBMS_READY_POLL=1" /></option>
++								<listOptionValue builtIn="false" value="AMS_ADBMS_SPI_PRESCALER_DIV=64" /><listOptionValue builtIn="false" value="AMS_ADBMS_SPI_DMA=1" /><listOptionValue builtIn="false" value="AMS_ENABLE_ADBMS_AUX2_REDUNDANCY=1" /><listOptionValue builtIn="false" value="AMS_ENABLE_ADBMS_THERM_OPEN_WIRE_DIAG=1" /><listOptionValue builtIn="false" value="AMS_BENCHMARK_ICACHE=0" /><listOptionValue builtIn="false" value="AMS_BENCHMARK_DCACHE=0" /><listOptionValue builtIn="false" value="AMS_CLI_UART_DMA=1" /><listOptionValue builtIn="false" value="AMS_CURRENT_PAIRED_START=1" /><listOptionValue builtIn="false" value="AMS_ADBMS_READY_POLL=1" /><listOptionValue builtIn="false" value="AMS_CURRENT_TIMER_TRIGGER=1" /></option>
+ 								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.includepaths.1163737927.diag" name="Include paths (-I)" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.includepaths" useByScannerDiscovery="false" valueType="includePath">
+ 									<listOptionValue builtIn="false" value="../Core/Inc" />
+ 									<listOptionValue builtIn="false" value="../Drivers/STM32F7xx_HAL_Driver/Inc" />
+--- a/Core/Inc/ams_build_profile.h
++++ b/Core/Inc/ams_build_profile.h
+@@ -53,7 +53,7 @@
+     (((AMS_BUILD_PROFILE != AMS_PROFILE_TESTDAY) || AMS_TESTDAY_BALANCE_RELEASE_ALLOWED) && \
+      ((AMS_BUILD_PROFILE != AMS_PROFILE_BENCH_VALIDATION) || AMS_BENCH_VALIDATION_BALANCE_RELEASE_ALLOWED) && \
+      (AMS_BUILD_PROFILE != AMS_PROFILE_CHARGE_REVIEW))
+-#define AMS_BUILD_CONFIG_FINGERPRINT (0xA5055714u ^ ((AMS_ADBMS_SPI_PRESCALER_DIV ^ 256u) << 8u) ^ (AMS_ADBMS_SPI_DMA ? 0x00000080u : 0u) ^ (AMS_CLI_UART_DMA ? 0x01000000u : 0u) ^ (AMS_CURRENT_PAIRED_START ? 0x02000000u : 0u) ^ (AMS_ADBMS_READY_POLL ? 0x04000000u : 0u) ^ (AMS_BENCHMARK_ICACHE ? 0x20u : 0u) ^ (AMS_BENCHMARK_DCACHE ? 0x40u : 0u) ^ (AMS_ENABLE_ADBMS_THERM_OPEN_WIRE_DIAG ? 0x10u : 0u) ^ (AMS_ENABLE_ADBMS_AUX2_REDUNDANCY ? 0x08u : 0u))
++#define AMS_BUILD_CONFIG_FINGERPRINT (0xA5055714u ^ ((AMS_ADBMS_SPI_PRESCALER_DIV ^ 256u) << 8u) ^ (AMS_ADBMS_SPI_DMA ? 0x00000080u : 0u) ^ (AMS_CLI_UART_DMA ? 0x01000000u : 0u) ^ (AMS_CURRENT_PAIRED_START ? 0x02000000u : 0u) ^ (AMS_CURRENT_TIMER_TRIGGER ? 0x08000000u : 0u) ^ (AMS_ADBMS_READY_POLL ? 0x04000000u : 0u) ^ (AMS_BENCHMARK_ICACHE ? 0x20u : 0u) ^ (AMS_BENCHMARK_DCACHE ? 0x40u : 0u) ^ (AMS_ENABLE_ADBMS_THERM_OPEN_WIRE_DIAG ? 0x10u : 0u) ^ (AMS_ENABLE_ADBMS_AUX2_REDUNDANCY ? 0x08u : 0u))
+ 
+ #ifndef AMS_BUILD_PROFILE
+ #define AMS_BUILD_PROFILE AMS_PROFILE_BENCH
+@@ -167,6 +167,12 @@
+ #error "SPI DMA requires inhibited TESTDAY communications profile"
+ #endif
+ 
++#ifndef AMS_CURRENT_TIMER_TRIGGER
++#define AMS_CURRENT_TIMER_TRIGGER 0
++#endif
++#if AMS_CURRENT_TIMER_TRIGGER && (!AMS_CURRENT_PAIRED_START || AMS_BUILD_PROFILE != AMS_PROFILE_TESTDAY)
++#error "Timer ADC requires inhibited paired-start bench configuration"
++#endif
+ /* Independently selectable, inhibited bench experiments. */
+ #ifndef AMS_CLI_UART_DMA
+ #define AMS_CLI_UART_DMA 0
+--- a/Core/Inc/ams_vehicle_project.h
++++ b/Core/Inc/ams_vehicle_project.h
+@@ -41,8 +41,8 @@
+ #error "Installed vehicle variant has no fan task"
+ #endif
+ #if AMS_BUILD_PROFILE == 3
+-#define AMS_SOURCE_REVISION "DER26-AMS-v0.5.57-VEHICLE-1M-TIMING8-IO-GATED"
++#define AMS_SOURCE_REVISION "DER26-AMS-v0.5.57-VEHICLE-1M-TIMING9-CPATH-GATED"
+ #else
+-#define AMS_SOURCE_REVISION "DER26-AMS-v0.5.57-VEHICLE-COMMS-1M-TIMING8-IO-INHIBITED"
++#define AMS_SOURCE_REVISION "DER26-AMS-v0.5.57-VEHICLE-COMMS-1M-TIMING9-CPATH-INHIBITED"
+ #endif
+ #endif
+--- a/Core/Src/ext_drivers/accumulator.c
++++ b/Core/Src/ext_drivers/accumulator.c
+@@ -715,6 +715,11 @@
+ 		}
+ 	}
+ #else
++#if AMS_VOLTAGE_MODE == AMS_VOLTAGE_MODE_C_ONLY_MVP
++    /* RD_OFF C results are available every millisecond; retain a complete
++     * 8 ms window for the optionally requested AVG8 product plus margin. */
++    if(adbms6830_wait_cooperative(dev,9000u)!=HAL_OK) return -1;
++#else
+ 	/* Current Rev5 uses the redundant C/S command. Depending on C-ADC
+ 	 * synchronization the documented result time is 8 ms to 16 ms. */
+ 	if(adbms6830_wait_cooperative(dev,
+@@ -724,6 +729,7 @@
+ 	}
+ #endif
+ 
++#endif
+ 	// 4. SNAP, READ, AND PARSE
+     bool optional_due = true;
+ #if AMS_ESTIMATOR_VOLTAGE_SOURCE == AMS_ESTIMATOR_VOLTAGE_SOURCE_RAW
+--- a/Core/Src/ext_drivers/adbms6830.c
++++ b/Core/Src/ext_drivers/adbms6830.c
+@@ -5294,6 +5294,11 @@
+     }
+     return status;
+ #else
++#if AMS_VOLTAGE_MODE == AMS_VOLTAGE_MODE_C_ONLY_MVP
++    /* Current hardware has no qualified S input network. Explicit C-only
++     * acquisition must not trigger the redundant C/S conversion sequence. */
++    return adbms6830_adcv_checked(dev,RD_OFF,CONTINUOUS,DCP_OFF,RSTF_OFF,OW_OFF_ALL_CH);
++#else
+     /* Current Rev5 hardware intentionally keeps S observable because the
+      * S2N-S15N routing defect is still under qualification. Published voltage
+      * remains C-authoritative; there is no automatic S fallback. */
+@@ -5303,6 +5308,7 @@
+                                  DCP_OFF,
+                                  RSTF_OFF,
+                                  OW_OFF_ALL_CH);
++#endif
+ #endif
+ }
+ 
+--- a/Core/Src/ext_drivers/current_sensor.c
++++ b/Core/Src/ext_drivers/current_sensor.c
+@@ -882,17 +882,40 @@
+ static bool current_sensor_read_pair(current_sensor_t *dev)
+ {
+     bool high_started=false, low_started=false, ok=false;
++#if AMS_CURRENT_TIMER_TRIGGER
++    uint32_t high_trigger=0,low_trigger=0;
++    bool trigger_configured=false;
++#endif
+     uint16_t high=0, low=0;
+     dev->count_high_fresh=dev->count_low_fresh=dev->last_read_ok=false;
+     if(!dev->hadc_high || !dev->hadc_low || dev->hadc_high==dev->hadc_low ||
+        dev->hadc_high->Instance==dev->hadc_low->Instance) goto done;
+     if(stm32f767z_adc_switch_channel(dev->hadc_high,dev->channel_high)!=HAL_OK ||
+        stm32f767z_adc_switch_channel(dev->hadc_low,dev->channel_low)!=HAL_OK) goto done;
++#if AMS_CURRENT_TIMER_TRIGGER
++    /* TIM8 is reserved exclusively for an on-demand common ADC trigger.
++     * Do not reconfigure a timer already claimed by another subsystem. */
++    __HAL_RCC_TIM8_CLK_ENABLE();
++    if(TIM8->CR1 || TIM8->CR2 || TIM8->DIER || TIM8->CCER || TIM8->SMCR ||
++       TIM8->CCMR1 || TIM8->CCMR2 ||
++       ((dev->hadc_high->Instance->CR2|dev->hadc_low->Instance->CR2)&ADC_CR2_ADON)) goto done;
++    high_trigger=dev->hadc_high->Instance->CR2 & (ADC_CR2_EXTSEL|ADC_CR2_EXTEN);
++    low_trigger=dev->hadc_low->Instance->CR2 & (ADC_CR2_EXTSEL|ADC_CR2_EXTEN);
++    dev->hadc_high->Instance->CR2=(dev->hadc_high->Instance->CR2 & ~(ADC_CR2_EXTSEL|ADC_CR2_EXTEN)) |
++        ADC_EXTERNALTRIGCONV_T8_TRGO|ADC_EXTERNALTRIGCONVEDGE_RISING;
++    dev->hadc_low->Instance->CR2=(dev->hadc_low->Instance->CR2 & ~(ADC_CR2_EXTSEL|ADC_CR2_EXTEN)) |
++        ADC_EXTERNALTRIGCONV_T8_TRGO|ADC_EXTERNALTRIGCONVEDGE_RISING;
++    TIM8->CR2=TIM_CR2_MMS_1; /* update event -> TRGO, counter remains stopped */
++    trigger_configured=true;
++#endif
+     uint32_t start=HAL_GetTick();
+     high_started=true;
+     if(HAL_ADC_Start(dev->hadc_high)!=HAL_OK) goto done;
+     low_started=true;
+     if(HAL_ADC_Start(dev->hadc_low)!=HAL_OK) goto done;
++#if AMS_CURRENT_TIMER_TRIGGER
++    __DMB();TIM8->EGR=TIM_EGR_UG;__DMB();
++#endif
+     if(HAL_ADC_PollForConversion(dev->hadc_high,CURRENT_ADC_TIMEOUT_MS)!=HAL_OK) goto done;
+     high=(uint16_t)HAL_ADC_GetValue(dev->hadc_high);
+     uint32_t elapsed=HAL_GetTick()-start;
+@@ -904,6 +927,13 @@
+ done:
+     if(high_started && HAL_ADC_Stop(dev->hadc_high)!=HAL_OK) ok=false;
+     if(low_started && HAL_ADC_Stop(dev->hadc_low)!=HAL_OK) ok=false;
++#if AMS_CURRENT_TIMER_TRIGGER
++    if(trigger_configured) {
++        TIM8->CR2=0;TIM8->SR=0;
++        dev->hadc_high->Instance->CR2=(dev->hadc_high->Instance->CR2 & ~(ADC_CR2_EXTSEL|ADC_CR2_EXTEN))|high_trigger;
++        dev->hadc_low->Instance->CR2=(dev->hadc_low->Instance->CR2 & ~(ADC_CR2_EXTSEL|ADC_CR2_EXTEN))|low_trigger;
++    }
++#endif
+     if(ok) {
+         dev->count_high=high;dev->count_low=low;
+         dev->count_high_fresh=dev->count_low_fresh=dev->last_read_ok=true;
+--- a/host_tests/Makefile
++++ b/host_tests/Makefile
+@@ -955,4 +955,6 @@
+ 	$(BUILD_DIR)/current_pair_test
+ 	$(CC) $(CFLAGS_COMMON) -Werror -Wno-unused-variable -DAMS_BUILD_PROFILE=4 -DAMS_ADBMS_READY_POLL=1 -ffunction-sections -fdata-sections production/aux_ready_test.c $(AMS_ROOT)/Core/Src/ext_drivers/adbms_shared.c $(THERMISTOR_SRC) -Wl,--gc-sections -o $(BUILD_DIR)/aux_ready_test $(LDLIBS)
+ 	$(BUILD_DIR)/aux_ready_test
++	$(CC) $(CFLAGS_COMMON) -Werror -Wno-unused-variable -DAMS_BUILD_PROFILE=4 -DAMS_CURRENT_PAIRED_START=1 -DAMS_CURRENT_TIMER_TRIGGER=1 -ffunction-sections -fdata-sections production/current_pair_test.c -Wl,--gc-sections -o $(BUILD_DIR)/current_timer_test $(LDLIBS)
++	$(BUILD_DIR)/current_timer_test
+ vehicle-ci: stage4-test
+--- a/host_tests/production/aux_ready_test.c
++++ b/host_tests/production/aux_ready_test.c
+@@ -37,6 +37,9 @@
+     reset_dev(5);read_clean();dev.session.coherent_snapshot_active=true;
+     uint32_t before=transfers;
+     CHECK(adbms6830_wait_aux_ready(&dev,false,1250)==HAL_ERROR && transfers==before);
++    reset_dev(5);read_clean();dev.spi_debug.enabled=true;
++    CHECK(adbms6830_start_adc_cell_voltage_measurement(&dev)==HAL_OK);
++    CHECK(dev.spi_debug.last_cmd[0]==0x02u); /* RD_OFF, no S conversion */
+     puts("PASS bounded AUX polling: 1/5-device propagation, busy/ready, timeout, transport failure, fine-clock wrap; no continuous C/S polling");
+     return failures ? 1 : 0;
+ }
+--- a/host_tests/production/current_pair_test.c
++++ b/host_tests/production/current_pair_test.c
+@@ -2,6 +2,12 @@
+ #include <assert.h>
+ #include <stdio.h>
+ #include <string.h>
++static TIM_TypeDef timer8;
++#undef TIM8
++#define TIM8 (&timer8)
++#undef __HAL_RCC_TIM8_CLK_ENABLE
++#define __HAL_RCC_TIM8_CLK_ENABLE() ((void)0)
++#define __DMB() ((void)0)
+ #include "Core/Src/ext_drivers/current_sensor.c"
+ static ADC_TypeDef high_regs,low_regs;
+ static ADC_HandleTypeDef hi,lo;
+@@ -16,6 +22,10 @@
+     starts++;assert(polls==0);return starts==fail_start ? HAL_ERROR : HAL_OK;
+ }
+ HAL_StatusTypeDef HAL_ADC_PollForConversion(ADC_HandleTypeDef *h,uint32_t ms) {
++#if AMS_CURRENT_TIMER_TRIGGER
++    assert(timer8.EGR==TIM_EGR_UG);
++    assert((hi.Instance->CR2 & ADC_CR2_EXTSEL)==ADC_EXTERNALTRIGCONV_T8_TRGO);
++#endif
+     assert(starts==2);assert(ms<=5);poll_ms[polls]=ms;polls++;
+     if(polls==1)tick+=elapsed;
+     return polls==fail_poll ? HAL_TIMEOUT : HAL_OK;
+@@ -25,6 +35,7 @@
+     stops++;return stops==fail_stop ? HAL_ERROR : HAL_OK;
+ }
+ static void reset(void){
++    memset(&timer8,0,sizeof(timer8));
+     memset(&dev,0,sizeof(dev));memset(&hi,0,sizeof(hi));memset(&lo,0,sizeof(lo));
+     hi.Instance=&high_regs;lo.Instance=&low_regs;dev.hadc_high=&hi;dev.hadc_low=&lo;
+     tick=calls=starts=stops=polls=fail_config=fail_start=fail_poll=fail_stop=elapsed=0;
+@@ -49,6 +60,12 @@
+     reset();fail_stop=1;failed();assert(stops==2);
+     reset();dev.hadc_low=dev.hadc_high;failed();assert(!starts);
+     reset();tick=UINT32_MAX-1;elapsed=2;assert(current_sensor_read_adc(&dev));assert(poll_ms[1]==3);
++#if AMS_CURRENT_TIMER_TRIGGER
++    reset();timer8.CR1=TIM_CR1_CEN;failed();assert(starts==0 && timer8.CR1==TIM_CR1_CEN);
++    reset();hi.Instance->CR2=ADC_CR2_EXTSEL_0;elapsed=1;
++    assert(current_sensor_read_adc(&dev));
++    assert((hi.Instance->CR2 & (ADC_CR2_EXTSEL|ADC_CR2_EXTEN))==ADC_CR2_EXTSEL_0 && timer8.CR2==0);
++#endif
+     puts("PASS actual current ADC path: both starts before polling, shared timeout/wrap, cleanup and atomic pair rejection");
+     return 0;
+ }
+--- a/host_tests/tools/check_timing_stage3.py
++++ b/host_tests/tools/check_timing_stage3.py
+@@ -14,7 +14,7 @@
+ sources += ['../Drivers/STM32F7xx_HAL_Driver/Src/'+x for x in ['stm32f7xx_hal_uart.c','stm32f7xx_hal_uart_ex.c','stm32f7xx_hal_dma.c']]
+ args=flags+['-D__ARM_ARCH_7EM__=1','-D__VFP_FP__=1',
+     '-DAMS_ENABLE_ADBMS_THERM_OPEN_WIRE_DIAG=1','-DAMS_ENABLE_ADBMS_AUX2_REDUNDANCY=1',
+-    '-DAMS_CLI_UART_DMA=1','-DAMS_CURRENT_PAIRED_START=1','-DAMS_ADBMS_READY_POLL=1','-DAMS_BENCHMARK_ICACHE=1','-DAMS_BENCHMARK_DCACHE=1','-fsyntax-only']+sources
++    '-DAMS_CLI_UART_DMA=1','-DAMS_CURRENT_PAIRED_START=1','-DAMS_CURRENT_TIMER_TRIGGER=1','-DAMS_ADBMS_READY_POLL=1','-DAMS_BENCHMARK_ICACHE=1','-DAMS_BENCHMARK_DCACHE=1','-fsyntax-only']+sources
+ run=subprocess.run(args,cwd=h,text=True,capture_output=True)
+ (h.parent/'validation/STAGE3_TARGET_SYNTAX.txt').write_text(
+     'Native target-branch syntax only; newlib shim declarations; no ARM link\n'+run.stdout+run.stderr+'\nexit='+str(run.returncode))

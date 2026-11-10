@@ -5674,6 +5674,10 @@ static int get_spi_debug_locked(int argc, char *argv[])
                      (unsigned long)session->reference_reuse_count,
                      (unsigned long)session->aux_short_wait_count);
             ret |= cli_printline(cli, outline);
+            snprintf(outline,CLI_LINESZ,"AUX ready_poll:%u polls/busy/fail:%lu/%lu/%lu",
+                (unsigned)AMS_ADBMS_READY_POLL,(unsigned long)session->aux_poll_count,
+                (unsigned long)session->aux_poll_busy_count,(unsigned long)session->aux_poll_fail_count);
+            ret |= cli_printline(cli,outline);
             ret |= cli_printline(cli,"SPI mux policy:STCOMM /256; normal rate restored after frame");
             snprintf(outline,CLI_LINESZ,"diag enabled AUX2:%u THERM:%u compact_max_ms:%lu",
                 (unsigned)AMS_ENABLE_ADBMS_AUX2_REDUNDANCY,(unsigned)AMS_ENABLE_ADBMS_THERM_OPEN_WIRE_DIAG,
@@ -7002,6 +7006,26 @@ int get_estimator_diag(int argc, char *argv[])
     }
 
     int ret = 0;
+    ret |= cli_printline(cli, "Thermal R11: SHADOW_ONLY uncalibrated boundary:assumed_25C; no control authority");
+    for(uint8_t segment=0u;segment<AMS_THERMAL_SEGMENTS;segment++)
+    {
+        ams_thermal_observer_t thermal;
+        taskENTER_CRITICAL();
+        thermal=data->thermal_shadow[segment];
+        taskEXIT_CRITICAL();
+        snprintf(outline,CLI_LINESZ,
+            "Thermal S%u avail:%u flags:0x%lX core_dC:%ld surf_dC:%ld upper_dC:%ld",
+            (unsigned)segment,(unsigned)thermal.available,(unsigned long)thermal.flags,
+            (long)(thermal.core_c*10.0f),(long)(thermal.surface_c*10.0f),
+            (long)(thermal.core_upper_c*10.0f));
+        ret |= cli_printline(cli,outline);
+        snprintf(outline,CLI_LINESZ,
+            "Thermal sensors:%u predict:%lu correct:%lu reject:%lu tick:%lu",
+            (unsigned)thermal.usable_sensors,(unsigned long)thermal.predictions,
+            (unsigned long)thermal.corrections,(unsigned long)thermal.rejected,
+            (unsigned long)thermal.tick_ms);
+        ret |= cli_printline(cli,outline);
+    }
     uint8_t active = data->estimator.active_index;
     const ams_ekf_instance_t *inst = &data->estimator.inst[active];
     const ams_resistance_soh_t *soh =
@@ -7595,6 +7619,11 @@ int get_uart_diag(int argc, char *argv[])
     snprintf(outline, CLI_LINESZ,"CLI TX queued:%u peak:%lu drop:%lu err:%lu abort:%lu",
              cli->tx_used,(unsigned long)cli->tx_high_water,(unsigned long)cli->tx_dropped,
              (unsigned long)cli->tx_errors,(unsigned long)cli->tx_aborts);
+    ret |= cli_printline(cli,outline);
+    snprintf(outline,CLI_LINESZ,"CLI DMA:%u RX events/overruns:%lu/%lu recover_pending:%u ADC paired_start:%u",
+        (unsigned)AMS_CLI_UART_DMA,(unsigned long)cli->rx_dma_events,
+        (unsigned long)cli->rx_dma_overruns,(unsigned)cli->rx_dma_recover_pending,
+        (unsigned)AMS_CURRENT_PAIRED_START);
     ret |= cli_printline(cli,outline);
     snprintf(outline, CLI_LINESZ,"CLI command last/max:%lu/%lums stop_tick:%lu",
              (unsigned long)cli->command_last_ms,(unsigned long)cli->command_max_ms,

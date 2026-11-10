@@ -1572,6 +1572,7 @@ uint16_t stm32f767z_adc_read(ADC_HandleTypeDef *hadc){ return stm32f767z_adc_rea
 #include "Core/Src/measurement/ams_measurement.c"
 #include "Core/Src/estimator/ams_estimator_lut.c"
 #include "Core/Src/estimator/ams_soc_ekf.c"
+#include "Core/Src/estimator/ams_thermal_observer.c"
 static uint32_t fake_uart_tx_while_spi_lock;
 int cli_printline(cli_device_t *dev, char *line)
 {
@@ -12658,7 +12659,77 @@ static void test_vehicle_variant(void)
 }
 #endif
 
+/* Production adapter integration: immutable thermistor provenance and
+ * no writes into the existing estimator/power/driver contracts. */
+static void test_thermal_shadow_adapter(void)
+{
+    static app_data_t a;
+    static ams_measurement_snapshot_t m;
+    static ams_estimator_t before;
+    static ams_power_state_t power_before;
+    memset(&a,0,sizeof(a)); memset(&m,0,sizeof(m));
+    ams_thermal_default_config(&a.thermal_config);
+    a.estimator.instance_count=AMS_THERMAL_SEGMENTS;
+    for(unsigned seg=0;seg<AMS_THERMAL_SEGMENTS;seg++) {
+        ams_thermal_init(&a.thermal_shadow[seg]);
+        ams_ekf_instance_t *e=&a.estimator.inst[seg];
+        e->cfg.first_series_group=seg*NCELLS;
+        e->cfg.series_group_count=NCELLS; e->cfg.parallel_cell_count=6;
+        e->valid=1; e->soc=0.5f; e->t_core_C=25; e->r0_ohm=0.015f;
+        e->last_voltage_tick=100;
+        if(seg<NSMBS) {
+            m.temp_usable_mask[seg]=0xffffffu;
+            for(unsigned sensor=0;sensor<NTEMPS;sensor++) m.temp_deci_c[seg][sensor]=250;
+        }
+    }
+    m.current.valid=true; m.current.sample_count=5;
+    m.current.rms_A=6; m.current.latest_sample_tick=100;
+    m.current.end_tick=100; m.current.start_tick=0;
+    m.publication_tick=100; m.voltage_complete_tick=100;
+    m.validity_flags=AMS_MEAS_VALID_CURRENT|AMS_MEAS_BALANCE_RECOVERED;
+    before=a.estimator; power_before=a.power_state;
+    estimator_update_thermal_shadow(&a,&m,100);
+    for(unsigned seg=0;seg<NSMBS && seg<5;seg++) {
+        CHECK(a.thermal_shadow[seg].available);
+        CHECK(fabsf(a.thermal_shadow[seg].heat_w-0.015f)<0.00001f);
+        CHECK(a.thermal_shadow[seg].flags&AMS_THERMAL_CURRENT_UNCALIBRATED);
+    }
+    CHECK(memcmp(&before,&a.estimator,sizeof(before))==0);
+    CHECK(memcmp(&power_before,&a.power_state,sizeof(power_before))==0);
+    m.publication_tick=200; m.voltage_complete_tick=200;
+    m.current.start_tick=100; m.current.end_tick=200; m.current.latest_sample_tick=200;
+    for(unsigned seg=0;seg<NSMBS;seg++)
+        for(unsigned sensor=0;sensor<NTEMPS;sensor++) m.temp_age_ms[seg][sensor]=100;
+    estimator_update_thermal_shadow(&a,&m,200);
+    CHECK(a.thermal_shadow[0].predictions==1 && a.thermal_shadow[0].corrections==0);
+    estimator_update_thermal_shadow(&a,&m,210);
+    CHECK(a.thermal_shadow[0].available && a.thermal_shadow[0].predictions==1);
+    m.publication_tick=300; m.voltage_complete_tick=300;
+    m.current.start_tick=200; m.current.end_tick=300; m.current.latest_sample_tick=300;
+    for(unsigned seg=0;seg<NSMBS;seg++)
+        for(unsigned sensor=0;sensor<NTEMPS;sensor++) m.temp_age_ms[seg][sensor]=200;
+    m.temp_age_ms[0][0]=0;
+    estimator_update_thermal_shadow(&a,&m,300);
+    CHECK(a.thermal_shadow[0].corrections==1);
+    CHECK(a.thermal_shadow[0].surface_tick[0]==300);
+    CHECK(a.thermal_shadow[0].surface_tick[1]==100);
+    /* Missing an entire current interval must not integrate the latest RMS
+     * value backward over that unobserved gap. */
+    m.publication_tick=500; m.voltage_complete_tick=500;
+    m.current.start_tick=400; m.current.end_tick=500; m.current.latest_sample_tick=500;
+    estimator_update_thermal_shadow(&a,&m,500);
+    CHECK(!a.thermal_shadow[0].available);
+    estimator_update_thermal_shadow(&a,NULL,600);
+    CHECK(!a.thermal_shadow[0].available);
+    CHECK(memcmp(&before,&a.estimator,sizeof(before))==0);
+    CHECK(memcmp(&power_before,&a.power_state,sizeof(power_before))==0);
+    puts("PASS thermal adapter: five segments, RMS/per-cell scaling, no repeat fusion, gap rejection, no estimator/power mutation");
+}
+
 int main(void){
+#if defined(AMS_HOST_THERMAL_INTEGRATION_TEST)
+    test_thermal_shadow_adapter(); return 0;
+#endif
 #if defined(AMS_HOST_DIAG_SCHEDULER_TEST)
     test_phased_diagnostic_admission(); return 0;
 #endif

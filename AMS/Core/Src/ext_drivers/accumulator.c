@@ -715,6 +715,11 @@ static int smb_read_voltage_checked(adbms6830_driver_t *dev,
 		}
 	}
 #else
+#if AMS_VOLTAGE_MODE == AMS_VOLTAGE_MODE_C_ONLY_MVP
+    /* RD_OFF C results are available every millisecond; retain a complete
+     * 8 ms window for the optionally requested AVG8 product plus margin. */
+    if(adbms6830_wait_cooperative(dev,9000u)!=HAL_OK) return -1;
+#else
 	/* Current Rev5 uses the redundant C/S command. Depending on C-ADC
 	 * synchronization the documented result time is 8 ms to 16 ms. */
 	if(adbms6830_wait_cooperative(dev,
@@ -724,6 +729,7 @@ static int smb_read_voltage_checked(adbms6830_driver_t *dev,
 	}
 #endif
 
+#endif
 	// 4. SNAP, READ, AND PARSE
     bool optional_due = true;
 #if AMS_ESTIMATOR_VOLTAGE_SOURCE == AMS_ESTIMATOR_VOLTAGE_SOURCE_RAW

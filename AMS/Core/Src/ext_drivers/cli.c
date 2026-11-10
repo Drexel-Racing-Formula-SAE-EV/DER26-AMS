@@ -15,6 +15,10 @@
 
 #include "ext_drivers/cli.h"
 
+#if AMS_CLI_UART_DMA
+#include "cli_uart_dma.inc"
+#endif
+
 #define CLI_TX_STALL_MS 250u
 #define CLI_TX_ENQUEUE_MS 50u
 
@@ -45,7 +49,11 @@ static void cli_tx_kick(cli_device_t *d)
     if(n>d->tx_used)n=d->tx_used;
     if(n>64u)n=64u;
     d->tx_active_len=n;
+    #if AMS_CLI_UART_DMA
+    if(cli_dma_tx_start(d,&d->tx_queue[d->tx_tail],n)!=HAL_OK)
+#else
     if(HAL_UART_Transmit_IT(d->huart,&d->tx_queue[d->tx_tail],n)!=HAL_OK)
+#endif
     {d->tx_active_len=0u;d->tx_errors++;}
     else d->tx_start_tick=osKernelGetTickCount();
 }
@@ -63,7 +71,11 @@ void cli_uart_service_tx(cli_device_t *d)
     uint32_t mask=cli_lock();
     if(d->tx_used && (uint32_t)(osKernelGetTickCount()-d->tx_start_tick)>CLI_TX_STALL_MS)
     {
+#if AMS_CLI_UART_DMA
+        if(cli_dma_stop(true)==HAL_OK) (void)HAL_UART_AbortTransmit(d->huart);
+#else
         (void)HAL_UART_AbortTransmit(d->huart);
+#endif
         d->tx_active_len=0u;d->tx_head=d->tx_tail=d->tx_used=0u;
         d->tx_aborts++;d->report_cancel=true;
     }
@@ -160,7 +172,11 @@ HAL_StatusTypeDef cli_uart_start_rx(cli_device_t *dev)
         return HAL_ERROR;
     }
 
+#if AMS_CLI_UART_DMA
+    status = cli_dma_rx_start(dev);
+#else
     status = HAL_UART_Receive_IT(dev->huart, &dev->c, 1u);
+#endif
     dev->rx_last_status = status;
 
     if(status == HAL_OK)
@@ -199,11 +215,18 @@ HAL_StatusTypeDef cli_uart_force_recover(cli_device_t *dev)
     dev->line[0] = '\0';
     dev->rx_discard_line = true;
 
+#if AMS_CLI_UART_DMA
+    uint32_t recover_mask=cli_lock();
+    if(cli_dma_stop(false)!=HAL_OK) {cli_unlock(recover_mask);return HAL_ERROR;}
+#endif
     abort_status = HAL_UART_AbortReceive(huart);
     if(abort_status != HAL_OK)
     {
         dev->rx_last_status = abort_status;
         dev->rx_rearm_fail_count++;
+#if AMS_CLI_UART_DMA
+        cli_unlock(recover_mask);
+#endif
         return abort_status;
     }
 
@@ -213,12 +236,18 @@ HAL_StatusTypeDef cli_uart_force_recover(cli_device_t *dev)
     __HAL_UART_SEND_REQ(huart, UART_RXDATA_FLUSH_REQUEST);
     huart->ErrorCode = HAL_UART_ERROR_NONE;
 
+#if AMS_CLI_UART_DMA
+    dev->rx_dma_recover_pending = false;
+#endif
     arm_status = cli_uart_start_rx(dev);
     if(arm_status == HAL_OK)
     {
         dev->rx_recovery_count++;
     }
 
+#if AMS_CLI_UART_DMA
+    cli_unlock(recover_mask);
+#endif
     return arm_status;
 }
 
@@ -226,7 +255,9 @@ HAL_StatusTypeDef cli_uart_service_rx(cli_device_t *dev)
 {
     UART_HandleTypeDef *huart;
     uint32_t error_code;
+#if !AMS_CLI_UART_DMA
     bool rx_irq_enabled;
+#endif
     bool error_irq_enabled;
 
     if((dev == NULL) || (dev->huart == NULL))
@@ -237,9 +268,14 @@ HAL_StatusTypeDef cli_uart_service_rx(cli_device_t *dev)
     huart = dev->huart;
     cli_uart_service_tx(dev);
     error_code = HAL_UART_GetError(huart);
+#if !AMS_CLI_UART_DMA
     rx_irq_enabled = ((huart->Instance->CR1 & USART_CR1_RXNEIE) != 0u);
+#endif
     error_irq_enabled = ((huart->Instance->CR3 & USART_CR3_EIE) != 0u);
 
+#if AMS_CLI_UART_DMA
+    if(dev->rx_dma_recover_pending) return cli_uart_force_recover(dev);
+#endif
     if(error_code != HAL_UART_ERROR_NONE)
     {
         /* Normally the HAL error callback records and clears this. Reaching
@@ -250,7 +286,13 @@ HAL_StatusTypeDef cli_uart_service_rx(cli_device_t *dev)
     }
 
     if((huart->RxState == HAL_UART_STATE_BUSY_RX) &&
+#if AMS_CLI_UART_DMA
+       ((DMA1_Stream1->CR & DMA_SxCR_EN) != 0u) &&
+       ((huart->Instance->CR3 & USART_CR3_DMAR) != 0u) &&
+       ((huart->Instance->CR1 & USART_CR1_IDLEIE) != 0u) && error_irq_enabled)
+#else
        rx_irq_enabled && error_irq_enabled)
+#endif
     {
         return HAL_OK;
     }

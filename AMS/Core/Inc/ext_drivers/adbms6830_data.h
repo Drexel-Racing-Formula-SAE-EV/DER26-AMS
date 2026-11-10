@@ -632,6 +632,7 @@ typedef struct
   uint32_t reference_wait_count;
   uint32_t reference_reuse_count;
   uint32_t aux_short_wait_count;
+  uint32_t aux_poll_count, aux_poll_busy_count, aux_poll_fail_count;
   uint32_t frame_trace_sequence;
   adbms6830_frame_trace_t frame_trace[32];
   uint32_t session_count;

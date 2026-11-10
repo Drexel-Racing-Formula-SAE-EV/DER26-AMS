@@ -1,6 +1,10 @@
-# Current update: v0.5.57-r8 timing stage 3
+# v0.5.57-r11 — thermal observer shadow implementation
 
-See [TIMING_STAGE3_R8_REVIEW.md](TIMING_STAGE3_R8_REVIEW.md): adaptive compact/phased diagnostics, partial-write restoration fix, temperature settling pipeline, passive task/IRQ profiling (`perf [clear]`) and opt-in cache/diagnostic bench presets. Twelve build configurations; standard configurations retain /256 polling with caches off. Retains /256 mux transactions and prior wake/DMA work. Full native vehicle-ci passes. Source only; no ARM or hardware qualification.
+See `THERMAL_OBSERVER_R11_REVIEW.md` for implementation, tests, CLI use and calibration limits. Built on r10 CPATH timing. No ARM build or hardware qualification performed.
+
+# Current update: v0.5.57-r10 C-path timing
+
+See [TIMING_STAGE5_R10_REVIEW.md](TIMING_STAGE5_R10_REVIEW.md): explicit C-only RD_OFF acquisition and optional common TIM8 current-ADC trigger in the inhibited ALLIO preset. No ARM build or hardware qualification. Mandatory C open-wire decomposition remains outstanding.
 
 # DER26 AMS v0.5.57 — Vehicle Main Branch (1 Mbps)
 
