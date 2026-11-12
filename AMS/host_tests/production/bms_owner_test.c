@@ -118,6 +118,69 @@ int main(void)
     CHECK(app.bms_state == false);
     CHECK(fake_bms_pin == GPIO_PIN_RESET);
 
+#if AMS_BUILD_PROFILE == AMS_PROFILE_CHARGE_REVIEW
+    /* Force a pre-existing high shadow/pin, then prove any caller can revoke. */
+    app.state = STATE_START;
+    app.charger_service_power_requested = true;
+    app.charger_service_power_expires_tick = 60000u;
+    app.bms_state = true;
+    fake_bms_pin = GPIO_PIN_SET;
+    fake_current_task = (TaskHandle_t)(uintptr_t)0x9999u;
+    set_bms(false);
+    CHECK(!app.bms_state && fake_bms_pin == GPIO_PIN_RESET);
+    CHECK(!app.charger_service_power_requested);
+    CHECK(app.charger_service_power_expires_tick == 0u);
+#endif
+
+    /* Repeated low is idempotent only after physical off proof. */
+    app.adbms_urgent_mute_requested = false;
+    app.adbms_mute_asserted = true;
+    app.adbms_balance_durable_zero_verified = true;
+    app.adbms_balance_write_fault = false;
+    app.adbms_balance_active = false;
+    uint32_t requests_before = app.adbms_urgent_mute_request_count;
+    set_bms(false);
+    CHECK(!app.adbms_urgent_mute_requested);
+    CHECK(app.adbms_urgent_mute_request_count == requests_before);
+    app.adbms_mute_asserted = false;
+    set_bms(false);
+    CHECK(app.adbms_urgent_mute_requested);
+    CHECK(app.adbms_urgent_mute_request_count == requests_before + 1u);
+    set_bms(false);
+    CHECK(app.adbms_urgent_mute_request_count == requests_before + 1u);
+    app.adbms_mute_asserted = true;
+    app.adbms_urgent_mute_requested = false;
+    app.adbms_balance_durable_zero_verified = false;
+    set_bms(false);
+    CHECK(app.adbms_urgent_mute_requested);
+    app.adbms_balance_durable_zero_verified = true;
+    app.adbms_urgent_mute_requested = false;
+    app.adbms_balance_write_fault = true;
+    app.adbms_urgent_mute_edge = false;
+    set_bms(false);
+    CHECK(app.adbms_urgent_mute_requested);
+    CHECK(!app.adbms_urgent_mute_edge);
+    app.adbms_balance_write_fault = false;
+    app.adbms_urgent_mute_requested = false;
+    app.adbms_balance_active = true;
+    uint32_t edge_generation = app.adbms_urgent_mute_generation;
+    set_bms(false);
+    CHECK(app.adbms_urgent_mute_requested);
+    CHECK(app.adbms_urgent_mute_edge);
+    CHECK(app.adbms_urgent_mute_generation == edge_generation + 1u);
+    app.adbms_balance_active = false;
+    app.adbms_urgent_mute_requested = false;
+    /* Simulate an asserted output before a fail-low edge in every profile. */
+    app.bms_state = true;
+    set_bms(false);
+    CHECK(app.adbms_urgent_mute_requested);
+    CHECK(fake_bms_pin == GPIO_PIN_RESET);
+    CHECK(fake_critical_depth == 0u);
+    CHECK(fake_critical_enter_count == fake_critical_exit_count);
+    fake_critical_enter_count = 0u;
+    fake_critical_exit_count = 0u;
+    fake_critical_max_depth = 0u;
+
     /* Output inhibit and panic remain higher-authority gates in profiles that
      * can otherwise assert. TESTDAY has already accumulated one additional
      * compile-lock block above, so use relative counters here. */
@@ -137,14 +200,22 @@ int main(void)
 #if AMS_PROFILE_BMS_RUNTIME_AUTHORITY_ALLOWED
     CHECK(fake_log_count >= 1u);
 #else
-    /* TESTDAY never physically asserted BMS_OK, so no asserted->dropped edge
-     * exists to log. The fail-low pin/state checks above are authoritative. */
-    CHECK(fake_log_count == 0u);
+    /* Only the simulated asserted-to-low regression edge is logged here. */
+    #if AMS_BUILD_PROFILE == AMS_PROFILE_CHARGE_REVIEW
+    CHECK(fake_log_count >= 2u); /* Additional forced-high service regression. */
+#else
+    CHECK(fake_log_count == 1u);
+#endif
 #endif
 
     /* Exercise the production heartbeat implementation, not the broad SIL
      * harness copy.  Every shared monitor mutation must be bracketed by a
      * balanced FreeRTOS critical section. */
+    CHECK(fake_critical_depth == 0u);
+    CHECK(fake_critical_enter_count == fake_critical_exit_count);
+    fake_critical_enter_count = 0u;
+    fake_critical_exit_count = 0u;
+    fake_critical_max_depth = 0u;
     ams_heartbeat_init(&heartbeat_app, 100u);
     ams_heartbeat_kick(&heartbeat_app, AMS_HEARTBEAT_ADBMS, 110u);
     ams_heartbeat_kick(&heartbeat_app, AMS_HEARTBEAT_CURRENT, 111u);
@@ -174,6 +245,8 @@ int main(void)
 
     #if AMS_BUILD_PROFILE == AMS_PROFILE_TESTDAY
     puts("PASS TESTDAY compile-locked BMS_OK writer and heartbeat critical-section enforcement");
+    #elif AMS_BUILD_PROFILE == AMS_PROFILE_CHARGE_REVIEW
+    puts("PASS CHARGE_REVIEW BMS_OK writer (runtime-armed) and heartbeat critical-section enforcement");
 #else
     puts("PASS BMS_OK ownership and heartbeat critical-section enforcement");
 #endif

@@ -875,6 +875,73 @@ bool current_sensor_calibration_confident(const current_sensor_t *dev)
             CURRENT_CAL_CONFIDENT_800A_UNCERTAINTY_MA);
 }
 
+#if AMS_CURRENT_PAIRED_START
+/* Owner mutex is held by the current task/calibration path. Start independent
+ * ADCs back-to-back, then wait against one total timeout. This reduces software
+ * skew; it is deliberately NOT advertised as simultaneous hardware sampling. */
+static bool current_sensor_read_pair(current_sensor_t *dev)
+{
+    bool high_started=false, low_started=false, ok=false;
+#if AMS_CURRENT_TIMER_TRIGGER
+    uint32_t high_trigger=0,low_trigger=0;
+    bool trigger_configured=false;
+#endif
+    uint16_t high=0, low=0;
+    dev->count_high_fresh=dev->count_low_fresh=dev->last_read_ok=false;
+    if(!dev->hadc_high || !dev->hadc_low || dev->hadc_high==dev->hadc_low ||
+       dev->hadc_high->Instance==dev->hadc_low->Instance) goto done;
+    if(stm32f767z_adc_switch_channel(dev->hadc_high,dev->channel_high)!=HAL_OK ||
+       stm32f767z_adc_switch_channel(dev->hadc_low,dev->channel_low)!=HAL_OK) goto done;
+#if AMS_CURRENT_TIMER_TRIGGER
+    /* TIM8 is reserved exclusively for an on-demand common ADC trigger.
+     * Do not reconfigure a timer already claimed by another subsystem. */
+    __HAL_RCC_TIM8_CLK_ENABLE();
+    if(TIM8->CR1 || TIM8->CR2 || TIM8->DIER || TIM8->CCER || TIM8->SMCR ||
+       TIM8->CCMR1 || TIM8->CCMR2 ||
+       ((dev->hadc_high->Instance->CR2|dev->hadc_low->Instance->CR2)&ADC_CR2_ADON)) goto done;
+    high_trigger=dev->hadc_high->Instance->CR2 & (ADC_CR2_EXTSEL|ADC_CR2_EXTEN);
+    low_trigger=dev->hadc_low->Instance->CR2 & (ADC_CR2_EXTSEL|ADC_CR2_EXTEN);
+    dev->hadc_high->Instance->CR2=(dev->hadc_high->Instance->CR2 & ~(ADC_CR2_EXTSEL|ADC_CR2_EXTEN)) |
+        ADC_EXTERNALTRIGCONV_T8_TRGO|ADC_EXTERNALTRIGCONVEDGE_RISING;
+    dev->hadc_low->Instance->CR2=(dev->hadc_low->Instance->CR2 & ~(ADC_CR2_EXTSEL|ADC_CR2_EXTEN)) |
+        ADC_EXTERNALTRIGCONV_T8_TRGO|ADC_EXTERNALTRIGCONVEDGE_RISING;
+    TIM8->CR2=TIM_CR2_MMS_1; /* update event -> TRGO, counter remains stopped */
+    trigger_configured=true;
+#endif
+    uint32_t start=HAL_GetTick();
+    high_started=true;
+    if(HAL_ADC_Start(dev->hadc_high)!=HAL_OK) goto done;
+    low_started=true;
+    if(HAL_ADC_Start(dev->hadc_low)!=HAL_OK) goto done;
+#if AMS_CURRENT_TIMER_TRIGGER
+    __DMB();TIM8->EGR=TIM_EGR_UG;__DMB();
+#endif
+    if(HAL_ADC_PollForConversion(dev->hadc_high,CURRENT_ADC_TIMEOUT_MS)!=HAL_OK) goto done;
+    high=(uint16_t)HAL_ADC_GetValue(dev->hadc_high);
+    uint32_t elapsed=HAL_GetTick()-start;
+    if(elapsed>=CURRENT_ADC_TIMEOUT_MS) goto done;
+    if(HAL_ADC_PollForConversion(dev->hadc_low,CURRENT_ADC_TIMEOUT_MS-elapsed)!=HAL_OK) goto done;
+    low=(uint16_t)HAL_ADC_GetValue(dev->hadc_low);
+    if((uint32_t)(HAL_GetTick()-start)>CURRENT_ADC_TIMEOUT_MS) goto done;
+    ok=true;
+done:
+    if(high_started && HAL_ADC_Stop(dev->hadc_high)!=HAL_OK) ok=false;
+    if(low_started && HAL_ADC_Stop(dev->hadc_low)!=HAL_OK) ok=false;
+#if AMS_CURRENT_TIMER_TRIGGER
+    if(trigger_configured) {
+        TIM8->CR2=0;TIM8->SR=0;
+        dev->hadc_high->Instance->CR2=(dev->hadc_high->Instance->CR2 & ~(ADC_CR2_EXTSEL|ADC_CR2_EXTEN))|high_trigger;
+        dev->hadc_low->Instance->CR2=(dev->hadc_low->Instance->CR2 & ~(ADC_CR2_EXTSEL|ADC_CR2_EXTEN))|low_trigger;
+    }
+#endif
+    if(ok) {
+        dev->count_high=high;dev->count_low=low;
+        dev->count_high_fresh=dev->count_low_fresh=dev->last_read_ok=true;
+    } else current_sensor_set_invalid(dev,CURRENT_SENSOR_REASON_ADC_READ);
+    return ok;
+}
+#endif
+
 bool current_sensor_read_adc(current_sensor_t *dev)
 {
     stm32f767z_adc_read_result_t high_result;
@@ -885,6 +952,9 @@ bool current_sensor_read_adc(current_sensor_t *dev)
         return false;
     }
 
+#if AMS_CURRENT_PAIRED_START
+    return current_sensor_read_pair(dev);
+#endif
     dev->count_high_fresh = false;
     dev->count_low_fresh = false;
     dev->last_read_ok = false;

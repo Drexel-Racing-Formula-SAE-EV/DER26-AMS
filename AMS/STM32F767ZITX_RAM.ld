@@ -44,13 +44,16 @@ _Min_Stack_Size = 0x400; /* required amount of stack */
 /* Memories definition */
 MEMORY
 {
-  RAM    (xrw)    : ORIGIN = 0x20000000,   LENGTH = 512K
+  SPI_DMA (xrw) : ORIGIN = 0x2007F000, LENGTH = 4K
+  RAM    (xrw)    : ORIGIN = 0x20000000,   LENGTH = 508K
   FLASH    (rx)    : ORIGIN = 0x8000000,   LENGTH = 2048K
 }
 
 /* Sections */
 SECTIONS
 {
+  .spi_dma (NOLOAD) : { . = ALIGN(32); *(.spi_dma) . = ALIGN(32); } >SPI_DMA
+  ASSERT(SIZEOF(.spi_dma) <= 4096, "SPI DMA bank overflow")
   /* The startup code into "RAM" Ram type memory */
   .isr_vector :
   {

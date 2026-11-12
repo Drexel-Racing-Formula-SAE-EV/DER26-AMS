@@ -8,4 +8,7 @@
  * parsing here, so a dummy definition is enough for the test harness.
  */
 struct _reent { int _ams_host_dummy; };
+extern struct _reent *_impure_ptr;
+#define _REENT_INIT_PTR(p) ((void)(p))
+void _reclaim_reent(struct _reent *p);
 #endif

@@ -1,0 +1,7 @@
+make: Entering directory '/workspace/scratch/43e64d7c85ca/work/ams-thermal-r11/host_tests'
+cc -std=c11 -Wall -Wextra -Werror -pedantic -I../Core/Inc unit/thermal_observer_test.c ../Core/Src/estimator/ams_thermal_observer.c -lm -o build/thermal_observer_test
+build/thermal_observer_test
+PASS thermal observer: faults, freshness, duplicates, rollover, Joseph PSD, equilibrium, independent plant max error 0.00072 C
+python3 tools/check_timing_stage3.py
+PASS target-branch native syntax: kernel/cache, driver/task/pipeline, UART DMA IRQs, paired ADC and AUX polling
+make: Leaving directory '/workspace/scratch/43e64d7c85ca/work/ams-thermal-r11/host_tests'

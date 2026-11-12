@@ -23,6 +23,8 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "app.h"
+#include "diagnostics/ams_perf.h"
+#include "ext_drivers/ams_spi6_transport.h"
 #include "ext_drivers/ams_safety.h"
 /* USER CODE END Includes */
 
@@ -169,10 +171,13 @@ void DebugMon_Handler(void)
   */
 void CAN1_TX_IRQHandler(void)
 {
+  ams_perf_irq_enter();
   /* TX-mailbox-empty notifications are enabled by canbus.c so the
    * asynchronous scheduler can retire mailbox tokens and pump the next
    * protected/detail frame without polling. */
   canbus_irq_handler(&hcan1);
+
+  ams_perf_irq_exit();
 }
 
 /**
@@ -180,6 +185,7 @@ void CAN1_TX_IRQHandler(void)
   */
 void CAN1_RX0_IRQHandler(void)
 {
+  ams_perf_irq_enter();
   /* USER CODE BEGIN CAN1_RX0_IRQn 0 */
 
   /* USER CODE END CAN1_RX0_IRQn 0 */
@@ -187,6 +193,8 @@ void CAN1_RX0_IRQHandler(void)
   /* USER CODE BEGIN CAN1_RX0_IRQn 1 */
 
   /* USER CODE END CAN1_RX0_IRQn 1 */
+
+  ams_perf_irq_exit();
 }
 
 /**
@@ -194,10 +202,13 @@ void CAN1_RX0_IRQHandler(void)
   */
 void CAN1_SCE_IRQHandler(void)
 {
+  ams_perf_irq_enter();
   /* Capture physical BOFF identity before HAL mutates/accumulates its sticky
    * ErrorCode. Generic error decoding and flag clearing still belong to HAL. */
   canbus_sce_irq_note(&hcan1);
   canbus_irq_handler(&hcan1);
+
+  ams_perf_irq_exit();
 }
 
 /**
@@ -205,6 +216,7 @@ void CAN1_SCE_IRQHandler(void)
   */
 void TIM2_IRQHandler(void)
 {
+  ams_perf_irq_enter();
   /* USER CODE BEGIN TIM2_IRQn 0 */
 
   /* USER CODE END TIM2_IRQn 0 */
@@ -212,6 +224,8 @@ void TIM2_IRQHandler(void)
   /* USER CODE BEGIN TIM2_IRQn 1 */
 
   /* USER CODE END TIM2_IRQn 1 */
+
+  ams_perf_irq_exit();
 }
 
 /**
@@ -219,6 +233,7 @@ void TIM2_IRQHandler(void)
   */
 void USART3_IRQHandler(void)
 {
+  ams_perf_irq_enter();
   /* USER CODE BEGIN USART3_IRQn 0 */
 
   /* USER CODE END USART3_IRQn 0 */
@@ -228,6 +243,8 @@ void USART3_IRQHandler(void)
   /* USER CODE BEGIN USART3_IRQn 1 */
 
   /* USER CODE END USART3_IRQn 1 */
+
+  ams_perf_irq_exit();
 }
 
 /**
@@ -235,6 +252,7 @@ void USART3_IRQHandler(void)
   */
 void TIM7_IRQHandler(void)
 {
+  ams_perf_irq_enter();
   /* USER CODE BEGIN TIM7_IRQn 0 */
 
   /* USER CODE END TIM7_IRQn 0 */
@@ -242,6 +260,8 @@ void TIM7_IRQHandler(void)
   /* USER CODE BEGIN TIM7_IRQn 1 */
 
   /* USER CODE END TIM7_IRQn 1 */
+
+  ams_perf_irq_exit();
 }
 
 /* USER CODE BEGIN 1 */
@@ -256,47 +276,41 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
         return;
     }
 
+#if AMS_CLI_UART_DMA
+    cli_uart_dma_rx_event(cli);
+    return;
+#endif
     c = cli->c;
 
-    if(cli->msg_pending)
-    {
-        /* Keep a completed command intact until the CLI task copies it. Bytes
-         * received meanwhile are intentionally dropped and counted. */
-        cli->index = 0u;
-        cli->rx_drop_count++;
-        (void)cli_uart_start_rx(cli);
-        return;
-    }
-
-    if((c == '\r') || (c == '\n'))
-    {
-        if(cli->index > 0u)
-        {
-            cli->line[cli->index] = '\0';
-            cli->index = 0u;
-            cli->msg_count++;
-            cli->msg_pending = true;
-        }
-    }
-    else if((c == '\b') || (c == 127u))
-    {
-        if(cli->index > 0u)
-        {
-            cli->index--;
-        }
-    }
-    else if(cli->index < (CLI_LINESZ - 1u))
-    {
-        cli->line[cli->index++] = (char)c;
-    }
-    else
-    {
-        cli->rx_drop_count++;
-    }
+    cli_rx_byte(cli,c);
 
     /* RX ISR only receives bytes and re-arms RX. All CLI output happens from
      * the CLI task through cli_printline(). */
     (void)cli_uart_start_rx(cli);
+}
+
+#if AMS_CLI_UART_DMA
+void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart,uint16_t size)
+{
+    (void)size;
+    cli_device_t *cli=&app.board.cli;
+    if(huart && cli->huart && huart==cli->huart) cli_uart_dma_rx_event(cli);
+}
+void DMA1_Stream1_IRQHandler(void)
+{
+    ams_perf_irq_enter();cli_uart_dma_irq(&app.board.cli);ams_perf_irq_exit();
+}
+void DMA1_Stream3_IRQHandler(void)
+{
+    ams_perf_irq_enter();cli_uart_dma_tx_irq(&app.board.cli);ams_perf_irq_exit();
+}
+#endif
+
+void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
+{
+    cli_device_t *cli=&app.board.cli;
+    if(huart && cli->huart && huart->Instance==cli->huart->Instance)
+        cli_uart_tx_complete(cli);
 }
 
 void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
@@ -310,16 +324,22 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
         return;
     }
 
+#if AMS_CLI_UART_DMA
+    /* HAL may already be aborting RX DMA asynchronously. Task service owns
+     * reinitialization; never start another DMA inside that error callback. */
+    cli->rx_dma_recover_pending=true;
+    cli->index=0;cli->rx_discard_line=true;
+    cli_uart_note_error(cli,HAL_UART_GetError(huart));
+    return;
+#endif
     error_code = HAL_UART_GetError(huart);
     cli_uart_note_error(cli, error_code);
 
     /* Preserve a completed pending command, but discard a partial command
      * because a framing/noise/overrun event may have corrupted it. */
-    if(cli->msg_pending == false)
-    {
-        cli->index = 0u;
-        cli->line[0] = '\0';
-    }
+    cli->index = 0u;
+    cli->line[0] = '\0';
+    cli->rx_discard_line = true;
 
     __HAL_UART_CLEAR_FLAG(huart,
                           UART_CLEAR_OREF | UART_CLEAR_NEF |
@@ -341,4 +361,16 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
     }
 }
 #endif /* AMS_ENABLE_CLI */
+
+#if AMS_ADBMS_SPI_DMA
+void DMA2_Stream5_IRQHandler(void) {
+  ams_perf_irq_enter(); ams_spi6_dma_irq(); 
+  ams_perf_irq_exit();
+}
+void DMA2_Stream6_IRQHandler(void) {
+  ams_perf_irq_enter(); ams_spi6_dma_irq(); 
+  ams_perf_irq_exit();
+}
+#endif
+
 /* USER CODE END 1 */

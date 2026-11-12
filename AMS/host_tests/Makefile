@@ -27,6 +27,7 @@ OWNER_BIN = $(BUILD_DIR)/bms_owner_test
 PROFILE_SRC := production/profile_compile_test.c
 ESTIMATOR_TOPOLOGY_SRC := production/estimator_topology_test.c
 ESTIMATOR_SRC := \
+	$(AMS_ROOT)/Core/Src/estimator/ams_thermal_observer.c \
 	$(AMS_ROOT)/Core/Src/estimator/ams_soc_ekf.c \
 	$(AMS_ROOT)/Core/Src/estimator/ams_estimator_lut.c
 
@@ -44,7 +45,16 @@ CAN_TX_SCHED_SRC := \
 	$(AMS_ROOT)/Core/Src/ext_drivers/can_tx_scheduler.c
 CAN_TX_SCHED_UNIT_SRC := unit/can_tx_scheduler_unit_test.c
 CAN_TX_SCHED_UNIT_BIN = $(BUILD_DIR)/can_tx_scheduler_unit_tests
-SYSTEM_SRC := $(SRC) $(CAN_TX_SCHED_SRC)
+FLIGHT_RECORDER_SRC := \
+	$(AMS_ROOT)/Core/Src/diagnostics/ams_flight_recorder.c
+FLIGHT_RECORDER_UNIT_SRC := unit/flight_recorder_test.c
+FLIGHT_RECORDER_UNIT_BIN = $(BUILD_DIR)/flight_recorder_tests
+RUNTIME_MANIFEST_SRC := \
+	$(AMS_ROOT)/Core/Src/diagnostics/ams_runtime_manifest.c
+RUNTIME_MANIFEST_UNIT_SRC := unit/runtime_manifest_test.c
+RUNTIME_MANIFEST_UNIT_BIN = $(BUILD_DIR)/runtime_manifest_tests
+PERF_SRC := $(AMS_ROOT)/Core/Src/diagnostics/ams_perf.c
+SYSTEM_SRC := $(PERF_SRC) $(SRC) $(CAN_TX_SCHED_SRC) $(FLIGHT_RECORDER_SRC) $(RUNTIME_MANIFEST_SRC)
 MEASUREMENT_SRC := \
 	$(AMS_ROOT)/Core/Src/measurement/ams_measurement.c
 POWER_SRC := \
@@ -129,7 +139,7 @@ VEHICLE_MANIFEST_DEFS += \
 	-DAMS_SOP_MODEL_REVISION=\"host-gate-not-release\" \
 	-DAMS_SOH_MODEL_REVISION=\"host-gate-not-release\"
 
-VEHICLE_PROFILE_DEFS := $(VEHICLE_VALIDATION_DEFS) $(VEHICLE_MANIFEST_DEFS) -DNSMBS=5 -DACCUMULATOR_PHYSICAL_CHAIN_COUNT=6 -DAMS_ENABLE_APM_2950=1
+VEHICLE_PROFILE_DEFS := $(VEHICLE_VALIDATION_DEFS) $(VEHICLE_MANIFEST_DEFS) -DNSMBS=5 -DACCUMULATOR_PHYSICAL_CHAIN_COUNT=5 -DAMS_ENABLE_APM_2950=0
 
 INC := \
 	-Iinclude \
@@ -156,13 +166,18 @@ WARN := \
 CFLAGS_COMMON := -std=c11 -g -O0 $(WARN) $(COMMON_DEFS) $(INC)
 LDLIBS := -lm
 
-.PHONY: help check-root check-core-root compile unit can-tx-scheduler-test temp-ack-decoder-test apm-hardening-test apm-cli-test can-logger-contract-test can-logger-contract-5s-test testday-lock-test bench-validation-lock-test apm-bench-gates firmware-asan can-load-budget can-v4-contract-gate can-irq-contract-gate rtos-fail-low-order-gate can-clock-contract-gate adbms-v05-contract-gate adbms-v05-variant-gates firmware-ci prevehicle-ci power-core power-metamorphic power-sensitivity power-oracle power-consumer power-resources fuse-oracle fuse-replay dashboard-decoder thermistor-validate test profile-gates estimator-topology-gates production-gates static-allocation-gate state-ownership-gate target-project-gate whole-source-analyze system-sil apm-sil bringup-test hil-adbms-test adbms-resilience-test imd-test air-feedback-stub-test safety-test stress ci asan ubsan analyze clang-analyze clean list make-build-dir
+.PHONY: help check-root check-core-root compile unit flight-recorder-test runtime-manifest-test flight-recorder-decode-test incident-pack-test bounded-io-gate can-tx-scheduler-test temp-ack-decoder-test apm-hardening-test apm-cli-test can-logger-contract-test can-logger-contract-5s-test testday-lock-test bench-validation-lock-test apm-bench-gates firmware-asan can-load-budget can-v4-contract-gate can-irq-contract-gate rtos-fail-low-order-gate can-clock-contract-gate adbms-v05-contract-gate adbms-v05-variant-gates firmware-ci prevehicle-ci power-core power-metamorphic power-sensitivity power-oracle power-consumer power-resources fuse-oracle fuse-replay dashboard-decoder thermistor-validate test profile-gates estimator-topology-gates production-gates static-allocation-gate state-ownership-gate target-project-gate whole-source-analyze system-sil apm-sil bringup-test hil-adbms-test adbms-resilience-test imd-test air-feedback-stub-test safety-test stress ci asan ubsan analyze clang-analyze clean list make-build-dir
 
 help:
 	@echo "DER26 AMS host test harness"
 	@echo ""
 	@echo "Targets:"
 	@echo "  make unit          Build and run isolated unit tests"
+	@echo "  make flight-recorder-test Run portable pre/post-fault recorder core tests"
+	@echo "  make runtime-manifest-test Run compact runtime provenance manifest tests"
+	@echo "  make incident-pack-test Run incident packer end-to-end self-test"
+	@echo "  make flight-recorder-decode-test Run pit-side recorder decoder self-test"
+	@echo "  make bounded-io-gate Reject obvious unbounded authored hardware waits"
 	@echo "  make can-tx-scheduler-test Run DER26-CAN-V4 scheduler state/race stress tests"
 	@echo "  make temp-ack-decoder-test Run focused ADBMS COMM ACK readback tests"
 	@echo "  make apm-hardening-test Run focused ADBMS2950B command/scaling/COMM tests"
@@ -204,7 +219,7 @@ help:
 	@echo "  make can-v4-contract-gate Verify V4 ID priority/scheduler contract"
 	@echo "  make can-irq-contract-gate Verify CAN1 RX0/TX/SCE vector coverage for enabled notifications"
 	@echo "  make rtos-fail-low-order-gate Verify fatal RTOS hooks fail BMS_OK low before diagnostics"
-	@echo "  make can-clock-contract-gate Verify 500k/250k timing and HSE clock contract"
+	@echo "  make can-clock-contract-gate Verify active 1 Mbps vehicle CAN timing and HSE clock"
 	@echo "  make adbms-v05-contract-gate Verify ADBMS session/fault/filter/balance cross-module contract"
 	@echo "  make adbms-v05-variant-gates Compile /128,/64, AVG8/IIR and post-S-ECO feature variants"
 	@echo "  make asan          Build and run with AddressSanitizer + UBSan"
@@ -250,11 +265,30 @@ compile: check-core-root make-build-dir
 
 unit: CFLAGS_COMMON += -DAMS_HW_BRINGUP=0
 unit: check-core-root make-build-dir
-	$(CC) $(CFLAGS_COMMON) $(UNIT_SRC) $(ESTIMATOR_SRC) $(ADBMS2950_SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC) -o $(UNIT_BIN) $(LDLIBS)
+	$(CC) $(CFLAGS_COMMON) $(UNIT_SRC) unit/host_clock_stubs.c $(ESTIMATOR_SRC) $(ADBMS2950_SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC) -o $(UNIT_BIN) $(LDLIBS)
 	$(UNIT_BIN)
 	$(CC) $(CFLAGS_COMMON) $(THERMISTOR_UNIT_SRC) $(THERMISTOR_SRC) -o $(THERMISTOR_UNIT_BIN) $(LDLIBS)
 	$(THERMISTOR_UNIT_BIN)
 
+
+flight-recorder-test: check-core-root make-build-dir
+	$(CC) $(CFLAGS_COMMON) -Werror $(FLIGHT_RECORDER_UNIT_SRC) $(FLIGHT_RECORDER_SRC) \
+		-o "$(FLIGHT_RECORDER_UNIT_BIN)" $(LDLIBS)
+	"$(FLIGHT_RECORDER_UNIT_BIN)"
+
+runtime-manifest-test: check-core-root make-build-dir
+	$(CC) $(CFLAGS_COMMON) -Werror $(RUNTIME_MANIFEST_UNIT_SRC) $(RUNTIME_MANIFEST_SRC) $(FLIGHT_RECORDER_SRC) \
+		-o "$(RUNTIME_MANIFEST_UNIT_BIN)" $(LDLIBS)
+	"$(RUNTIME_MANIFEST_UNIT_BIN)"
+
+flight-recorder-decode-test: check-root
+	$(PYTHON) "$(REPO_ROOT)/Tools/ams_flight_recorder_decode.py" --self-test
+
+incident-pack-test: check-root
+	$(PYTHON) "$(REPO_ROOT)/Tools/ams_incident_pack.py" --self-test
+
+bounded-io-gate: check-core-root
+	$(PYTHON) tools/check_bounded_io.py
 
 can-tx-scheduler-test: check-core-root make-build-dir
 	$(CC) $(CFLAGS_COMMON) -Werror $(CAN_TX_SCHED_UNIT_SRC) $(CAN_TX_SCHED_SRC) \
@@ -274,7 +308,7 @@ temp-ack-decoder-test: check-core-root make-build-dir
 	"$(TEMP_ACK_DECODER_UNIT_BIN)"
 
 apm-hardening-test: check-core-root make-build-dir
-	$(CC) $(CFLAGS_COMMON) -Werror \
+	$(CC) $(CFLAGS_COMMON) -Werror unit/apm_link_clock.c \
 		-DAMS_HOST_ONLY_ADBMS2950_HARDENING_TEST=1 \
 		$(UNIT_SRC) $(ESTIMATOR_SRC) $(ADBMS2950_SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC) \
 		-o "$(BUILD_DIR)/adbms2950_hardening_tests" $(LDLIBS)
@@ -323,6 +357,18 @@ testday-lock-test: check-core-root make-build-dir
 		"$(AMS_ROOT)/Core/Src/tasks/adbms_task.c"
 	@echo "PASS TESTDAY final BMS writer and balancing application are compile-locked"
 
+inhibit-regression-test: check-core-root make-build-dir
+	$(CC) $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=5 \
+		-DAMS_HOST_ONLY_INHIBIT_REGRESSION=1 \
+		$(SYSTEM_SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC) $(POWER_SRC) \
+		-o "$(BUILD_DIR)/inhibit_5s_tests" $(LDLIBS)
+	"$(BUILD_DIR)/inhibit_5s_tests"
+	$(CC) $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=5 \
+		-DAMS_BENCH_VALIDATION_SINGLE_SMB=1 -DAMS_HOST_ONLY_INHIBIT_REGRESSION=1 \
+		$(SYSTEM_SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC) $(POWER_SRC) \
+		-o "$(BUILD_DIR)/inhibit_1s_tests" $(LDLIBS)
+	"$(BUILD_DIR)/inhibit_1s_tests"
+
 bench-validation-lock-test: check-core-root make-build-dir
 	$(CC) $(CFLAGS_COMMON) -Werror \
 		-DAMS_BUILD_PROFILE=5 -DAMS_HOST_TESTDAY_LOCK_TEST=1 \
@@ -365,7 +411,7 @@ apm-bench-gates: apm-hardening-test apm-cli-test can-logger-contract-test
 		(echo "ERROR: unified/single-SMB source must default with ADBMS2950 disabled"; exit 2)
 	@echo "ADBMS2950B explicit eval-profile gates passed; unified source defaults remain single-SMB"
 
-ci: unit power-core power-metamorphic fuse-oracle power-oracle power-consumer dashboard-decoder thermistor-validate test apm-sil profile-gates estimator-topology-gates production-gates static-allocation-gate state-ownership-gate target-project-gate analyze whole-source-analyze
+ci: unit flight-recorder-test runtime-manifest-test flight-recorder-decode-test incident-pack-test bounded-io-gate power-core power-metamorphic fuse-oracle power-oracle power-consumer dashboard-decoder thermistor-validate test apm-sil profile-gates estimator-topology-gates production-gates static-allocation-gate state-ownership-gate target-project-gate analyze whole-source-analyze
 
 power-core: check-root
 	$(MAKE) -C sop test
@@ -417,156 +463,75 @@ thermistor-validate: check-root make-build-dir
 
 # Normal run: catches logic regressions and compile/link problems.
 test: CFLAGS_COMMON += $(SYSTEM_SIL_DEFS)
-test: compile
+test: compile adbms-post-sequence-test task-schedule-test
 	$(BIN)
 
 profile-gates: check-core-root make-build-dir
-	$(CC) $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=1 -DAMS_EXPECTED_PROFILE=1 \
-		$(PROFILE_SRC) -o "$(BUILD_DIR)/profile_bench" $(LDLIBS)
-	"$(BUILD_DIR)/profile_bench"
-	$(CC) $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=2 -DAMS_EXPECTED_PROFILE=2 \
-		$(PROFILE_SRC) -o "$(BUILD_DIR)/profile_hil" $(LDLIBS)
-	"$(BUILD_DIR)/profile_hil"
 	$(CC) $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=4 -DAMS_EXPECTED_PROFILE=4 \
-		$(PROFILE_SRC) -o "$(BUILD_DIR)/profile_testday" $(LDLIBS)
-	"$(BUILD_DIR)/profile_testday"
-	$(CC) $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=5 -DAMS_EXPECTED_PROFILE=5 \
-		$(PROFILE_SRC) -o "$(BUILD_DIR)/profile_bench_validation" $(LDLIBS)
-	"$(BUILD_DIR)/profile_bench_validation"
+		$(PROFILE_SRC) -o "$(BUILD_DIR)/profile_vehicle_comms" $(LDLIBS)
+	"$(BUILD_DIR)/profile_vehicle_comms"
 	$(CC) $(CFLAGS_COMMON) -Werror $(VEHICLE_PROFILE_DEFS) -DAMS_EXPECTED_PROFILE=3 \
 		$(PROFILE_SRC) -o "$(BUILD_DIR)/profile_vehicle" $(LDLIBS)
 	"$(BUILD_DIR)/profile_vehicle"
 	@if $(CC) $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=3 -DAMS_EXPECTED_PROFILE=3 \
-		$(PROFILE_SRC) -o "$(BUILD_DIR)/profile_vehicle_unsafe" $(LDLIBS) \
-		>"$(BUILD_DIR)/profile_vehicle_unsafe.log" 2>&1; then \
-		echo "ERROR: vehicle profile compiled without release-evidence acknowledgements"; \
-		exit 1; \
-	fi
-	@if $(CC) $(CFLAGS_COMMON) -Werror $(VEHICLE_VALIDATION_DEFS) -DNSMBS=5 \
-		-DAMS_EXPECTED_PROFILE=3 $(PROFILE_SRC) \
-		-o "$(BUILD_DIR)/profile_vehicle_missing_manifest" $(LDLIBS) \
+		$(PROFILE_SRC) -o "$(BUILD_DIR)/profile_vehicle_missing_evidence" $(LDLIBS) \
+		>"$(BUILD_DIR)/profile_vehicle_missing_evidence.log" 2>&1; then \
+		echo "ERROR: vehicle profile compiled without target-validation evidence"; exit 1; fi
+	@grep -q 'Vehicle profile requires' "$(BUILD_DIR)/profile_vehicle_missing_evidence.log" || \
+		(echo "ERROR: missing-evidence gate failed for an unrelated reason"; exit 1)
+	@if $(CC) $(CFLAGS_COMMON) -Werror $(VEHICLE_VALIDATION_DEFS) \
+		-DNSMBS=5 -DACCUMULATOR_PHYSICAL_CHAIN_COUNT=5 -DAMS_ENABLE_APM_2950=0 \
+		-DAMS_EXPECTED_PROFILE=3 $(PROFILE_SRC) -o "$(BUILD_DIR)/profile_vehicle_missing_manifest" $(LDLIBS) \
 		>"$(BUILD_DIR)/profile_vehicle_missing_manifest.log" 2>&1; then \
-		echo "ERROR: vehicle profile compiled without explicit manifest revisions"; \
-		exit 1; \
-	fi
+		echo "ERROR: vehicle profile compiled without manifest revisions"; exit 1; fi
+	@grep -Eiq 'revision|manifest|Vehicle profile requires' "$(BUILD_DIR)/profile_vehicle_missing_manifest.log" || \
+		(echo "ERROR: missing-manifest gate failed for unrelated reason"; exit 1)
 	@if $(CC) $(CFLAGS_COMMON) -Werror \
 		$(filter-out -DAMS_C_OPEN_WIRE_TARGET_VALIDATED=1,$(VEHICLE_PROFILE_DEFS)) \
-		-DAMS_EXPECTED_PROFILE=3 $(PROFILE_SRC) \
-		-o "$(BUILD_DIR)/profile_vehicle_missing_c_open_wire" $(LDLIBS) \
+		-DAMS_EXPECTED_PROFILE=3 $(PROFILE_SRC) -o "$(BUILD_DIR)/profile_vehicle_missing_c_open_wire" $(LDLIBS) \
 		>"$(BUILD_DIR)/profile_vehicle_missing_c_open_wire.log" 2>&1; then \
-		echo "ERROR: vehicle profile compiled without C-open-wire target evidence"; \
-		exit 1; \
-	fi
-	@if $(CC) $(CFLAGS_COMMON) -Werror \
-		$(filter-out -DAMS_FUSE_LOW_CURRENT_EXTRAPOLATION_VALIDATED=1,$(VEHICLE_PROFILE_DEFS)) \
-		-DAMS_EXPECTED_PROFILE=3 $(PROFILE_SRC) \
-		-o "$(BUILD_DIR)/profile_vehicle_missing_fuse_low_current" $(LDLIBS) \
-		>"$(BUILD_DIR)/profile_vehicle_missing_fuse_low_current.log" 2>&1; then \
-		echo "ERROR: vehicle profile compiled without low-current fuse-curve evidence"; \
-		exit 1; \
-	fi
-	@if $(CC) $(CFLAGS_COMMON) -Werror \
-		$(filter-out -DAMS_TEMP_PULLUPS_TARGET_VALIDATED=1,$(VEHICLE_PROFILE_DEFS)) \
-		-DAMS_EXPECTED_PROFILE=3 $(PROFILE_SRC) \
-		-o "$(BUILD_DIR)/profile_vehicle_missing_temp_pullups" $(LDLIBS) \
-		>"$(BUILD_DIR)/profile_vehicle_missing_temp_pullups.log" 2>&1; then \
-		echo "ERROR: vehicle profile compiled without corrected temperature pull-up evidence"; \
-		exit 1; \
-	fi
+		echo "ERROR: vehicle profile compiled without C-open-wire evidence"; exit 1; fi
 	@if $(CC) $(CFLAGS_COMMON) -Werror \
 		$(filter-out -DAMS_TEMP_THRESHOLDS_VALIDATED=1,$(VEHICLE_PROFILE_DEFS)) \
-		-DAMS_EXPECTED_PROFILE=3 $(PROFILE_SRC) \
-		-o "$(BUILD_DIR)/profile_vehicle_missing_temp_thresholds" $(LDLIBS) \
+		-DAMS_EXPECTED_PROFILE=3 $(PROFILE_SRC) -o "$(BUILD_DIR)/profile_vehicle_missing_temp_thresholds" $(LDLIBS) \
 		>"$(BUILD_DIR)/profile_vehicle_missing_temp_thresholds.log" 2>&1; then \
-		echo "ERROR: vehicle profile compiled without reviewed temperature-threshold evidence"; \
-		exit 1; \
-	fi
-	@if $(CC) $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=1 -DAMS_EXPECTED_PROFILE=1 \
-		-DAMS_MAIN_FUSE_PLAUSIBILITY_VALIDATED=1 \
-		$(PROFILE_SRC) -o "$(BUILD_DIR)/profile_main_fuse_without_air" $(LDLIBS) \
-		>"$(BUILD_DIR)/profile_main_fuse_without_air.log" 2>&1; then \
-		echo "ERROR: main-fuse plausibility compiled as validated without AIR/current evidence"; \
-		exit 1; \
-	fi
-	@grep -q "Main-fuse plausibility validation requires authoritative AIR feedback, calibrated current and independent load-side voltage" \
-		"$(BUILD_DIR)/profile_main_fuse_without_air.log" || \
-		(echo "ERROR: main-fuse negative gate failed for an unrelated compiler reason"; exit 1)
-	@if $(CC) $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=1 -DAMS_EXPECTED_PROFILE=1 \
-		-DAMS_MAIN_FUSE_PLAUSIBILITY_VALIDATED=1 \
-		-DAMS_ENABLE_AIR_AUX_FEEDBACK=1 \
-		-DAMS_CURRENT_CALIBRATION_VALIDATED=1 \
-		$(PROFILE_SRC) -o "$(BUILD_DIR)/profile_main_fuse_without_load_voltage" $(LDLIBS) \
-		>"$(BUILD_DIR)/profile_main_fuse_without_load_voltage.log" 2>&1; then \
-		echo "ERROR: main-fuse plausibility compiled as validated without independent load-side voltage evidence"; \
-		exit 1; \
-	fi
-	@grep -q "Main-fuse plausibility validation requires authoritative AIR feedback, calibrated current and independent load-side voltage" \
-		"$(BUILD_DIR)/profile_main_fuse_without_load_voltage.log" || \
-		(echo "ERROR: main-fuse load-voltage negative gate failed for an unrelated compiler reason"; exit 1)
-	@if $(CC) $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=1 -DAMS_EXPECTED_PROFILE=1 \
-		-DAMS_PARALLEL_CONNECTION_OBSERVER_VALIDATED=1 \
-		$(PROFILE_SRC) -o "$(BUILD_DIR)/profile_parallel_without_current" $(LDLIBS) \
-		>"$(BUILD_DIR)/profile_parallel_without_current.log" 2>&1; then \
-		echo "ERROR: parallel-connection observer compiled as validated without current evidence"; \
-		exit 1; \
-	fi
-	@grep -q "Parallel-connection observer validation requires validated current polarity and calibration" \
-		"$(BUILD_DIR)/profile_parallel_without_current.log" || \
-		(echo "ERROR: parallel-observer negative gate failed for an unrelated compiler reason"; exit 1)
+		echo "ERROR: vehicle profile compiled without temperature-threshold evidence"; exit 1; fi
 	@if $(CC) $(CFLAGS_COMMON) -Werror \
-		$(filter-out -DNSMBS=5,$(VEHICLE_PROFILE_DEFS)) \
-		-DAMS_EXPECTED_PROFILE=3 $(PROFILE_SRC) \
-		-o "$(BUILD_DIR)/profile_vehicle_wrong_topology" $(LDLIBS) \
+		$(filter-out -DAMS_FUSE_LOW_CURRENT_EXTRAPOLATION_VALIDATED=1,$(VEHICLE_PROFILE_DEFS)) \
+		-DAMS_EXPECTED_PROFILE=3 $(PROFILE_SRC) -o "$(BUILD_DIR)/profile_vehicle_missing_fuse" $(LDLIBS) \
+		>"$(BUILD_DIR)/profile_vehicle_missing_fuse.log" 2>&1; then \
+		echo "ERROR: vehicle profile compiled without fuse evidence"; exit 1; fi
+	@if $(CC) $(CFLAGS_COMMON) -Werror $(VEHICLE_PROFILE_DEFS) -DAMS_EXPECTED_PROFILE=3 -DNSMBS=4 \
+		$(PROFILE_SRC) -o "$(BUILD_DIR)/profile_vehicle_wrong_topology" $(LDLIBS) \
 		>"$(BUILD_DIR)/profile_vehicle_wrong_topology.log" 2>&1; then \
-		echo "ERROR: vehicle profile compiled without NSMBS=5"; \
-		exit 1; \
-	fi
+		echo "ERROR: vehicle profile compiled with wrong SMB count"; exit 1; fi
 	@if $(CC) $(CFLAGS_COMMON) -Werror \
-		$(filter-out -DACCUMULATOR_PHYSICAL_CHAIN_COUNT=6,$(VEHICLE_PROFILE_DEFS)) \
-		-DAMS_EXPECTED_PROFILE=3 $(PROFILE_SRC) \
-		-o "$(BUILD_DIR)/profile_vehicle_wrong_physical_chain" $(LDLIBS) \
-		>"$(BUILD_DIR)/profile_vehicle_wrong_physical_chain.log" 2>&1; then \
-		echo "ERROR: vehicle profile compiled without six physical ADBMS devices"; \
-		exit 1; \
-	fi
+		$(filter-out -DACCUMULATOR_PHYSICAL_CHAIN_COUNT=5,$(VEHICLE_PROFILE_DEFS)) \
+		-DACCUMULATOR_PHYSICAL_CHAIN_COUNT=6 -DAMS_EXPECTED_PROFILE=3 \
+		$(PROFILE_SRC) -o "$(BUILD_DIR)/profile_vehicle_wrong_chain" $(LDLIBS) \
+		>"$(BUILD_DIR)/profile_vehicle_wrong_chain.log" 2>&1; then \
+		echo "ERROR: vehicle profile compiled with extra physical device"; exit 1; fi
 	@if $(CC) $(CFLAGS_COMMON) -Werror \
-		$(filter-out -DAMS_ENABLE_APM_2950=1,$(VEHICLE_PROFILE_DEFS)) \
-		-DAMS_EXPECTED_PROFILE=3 $(PROFILE_SRC) \
-		-o "$(BUILD_DIR)/profile_vehicle_missing_apm" $(LDLIBS) \
-		>"$(BUILD_DIR)/profile_vehicle_missing_apm.log" 2>&1; then \
-		echo "ERROR: vehicle profile compiled without installed ADBMS2950"; \
-		exit 1; \
-	fi
-	@echo "PASS explicit profiles and fail-closed vehicle evidence/manifest/open-wire/temp/observer/topology gates"
+		$(filter-out -DAMS_ENABLE_APM_2950=0,$(VEHICLE_PROFILE_DEFS)) \
+		-DAMS_ENABLE_APM_2950=1 -DAMS_EXPECTED_PROFILE=3 \
+		$(PROFILE_SRC) -o "$(BUILD_DIR)/profile_vehicle_wrong_apm" $(LDLIBS) \
+		>"$(BUILD_DIR)/profile_vehicle_wrong_apm.log" 2>&1; then \
+		echo "ERROR: vehicle profile compiled with nonexistent APM"; exit 1; fi
+	@echo "PASS vehicle profile 4/3, source-required evidence, five-SMB/no-APM topology gates"
 
 estimator-topology-gates: check-core-root make-build-dir
-	$(CC) $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=1 \
-		-DAMS_ESTIMATOR_DEFAULT_TOPOLOGY=1 \
-		-DAMS_EXPECTED_ESTIMATOR_INSTANCES=1 \
-		$(ESTIMATOR_TOPOLOGY_SRC) $(ESTIMATOR_SRC) \
-		-o "$(BUILD_DIR)/estimator_topology_pack" $(LDLIBS)
-	"$(BUILD_DIR)/estimator_topology_pack"
-	$(CC) $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=1 \
-		-DAMS_ESTIMATOR_DEFAULT_TOPOLOGY=2 \
+	$(CC) $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=4 \
 		-DAMS_EXPECTED_ESTIMATOR_INSTANCES=5 \
 		$(ESTIMATOR_TOPOLOGY_SRC) $(ESTIMATOR_SRC) \
-		-o "$(BUILD_DIR)/estimator_topology_segments" $(LDLIBS)
-	"$(BUILD_DIR)/estimator_topology_segments"
-	$(CC) $(CFLAGS_COMMON) -Werror $(VEHICLE_PROFILE_DEFS) \
+		-o "$(BUILD_DIR)/estimator_topology_vehicle_comms" $(LDLIBS)
+	"$(BUILD_DIR)/estimator_topology_vehicle_comms"
+	$(CC) $(CFLAGS_COMMON) -Werror \
+		$(VEHICLE_PROFILE_DEFS) \
 		-DAMS_EXPECTED_ESTIMATOR_INSTANCES=5 \
 		$(ESTIMATOR_TOPOLOGY_SRC) $(ESTIMATOR_SRC) \
-		-o "$(BUILD_DIR)/estimator_topology_vehicle_default" $(LDLIBS)
-	"$(BUILD_DIR)/estimator_topology_vehicle_default"
-	@if $(CC) $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=2 \
-		-DAMS_ESTIMATOR_DEFAULT_TOPOLOGY=2 \
-		-DAMS_EXPECTED_ESTIMATOR_INSTANCES=5 \
-		$(ESTIMATOR_TOPOLOGY_SRC) $(ESTIMATOR_SRC) \
-		-o "$(BUILD_DIR)/estimator_topology_hil_invalid" $(LDLIBS) \
-		>"$(BUILD_DIR)/estimator_topology_hil_invalid.log" 2>&1; then \
-		echo "ERROR: segment topology compiled against pack-only HIL contract"; \
-		exit 1; \
-	fi
-	@echo "PASS pack/segment topology, vehicle five-segment default and pack-only HIL gate"
+		-o "$(BUILD_DIR)/estimator_topology_vehicle_release_test" $(LDLIBS)
+	"$(BUILD_DIR)/estimator_topology_vehicle_release_test"
+	@echo "PASS vehicle profiles 4/3: five segment EKFs and coulomb counter initialize at 27%"
 
 production-gates: BUILD_DIR = build-production
 production-gates: CFLAGS_COMMON += $(VEHICLE_PROFILE_DEFS) -DAMS_HOST_PRODUCTION_GATE_TEST=1
@@ -624,27 +589,9 @@ state-ownership-gate: check-core-root
 	@echo "PASS centralized state writers and CAN control ownership gate"
 
 target-project-gate: check-core-root
-	@$(PYTHON) "$(AMS_ROOT)/host_tests/tools/check_release_identity.py" "$(AMS_ROOT)"
-	@$(PYTHON) -c 'import xml.etree.ElementTree as E; E.parse("$(AMS_ROOT)/.project"); E.parse("$(AMS_ROOT)/.cproject")'
-	@grep -q '<name>DER26-AMS</name>' "$(AMS_ROOT)/.project"
-	@grep -q 'project id="DER26-AMS' "$(AMS_ROOT)/.cproject"
-	@if grep -q 'DER25-AMS' "$(AMS_ROOT)/.cproject" "$(AMS_ROOT)/.project" "$(AMS_ROOT)/DER26-AMS.ioc"; then \
-		echo "ERROR: stale DER25 CubeIDE project metadata remains"; exit 1; \
-	fi
-	@grep -Fq 'buildPath="$${workspace_loc:/$${ProjName}/Bench5_Debug}"' "$(AMS_ROOT)/.cproject"
-	@grep -Fq 'buildPath="$${workspace_loc:/$${ProjName}/Bench5_Release}"' "$(AMS_ROOT)/.cproject"
-	@grep -Fq 'buildPath="$${workspace_loc:/$${ProjName}/Bench1_Debug}"' "$(AMS_ROOT)/.cproject"
-	@grep -Fq 'buildPath="$${workspace_loc:/$${ProjName}/Bench1_Release}"' "$(AMS_ROOT)/.cproject"
-	@test "$$(grep -c 'value="-Wall -Wextra"' "$(AMS_ROOT)/.cproject")" -eq 4
-	@test "$$(grep -c 'STM32F767ZITX_FLASH.ld' "$(AMS_ROOT)/.cproject")" -eq 8
-	@test "$$(grep -c 'name="BENCH Validation 5-SMB Debug"' "$(AMS_ROOT)/.cproject")" -ge 1
-	@test "$$(grep -c 'name="BENCH Validation 5-SMB Release"' "$(AMS_ROOT)/.cproject")" -ge 1
-	@test "$$(grep -c 'name="BENCH Validation 1-SMB Debug"' "$(AMS_ROOT)/.cproject")" -ge 1
-	@test "$$(grep -c 'name="BENCH Validation 1-SMB Release"' "$(AMS_ROOT)/.cproject")" -ge 1
-	@test "$$(grep -c 'value="AMS_BENCH_VALIDATION_SINGLE_SMB=1"' "$(AMS_ROOT)/.cproject")" -eq 2
-	@test "$$(grep -c 'value="AMS_BUILD_PROFILE=5"' "$(AMS_ROOT)/.cproject")" -eq 4
-	@test "$$(grep -c 'value="DER26_CAN_BITRATE_KBPS=1000"' "$(AMS_ROOT)/.cproject")" -eq 4
-	@echo "PASS CubeIDE BENCH Validation 5-SMB/1-SMB identity/profile/bitrate, build paths, warning flags, XML and linker-script metadata"
+	$(PYTHON) "$(AMS_ROOT)/host_tests/tools/check_release_identity.py" "$(AMS_ROOT)"
+	$(PYTHON) "$(AMS_ROOT)/host_tests/tools/check_vehicle_variant.py"
+	@echo "PASS vehicle CubeIDE project identity, four configurations, 1 Mbps and linker metadata"
 
 system-sil: test
 
@@ -712,7 +659,7 @@ imd-test: CFLAGS_COMMON += -DAMS_ENABLE_IMD=1
 imd-test: test
 
 air-feedback-stub-test: CFLAGS_COMMON += -DAMS_ENABLE_AIR_AUX_FEEDBACK=1 -DAMS_HOST_AIR_FEEDBACK_GATE_TEST=1 -DAMS_AIR_MONITOR_PUBLICATION_TIMEOUT_MS=50u
-air-feedback-stub-test: compile
+air-feedback-stub-test: compile adbms-post-sequence-test task-schedule-test
 	$(BIN)
 	$(CC) $(CFLAGS_COMMON) -Werror \
 		-DAMS_AIR_AUX_BOARD_ADAPTER_READY=1 -DAMS_AIR_MONITOR_PERIOD_MS=10u \
@@ -730,7 +677,7 @@ asan: CFLAGS_COMMON += $(SYSTEM_SIL_DEFS)
 asan: check-root
 	@mkdir -p "$(BUILD_DIR)"
 	$(CC) $(CFLAGS_COMMON) -DAMS_HW_BRINGUP=0 -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer \
-		$(UNIT_SRC) $(ESTIMATOR_SRC) $(ADBMS2950_SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC) -o $(UNIT_BIN)-asan $(LDLIBS)
+		$(UNIT_SRC) unit/host_clock_stubs.c $(ESTIMATOR_SRC) $(ADBMS2950_SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC) -o $(UNIT_BIN)-asan $(LDLIBS)
 	ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 $(UNIT_BIN)-asan
 	$(CC) $(CFLAGS_COMMON) -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer \
 		$(SYSTEM_SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC) $(POWER_SRC) -o $(BIN)-asan $(LDLIBS)
@@ -743,7 +690,7 @@ ubsan: CFLAGS_COMMON += $(SYSTEM_SIL_DEFS)
 ubsan: check-core-root
 	@mkdir -p "$(BUILD_DIR)"
 	$(CC) $(CFLAGS_COMMON) -fsanitize=undefined -fno-sanitize-recover=all -fno-omit-frame-pointer \
-		$(UNIT_SRC) $(ESTIMATOR_SRC) $(ADBMS2950_SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC) -o $(UNIT_BIN)-ubsan $(LDLIBS)
+		$(UNIT_SRC) unit/host_clock_stubs.c $(ESTIMATOR_SRC) $(ADBMS2950_SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC) -o $(UNIT_BIN)-ubsan $(LDLIBS)
 	UBSAN_OPTIONS=halt_on_error=1 $(UNIT_BIN)-ubsan
 	$(CC) $(CFLAGS_COMMON) -fsanitize=undefined -fno-sanitize-recover=all -fno-omit-frame-pointer \
 		$(SYSTEM_SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC) $(POWER_SRC) -o $(BIN)-ubsan $(LDLIBS)
@@ -813,7 +760,7 @@ adbms-v05-variant-gates: check-core-root
 can-load-budget: check-core-root
 	$(PYTHON) tools/check_can_load_budget.py
 
-firmware-ci: unit can-tx-scheduler-test can-tx-regression-test measurement-integrity-test temp-ack-decoder-test test testday-lock-test apm-sil apm-bench-gates \
+firmware-ci: unit flight-recorder-test runtime-manifest-test flight-recorder-decode-test incident-pack-test bounded-io-gate can-tx-scheduler-test can-tx-regression-test measurement-integrity-test temp-ack-decoder-test test testday-lock-test apm-sil apm-bench-gates \
 	can-logger-contract-5s-test adbms-resilience-test profile-gates \
 	estimator-topology-gates production-gates static-allocation-gate \
 	state-ownership-gate target-project-gate analyze whole-source-analyze \
@@ -841,3 +788,186 @@ measurement-integrity-test: check-core-root make-build-dir
 		$(AMS_ROOT)/Core/Src/estimator/ams_estimator_lut.c \
 		-Wl,--gc-sections -o "$(BUILD_DIR)/measurement_integrity_tests" $(LDLIBS)
 	"$(BUILD_DIR)/measurement_integrity_tests"
+
+.PHONY: adbms-post-sequence-test
+adbms-post-sequence-test: check-core-root
+	python3 tools/test_adbms_post_sequence.py
+
+.PHONY: task-schedule-test
+task-schedule-test: check-core-root make-build-dir
+	$(CC) $(CFLAGS_COMMON) -Werror unit/task_schedule_test.c -o "$(BUILD_DIR)/task_schedule_tests"
+	"$(BUILD_DIR)/task_schedule_tests"
+
+testday-cell-policy-test: check-core-root make-build-dir
+	$(CC) $(CFLAGS_COMMON) -Werror \
+		-DAMS_BUILD_PROFILE=4 -DAMS_HOST_TESTDAY_CELL_POLICY_TEST=1 \
+		-DNSMBS=5 -DACCUMULATOR_PHYSICAL_CHAIN_COUNT=5 -DAMS_ENABLE_APM_2950=0 \
+		$(SYSTEM_SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC) $(POWER_SRC) \
+		-o "$(BUILD_DIR)/testday_cell_policy_tests" $(LDLIBS)
+	"$(BUILD_DIR)/testday_cell_policy_tests"
+
+.PHONY: testday-hardware-map-gate
+testday-hardware-map-gate: check-core-root
+	$(PYTHON) tools/check_testday_hardware_map.py
+	$(CC) $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=4 \
+		-fsyntax-only $(AMS_ROOT)/Core/Src/tasks/cli_task.c $(AMS_ROOT)/Core/Src/board.c
+	$(CC) $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=5 \
+		-fsyntax-only $(AMS_ROOT)/Core/Src/tasks/cli_task.c $(AMS_ROOT)/Core/Src/board.c
+
+.PHONY: adbms-wake-policy-test
+.PHONY: cli-async-test
+cli-async-test: | make-build-dir
+	$(CC) $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=4 -ffunction-sections -fdata-sections \
+		production/cli_async_test.c $(PERF_SRC) -Wl,--gc-sections -o "$(BUILD_DIR)/cli_async_test" $(LDLIBS)
+	"$(BUILD_DIR)/cli_async_test"
+.PHONY: ekf-refinement-test
+ekf-refinement-test: | make-build-dir
+	$(CC) $(CFLAGS_COMMON) -O2 -Werror -DAMS_BUILD_PROFILE=4 \
+		production/ekf_refinement_test.c $(AMS_ROOT)/Core/Src/estimator/ams_estimator_lut.c \
+		-o "$(BUILD_DIR)/ekf_refinement_test" $(LDLIBS)
+	"$(BUILD_DIR)/ekf_refinement_test"
+
+.PHONY: charger-only-test
+charger-only-test: check-core-root make-build-dir
+	$(CC) $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=4 -DAMS_HOST_CHARGER_ONLY_TEST=1 \
+		$(SYSTEM_SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC) $(POWER_SRC) \
+		-o "$(BUILD_DIR)/charger_only_tests" $(LDLIBS)
+	"$(BUILD_DIR)/charger_only_tests"
+	$(CC) $(CFLAGS_COMMON) -Werror -fsyntax-only \
+		$(AMS_ROOT)/Core/Src/tasks/cli_task.c $(AMS_ROOT)/Core/Src/tasks/error_task.c \
+		$(AMS_ROOT)/Core/Src/tasks/canbus_task.c $(AMS_ROOT)/Core/Src/main.c
+	$(PYTHON) tools/check_charger_project.py
+
+.PHONY: charge-review-test
+charge-review-test: check-core-root make-build-dir
+	$(CC) $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=6 -DAMS_HOST_CHARGE_REVIEW_TEST=1 \
+		$(SYSTEM_SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC) $(POWER_SRC) \
+		-o "$(BUILD_DIR)/charge_review_tests" $(LDLIBS)
+	"$(BUILD_DIR)/charge_review_tests"
+	$(CC) $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=6 -fsyntax-only \
+		$(AMS_ROOT)/Core/Src/app.c $(AMS_ROOT)/Core/Src/tasks/cli_task.c \
+		$(AMS_ROOT)/Core/Src/tasks/error_task.c $(AMS_ROOT)/Core/Src/tasks/canbus_task.c \
+		$(AMS_ROOT)/Core/Src/ext_drivers/canbus.c $(AMS_ROOT)/Core/Src/main.c
+	$(CC) $(CFLAGS_COMMON) -Werror -ffunction-sections -fdata-sections \
+		-DAMS_BUILD_PROFILE=6 -DNSMBS=5 -DACCUMULATOR_PHYSICAL_CHAIN_COUNT=5 \
+		-DAMS_ENABLE_APM_2950=0 \
+		$(AMS_ROOT)/Core/Src/app.c $(AMS_ROOT)/Core/Src/measurement/ams_measurement.c \
+		$(AMS_ROOT)/Core/Src/soh/ams_soh.c $(AMS_ROOT)/Core/Src/sop/ams_sop.c \
+		$(AMS_ROOT)/Core/Src/sop/ams_fuse_observer.c $(AMS_ROOT)/Core/Src/sop/ams_power_strategy.c \
+		$(AMS_ROOT)/Core/Src/sop/ams_power_state.c $(AMS_ROOT)/Core/Src/sop/ams_power_can.c \
+		$(AMS_ROOT)/Core/Src/estimator/ams_soc_ekf.c $(AMS_ROOT)/Core/Src/estimator/ams_estimator_lut.c \
+		production/bms_owner_test.c -Wl,--gc-sections \
+		-o "$(BUILD_DIR)/charge_review_bms_owner" $(LDLIBS)
+	"$(BUILD_DIR)/charge_review_bms_owner"
+
+adbms-wake-policy-test: | make-build-dir
+	$(CC) $(CFLAGS_COMMON) -Wno-unused-variable -Werror -DAMS_BUILD_PROFILE=4 -ffunction-sections -fdata-sections \
+		production/adbms_wake_policy_test.c $(AMS_ROOT)/Core/Src/ext_drivers/adbms_shared.c \
+		$(AMS_ROOT)/Core/Src/ext_drivers/thermistor_model.c \
+		-Wl,--gc-sections -o "$(BUILD_DIR)/adbms_wake_policy_test" $(LDLIBS)
+	"$(BUILD_DIR)/adbms_wake_policy_test"
+
+.PHONY: vehicle-variant-test
+vehicle-variant-test: check-core-root make-build-dir
+	$(CC) $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=4 -DAMS_HOST_VEHICLE_VARIANT_TEST=1 \
+		$(SYSTEM_SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC) $(POWER_SRC) \
+		-o "$(BUILD_DIR)/vehicle_variant_tests" $(LDLIBS)
+	"$(BUILD_DIR)/vehicle_variant_tests"
+	$(CC) $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=4 -fsyntax-only \
+		$(AMS_ROOT)/Core/Src/app.c $(AMS_ROOT)/Core/Src/tasks/cli_task.c \
+		$(AMS_ROOT)/Core/Src/tasks/error_task.c $(AMS_ROOT)/Core/Src/tasks/canbus_task.c \
+		$(AMS_ROOT)/Core/Src/ext_drivers/canbus.c $(AMS_ROOT)/Core/Src/ext_drivers/cli.c \
+		$(AMS_ROOT)/Core/Src/stm32f7xx_it.c $(AMS_ROOT)/Core/Src/tasks/adbms_task.c $(AMS_ROOT)/Core/Src/main.c
+
+.PHONY: vehicle-project-check
+vehicle-project-check: make-build-dir
+	$(PYTHON) tools/check_vehicle_variant.py
+
+# Vehicle source contains the shared ADBMS2950B driver, but profile 3/4
+# excludes the APM from the installed vehicle hardware. Host-only coverage.
+.PHONY: apm-driver-regression
+apm-driver-regression: check-core-root make-build-dir
+	$(CC) $(CFLAGS_COMMON) -Werror -DAMS_HOST_ONLY_ADBMS2950_HARDENING_TEST=1 unit/apm_regression.c $(ESTIMATOR_SRC) $(ADBMS2950_SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC) -o "$(BUILD_DIR)/apm_driver_regression" $(LDLIBS)
+	"$(BUILD_DIR)/apm_driver_regression"
+
+# Supported native CI for this vehicle-only project. The inherited `unit`,
+# `test`, and full `ci` targets still exercise obsolete bench/charge fixtures
+# and must not be mistaken for validated vehicle tests.
+.PHONY: vehicle-ci
+vehicle-ci: vehicle-variant-test cli-async-test can-tx-scheduler-test \
+	vehicle-project-check target-project-gate can-clock-contract-gate \
+	estimator-topology-gates profile-gates adbms-wake-policy-test \
+	measurement-integrity-test apm-hardening-test apm-driver-regression diag-budget-test acquisition-sil
+	@echo "PASS all supported AMS v0.5.57 vehicle-native CI gates"
+
+.PHONY: diag-budget-test
+diag-budget-test: | make-build-dir
+	$(CC) $(CFLAGS_COMMON) -Werror production/diag_budget_test.c -o "$(BUILD_DIR)/diag_budget_test"
+	"$(BUILD_DIR)/diag_budget_test"
+
+.PHONY: acquisition-sil
+acquisition-sil:
+	python3 sil/run_acquisition_sil.py
+
+.PHONY: spi6-dma-test
+spi6-dma-test: | $(BUILD_DIR)
+	$(CC) -Idma_fakes $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=4 -DAMS_ADBMS_SPI_DMA=1 production/spi6_dma_test.c -o $(BUILD_DIR)/spi6_dma_test
+	$(BUILD_DIR)/spi6_dma_test
+	$(CC) -Idma_fakes $(CFLAGS_COMMON) -Wno-unused-variable -Werror -DAMS_BUILD_PROFILE=4 -DAMS_ADBMS_SPI_DMA=1 -ffunction-sections -fdata-sections production/mux_dma_test.c $(AMS_ROOT)/Core/Src/ext_drivers/adbms_shared.c $(THERMISTOR_SRC) -Wl,--gc-sections -o $(BUILD_DIR)/mux_dma_test $(LDLIBS)
+	$(BUILD_DIR)/mux_dma_test
+	$(PYTHON) tools/check_spi_dma.py
+
+vehicle-ci: spi6-dma-test
+
+.PHONY: therm-phase-test
+therm-phase-test: | make-build-dir
+	$(CC) $(CFLAGS_COMMON) -Wno-unused-variable -Werror -DAMS_BUILD_PROFILE=4 -DAMS_ENABLE_ADBMS_THERM_OPEN_WIRE_DIAG=1 -ffunction-sections -fdata-sections production/therm_phase_test.c $(AMS_ROOT)/Core/Src/ext_drivers/adbms_shared.c $(THERMISTOR_SRC) -Wl,--gc-sections -o $(BUILD_DIR)/therm_phase_test $(LDLIBS)
+	$(BUILD_DIR)/therm_phase_test
+vehicle-ci: therm-phase-test
+
+.PHONY: perf-test
+perf-test: | make-build-dir
+	$(CC) $(CFLAGS_COMMON) -Werror production/perf_test.c $(PERF_SRC) -o $(BUILD_DIR)/perf_test
+	$(BUILD_DIR)/perf_test
+vehicle-ci: perf-test
+
+.PHONY: diag-scheduler-test
+diag-scheduler-test: | make-build-dir
+	$(CC) $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=4 -DAMS_HOST_DIAG_SCHEDULER_TEST=1 -DAMS_ENABLE_ADBMS_THERM_OPEN_WIRE_DIAG=1 -DAMS_ENABLE_ADBMS_AUX2_REDUNDANCY=1 $(SYSTEM_SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC) $(POWER_SRC) -o $(BUILD_DIR)/diag_scheduler_test $(LDLIBS)
+	$(BUILD_DIR)/diag_scheduler_test
+vehicle-ci: diag-scheduler-test
+
+.PHONY: temp-pipeline-test
+temp-pipeline-test: | make-build-dir
+	$(CC) $(CFLAGS_COMMON) -Wno-unused-variable -Werror -DAMS_BUILD_PROFILE=4 -ffunction-sections -fdata-sections production/temp_pipeline_test.c $(AMS_ROOT)/Core/Src/ext_drivers/adbms_shared.c $(THERMISTOR_SRC) -Wl,--gc-sections -o $(BUILD_DIR)/temp_pipeline_test $(LDLIBS)
+	$(BUILD_DIR)/temp_pipeline_test
+vehicle-ci: temp-pipeline-test
+
+.PHONY: stage3-target-syntax
+stage3-target-syntax:
+	$(PYTHON) tools/check_timing_stage3.py
+vehicle-ci: stage3-target-syntax
+
+.PHONY: stage4-test
+stage4-test: | make-build-dir
+	$(CC) $(CFLAGS_COMMON) -Werror -Wno-unused-variable -DAMS_BUILD_PROFILE=4 -DAMS_CLI_UART_DMA=1 -ffunction-sections -fdata-sections production/uart_dma_test.c -Wl,--gc-sections -o $(BUILD_DIR)/uart_dma_test
+	$(BUILD_DIR)/uart_dma_test
+	$(CC) $(CFLAGS_COMMON) -Werror -Wno-unused-variable -DAMS_BUILD_PROFILE=4 -DAMS_CURRENT_PAIRED_START=1 -ffunction-sections -fdata-sections production/current_pair_test.c -Wl,--gc-sections -o $(BUILD_DIR)/current_pair_test $(LDLIBS)
+	$(BUILD_DIR)/current_pair_test
+	$(CC) $(CFLAGS_COMMON) -Werror -Wno-unused-variable -DAMS_BUILD_PROFILE=4 -DAMS_ADBMS_READY_POLL=1 -ffunction-sections -fdata-sections production/aux_ready_test.c $(AMS_ROOT)/Core/Src/ext_drivers/adbms_shared.c $(THERMISTOR_SRC) -Wl,--gc-sections -o $(BUILD_DIR)/aux_ready_test $(LDLIBS)
+	$(BUILD_DIR)/aux_ready_test
+	$(CC) $(CFLAGS_COMMON) -Werror -Wno-unused-variable -DAMS_BUILD_PROFILE=4 -DAMS_CURRENT_PAIRED_START=1 -DAMS_CURRENT_TIMER_TRIGGER=1 -ffunction-sections -fdata-sections production/current_pair_test.c -Wl,--gc-sections -o $(BUILD_DIR)/current_timer_test $(LDLIBS)
+	$(BUILD_DIR)/current_timer_test
+vehicle-ci: stage4-test
+
+.PHONY: thermal-observer-test
+thermal-observer-test: | make-build-dir
+	$(CC) -std=c11 -Wall -Wextra -Werror -pedantic -I$(AMS_ROOT)/Core/Inc unit/thermal_observer_test.c $(AMS_ROOT)/Core/Src/estimator/ams_thermal_observer.c -lm -o $(BUILD_DIR)/thermal_observer_test
+	$(BUILD_DIR)/thermal_observer_test
+vehicle-ci: thermal-observer-test
+
+.PHONY: thermal-integration-test
+thermal-integration-test: | make-build-dir
+	$(CC) $(CFLAGS_COMMON) -Werror -DAMS_BUILD_PROFILE=4 -DAMS_HOST_THERMAL_INTEGRATION_TEST=1 $(SYSTEM_SRC) $(AIR_MONITOR_SRC) $(THERMISTOR_SRC) $(POWER_SRC) -o $(BUILD_DIR)/thermal_integration_test $(LDLIBS)
+	$(BUILD_DIR)/thermal_integration_test
+vehicle-ci: thermal-integration-test

@@ -34,7 +34,11 @@ extern "C" {
 #define AMS_EKF_CELL_CAPACITY_AH    4.2f
 #define AMS_EKF_DEFAULT_DT_S        0.1f
 
-#define AMS_EKF_DEFAULT_SOC_INIT    1.0f
+/* Temporary 27% startup prior from the earlier roughly 3.55 V/cell
+ * rested-OCV estimate (Molicel P42A, near 25 C). Applies to both vehicle
+ * configurations, including the five segment EKFs and the coulomb counter.
+ * This is not a present measurement or a persisted SoC. */
+#define AMS_EKF_DEFAULT_SOC_INIT    0.27f
 #define AMS_EKF_DEFAULT_R0_INIT_OHM 0.0147f
 
 #define AMS_HIL_CAN_ID_MEAS         0x200U
@@ -484,6 +488,9 @@ void ams_resistance_soh_record(ams_resistance_soh_t *soh,
 void ams_estimator_init_default(ams_estimator_t *est);
 bool ams_estimator_configure_pack(ams_estimator_t *est);
 bool ams_estimator_configure_segments(ams_estimator_t *est);
+/* Core experiments only: 2 groups/SMB, respecting TESTDAY missing C1.
+ * Live five-segment SoP/tuning contracts are not extended by this API. */
+bool ams_estimator_configure_subsegments(ams_estimator_t *est);
 bool ams_estimator_configure_even_split(ams_estimator_t *est, uint8_t instance_count);
 void ams_estimator_cc_reset(ams_estimator_t *est, float soc_init);
 bool ams_estimator_cc_step(ams_estimator_t *est, float i_pack_A, float dt_s);

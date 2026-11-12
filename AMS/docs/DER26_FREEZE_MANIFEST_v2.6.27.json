@@ -1,0 +1,25 @@
+{
+  "package": "v2.6.27",
+  "firmware": "0.5.30",
+  "revision": "DER26-AMS-v0.5.30-20260906",
+  "source_input_tree_sha256": "b5b2f7413825366d2b681f75a1d092be4b590af71ed383db73066e0cad6e0b90",
+  "freertos_source_tree_sha256": "4393c390c3939c1ce11c713c9b862ec1b27cd9a3448e73a7a48c9c11dbdc3824",
+  "profile": "baseline source package; host gates exercised in BENCH/vehicle compile variants",
+  "host_required_gates": "PASS",
+  "required_gates": [
+    "can-tx-regression-test",
+    "can-tx-scheduler-test",
+    "safety-test",
+    "test",
+    "measurement-integrity-test",
+    "profile-gates",
+    "review-fixes-test",
+    "can-v4-contract-gate",
+    "can-irq-contract-gate",
+    "can-clock-contract-gate",
+    "adbms-v05-contract-gate",
+    "whole-source-analyze"
+  ],
+  "arm_target_build": "not run in this environment",
+  "freeze_date": "2026-09-17"
+}

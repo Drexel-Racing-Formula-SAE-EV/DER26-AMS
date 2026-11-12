@@ -1,0 +1,223 @@
+--- Core/Inc/ams_build_profile.h
++++ Core/Inc/ams_build_profile.h
+@@ -911,4 +911,13 @@
+ #error "AMS_ADBMS_SCAN_HZ must be between 1 and 1000 Hz"
+ #endif
+ 
++
++/* Independent opt-in benchmark. Never enable D-cache implicitly. */
++#ifndef AMS_BENCHMARK_ICACHE
++#define AMS_BENCHMARK_ICACHE 0
++#endif
++#if (AMS_BENCHMARK_ICACHE != 0) && (AMS_BENCHMARK_ICACHE != 1)
++#error "AMS_BENCHMARK_ICACHE must be 0 or 1"
++#endif
++
+ #endif /* INC_AMS_BUILD_PROFILE_H_ */
+--- Core/Inc/ams_version.h
++++ Core/Inc/ams_version.h
+@@ -11,7 +11,7 @@
+ #define AMS_VERSION_STRING AMS_VERSION_STRINGIFY(AMS_VERSION_MAJOR) "." \
+     AMS_VERSION_STRINGIFY(AMS_VERSION_MINOR) "." AMS_VERSION_STRINGIFY(AMS_VERSION_PATCH)
+ #ifndef AMS_SOURCE_REVISION
+-#define AMS_SOURCE_REVISION "DER26-AMS-v" AMS_VERSION_STRING "-" AMS_RELEASE_DATE
++#define AMS_SOURCE_REVISION "DER26-AMS-v" AMS_VERSION_STRING "-timing-stage1-" AMS_RELEASE_DATE
+ #endif
+ 
+ /* GCC honors SOURCE_DATE_EPOCH for these built-ins. IDE builds without it
+--- Core/Inc/app.h
++++ Core/Inc/app.h
+@@ -843,6 +843,9 @@
+ 	uint32_t adbms_urgent_mute_request_count;
+ 	uint32_t adbms_urgent_mute_service_count;
+ 	uint32_t adbms_urgent_mute_fail_count;
++    uint32_t adbms_aux2_attempt_tick[24], adbms_aux2_success_tick[24];
++    uint32_t adbms_therm_attempt_tick[24], adbms_therm_success_tick[24];
++    uint32_t adbms_aux2_completed_mask, adbms_therm_completed_mask;
+ 	uint32_t adbms_aux2_diag_count;
+ 	uint32_t adbms_aux2_diag_fail_count;
+ 	uint32_t adbms_aux2_next_due_tick;
+--- Core/Inc/ext_drivers/adbms6830_data.h
++++ Core/Inc/ext_drivers/adbms6830_data.h
+@@ -610,6 +610,12 @@
+ typedef HAL_StatusTypeDef (*adbms6830_cooperative_wait_fn_t)(void *ctx, uint32_t wait_us);
+ typedef uint32_t (*adbms6830_time_us_fn_t)(void *ctx);
+ 
++typedef struct {
++  uint32_t start_us, end_us;
++  uint16_t bytes;
++  uint8_t status, coherent;
++} adbms6830_frame_trace_t;
++
+ typedef struct
+ {
+   bool active;
+@@ -621,6 +627,8 @@
+   uint32_t max_gap_us;
+   uint32_t last_duration_us;
+   uint32_t max_duration_us;
++  uint32_t frame_trace_sequence;
++  adbms6830_frame_trace_t frame_trace[32];
+   uint32_t session_count;
+   uint32_t full_wake_count;
+   uint32_t cold_wake_count;
+--- Core/Src/ext_drivers/adbms6830.c
++++ Core/Src/ext_drivers/adbms6830.c
+@@ -4277,6 +4277,21 @@
+ 	}
+ }
+ 
++/* Owner-only bounded binary ring, readable through SWD; no UART/ISR work.
++ * end_us is software observation, NOT proof of last physical SCK activity. */
++static void adbms6830_trace_frame(adbms6830_driver_t *dev, uint32_t start,
++                                  HAL_StatusTypeDef status, uint16_t bytes)
++{
++    uint32_t seq = dev->session.frame_trace_sequence;
++    adbms6830_frame_trace_t *event = &dev->session.frame_trace[seq % 32u];
++    event->start_us = start;
++    event->end_us = adbms6830_runtime_time_us(dev);
++    event->bytes = bytes;
++    event->status = (uint8_t)status;
++    event->coherent = dev->session.coherent_snapshot_active;
++    dev->session.frame_trace_sequence = seq + 1u;
++}
++
+ HAL_StatusTypeDef adbms6830_spi_write(adbms6830_driver_t* dev,
+                                          uint8_t* data,
+                                          uint16_t len,
+@@ -4290,9 +4305,9 @@
+         return HAL_ERROR;
+     }
+ 
++    adbms_spi_lock();
+     adbms6830_spi_debug_note_tx(dev, dev->spi_debug.last_op, data, data, len, 0u);
+ 
+-    adbms_spi_lock();
+     uint32_t frame_start_us = adbms6830_runtime_time_us(dev);
+     uint32_t frame_start_ms = HAL_GetTick();
+     if(use_cs)
+@@ -4306,7 +4321,8 @@
+     {
+         adbms6830_set_cs(dev, 1);
+     }
+-    adbms_spi_unlock();
++
++    adbms6830_trace_frame(dev, frame_start_us, status, len);
+ 
+     if(status == HAL_OK)
+     {
+@@ -4326,6 +4342,7 @@
+         }
+     }
+ 
++    adbms_spi_unlock();
+     return status;
+ }
+ 
+@@ -4628,13 +4645,13 @@
+     }
+     total_len = (uint16_t)((uint16_t)tx_len + rx_len);
+ 
++    adbms_spi_lock();
+     memset(spi_txrx_tx_buf, ADBMS6830_SPI_DUMMY_BYTE, total_len);
+     memset(spi_txrx_rx_buf, 0, total_len);
+     memcpy(spi_txrx_tx_buf, tx_Data, tx_len);
+ 
+     adbms6830_spi_debug_note_tx(dev, dev->spi_debug.last_op, tx_Data, spi_txrx_tx_buf, tx_len, rx_len);
+ 
+-    adbms_spi_lock();
+     uint32_t frame_start_us = adbms6830_runtime_time_us(dev);
+     uint32_t frame_start_ms = HAL_GetTick();
+     if(use_cs)
+@@ -4652,7 +4669,8 @@
+     {
+         adbms6830_set_cs(dev, 1);
+     }
+-    adbms_spi_unlock();
++
++    adbms6830_trace_frame(dev, frame_start_us, status, total_len);
+ 
+     if(status == HAL_OK)
+     {
+@@ -4682,6 +4700,7 @@
+ 
+     adbms6830_spi_debug_note_rx(dev, rx_data, rx_len, status);
+ 
++    adbms_spi_unlock();
+     return status;
+ }
+ 
+--- Core/Src/main.c
++++ Core/Src/main.c
+@@ -106,6 +106,9 @@
+   /* MCU Configuration--------------------------------------------------------*/
+ 
+   /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
++#if AMS_BENCHMARK_ICACHE
++  SCB_EnableICache();
++#endif
+   HAL_Init();
+ 
+   /* USER CODE BEGIN Init */
+--- Core/Src/tasks/adbms_task.c
++++ Core/Src/tasks/adbms_task.c
+@@ -765,6 +765,7 @@
+             data->adbms_open_wire_fault = true;
+         }
+         taskEXIT_CRITICAL();
++        goto publish_diagnostic_fault;
+     }
+ 
+ 
+@@ -789,6 +790,11 @@
+             HAL_StatusTypeDef aux2_status =
+                 adbms6830_run_aux2_redundancy(smb, sensor);
+ 
++            data->adbms_aux2_attempt_tick[sensor] = osKernelGetTickCount();
++            if(aux2_status == HAL_OK) {
++                data->adbms_aux2_success_tick[sensor] = osKernelGetTickCount();
++                data->adbms_aux2_completed_mask |= 1UL << sensor;
++            }
+             /* Keep an absolute deadline while skipping elapsed slots. At the
+              * 10 Hz vehicle scan and 250 ms target this still gives the desired
+              * 300/200 ms cadence in steady state, but a long pause causes only
+@@ -809,6 +815,8 @@
+                  * temperature safety authority is not silently replaced. */
+                 data->adbms_aux2_diag_fail_count++;
+             }
++            /* One intrusive diagnostic per post-acquisition pass. */
++            goto publish_diagnostic_fault;
+         }
+     }
+     else
+@@ -831,6 +839,11 @@
+             uint8_t sensor = data->adbms_therm_ow_next_sensor;
+             HAL_StatusTypeDef therm_ow_status =
+                 adbms6830_run_thermistor_open_wire(smb, sensor);
++            data->adbms_therm_attempt_tick[sensor] = osKernelGetTickCount();
++            if(therm_ow_status == HAL_OK) {
++                data->adbms_therm_success_tick[sensor] = osKernelGetTickCount();
++                data->adbms_therm_completed_mask |= 1UL << sensor;
++            }
+             data->adbms_therm_ow_last_tick = now;
+             data->adbms_therm_ow_next_sensor =
+                 (uint8_t)((sensor + 1u) % ADBMS6830_TEMP_SENSOR_COUNT);
+--- host_tests/production/adbms_wake_policy_test.c
++++ host_tests/production/adbms_wake_policy_test.c
+@@ -125,6 +125,16 @@
+     CHECK(adbms6830_wakeup_checked(&dev)==HAL_OK);
+     CHECK(dev.session.cold_wake_count==1 && dev.session.warm_wake_count==0);
+     CHECK(sim_us>=10000 && sim_us<10100 && edge_count==10);
++    uint8_t command[4] = {0, 0x2c, 0x59, 0x90};
++    uint8_t reply[40];
++    CHECK(adbms6830_spi_write_read(&dev, command, 4, reply, 40, 1)==HAL_OK);
++    CHECK(dev.session.frame_trace_sequence == 1u);
++    CHECK(dev.session.frame_trace[0].bytes == 44u);
++    CHECK(dev.session.frame_trace[0].end_us - dev.session.frame_trace[0].start_us >= 834u);
++    for(unsigned j=0; j<40; j++)
++        CHECK(adbms6830_spi_write_read(&dev, command, 4, reply, 40, 1)==HAL_OK);
++    CHECK(dev.session.frame_trace_sequence == 41u);
++    CHECK(dev.session.frame_trace[8].status == HAL_OK);
+     uint32_t edges=edge_count;
+     CHECK(adbms6830_wakeup_checked(&dev)==HAL_OK && edge_count==edges);
+     read_clean(); sim_us+=100000;

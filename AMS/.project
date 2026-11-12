@@ -1,7 +1,7 @@
-<?xml version="1.0" encoding="UTF-8"?>
+<?xml version='1.0' encoding='UTF-8'?>
 <projectDescription>
-	<name>DER26-AMS</name>
-	<comment></comment>
+	<name>DER26-AMS-VEHICLE-1M-CLI4</name>
+	<comment />
 	<projects>
 	</projects>
 	<buildSpec>

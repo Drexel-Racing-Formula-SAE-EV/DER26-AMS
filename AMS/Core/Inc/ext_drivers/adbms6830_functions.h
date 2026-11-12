@@ -55,6 +55,7 @@ void adbms6830_adcv(adbms6830_driver_t *dev, RD rd, CONT cont, DCP dcp, RSTF rst
 
 void adbms6830_wakeup(adbms6830_driver_t* dev);
 HAL_StatusTypeDef adbms6830_wakeup_checked(adbms6830_driver_t* dev);
+HAL_StatusTypeDef adbms6830_prepare_reference(adbms6830_driver_t *dev);
 void adbms6830_wakeup_cold(adbms6830_driver_t* dev);
 
 HAL_StatusTypeDef adbms6830_us_delay(adbms6830_driver_t* dev, uint16_t microseconds);
@@ -78,9 +79,14 @@ HAL_StatusTypeDef adbms6830_read_cell_voltage_products(adbms6830_driver_t *dev,
                                                        bool read_avg8,
                                                        bool read_filtered);
 HAL_StatusTypeDef adbms6830_mute_checked(adbms6830_driver_t *dev);
+/* Caller owns SPI for the complete session. Guarded activity reuse and verified warm wakes are transport-only. */
+HAL_StatusTypeDef adbms6830_transaction_session_begin(adbms6830_driver_t *dev,
+                                                     bool *owned);
+void adbms6830_transaction_session_end(adbms6830_driver_t *dev, bool owned);
 HAL_StatusTypeDef adbms6830_unmute_checked(adbms6830_driver_t *dev);
 HAL_StatusTypeDef adbms6830_run_startup_post(adbms6830_driver_t *dev);
 HAL_StatusTypeDef adbms6830_run_aux2_redundancy(adbms6830_driver_t *dev, uint8_t sensor_num);
+HAL_StatusTypeDef adbms6830_thermistor_open_wire_step(adbms6830_driver_t *dev, uint8_t sensor, bool *complete);
 HAL_StatusTypeDef adbms6830_run_thermistor_open_wire(adbms6830_driver_t *dev, uint8_t sensor_num);
 HAL_StatusTypeDef adbms6830_run_s_periodic_diagnostic(adbms6830_driver_t *dev);
 
@@ -98,6 +104,9 @@ HAL_StatusTypeDef adbms6830_scope_activity(adbms6830_driver_t *dev,
 HAL_StatusTypeDef adbms6830_read_sid(adbms6830_driver_t *dev);
 HAL_StatusTypeDef adbms6830_read_status(adbms6830_driver_t *dev, bool inject_spiflt);
 HAL_StatusTypeDef adbms6830_refresh_diagnostics(adbms6830_driver_t *dev);
+/* Owner must complete before another AUX conversion overwrites the result. */
+HAL_StatusTypeDef adbms6830_start_status_conversion(adbms6830_driver_t *dev);
+HAL_StatusTypeDef adbms6830_complete_status_conversion(adbms6830_driver_t *dev);
 HAL_StatusTypeDef adbms6830_establish_diagnostic_baseline(adbms6830_driver_t *dev);
 /* Transport/integrity validity is intentionally separate from the diagnostic
  * fault policy.  A clean Status A-E/SID image can be transported correctly

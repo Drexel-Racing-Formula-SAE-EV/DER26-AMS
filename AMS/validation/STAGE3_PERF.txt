@@ -1,0 +1,5 @@
+make: Entering directory '/workspace/scratch/43e64d7c85ca/work/ams-timing-r8/host_tests'
+cc -std=c11 -g -O0 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -Wno-missing-field-initializers -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -DSTM32F767xx -DUSE_HAL_DRIVER -DAMS_HOST_TEST=1 -Iinclude -I.. -I../Core/Inc -I../Core/Inc/tasks -I../Core/Inc/ext_drivers -I../Drivers/CMSIS/Include -I../Drivers/CMSIS/Device/ST/STM32F7xx/Include -I../Drivers/STM32F7xx_HAL_Driver/Inc -I../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy -I../Middlewares/Third_Party/FreeRTOS/Source/include -I../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1 -Werror production/perf_test.c ../Core/Src/diagnostics/ams_perf.c -o build/perf_test
+build/perf_test
+PASS task/IRQ accounting, nested IRQ exclusion, unblock latency, wrap and bounded slots
+make: Leaving directory '/workspace/scratch/43e64d7c85ca/work/ams-timing-r8/host_tests'

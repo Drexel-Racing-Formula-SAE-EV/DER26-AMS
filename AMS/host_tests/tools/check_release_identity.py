@@ -3,6 +3,7 @@
 from pathlib import Path
 import re
 import sys
+import xml.etree.ElementTree as ET
 
 ROOT = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).resolve().parents[2]
 
@@ -13,7 +14,11 @@ def require(condition, message):
 version = (ROOT / "Core/Inc/ams_version.h").read_text()
 app = (ROOT / "Core/Inc/app.h").read_text()
 profile = (ROOT / "Core/Inc/ams_build_profile.h").read_text()
-ioc = (ROOT / "DER26-AMS.ioc").read_text()
+project_name = ET.parse(ROOT / ".project").findtext("name")
+require(project_name == "DER26-AMS-VEHICLE-1M-CLI4", "unexpected vehicle CubeIDE project name")
+ioc_path = ROOT / f"{project_name}.ioc"
+require(ioc_path.is_file(), "vehicle CubeMX .ioc missing")
+ioc = ioc_path.read_text()
 main_h = (ROOT / "Core/Inc/main.h").read_text()
 for suffix in ("MAJOR", "MINOR", "PATCH"):
     require(re.search(rf"^#define AMS_VERSION_{suffix} [0-9]+$", version, re.M),
@@ -25,8 +30,8 @@ require('#include "ams_version.h"' in profile, "profile must include canonical i
 require("#define AMS_SOURCE_REVISION" not in profile, "duplicate source revision in profile")
 require('#define AMS_SOURCE_REVISION "DER26-AMS-v" AMS_VERSION_STRING "-" AMS_RELEASE_DATE' in version,
         "source revision must derive from canonical semantic version")
-require(re.search(r'^ProjectManager.ProjectName=DER26-AMS$', ioc, re.M), "CubeMX project name")
-require(re.search(r'^ProjectManager.ProjectFileName=DER26-AMS.ioc$', ioc, re.M), "CubeMX project file")
+require(re.search(rf"^ProjectManager.ProjectName={re.escape(project_name)}$", ioc, re.M), "CubeMX project name")
+require(re.search(rf"^ProjectManager.ProjectFileName={re.escape(ioc_path.name)}$", ioc, re.M), "CubeMX project file")
 require(re.search(r'^Mcu\.Pin[0-9]+=PE4$', ioc, re.M), "CubeMX must include PE4")
 require(re.search(r'^PE4\.GPIO_Label=CS_B$', ioc, re.M), "CubeMX PE4 must be CS_B")
 require(re.search(r'^#define CS_B_Pin GPIO_PIN_4$', main_h, re.M), "firmware CS_B pin must be GPIO pin 4")

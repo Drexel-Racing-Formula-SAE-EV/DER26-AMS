@@ -11,6 +11,7 @@
 
 #include <stdbool.h>
 #include "ams_build_profile.h"
+#include "ams_cell_observation.h"
 #include "stm32f7xx_hal.h"
 #include "ext_drivers/adbms2950.h"
 #include "ext_drivers/adbms6830_functions.h"
@@ -34,6 +35,23 @@
 #define ACCUMULATOR_CELL_VALID_MAX_MV          5000u
 #define ACCUMULATOR_TEMP_STALE_TIMEOUT_MS      12000u
 #define ACCUMULATOR_TEMP_MAX_CONSEC_MISSES     10u
+/* Preserve the old nominal eleven-missed-iteration bound in elapsed time.
+ * At 10 Hz: eight-position sweep 800 ms, revisit deadline 1100 ms.
+ * Failed scheduled visits fail closed immediately rather than waiting for
+ * unrelated mux positions to accumulate spurious misses. */
+#define ACCUMULATOR_TEMP_REVISIT_TIMEOUT_MS \
+    ((ACCUMULATOR_TEMP_MAX_CONSEC_MISSES + 1u) * ((1000u + AMS_ADBMS_SCAN_HZ - 1u) / AMS_ADBMS_SCAN_HZ))
+#define ACCUMULATOR_TEMP_FILTER_TAU_MS \
+    (7u * 8u * ((1000u + AMS_ADBMS_SCAN_HZ - 1u) / AMS_ADBMS_SCAN_HZ))
+/* One overflow-safe policy for acquisition and downstream consumers. */
+static inline bool ams_temperature_age_fresh(uint32_t age, uint32_t elapsed)
+{
+    const uint32_t limit = (ACCUMULATOR_TEMP_REVISIT_TIMEOUT_MS <
+                           ACCUMULATOR_TEMP_STALE_TIMEOUT_MS) ?
+                           ACCUMULATOR_TEMP_REVISIT_TIMEOUT_MS :
+                           ACCUMULATOR_TEMP_STALE_TIMEOUT_MS;
+    return age <= limit && elapsed <= limit - age;
+}
 #define ACCUMULATOR_TEMP_VALID_MIN_DECI_C      (-400)
 #define ACCUMULATOR_TEMP_VALID_MAX_DECI_C      1500
 #define ACCUMULATOR_TEMP_IMPLAUSIBLE_JUMP_DECI_C 250
@@ -78,7 +96,9 @@
 /* The single-SMB bench image remains the default. Host/SIL builds may
  * override NSMBS explicitly to exercise the production five-segment topology. */
 #ifndef NSMBS
-#if (AMS_BUILD_PROFILE == AMS_PROFILE_TESTDAY) || \
+#if (AMS_BUILD_PROFILE == AMS_PROFILE_VEHICLE) || \
+    (AMS_BUILD_PROFILE == AMS_PROFILE_TESTDAY) || \
+    (AMS_BUILD_PROFILE == AMS_PROFILE_CHARGE_REVIEW) || \
     ((AMS_BUILD_PROFILE == AMS_PROFILE_BENCH_VALIDATION) && !AMS_BENCH_VALIDATION_SINGLE_SMB)
 #define NSMBS 5
 #else
@@ -89,17 +109,23 @@
 #define ACCUMULATOR_PHYSICAL_CHAIN_COUNT NSMBS
 #endif
 #ifndef ACCUMULATOR_SMB_STRING
-#if (AMS_ENABLE_APM_2950 && !AMS_APM_STANDALONE_EVAL_BENCH) || \
-    (AMS_BUILD_PROFILE == AMS_PROFILE_TESTDAY) || \
-    ((AMS_BUILD_PROFILE == AMS_PROFILE_BENCH_VALIDATION) && !AMS_BENCH_VALIDATION_SINGLE_SMB)
+#if AMS_ENABLE_APM_2950 && !AMS_APM_STANDALONE_EVAL_BENCH
 /* Final ring: five SMBs are the leading String-A subset; the ADBMS2950 is
  * addressed independently from String B. */
 #define ACCUMULATOR_SMB_STRING STRING_A
 #else
-/* Single-SMB EVAL jumper reaches the monitor through CS_B / String B. */
+/* SMB-only bench: use the validated onboard CS_B path for both one
+ * and five SMBs. This host port choice does not reverse the SMB chain. */
 #define ACCUMULATOR_SMB_STRING STRING_B
 #endif
 #endif
+
+static inline uint16_t accumulator_required_cell_count(void)
+{
+    uint16_t n = 0u;
+    for(uint8_t seg = 0u; seg < NSMBS; seg++) n += ams_observed_segment_cell_count(seg);
+    return n;
+}
 
 /* The physical DER26 accumulator is five 15s segments.  The single-SMB
  * release is intentionally a bench image, but a vehicle build must never be
@@ -107,16 +133,18 @@
 #if (AMS_BUILD_PROFILE == AMS_PROFILE_VEHICLE) && (NSMBS != 5)
 #error "Vehicle profile requires NSMBS=5 for the five physical accumulator segments"
 #endif
-#if (AMS_BUILD_PROFILE == AMS_PROFILE_VEHICLE) &&     (ACCUMULATOR_PHYSICAL_CHAIN_COUNT != 6)
-#error "Vehicle profile requires ACCUMULATOR_PHYSICAL_CHAIN_COUNT=6 (five SMBs plus one ADBMS2950)"
+#if (AMS_BUILD_PROFILE == AMS_PROFILE_VEHICLE) &&     (ACCUMULATOR_PHYSICAL_CHAIN_COUNT != 5)
+#error "Vehicle variant requires five physical SMBs"
 #endif
-#if (AMS_BUILD_PROFILE == AMS_PROFILE_VEHICLE) && !AMS_ENABLE_APM_2950
-#error "Vehicle profile requires AMS_ENABLE_APM_2950=1 for the installed final ring"
+#if (AMS_BUILD_PROFILE == AMS_PROFILE_VEHICLE) && AMS_ENABLE_APM_2950
+#error "Vehicle variant excludes the ADBMS2950/APM"
 #endif
 
 typedef struct
 {
 	float total_volt;
+	/* Sum of the observed cells only (74 in the 75S profile); NOT pack voltage. */
+	float observed_sum_volt;
 	float max_temp;
 	float avg_temp;
 	float max_volt;
@@ -130,7 +158,26 @@ typedef struct
 	bool temp_sensor_valid[NSMBS][NTEMPS];
 	uint32_t temp_filter_valid_mask[NSMBS];
 	uint32_t temp_last_update_ms[NSMBS][NTEMPS];
+	/* Legacy field name retained for consumers; now mirrors failed visits,
+     * not unrelated acquisition iterations. */
 	uint8_t temp_consecutive_misses[NSMBS][NTEMPS];
+    /* A failed scheduled visit invalidates channel availability until a
+     * new valid sample arrives. Revisit age independently detects stalls. */
+    uint8_t temp_failed_visits[NSMBS][NTEMPS];
+    uint32_t temp_step_last_ms;
+    uint32_t temp_step_max_ms;
+    uint32_t temp_visit_generation_consumed;
+    uint32_t temp_sample_generation_consumed[NSMBS][NTEMPS];
+    uint32_t temp_seen_mask[NSMBS];
+    uint8_t temp_sample_status[NSMBS][NTEMPS];
+    uint32_t temp_sweep_seen_mask[NSMBS];
+    uint32_t temp_sweep_count;
+    uint32_t temp_last_sweep_tick;
+    uint32_t temp_last_sweep_span_ms;
+    uint32_t temp_sweep_start_tick;
+    bool temp_sweep_started;
+    uint32_t temp_oldest_required_age_ms;
+    uint32_t temp_stats_tick;
 
 	uint32_t updated_temp_mask[NSMBS];
 	uint32_t usable_temp_mask[NSMBS];
@@ -262,6 +309,8 @@ int accumulator_run_c_open_wire_diagnostic(
  * API and resynchronize SMB counter tracking after their transaction. */
 int accumulator_read_apm(accumulator_t *dev, uint32_t now_ms);
 int accumulator_read_temp(accumulator_t *dev);
+int accumulator_prepare_temp(accumulator_t *dev);
+int smb_prepare_temp(adbms6830_driver_t *dev);
 int accumulator_set_temp_ch(accumulator_t *dev, uint8_t channel);
 int accumulator_stat_temp(accumulator_t *dev);
 int accumulator_set_mux_ch(accumulator_t *dev, uint8_t channel, uint8_t addr7);

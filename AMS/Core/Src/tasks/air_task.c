@@ -1,3 +1,4 @@
+#include "ams_task_schedule.h"
 /*
  * air_task.c
  *
@@ -149,13 +150,13 @@ void air_task_fn(void *argument)
                                 next.latched_fault_mask);
         }
 
-        osDelayUntil(entry + AMS_AIR_MONITOR_PERIOD_MS);
+        ams_task_delay_until(entry + AMS_AIR_MONITOR_PERIOD_MS);
 #else
 		/* Legacy command/control sense only. This path is not started by app.c. */
 		data->air_state = (HAL_GPIO_ReadPin(AIR_CTRL_GPIO_Port, AIR_CTRL_Pin) ==
 		                   GPIO_PIN_SET);
 
-		osDelayUntil(entry + (1000 / AIR_FREQ));
+		ams_task_delay_until(entry + (1000 / AIR_FREQ));
 #endif
 	}
 }

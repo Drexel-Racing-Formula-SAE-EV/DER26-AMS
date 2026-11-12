@@ -1,3 +1,4 @@
+#include "ams_task_schedule.h"
 /*
  * fan_task.c
  *
@@ -201,6 +202,6 @@ void fan_task_fn(void *argument)
          * executing, so publish an independent supervisor heartbeat. */
         ams_heartbeat_kick(data, AMS_HEARTBEAT_FAN, osKernelGetTickCount());
 
-        osDelayUntil(entry + (1000 / FAN_FREQ));
+        ams_task_delay_until(entry + (1000 / FAN_FREQ));
     }
 }

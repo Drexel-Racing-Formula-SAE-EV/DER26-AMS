@@ -1,0 +1,3 @@
+Synthetic packet/wire model; compact whole-job comparison, not target timing
+r7 rc:0 total_us:32566 warm_wakes:5
+r8 rc:0 total_us:32566 warm_wakes:5

@@ -1,3 +1,4 @@
+#include "app.h"
 /*
  * Compile-only checks for the three explicit AMS build intents.
  *
@@ -56,9 +57,10 @@ _Static_assert(AMS_ENABLE_CLI == 1, "bench validation requires diagnostic CLI");
 _Static_assert(AMS_ENABLE_HIL_CAN == 0, "bench validation must use physical measurements");
 _Static_assert(AMS_HIL_REPLACE_ADBMS == 0, "bench validation requires physical ADBMS");
 _Static_assert(AMS_ENABLE_IMD == 1, "bench validation enables the real IMD path");
-_Static_assert(AMS_ENABLE_IWDG == 0, "unvalidated watchdog stays disabled");
-_Static_assert(AMS_ENABLE_AUTO_TEMP_MUX_SCAN == 0,
-               "automatic temperature scan stays off for staged bench validation");
+_Static_assert(AMS_ENABLE_IWDG == 0, "bench watchdog stays disabled");
+_Static_assert(AMS_TESTDAY_C1_EXCLUDED_IC_MASK == 0u, "bench has no cell exception");
+_Static_assert(AMS_ENABLE_AUTO_TEMP_MUX_SCAN == 1,
+               "bench validation must acquire validated SMB temperatures");
 _Static_assert(AMS_ENABLE_AUTO_C_OPEN_WIRE == 0,
                "intrusive automatic C open-wire stays disabled");
 _Static_assert(AMS_ENABLE_ADBMS_AUX2_REDUNDANCY == 0,
@@ -79,15 +81,31 @@ _Static_assert(AMS_PROFILE_BMS_RUNTIME_AUTHORITY_ALLOWED == 0,
                "bench validation final BMS writer must remain compile-locked");
 _Static_assert(AMS_PROFILE_BALANCE_RUNTIME_AUTHORITY_ALLOWED == 0,
                "bench validation final balancing path must remain compile-locked");
+_Static_assert(AMS_ENABLE_APM_2950 == 0,
+               "bench validation baseline keeps APM advisory path off");
+#if AMS_BENCH_VALIDATION_SINGLE_SMB
+_Static_assert(CLI_PRIO < ERR_PRIO && CLI_PRIO > CUR_PRIO && CLI_PRIO > ADBMS_PRIO,
+               "inhibited single-SMB service CLI must start below supervisor and above acquisition");
+_Static_assert(AMS_ENABLE_FAN_TASK == 0, "single-SMB bench has no Fan task");
+_Static_assert((AMS_HEARTBEAT_SAFETY_MASK & AMS_HEARTBEAT_BIT(AMS_HEARTBEAT_FAN)) == 0u,
+               "single-SMB bench must not require an absent Fan heartbeat");
+_Static_assert(NSMBS == 1, "single-SMB bench must use one SMB");
+_Static_assert(ACCUMULATOR_PHYSICAL_CHAIN_COUNT == 1,
+               "single-SMB bench must have one physical device");
+_Static_assert(ACCUMULATOR_SMB_STRING == STRING_B,
+               "single-SMB bench must select String B/J2");
+#else
+_Static_assert(CLI_PRIO < ADBMS_PRIO && CLI_PRIO < CUR_PRIO,
+               "five-SMB CLI remains below acquisition");
+_Static_assert(AMS_ENABLE_FAN_TASK == 1, "five-SMB bench retains Fan task");
 _Static_assert(NSMBS == 5, "bench validation uses five-SMB production topology");
 _Static_assert(ACCUMULATOR_PHYSICAL_CHAIN_COUNT == 5,
                "bench validation excludes the APM final-ring device");
-_Static_assert(AMS_ENABLE_APM_2950 == 0,
-               "bench validation baseline keeps APM advisory path off");
-_Static_assert(ACCUMULATOR_SMB_STRING == STRING_A,
-               "bench validation five-SMB chain must use production String A");
+_Static_assert(ACCUMULATOR_SMB_STRING == STRING_B,
+               "bench validation SMB-only chain uses validated String B");
 _Static_assert(AMS_ESTIMATOR_DEFAULT_TOPOLOGY == AMS_ESTIMATOR_TOPOLOGY_SEGMENTS,
                "bench validation requires five segment DADEKFs for CAN/logging validation");
+#endif
 #elif AMS_EXPECTED_PROFILE == AMS_PROFILE_TESTDAY
 _Static_assert(AMS_HW_BRINGUP == 0, "test day must use 10 Hz production acquisition");
 _Static_assert(AMS_ENABLE_SERVICE_CLI == 1, "test day requires read/service CLI");
@@ -95,7 +113,10 @@ _Static_assert(AMS_ENABLE_CLI == 1, "test day requires diagnostic CLI");
 _Static_assert(AMS_ENABLE_HIL_CAN == 0, "test day must use physical measurements");
 _Static_assert(AMS_HIL_REPLACE_ADBMS == 0, "test day requires physical ADBMS");
 _Static_assert(AMS_ENABLE_IMD == 1, "test day exercises the real IMD path");
-_Static_assert(AMS_ENABLE_IWDG == 0, "unvalidated watchdog stays disabled");
+_Static_assert(AMS_ENABLE_IWDG == 1, "test day boots the watchdog for target validation");
+_Static_assert(AMS_ENABLE_MISSION_CAN == 1, "test day exercises mission CAN");
+_Static_assert(AMS_ENABLE_FAN_TASK == 0, "removed fans have no task/heartbeat");
+_Static_assert(AMS_TESTDAY_C1_EXCLUDED_IC_MASK == 1u, "only known SMB1 C1 is excluded");
 _Static_assert(AMS_ENABLE_AUTO_TEMP_MUX_SCAN == 1,
                "test day exercises all primary thermistors");
 _Static_assert(AMS_ENABLE_AUTO_C_OPEN_WIRE == 0,
@@ -121,8 +142,8 @@ _Static_assert(ACCUMULATOR_PHYSICAL_CHAIN_COUNT == 5,
                "test day baseline excludes the APM final-ring device");
 _Static_assert(AMS_ENABLE_APM_2950 == 0,
                "test day baseline keeps APM advisory path off");
-_Static_assert(ACCUMULATOR_SMB_STRING == STRING_A,
-               "five-SMB test-day chain must use production String A");
+_Static_assert(ACCUMULATOR_SMB_STRING == STRING_B,
+               "five-SMB test-day chain uses validated String B");
 _Static_assert(AMS_ESTIMATOR_DEFAULT_TOPOLOGY == AMS_ESTIMATOR_TOPOLOGY_SEGMENTS,
                "test day requires five segment DADEKFs");
 #elif AMS_EXPECTED_PROFILE == AMS_PROFILE_VEHICLE
@@ -142,8 +163,10 @@ _Static_assert(AMS_PROFILE_BMS_RUNTIME_AUTHORITY_ALLOWED == 1,
 _Static_assert(AMS_PROFILE_BALANCE_RUNTIME_AUTHORITY_ALLOWED == 1,
                "vehicle balancing must remain available behind runtime gates");
 _Static_assert(NSMBS == 5, "vehicle profile requires five SMBs");
-_Static_assert(ACCUMULATOR_PHYSICAL_CHAIN_COUNT == 6,
-               "vehicle profile requires five physical chain devices");
+_Static_assert(ACCUMULATOR_PHYSICAL_CHAIN_COUNT == 5,
+               "vehicle profile requires five physical SMB devices");
+_Static_assert(AMS_ENABLE_APM_2950 == 0,
+               "vehicle profile excludes APM2950 hardware");
 #else
 #error "unsupported expected profile"
 #endif

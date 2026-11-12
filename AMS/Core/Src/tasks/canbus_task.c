@@ -1,3 +1,4 @@
+#include "ams_task_schedule.h"
 /**
  * @file canbus_task.c
  * @author Cole Bardin (cab572@drexel.edu)
@@ -115,6 +116,14 @@ static uint16_t sat_u16_scaled(float x, float scale);
 static int16_t sat_i16_scaled(float x, float scale);
 static uint8_t sat_u8_u32(uint32_t x);
 
+static bool can_temperature_fresh(const app_data_t *data)
+{
+    taskENTER_CRITICAL();
+    bool fresh = ams_temperature_authority_fresh(data, osKernelGetTickCount());
+    taskEXIT_CRITICAL();
+    return fresh;
+}
+
 static void can_measurement_view_build(const app_data_t *data,
                                        const ams_measurement_snapshot_t *snapshot,
                                        can_measurement_view_t *view)
@@ -129,7 +138,9 @@ static void can_measurement_view_build(const app_data_t *data,
     if(snapshot == NULL)
     {
         view->voltage_valid = data->voltage_valid && !data->voltage_read_fault;
-        view->temperature_valid = data->temp_valid && !data->temp_read_fault;
+        taskENTER_CRITICAL();
+        view->temperature_valid = ams_temperature_authority_fresh(data, osKernelGetTickCount());
+        taskEXIT_CRITICAL();
         view->current_valid = data->current_valid && !data->current_sensor_fault &&
             ((uint32_t)(osKernelGetTickCount() - data->current_sample_tick) <=
              AMS_CURRENT_WINDOW_MAX_SAMPLE_AGE_MS);
@@ -160,7 +171,7 @@ static void can_measurement_view_build(const app_data_t *data,
         view->max_temp_deci_c = data->acc.max_temp_deci_c;
         view->avg_temp_deci_c = data->acc.filtered_avg_temp_deci_c;
         view->usable_cell_count = data->voltage_usable_cell_count;
-        view->usable_temp_count = data->temp_usable_sensor_count;
+        view->usable_temp_count = view->temperature_valid ? data->temp_usable_sensor_count : 0u;
         view->min_cell_seg = data->min_voltage_seg;
         view->min_cell_index = data->min_voltage_cell;
         view->max_cell_seg = data->max_voltage_seg;
@@ -238,9 +249,8 @@ static void can_measurement_view_build(const app_data_t *data,
             {
                 continue;
             }
-            if((temperature_elapsed > ACCUMULATOR_TEMP_STALE_TIMEOUT_MS) ||
-               (snapshot->temp_age_ms[seg][sensor] >
-                ACCUMULATOR_TEMP_STALE_TIMEOUT_MS - temperature_elapsed))
+            if(!ams_temperature_age_fresh(snapshot->temp_age_ms[seg][sensor],
+                                         temperature_elapsed))
             {
                 view->temperature_valid = false;
                 continue;
@@ -365,7 +375,7 @@ static uint16_t cell_mv_for_view(const app_data_t *data,
 
 static uint16_t temp_deci_c_for_ecu(const app_data_t *data, uint8_t seg, uint8_t sensor)
 {
-    if((data == NULL) ||
+    if(!can_temperature_fresh(data) ||
        (seg >= accumulator_configured_smb_count(&data->acc)) ||
        (sensor >= NTEMPS))
     {
@@ -523,7 +533,7 @@ static bool can_compact_state_snapshot_capture(
     snapshot->canbus_fault = data->canbus_fault;
     snapshot->voltage_valid = data->voltage_valid;
     snapshot->current_valid = data->current_valid;
-    snapshot->temperature_valid = data->temp_valid;
+    snapshot->temperature_valid = ams_temperature_authority_fresh(data, osKernelGetTickCount());
     snapshot->voltage_fault = data->voltage_fault;
     snapshot->temp_fault = data->temp_fault;
     snapshot->current_fault = data->current_fault;
@@ -1075,7 +1085,7 @@ static HAL_StatusTypeDef send_logger_frame(canbus_device_t *canbus, uint32_t id,
 
 static uint16_t temp_deci_c_for_logger(const app_data_t *data, uint8_t seg, uint8_t sensor)
 {
-    if((data == NULL) ||
+    if(!can_temperature_fresh(data) ||
        (seg >= accumulator_configured_smb_count(&data->acc)) ||
        (sensor >= NTEMPS) ||
        !accumulator_temp_sensor_usable(&data->acc, seg, sensor))
@@ -1183,7 +1193,31 @@ static uint16_t charger_disable_reasons(const app_data_t *data, bool charger_hw_
     }
 
     uint16_t reasons = CHARGER_DISABLE_REASON_NONE;
+#if AMS_VEHICLE_ONLY_BUILD
+    reasons |= CHARGER_DISABLE_REASON_STATE_EXIT;
+#endif
 
+#if AMS_BUILD_PROFILE == AMS_PROFILE_CHARGE_REVIEW
+#if !AMS_CHARGE_REVIEW_C1_UNOBSERVED_CHARGE_ALLOWED
+    /* Connected SMB1/C1 has no measurement. Treat the physical pack as
+     * unmonitored even when all 74 instrumented channels are valid. */
+    reasons |= CHARGER_DISABLE_REASON_VOLTAGE_INVALID;
+#else
+    /* C1 is unmeasured (operator-accepted risk).  Infer it from the charger's
+     * own output-voltage report minus the 74 measured cells.  Requires a fresh
+     * charger status frame and a full usable 74-cell scan; otherwise stop. */
+    {
+        const charger_t *c = &data->board.charger;
+        bool fresh = (c->last_rx_tick != 0u) &&
+                     ((uint32_t)(osKernelGetTickCount() - c->last_rx_tick) <=
+                      CHARGER_RX_TIMEOUT_MS);
+        if(ams_c1_inferred_stop(fresh, c->read_voltage, data->observed_sum_voltage))
+        {
+            reasons |= CHARGER_DISABLE_REASON_VOLTAGE_CHARGE_STOP;
+        }
+    }
+#endif
+#endif
     if(charger_hw_fault)          reasons |= CHARGER_DISABLE_REASON_HW_FAULT;
     if(data->hard_fault)          reasons |= CHARGER_DISABLE_REASON_HARD_FAULT;
     if(data->voltage_fault)       reasons |= CHARGER_DISABLE_REASON_VOLTAGE_FAULT;
@@ -1191,6 +1225,10 @@ static uint16_t charger_disable_reasons(const app_data_t *data, bool charger_hw_
     if(!data->voltage_valid)      reasons |= CHARGER_DISABLE_REASON_VOLTAGE_INVALID;
     if(data->temp_charge_stop)    reasons |= CHARGER_DISABLE_REASON_TEMP_CHARGE_STOP;
     if(data->temp_fault)          reasons |= CHARGER_DISABLE_REASON_TEMP_FAULT;
+    taskENTER_CRITICAL();
+    bool temperature_fresh = ams_temperature_authority_fresh(data, osKernelGetTickCount());
+    taskEXIT_CRITICAL();
+    if(!temperature_fresh)        reasons |= CHARGER_DISABLE_REASON_TEMP_FAULT;
     if(data->current_fault)       reasons |= CHARGER_DISABLE_REASON_CURRENT_FAULT;
     if(!data->current_valid)      reasons |= CHARGER_DISABLE_REASON_CURRENT_INVALID;
     if(!data->bms_state)          reasons |= CHARGER_DISABLE_REASON_BMS_NOT_OK;
@@ -2629,6 +2667,10 @@ static HAL_StatusTypeDef canbus_publish_protected_generation(
     uint8_t wire_sequence,
     uint32_t publish_tick)
 {
+#if AMS_CHARGER_ONLY_BUILD
+    /* No ECU authority/status traffic on the standalone charger bus. */
+    return HAL_OK;
+#else
     if((canbus == NULL) || (data == NULL))
     {
         return HAL_ERROR;
@@ -2655,6 +2697,7 @@ static HAL_StatusTypeDef canbus_publish_protected_generation(
         canbus_tx_build_cancel(canbus);
     }
     return status;
+#endif
 }
 
 static HAL_StatusTypeDef canbus_publish_detail_snapshot(
@@ -2668,6 +2711,10 @@ static HAL_StatusTypeDef canbus_publish_detail_snapshot(
 #endif
     )
 {
+#if AMS_CHARGER_ONLY_BUILD
+    /* Battery observations remain available locally through the CLI. */
+    return HAL_OK;
+#else
     if((canbus == NULL) || (data == NULL))
     {
         return HAL_ERROR;
@@ -2707,6 +2754,7 @@ static HAL_StatusTypeDef canbus_publish_detail_snapshot(
         canbus_tx_build_cancel(canbus);
     }
     return status;
+#endif
 }
 
 #if AMS_ENABLE_TUNING_CAN
@@ -2812,7 +2860,7 @@ static void canbus_wait_next_period(app_data_t *data, uint32_t entry_tick)
         }
     }
 
-    (void)osDelayUntil(entry_tick + CAN_ECU_FAST_PERIOD_MS);
+    (void)ams_task_delay_until(entry_tick + CAN_ECU_FAST_PERIOD_MS);
 }
 
 static void canbus_update_authority_from_wire_completion(
@@ -2848,6 +2896,16 @@ static void canbus_update_authority_from_wire_completion(
         taskEXIT_CRITICAL();
         return;
     }
+
+#if AMS_CHARGER_ONLY_BUILD
+    /* This image has no ECU authority publications and never grants BMS power.
+     * Transport settlement is sufficient to clear the inapplicable ECU refresh
+     * gate. Charger RX freshness remains separately reported by charger logic. */
+    data->can_authority_ready = false;
+    data->can_authority_refresh_pending = false;
+    taskEXIT_CRITICAL();
+    return;
+#endif
 
     completed_generation =
         canbus->tx_scheduler.protected_required_last_complete_generation;
@@ -3026,9 +3084,11 @@ void canbus_task_fn(void *arg)
         /* 10 Hz latest-generation protected authority/status publication. */
         HAL_StatusTypeDef protected_status = canbus_publish_protected_generation(
             canbus, data, &measurement_view, ecu_sequence++, entry);
+#if !AMS_CHARGER_ONLY_BUILD
         canbus_record_tx_class(&data->can_tx_compact_bundle_count,
                                &data->can_tx_compact_bundle_fail_count,
                                protected_status);
+#endif
         task_status |= protected_status;
 
         if(canbus->tx_refresh_pending && (task_status == HAL_OK))
@@ -3056,6 +3116,7 @@ void canbus_task_fn(void *arg)
                 , slow_tuning
 #endif
                 );
+#if !AMS_CHARGER_ONLY_BUILD
             canbus_record_tx_class(&data->can_tx_detail_phase_count,
                                    &data->can_tx_detail_phase_fail_count,
                                    detail_status);
@@ -3063,6 +3124,9 @@ void canbus_task_fn(void *arg)
             {
                 ams_heartbeat_kick(data, AMS_HEARTBEAT_LOGGER, entry);
             }
+#else
+            (void)detail_status;
+#endif
         }
 
 #if AMS_ENABLE_TUNING_CAN

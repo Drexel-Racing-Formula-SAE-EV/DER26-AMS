@@ -189,11 +189,9 @@ void voltage_fault_update(voltage_fault_state_t *state, const accumulator_t *acc
        (acc->smb.monitored_cell_count == 0u) ||
        (acc->smb.monitored_cell_count > NCELLS) ||
        (acc->usable_voltage_count !=
-        ((uint16_t)acc->smb.num_ics *
-         (uint16_t)acc->smb.monitored_cell_count)) ||
+        accumulator_required_cell_count()) ||
        (acc->updated_voltage_count !=
-        ((uint16_t)acc->smb.num_ics *
-         (uint16_t)acc->smb.monitored_cell_count)))
+        accumulator_required_cell_count()))
     {
         state->read_fault_streak = 0u;
         state->read_fault = true;
@@ -231,6 +229,7 @@ void voltage_fault_update(voltage_fault_state_t *state, const accumulator_t *acc
             uint16_t definite_uv = 0u;
             uint16_t definite_not_uv = 0u;
             uint16_t bit_ic = (uint16_t)(1u << seg);
+            uint16_t required_mask = (uint16_t)(cell_mask & ams_observed_cell_mask(seg));
 
             for(uint8_t cell = 0u; cell < acc->smb.monitored_cell_count; cell++)
             {
@@ -277,9 +276,9 @@ void voltage_fault_update(voltage_fault_state_t *state, const accumulator_t *acc
             {
                 state->hardware_status_valid_ic_mask |= bit_ic;
                 state->hardware_ov_mask[seg] =
-                    (uint16_t)(acc->smb.diag[seg].cell_ov_mask & cell_mask);
+                    (uint16_t)(acc->smb.diag[seg].cell_ov_mask & required_mask);
                 state->hardware_uv_mask[seg] =
-                    (uint16_t)(acc->smb.diag[seg].cell_uv_mask & cell_mask);
+                    (uint16_t)(acc->smb.diag[seg].cell_uv_mask & required_mask);
                 state->hardware_disagreement_mask[seg] =
                     (uint16_t)((definite_ov &
                                 (uint16_t)~state->hardware_ov_mask[seg]) |

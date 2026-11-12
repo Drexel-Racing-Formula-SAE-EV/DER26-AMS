@@ -11,6 +11,12 @@
 #include <stddef.h>
 #include <string.h>
 #include <math.h>
+#ifdef DER_APM_STANDALONE
+#include "ams_apm_standalone_project.h"
+#if !defined(AMS_HOST_TEST)
+#include "cmsis_os2.h"
+#endif
+#endif
 
 static uint8_t buf[BUFSZ] = {0};
 static uint8_t wrbuf[BUFSZ] = {0};
@@ -38,8 +44,9 @@ static uint8_t adbms2950_spi_txrx_rx_buf[BUFSZ] = {0};
 #define ADBMS2950_I1_INITIALIZE_OPT 0x00u
 #define ADBMS2950_I1_CONTINUOUS_MIXED_OPT 0x0Cu
 #define ADBMS2950_I1_INIT_WAIT_US 160000u
-#define ADBMS2950_I1_INIT_MIN_COUNT 136u
-#define ADBMS2950_I1_CONTINUOUS_VERIFY_WAIT_US 2000u
+#define ADBMS2950_I1_SINGLE_MIN_COUNT 1u
+#define ADBMS2950_I1_CONTINUOUS_MIN_COUNT 136u
+#define ADBMS2950_I1_CONTINUOUS_VERIFY_WAIT_US 160000u
 #define ADBMS2950_LONG_DELAY_CHUNK_US 60000u
 
 /*!< configuration registers commands */
@@ -194,6 +201,19 @@ static bool adbms2950_cmd_resets_counter(const uint8_t cmd[CMDSZ]);
 
 // SPI communication
 void adbms2950_set_cs(adbms2950_driver_t* dev, uint8_t state);
+static uint32_t adbms2950_frame_timeout_ms(adbms2950_driver_t *dev, uint16_t bytes)
+{
+#ifdef AMS_HOST_TEST
+	const uint32_t pclk = 108000000u;
+#else
+	const uint32_t pclk = HAL_RCC_GetPCLK2Freq(); /* Dedicated SPI6 bus. */
+#endif
+	uint32_t divisor = 1u << (((dev->hspi->Init.BaudRatePrescaler & SPI_CR1_BR) >> 3u) + 1u);
+	if(pclk < 1000000u) return 5u;
+	uint64_t clocks_ms = (uint64_t)bytes * 8u * divisor * 1000u;
+	return 2u + (uint32_t)((clocks_ms + pclk - 1u) / pclk);
+}
+
 HAL_StatusTypeDef adbms2950_spi_write(adbms2950_driver_t* dev, uint8_t* data, uint16_t len, uint8_t use_cs);
 HAL_StatusTypeDef adbms2950_spi_write_read(adbms2950_driver_t *dev, uint8_t* tx_Data, uint16_t tx_len, uint8_t* rx_data, uint16_t rx_len, uint8_t use_cs);
 static void adbms2950_spi_debug_note_tx(adbms2950_driver_t *dev, adbms2950_spi_op_t op, const uint8_t *cmd, const uint8_t *tx, uint16_t tx_len, uint16_t rx_len);
@@ -229,6 +249,7 @@ static void adbms2950_set_failure(adbms2950_driver_t *dev,
 	dev->health.last_stage = stage;
 	dev->health.last_reason = reason;
 	dev->health.last_status = status;
+	if(status != HAL_OK) dev->bridge_ready = false;
 }
 
 static adbms2950_reason_t adbms2950_transaction_reason(
@@ -489,17 +510,15 @@ const char *adbms2950_reason_str(adbms2950_reason_t reason)
 	case ADBMS2950_REASON_SENTINEL: return "SENTINEL";
 	case ADBMS2950_REASON_PERIPHERAL_NACK: return "PERIPHERAL_NACK";
 	case ADBMS2950_REASON_RESTORE: return "RESTORE";
+	case ADBMS2950_REASON_HARDWARE_FAULT: return "HARDWARE_FAULT";
 	default: return "UNKNOWN";
 	}
 }
 
 static void adbms2950_ensure_calibration(adbms2950_driver_t *dev)
 {
-	if((dev != NULL) && !adbms2950_calibration_valid(&dev->calibration))
-	{
-		(void)adbms2950_set_calibration_profile(
-			dev, ADBMS2950_CAL_PROFILE_DER_APM);
-	}
+	/* Defaults belong to initialization; reads must not repair corrupt calibration. */
+	(void)dev;
 }
 
 static float adbms2950_scale_current(const adbms2950_driver_t *dev,
@@ -642,6 +661,17 @@ static int32_t adbms2950_sign_extend_24(uint32_t raw)
 static HAL_StatusTypeDef adbms2950_delay_long_checked(adbms2950_driver_t *dev,
                                                        uint32_t microseconds)
 {
+#if defined(DER_APM_STANDALONE) && !defined(AMS_HOST_TEST)
+	/* Conversion initialization is a minimum wait, not a CPU workload.
+	 * Before scheduler startup retain the bounded timer implementation. */
+	if(osKernelGetState() == osKernelRunning && microseconds >= 1000u)
+	{
+		uint32_t hz = osKernelGetTickFreq();
+		/* Extra tick compensates call position within the current RTOS tick. */
+		uint32_t ticks = 1u + (uint32_t)(((uint64_t)microseconds * hz + 999999u) / 1000000u);
+		return osDelay(ticks) == osOK ? HAL_OK : HAL_ERROR;
+	}
+#endif
 	while(microseconds > 0u)
 	{
 		uint16_t chunk = (microseconds > ADBMS2950_LONG_DELAY_CHUNK_US) ?
@@ -715,9 +745,9 @@ static HAL_StatusTypeDef adbms2950_start_i1_continuous_checked(adbms2950_driver_
 	}
 	if(status == HAL_OK)
 	{
-		/* tREFUP + tIxADC_STARTUP + tIxADC_INIT is at most about 155 ms.
-		 * The 160 ms bounded wait leaves margin before checking I1CAL and
-		 * the documented minimum conversion count of 136. */
+		/* OPT=0000 is single-shot (datasheet Table 41). After the bounded
+		 * calibration wait require I1CAL and its single completed conversion.
+		 * The >=136 continuous-count proof belongs to the next phase. */
 		status = adbms2950_delay_long_checked(dev, ADBMS2950_I1_INIT_WAIT_US);
 	}
 	if(status == HAL_OK)
@@ -742,10 +772,15 @@ static HAL_StatusTypeDef adbms2950_start_i1_continuous_checked(adbms2950_driver_
 	}
 	if((status == HAL_OK) &&
 	   ((!dev->health.i1_calibrated) ||
-	    (dev->health.i1_conversion_count < ADBMS2950_I1_INIT_MIN_COUNT) ||
+	    (dev->health.i1_conversion_count < ADBMS2950_I1_SINGLE_MIN_COUNT) ||
 	    (status_cmd_counter != flag_cmd_counter)))
 	{
 		status = HAL_ERROR;
+		adbms2950_set_failure(dev, ADBMS2950_STAGE_I1_INITIALIZE,
+		    !dev->health.i1_calibrated ? ADBMS2950_REASON_CALIBRATION :
+		    ((status_cmd_counter != flag_cmd_counter) ?
+		      ADBMS2950_REASON_COMMAND_COUNTER : ADBMS2950_REASON_CONVERSION_STALL),
+		    status);
 	}
 
 	if(status == HAL_OK)
@@ -754,9 +789,9 @@ static HAL_StatusTypeDef adbms2950_start_i1_continuous_checked(adbms2950_driver_
 	}
 	if(status == HAL_OK)
 	{
-		/* One conversion is produced every 1 ms.  Require a nonzero counter
-		 * after two periods so a transport-successful command that did not
-		 * actually start continuous conversion cannot pass initialization. */
+		/* OPT=1100 is continuous. A separate 160 ms bounded wait provides
+		 * margin for >=136 conversions at the slow oscillator limit.
+		 * Do not apply that requirement to the preceding single-shot count. */
 		status = adbms2950_delay_long_checked(
 			dev, ADBMS2950_I1_CONTINUOUS_VERIFY_WAIT_US);
 	}
@@ -778,10 +813,15 @@ static HAL_StatusTypeDef adbms2950_start_i1_continuous_checked(adbms2950_driver_
 	}
 	if((status == HAL_OK) &&
 	   ((!dev->health.i1_calibrated) ||
-	    (dev->health.i1_conversion_count == 0u) ||
+	    (dev->health.i1_conversion_count < ADBMS2950_I1_CONTINUOUS_MIN_COUNT) ||
 	    (status_cmd_counter != flag_cmd_counter)))
 	{
 		status = HAL_ERROR;
+		adbms2950_set_failure(dev, ADBMS2950_STAGE_I1_CONTINUOUS,
+		    !dev->health.i1_calibrated ? ADBMS2950_REASON_CALIBRATION :
+		    ((status_cmd_counter != flag_cmd_counter) ?
+		      ADBMS2950_REASON_COMMAND_COUNTER : ADBMS2950_REASON_CONVERSION_STALL),
+		    status);
 	}
 
 	if(status == HAL_OK)
@@ -804,6 +844,7 @@ static void adbms2950_invalidate_sample(adbms2950_driver_t *dev,
 	dev->health.current_valid = false;
 	dev->health.pack_voltage_valid = false;
 	dev->health.last_status = status;
+	if(status != HAL_OK) dev->bridge_ready = false;
 	if(count_error)
 	{
 		adbms2950_sat_inc_u32(&dev->health.sample_error_count);
@@ -933,7 +974,8 @@ static void adbms2950_spi_debug_note_tx(adbms2950_driver_t *dev,
 
 	if((tx != NULL) && (tx_len > 0u))
 	{
-		preview_len = adbms2950_min_u16(tx_len, ADBMS2950_SPI_DEBUG_PREVIEW_BYTES);
+		/* Read transfers clock dummy bytes after the command; show those too. */
+		preview_len = adbms2950_min_u16(dev->spi_debug.last_total_len, ADBMS2950_SPI_DEBUG_PREVIEW_BYTES);
 		memcpy(dev->spi_debug.last_tx_preview, tx, preview_len);
 	}
 }
@@ -1247,8 +1289,7 @@ HAL_StatusTypeDef adbms2950_init_mixed_chain(adbms2950_driver_t *dev,
 	status = adbms2950_read_sid(dev);
 	if(status != HAL_OK)
 	{
-		adbms2950_set_failure(dev, ADBMS2950_STAGE_SID,
-		                      ADBMS2950_REASON_IDENTITY, status);
+        /* read_sid already distinguishes transport/PEC from device identity. */
 		return status;
 	}
 
@@ -1287,9 +1328,8 @@ HAL_StatusTypeDef adbms2950_init_mixed_chain(adbms2950_driver_t *dev,
 	if(status == HAL_OK)
 	{
 		dev->health.last_stage = ADBMS2950_STAGE_I1_INITIALIZE;
-		/* Establish I1ADC accuracy before the 10 Hz cell-monitor loop begins.
-		 * Otherwise each compatible ADCV/ADI1 can arrive before the 136-cycle
-		 * initialization window completes and I1CAL may never become valid. */
+		/* Complete calibration and continuous-conversion qualification before
+		 * allowing periodic reads; no measurement is published here. */
 		status = adbms2950_start_i1_continuous_checked(dev);
 	}
 	if(status != HAL_OK)
@@ -1305,6 +1345,7 @@ HAL_StatusTypeDef adbms2950_init_mixed_chain(adbms2950_driver_t *dev,
 	dev->health.initialized = (status == HAL_OK);
 	dev->health.hv_dividers_enabled = (status == HAL_OK) && enable_hv_dividers;
 	dev->health.last_status = status;
+	if(status != HAL_OK) dev->bridge_ready = false;
 	if(status == HAL_OK)
 	{
 		dev->health.last_stage = ADBMS2950_STAGE_I1_CONTINUOUS;
@@ -1905,38 +1946,50 @@ HAL_StatusTypeDef adbms2950_read_flag(adbms2950_driver_t *dev)
 		(uint16_t)(((uint16_t)(buf[2] & 0x1Fu) << 6u) |
 		           ((uint16_t)(buf[3] >> 2u) & 0x3Fu));
 	dev->health.i1_conversion_phase = (uint8_t)(buf[3] & 0x03u);
-	if((buf[0] & 0x40u) != 0u) faults |= (1u << 0);  /* VDRUV */
-	if((buf[0] & 0x20u) != 0u) faults |= (1u << 1);  /* OCMM */
-	if((buf[0] & 0x10u) != 0u) faults |= (1u << 2);  /* OC3L */
-	if((buf[0] & 0x08u) != 0u) faults |= (1u << 3);  /* OCAGD */
-	if((buf[0] & 0x04u) != 0u) faults |= (1u << 4);  /* OCAL */
-	if((buf[0] & 0x02u) != 0u) faults |= (1u << 5);  /* OC1L */
-	if((buf[1] & 0x40u) != 0u) faults |= (1u << 6);  /* VDDUV */
-	if((buf[1] & 0x20u) != 0u) faults |= (1u << 7);  /* NOCLK */
-	if((buf[1] & 0x10u) != 0u) faults |= (1u << 8);  /* REFFLT */
-	if((buf[1] & 0x08u) != 0u) faults |= (1u << 9);  /* OCBGD */
-	if((buf[1] & 0x04u) != 0u) faults |= (1u << 10); /* OCBL */
-	if((buf[1] & 0x02u) != 0u) faults |= (1u << 11); /* OC2L */
-	if((buf[4] & 0x80u) != 0u) faults |= (1u << 12); /* VREGOV */
-	if((buf[4] & 0x40u) != 0u) faults |= (1u << 13); /* VREGUV */
-	if((buf[4] & 0x20u) != 0u) faults |= (1u << 14); /* VDIGOV */
-	if((buf[4] & 0x10u) != 0u) faults |= (1u << 15); /* VDIGUV */
-	if((buf[4] & 0x08u) != 0u) faults |= (1u << 16); /* SED1 */
-	if((buf[4] & 0x04u) != 0u) faults |= (1u << 17); /* MED1 */
-	if((buf[4] & 0x02u) != 0u) faults |= (1u << 18); /* SED2 */
-	if((buf[4] & 0x01u) != 0u) faults |= (1u << 19); /* MED2 */
-	if((buf[5] & 0x80u) != 0u) faults |= (1u << 20); /* VDEL */
-	if((buf[5] & 0x40u) != 0u) faults |= (1u << 21); /* VDE */
-	if((buf[5] & 0x10u) != 0u) faults |= (1u << 22); /* SPIFLT */
-	if((buf[5] & 0x08u) != 0u) faults |= (1u << 23); /* RESET */
-	if((buf[5] & 0x04u) != 0u) faults |= (1u << 24); /* THSD */
-	if((buf[5] & 0x02u) != 0u) faults |= (1u << 25); /* TMODE */
-	if((buf[5] & 0x01u) != 0u) faults |= (1u << 26); /* OSCFLT */
+	faults = adbms2950_decode_fault_mask(buf);
+  if(dev->fault_history_count == 0u || dev->health.fault_mask != faults) {
+    adbms2950_fault_event_t *e = &dev->fault_history[dev->fault_history_next];
+    e->tick_ms = HAL_GetTick(); e->mask = faults;
+    memcpy(e->raw, buf, 6u);
+    dev->fault_history_next = (uint8_t)((dev->fault_history_next + 1u) % ADBMS2950_FAULT_HISTORY);
+    if(dev->fault_history_count < ADBMS2950_FAULT_HISTORY) dev->fault_history_count++;
+    adbms2950_sat_inc_u32(&dev->fault_history_total);
+  }
 	dev->health.fault_mask = faults;
 	dev->health.flag_valid = true;
 	dev->health.last_reason = ADBMS2950_REASON_NONE;
 	dev->health.last_status = HAL_OK;
 	return HAL_OK;
+}
+
+/* Explicit, one-shot startup acknowledgement. Never a periodic fault eraser.
+ * Preserve startup evidence; thermal shutdown is never acknowledged here. */
+HAL_StatusTypeDef adbms2950_startup_baseline(adbms2950_driver_t *dev)
+{
+	uint8_t clear_data[TX_DATA] = {0};
+	HAL_StatusTypeDef status;
+	if(dev == NULL || !dev->health.initialized || !dev->health.sid_valid ||
+	   !dev->health.config_valid || dev->num_ics != 1u ||
+	   dev->startup_baseline_attempted) return HAL_ERROR;
+	dev->startup_baseline_attempted = true;
+	dev->startup_baseline_valid = false;
+	adbms2950_invalidate_sample(dev, HAL_ERROR, true);
+	status = adbms2950_read_flag(dev);
+	if(status != HAL_OK) return status;
+	memcpy(dev->startup_raw_flag, dev->health.raw_flag, 6u);
+	if(dev->health.raw_flag[5] & 0x04u) return HAL_ERROR;
+	/* Only documented supply, clock, memory and reset-domain RW1C bits.
+	 * Do not write conversion counters, OC controls or reserved bits. */
+	clear_data[0] = dev->health.raw_flag[0] & 0x20u;
+	clear_data[1] = dev->health.raw_flag[1] & 0x38u;
+	clear_data[4] = dev->health.raw_flag[4];
+	clear_data[5] = dev->health.raw_flag[5] & 0xDBu;
+	status = adbms2950_wr48_checked(dev, CLRFLAG, clear_data);
+	if(status == HAL_OK) status = adbms2950_read_flag(dev);
+	if(status == HAL_OK && (dev->health.fault_mask & (0x07FFF000u | 0x1C1u)))
+		status = HAL_ERROR;
+	dev->startup_baseline_valid = status == HAL_OK;
+	return status;
 }
 
 HAL_StatusTypeDef adbms2950_verify_refup(adbms2950_driver_t *dev)
@@ -2074,6 +2127,10 @@ HAL_StatusTypeDef adbms2950_recover(adbms2950_driver_t *dev,
 	}
 	dev->health.last_stage = ADBMS2950_STAGE_RECOVERY;
 	saved_cal = dev->calibration;
+	uint32_t saved_recoveries = dev->health.recovery_count;
+	uint32_t saved_failures = dev->health.recovery_failure_count;
+	adbms2950_invalidate_sample(dev, HAL_ERROR, true);
+	dev->redundant_sample.valid = false;
 	num_ics = dev->num_ics; capacity = dev->ics_capacity; ics = dev->ics;
 	hspi = dev->hspi; csa_port = dev->cs_port[STRING_A]; csb_port = dev->cs_port[STRING_B];
 	csa_pin = dev->cs_pin[STRING_A]; csb_pin = dev->cs_pin[STRING_B]; htim = dev->htim;
@@ -2084,9 +2141,9 @@ HAL_StatusTypeDef adbms2950_recover(adbms2950_driver_t *dev,
 		                                     hspi, csa_port, csb_port,
 		                                     csa_pin, csb_pin, htim, string,
 		                                     true, false);
-		if((status == HAL_OK) && adbms2950_calibration_valid(&saved_cal))
+		if(adbms2950_calibration_valid(&saved_cal))
 		{
-			status = adbms2950_set_calibration(dev, &saved_cal);
+			(void)adbms2950_set_calibration(dev, &saved_cal);
 		}
 	}
 	else
@@ -2098,6 +2155,10 @@ HAL_StatusTypeDef adbms2950_recover(adbms2950_driver_t *dev,
 		if(status == HAL_OK) status = adbms2950_start_i1_continuous_checked(dev);
 		dev->health.initialized = (status == HAL_OK);
 	}
+	/* Preserve calibration verbatim, including invalid state, on failed recovery. */
+	dev->calibration = saved_cal;
+	dev->health.recovery_count = saved_recoveries;
+	dev->health.recovery_failure_count = saved_failures;
 	if(status == HAL_OK)
 	{
 		adbms2950_sat_inc_u32(&dev->health.recovery_count);
@@ -2133,6 +2194,14 @@ HAL_StatusTypeDef adbms2950_read_primary_sample(adbms2950_driver_t *dev,
 	{
 		return HAL_ERROR;
 	}
+	adbms2950_sat_inc_u32(&dev->health.primary_attempt);
+	dev->health.primary_attempt_ms = now_ms;
+	dev->health.primary_packet_checked = false;
+	dev->health.primary_flag_checked = false;
+	memset(dev->health.primary_packet, 0, sizeof(dev->health.primary_packet));
+	dev->health.primary_status_counter = 0u;
+	dev->health.primary_sample_counter = 0u;
+	dev->health.primary_flag_counter = 0u;
 	adbms2950_ensure_calibration(dev);
 	if(!adbms2950_topology_valid(dev))
 	{
@@ -2141,7 +2210,8 @@ HAL_StatusTypeDef adbms2950_read_primary_sample(adbms2950_driver_t *dev,
 		adbms2950_invalidate_sample(dev, HAL_ERROR, true);
 		return HAL_ERROR;
 	}
-	if(!dev->health.initialized || !dev->health.i1_continuous_ready)
+	if(!dev->health.initialized || !dev->health.sid_valid ||
+	   !dev->health.config_valid || !dev->health.i1_continuous_ready)
 	{
 		adbms2950_set_failure(dev, ADBMS2950_STAGE_SAMPLE,
 		                      ADBMS2950_REASON_NOT_INITIALIZED, HAL_ERROR);
@@ -2182,15 +2252,20 @@ HAL_StatusTypeDef adbms2950_read_primary_sample(adbms2950_driver_t *dev,
 		status = HAL_ERROR;
 	}
 	status_counter = dev->ics[0].rx_cmd_cntr;
+	dev->health.primary_status_counter = status_counter;
 
 	if(status == HAL_OK)
 	{
 		dev->health.last_stage = ADBMS2950_STAGE_SAMPLE;
+		memset(buf, 0, 8u);
 		status = adbms2950_rd48_checked(dev, RDIVB1, buf);
+		memcpy(dev->health.primary_packet, buf, 8u);
+		dev->health.primary_packet_checked = (status == HAL_OK);
 	}
 	if(status == HAL_OK)
 	{
 		sample_counter = dev->ics[0].rx_cmd_cntr;
+		dev->health.primary_sample_counter = sample_counter;
 		raw_i1 = (uint32_t)buf[0] |
 		         ((uint32_t)buf[1] << 8u) |
 		         ((uint32_t)buf[2] << 16u);
@@ -2206,6 +2281,8 @@ HAL_StatusTypeDef adbms2950_read_primary_sample(adbms2950_driver_t *dev,
 	if(status == HAL_OK)
 	{
 		status = adbms2950_read_i1_counter_checked(dev, &i1cntpha, &flag_counter);
+		dev->health.primary_flag_counter = flag_counter;
+		dev->health.primary_flag_checked = (status == HAL_OK);
 	}
 	else
 	{
@@ -2215,7 +2292,8 @@ HAL_StatusTypeDef adbms2950_read_primary_sample(adbms2950_driver_t *dev,
 
 	if(snapshot_active)
 	{
-		dev->health.last_stage = ADBMS2950_STAGE_UNSNAP;
+		/* Preserve an earlier failure's stage while still releasing SNAP. */
+		if(status == HAL_OK) dev->health.last_stage = ADBMS2950_STAGE_UNSNAP;
 		unsnap_status = adbms2950_cmd_checked(dev, UNSNAP);
 		if((status == HAL_OK) && (unsnap_status != HAL_OK))
 		{
@@ -2240,8 +2318,9 @@ HAL_StatusTypeDef adbms2950_read_primary_sample(adbms2950_driver_t *dev,
 	if((status == HAL_OK) &&
 	   ((raw_i1 == ADBMS2950_I1_RESET_CODE) ||
 	    (raw_i1 == ADBMS2950_I1_CLEAR_CODE) ||
-	    (raw_vb1 == ADBMS2950_VB1_RESET_CODE) ||
-	    (raw_vb1 == ADBMS2950_VB1_CLEAR_CODE)))
+	    (dev->health.hv_dividers_enabled &&
+	     ((raw_vb1 == ADBMS2950_VB1_RESET_CODE) ||
+	      (raw_vb1 == ADBMS2950_VB1_CLEAR_CODE)))))
 	{
 		adbms2950_set_failure(dev, ADBMS2950_STAGE_SAMPLE,
 		                      ADBMS2950_REASON_SENTINEL, HAL_ERROR);
@@ -2258,6 +2337,18 @@ HAL_StatusTypeDef adbms2950_read_primary_sample(adbms2950_driver_t *dev,
 		dev->health.counter_advanced = false;
 		adbms2950_invalidate_sample(dev, status, true);
 		return status;
+	}
+
+	/* Raw transport success does not qualify measurements under hardware faults.
+	 * Bits 12..26 are supply/memory/digital/reset/thermal/oscillator faults;
+	 * bits 0,6,7 are drive/supply/clock faults; bit8 is REFFLT (OC fault latch). */
+	if(!dev->health.flag_valid ||
+	   (dev->health.fault_mask & (0x07FFF000u | 0x000001C1u)))
+	{
+		adbms2950_set_failure(dev, ADBMS2950_STAGE_SAMPLE,
+		                      ADBMS2950_REASON_HARDWARE_FAULT, HAL_ERROR);
+		adbms2950_invalidate_sample(dev, HAL_ERROR, true);
+		return HAL_ERROR;
 	}
 
 	if(dev->health.counter_seen)
@@ -2298,6 +2389,14 @@ HAL_StatusTypeDef adbms2950_read_primary_sample(adbms2950_driver_t *dev,
 	dev->health.vb1_raw = signed_vb1;
 	dev->health.current_a = dev->current[0];
 	dev->health.pack_voltage_v = dev->vbat[0];
+	if(!isfinite(dev->health.current_a) ||
+	   (dev->health.hv_dividers_enabled && !isfinite(dev->health.pack_voltage_v)))
+	{
+		adbms2950_set_failure(dev, ADBMS2950_STAGE_SAMPLE,
+		                      ADBMS2950_REASON_CALIBRATION, HAL_ERROR);
+		adbms2950_invalidate_sample(dev, HAL_ERROR, true);
+		return HAL_ERROR;
+	}
 	dev->health.current_valid = true;
 	dev->health.pack_voltage_valid = dev->health.hv_dividers_enabled;
 	dev->health.sample_valid = true;
@@ -2343,7 +2442,8 @@ HAL_StatusTypeDef adbms2950_read_redundant_sample(adbms2950_driver_t *dev,
 		                      ADBMS2950_REASON_TOPOLOGY, HAL_ERROR);
 		return HAL_ERROR;
 	}
-	if(!dev->health.initialized || !dev->health.i1_continuous_ready)
+	if(!dev->health.initialized || !dev->health.sid_valid ||
+	   !dev->health.config_valid || !dev->health.i1_continuous_ready)
 	{
 		adbms2950_set_failure(dev, ADBMS2950_STAGE_REDUNDANT_START,
 		                      ADBMS2950_REASON_NOT_INITIALIZED, HAL_ERROR);
@@ -2462,13 +2562,22 @@ HAL_StatusTypeDef adbms2950_read_redundant_sample(adbms2950_driver_t *dev,
 	    (((uint32_t)i1_raw & 0x00FFFFFFu) == ADBMS2950_I1_CLEAR_CODE) ||
 	    (((uint32_t)i2_raw & 0x00FFFFFFu) == ADBMS2950_I1_RESET_CODE) ||
 	    (((uint32_t)i2_raw & 0x00FFFFFFu) == ADBMS2950_I1_CLEAR_CODE) ||
-	    ((uint16_t)vb1_raw == ADBMS2950_VB1_RESET_CODE) ||
-	    ((uint16_t)vb1_raw == ADBMS2950_VB1_CLEAR_CODE) ||
-	    ((uint16_t)vb2_raw == ADBMS2950_VB1_RESET_CODE) ||
-	    ((uint16_t)vb2_raw == ADBMS2950_VB1_CLEAR_CODE)))
+	    (dev->health.hv_dividers_enabled &&
+	     (((uint16_t)vb1_raw == ADBMS2950_VB1_RESET_CODE) ||
+	      ((uint16_t)vb1_raw == ADBMS2950_VB1_CLEAR_CODE) ||
+	      ((uint16_t)vb2_raw == ADBMS2950_VB1_RESET_CODE) ||
+	      ((uint16_t)vb2_raw == ADBMS2950_VB1_CLEAR_CODE)))))
 	{
 		adbms2950_set_failure(dev, ADBMS2950_STAGE_REDUNDANT_SAMPLE,
 		                      ADBMS2950_REASON_SENTINEL, HAL_ERROR);
+		status = HAL_ERROR;
+	}
+
+	if((status == HAL_OK) && (!dev->health.flag_valid ||
+	   (dev->health.fault_mask & (0x07FFF000u | 0x000001C1u))))
+	{
+		adbms2950_set_failure(dev, ADBMS2950_STAGE_REDUNDANT_SAMPLE,
+		                      ADBMS2950_REASON_HARDWARE_FAULT, HAL_ERROR);
 		status = HAL_ERROR;
 	}
 
@@ -2879,6 +2988,43 @@ HAL_StatusTypeDef adbms2950_wakeup_checked(adbms2950_driver_t *dev)
 		return HAL_ERROR;
 	}
 
+#ifdef DER_APM_STANDALONE
+#if AMS_APM_EVAL_LEGACY_WAKE
+	/* Diagnostic-only compatibility profile: exactly the old one-device
+	 * 1 ms low / 1 ms high wake before each transaction. No wake cache.
+	 * Do not use this timing profile for vehicle task-budget qualification. */
+	if(dev->num_ics != 1u) return HAL_ERROR;
+	dev->bridge_ready = false;
+	adbms2950_set_cs(dev, 0);
+	status = adbms2950_us_delay(dev, 1000u);
+	adbms2950_set_cs(dev, 1);
+	if(status == HAL_OK) status = adbms2950_us_delay(dev, 1000u);
+	if(status == HAL_OK) dev->bridge_wakes++;
+	return status;
+#else
+	/* One powered APM: ensure host 6822 readiness, not a 6830 cold wake train.
+	 * Millisecond guard < 4.3 ms minimum idle time; recheck at every burst. */
+	if(dev->num_ics != 1u) return HAL_ERROR;
+	if(dev->bridge_ready && dev->bridge_string == dev->string &&
+	   (uint32_t)(HAL_GetTick() - dev->bridge_activity_ms) < 3u)
+	{
+		dev->bridge_wake_skips++;
+		return HAL_OK;
+	}
+	dev->bridge_ready = false;
+	adbms2950_set_cs(dev, 0);
+	status = adbms2950_us_delay(dev, 20u);
+	adbms2950_set_cs(dev, 1);
+	if(status == HAL_OK) status = adbms2950_us_delay(dev, 2u);
+	if(status != HAL_OK) return status;
+	dev->bridge_string = dev->string;
+	dev->bridge_activity_ms = HAL_GetTick();
+	dev->bridge_ready = true;
+	dev->bridge_wakes++;
+	return HAL_OK;
+#endif /* activity-aware wake */
+#endif /* standalone */
+
 	for(uint8_t i = 0; i < dev->num_ics; i++)
 	{
 		adbms2950_set_cs(dev, 0);
@@ -2910,6 +3056,10 @@ void adbms2950_set_cs(adbms2950_driver_t* dev, uint8_t state)
 	}
 
 	HAL_GPIO_WritePin(dev->cs_port[dev->string], dev->cs_pin[dev->string], state);
+#ifdef DER_APM_STANDALONE
+	if(state && dev->bridge_ready && dev->bridge_string == dev->string)
+		dev->bridge_activity_ms = HAL_GetTick();
+#endif
 }
 
 HAL_StatusTypeDef adbms2950_us_delay(adbms2950_driver_t* dev, uint16_t microseconds)
@@ -2975,7 +3125,7 @@ HAL_StatusTypeDef adbms2950_spi_write(adbms2950_driver_t* dev, uint8_t* data, ui
 
 	if(status == HAL_OK)
 	{
-		status = HAL_SPI_Transmit(dev->hspi, data, len, SPI_TIMEOUT);
+		status = HAL_SPI_Transmit(dev->hspi, data, len, adbms2950_frame_timeout_ms(dev, len));
 	}
 
 	if(use_cs)
@@ -2989,6 +3139,7 @@ HAL_StatusTypeDef adbms2950_spi_write(adbms2950_driver_t* dev, uint8_t* data, ui
 		}
 	}
 	adbms_spi_unlock();
+	if(status != HAL_OK) dev->bridge_ready = false;
 
 	if(dev->spi_debug.enabled)
 	{
@@ -3032,13 +3183,14 @@ HAL_StatusTypeDef adbms2950_spi_write_read(adbms2950_driver_t *dev,
 	}
 	total_len = (uint16_t)(tx_len + rx_len);
 
+	/* Shared DMA-safe staging and result copy belong to the transaction. */
+	adbms_spi_lock();
 	memset(adbms2950_spi_txrx_tx_buf, ADBMS2950_SPI_DUMMY_BYTE, total_len);
 	memset(adbms2950_spi_txrx_rx_buf, 0, total_len);
 	memcpy(adbms2950_spi_txrx_tx_buf, tx_Data, tx_len);
 
 	adbms2950_spi_debug_note_tx(dev, dev->spi_debug.last_op, tx_Data, adbms2950_spi_txrx_tx_buf, tx_len, rx_len);
 
-	adbms_spi_lock();
 	status = HAL_OK;
 	if(use_cs)
 	{
@@ -3052,7 +3204,7 @@ HAL_StatusTypeDef adbms2950_spi_write_read(adbms2950_driver_t *dev,
 									  adbms2950_spi_txrx_tx_buf,
 									  adbms2950_spi_txrx_rx_buf,
 									  total_len,
-									  SPI_TIMEOUT);
+									  adbms2950_frame_timeout_ms(dev, total_len));
 	}
 
 	if(use_cs)
@@ -3065,7 +3217,7 @@ HAL_StatusTypeDef adbms2950_spi_write_read(adbms2950_driver_t *dev,
 			status = hold_status;
 		}
 	}
-	adbms_spi_unlock();
+	if(status != HAL_OK) dev->bridge_ready = false;
 
 	if(status == HAL_OK)
 	{
@@ -3092,5 +3244,222 @@ HAL_StatusTypeDef adbms2950_spi_write_read(adbms2950_driver_t *dev,
 
 	adbms2950_spi_debug_note_rx(dev, rx_data, rx_len, status);
 
+	adbms_spi_unlock();
 	return status;
+}
+
+/* Datasheet Rev0 Tables49,52,63,66,73. Only documented read commands. */
+static const uint8_t debug_codes[ADBMS2950_DEBUG_REGS] = {
+  0x02,0x26,0x34,0x32,0x2c,0x04,0x06,0x08,0x44,0x46,0x48,0x0b,
+  0x0a,0x09,0x03,0x07,0x0d,0x05,0x30,0x31,0x33,0x22,0x23,0x32
+};
+static const char *const debug_names[ADBMS2950_DEBUG_REGS] = {
+  "CFGA","CFGB","STAT","FLAG_PRE","SID","I1_I2","VB1_VB2","I1_VB1",
+  "IACC","VBACC","I1VB1ACC","OC","V1A_V3A","V4A_V6A","V7A_V8A_REF2A",
+  "V1B_V3B","V4B_V6B","V9B_V10B_REF2B","AUX_A","AUX_B","AUX_C",
+  "PWMA","PWMB","FLAG_POST"
+};
+const char *adbms2950_debug_register_name(unsigned index) {
+  return index < ADBMS2950_DEBUG_REGS ? debug_names[index] : "INVALID";
+}
+int32_t adbms2950_debug_s24(const uint8_t *b) {
+  uint32_t u = (uint32_t)b[0] | ((uint32_t)b[1]<<8) | ((uint32_t)b[2]<<16);
+  return (u & 0x800000u) ? (int32_t)u - 16777216 : (int32_t)u;
+}
+int32_t adbms2950_debug_s16(const uint8_t *b) {
+  uint32_t u = (uint32_t)b[0] | ((uint32_t)b[1]<<8);
+  return (u & 0x8000u) ? (int32_t)u - 65536 : (int32_t)u;
+}
+uint32_t adbms2950_decode_fault_mask(const uint8_t flag[6]) {
+  uint32_t faults=0u;
+	if((flag[0] & 0x20u) != 0u) faults |= (1u << 0);  /* VDRUV */
+	if((flag[0] & 0x10u) != 0u) faults |= (1u << 1);  /* OCMM */
+	if((flag[0] & 0x08u) != 0u) faults |= (1u << 2);  /* OC3L */
+	if((flag[0] & 0x04u) != 0u) faults |= (1u << 3);  /* OCAGD */
+	if((flag[0] & 0x02u) != 0u) faults |= (1u << 4);  /* OCAL */
+	if((flag[0] & 0x01u) != 0u) faults |= (1u << 5);  /* OC1L */
+	if((flag[1] & 0x20u) != 0u) faults |= (1u << 6);  /* VDDUV */
+	if((flag[1] & 0x10u) != 0u) faults |= (1u << 7);  /* NOCLK */
+	if((flag[1] & 0x08u) != 0u) faults |= (1u << 8);  /* REFFLT */
+	if((flag[1] & 0x04u) != 0u) faults |= (1u << 9);  /* OCBGD */
+	if((flag[1] & 0x02u) != 0u) faults |= (1u << 10); /* OCBL */
+	if((flag[1] & 0x01u) != 0u) faults |= (1u << 11); /* OC2L */
+	if((flag[4] & 0x80u) != 0u) faults |= (1u << 12); /* VREGOV */
+	if((flag[4] & 0x40u) != 0u) faults |= (1u << 13); /* VREGUV */
+	if((flag[4] & 0x20u) != 0u) faults |= (1u << 14); /* VDIGOV */
+	if((flag[4] & 0x10u) != 0u) faults |= (1u << 15); /* VDIGUV */
+	if((flag[4] & 0x08u) != 0u) faults |= (1u << 16); /* SED1 */
+	if((flag[4] & 0x04u) != 0u) faults |= (1u << 17); /* MED1 */
+	if((flag[4] & 0x02u) != 0u) faults |= (1u << 18); /* SED2 */
+	if((flag[4] & 0x01u) != 0u) faults |= (1u << 19); /* MED2 */
+	if((flag[5] & 0x80u) != 0u) faults |= (1u << 20); /* VDEL */
+	if((flag[5] & 0x40u) != 0u) faults |= (1u << 21); /* VDE */
+	if((flag[5] & 0x10u) != 0u) faults |= (1u << 22); /* SPIFLT */
+	if((flag[5] & 0x08u) != 0u) faults |= (1u << 23); /* RESET */
+	if((flag[5] & 0x04u) != 0u) faults |= (1u << 24); /* THSD */
+	if((flag[5] & 0x02u) != 0u) faults |= (1u << 25); /* TMODE */
+	if((flag[5] & 0x01u) != 0u) faults |= (1u << 26); /* OSCFLT */
+  return faults;
+}
+const char *adbms2950_fault_name(unsigned bit) {
+  static const char *const names[27] = {
+    "VDRUV","OCMM","OC3L","OCAGD","OCAL","OC1L","VDDUV","NOCLK",
+    "REFFLT","OCBGD","OCBL","OC2L","VREGOV","VREGUV","VDIGOV","VDIGUV",
+    "SED1","MED1","SED2","MED2","VDEL","VDE","SPIFLT","RESET","THSD","TMODE","OSCFLT"
+  };
+  return bit < 27u ? names[bit] : "INVALID";
+}
+HAL_StatusTypeDef adbms2950_debug_capture(adbms2950_driver_t *dev,
+    adbms2950_debug_snapshot_t *s, bool refresh_aux) {
+  if(s == NULL) return HAL_ERROR;
+  memset(s,0,sizeof(*s));
+  for(unsigned n=0;n<ADBMS2950_DEBUG_REGS;n++) s->reg[n].status=HAL_ERROR;
+  s->aux_start_status=HAL_ERROR;
+  if(!adbms2950_topology_valid(dev) || dev->num_ics != 1u) return HAL_ERROR;
+  adbms2950_stage_t saved_stage=dev->health.last_stage;
+  adbms2950_reason_t saved_reason=dev->health.last_reason;
+  HAL_StatusTypeDef saved_status=dev->health.last_status;
+  s->started_ms=HAL_GetTick(); s->aux_requested=refresh_aux;
+  /* No prerequisite on health.initialized: failed initialization is diagnosable.
+   * No writes to CFGA/CFGB, CLRFLAG, GPIO or divider controls here. */
+  bool old_trace=dev->spi_debug.enabled;
+  dev->spi_debug.enabled=true;
+  HAL_StatusTypeDef result=HAL_OK;
+  for(unsigned n=0;n<ADBMS2950_DEBUG_REGS;n++) {
+    if(n==18u && refresh_aux) {
+      s->aux_start_status=adbms2950_cmd_checked(dev,sADX);
+      if(s->aux_start_status==HAL_OK)
+        s->aux_start_status=adbms2950_delay_long_checked(dev,10000u);
+      s->aux_completed=s->aux_start_status==HAL_OK;
+      if(!s->aux_completed) result=HAL_ERROR;
+    }
+    adbms2950_debug_register_t *r=&s->reg[n];
+    uint8_t cmd[2]={0u,debug_codes[n]};
+    /* Preserve failed frame bytes as evidence, never decode them as valid. */
+    memset(buf,0,sizeof(buf));
+    dev->spi_debug.last_read_pec_pass_mask=0u;
+    dev->spi_debug.last_read_pec_fail_mask=0u;
+    dev->spi_debug.cmd_counter_mismatch_mask=0u;
+    if(n==3u || n==23u) r->status=adbms2950_read_flag(dev);
+    else r->status=adbms2950_rd48_checked(dev,cmd,buf);
+    memcpy(r->packet,buf,8u);
+    r->pec_pass=dev->spi_debug.last_read_pec_pass_mask;
+    r->pec_fail=dev->spi_debug.last_read_pec_fail_mask;
+    r->counter_mismatch=dev->spi_debug.cmd_counter_mismatch_mask;
+    r->observed_ccnt=dev->spi_debug.last_cmd_counter[0];
+    r->expected_ccnt=dev->spi_debug.expected_cmd_counter[0];
+    if(r->status!=HAL_OK) result=HAL_ERROR;
+    /* Deliberately continue after a failed register; per-group validity survives. */
+  }
+  dev->spi_debug.enabled=old_trace;
+  s->finished_ms=HAL_GetTick();
+  /* Diagnostic-read status lives in the snapshot, not in prior failure context. */
+  dev->health.last_stage=saved_stage;
+  dev->health.last_reason=saved_reason;
+  dev->health.last_status=saved_status;
+  return result;
+}
+
+/* Explicit inhibited-bench I1/VB1 internal-source probe. Never OC/GPO injection.
+ * Table41 OPT=1110, Table72 DIAGSEL=4/5/6. I2 is NOT started (RD=0).
+ * Restore configuration even on failed write/read; leave normal acquisition
+ * invalid until explicit recovery. No flag acknowledgement or reset here. */
+HAL_StatusTypeDef adbms2950_debug_adc_probe(adbms2950_driver_t *dev,uint8_t mode,
+    adbms2950_debug_snapshot_t *s,HAL_StatusTypeDef *restore_status) {
+  if(restore_status==NULL || s==NULL) return HAL_ERROR;
+  *restore_status=HAL_ERROR; /* Interpret only when restore_attempted is true. */
+  memset(s,0,sizeof(*s));
+  for(unsigned n=0;n<ADBMS2950_DEBUG_REGS;n++) s->reg[n].status=HAL_ERROR;
+  adbms2950_adc_probe_t p={0}; p.mode=mode; p.step=1;
+#if defined(DER_APM_STANDALONE) && AMS_APM_STANDALONE_EVAL_BENCH
+  if(!adbms2950_topology_valid(dev) || dev->num_ics!=1u || mode<4u || mode>6u ||
+      dev->health.hv_dividers_enabled || !dev->health.sid_valid ||
+      dev->health.device_id!=0x06u || !dev->health.initialized) {
+    s->adc_probe=p; return HAL_ERROR;
+  }
+  uint8_t original[6], test[6], cmd[2];
+  HAL_StatusTypeDef st=adbms2950_rd48_checked(dev,RDSTAT,buf);
+  if(st==HAL_OK) p.initialized=(buf[1]&0x40u)!=0u;
+  if(st==HAL_OK && !p.initialized) st=HAL_ERROR;
+  if(st==HAL_OK) st=adbms2950_rd48_checked(dev,RDCFGA,buf);
+  /* Never inspect frozen results or disturb a caller-owned snapshot. */
+  if(st==HAL_OK && (buf[5]&0x20u)) st=HAL_ERROR;
+  if(st==HAL_OK) st=adbms2950_rd48_checked(dev,RDCFGB,buf);
+  if(st!=HAL_OK) {s->adc_probe=p; return st;}
+  memcpy(original,buf,6u); memcpy(test,original,6u);
+  for(unsigned n=0;n<6;n++) test[n] &= adbms2950_cfgb_compare_mask[n];
+  test[5]=(uint8_t)((test[5]&0xf8u)|mode);
+  /* Stop continuous I1 first. CLRI alone is not a freshness barrier while
+   * continuous acquisition can overwrite the sentinel before the test. */
+  p.step=2; p.disturbed=true;
+  adbms2950_invalidate_sample(dev,HAL_ERROR,false);
+  dev->health.i1_continuous_ready=false;
+  adbms2950_build_adi1_command(0u,0u,cmd);
+  st=adbms2950_cmd_checked(dev,cmd);
+  /* Already initialized; conservative settling for the normal single shot.
+   * 40 ms exceeds 32 accumulation periods at the documented slow limit. */
+  if(st==HAL_OK) st=adbms2950_delay_long_checked(dev,40000u);
+  if(st==HAL_OK) {
+    p.step=3; p.restore_attempted=true;
+    st=adbms2950_wr48_checked(dev,WRCFGB,test);
+    if(st==HAL_OK) st=adbms2950_rd48_checked(dev,RDCFGB,buf);
+    if(st==HAL_OK && !adbms2950_masked_equal(buf,test,adbms2950_cfgb_compare_mask,6u)) st=HAL_ERROR;
+  }
+  if(st==HAL_OK) {
+    p.step=4; st=adbms2950_cmd_checked(dev,CLRI);
+    if(st==HAL_OK) st=adbms2950_rd48_checked(dev,RDIVB1,buf);
+    if(st==HAL_OK) {
+      uint32_t raw=(uint32_t)buf[0]|((uint32_t)buf[1]<<8)|((uint32_t)buf[2]<<16);
+      uint16_t vb=(uint16_t)buf[4]|((uint16_t)buf[5]<<8);
+      p.clear_verified=raw==ADBMS2950_I1_CLEAR_CODE && vb==ADBMS2950_VB1_CLEAR_CODE;
+      if(!p.clear_verified) st=HAL_ERROR;
+    }
+  }
+  if(st==HAL_OK) {
+    p.step=5; adbms2950_build_adi1_command(0u,0x0eu,cmd);
+    st=adbms2950_cmd_checked(dev,cmd);
+    if(st==HAL_OK) st=adbms2950_delay_long_checked(dev,40000u);
+  }
+  if(st==HAL_OK) {
+    p.step=6; st=adbms2950_rd48_checked(dev,RDIVB1,buf);
+    if(st==HAL_OK) {
+      p.i1_raw=adbms2950_debug_s24(buf);
+      p.vb1_raw=(int16_t)adbms2950_debug_s16(buf+4);
+      uint32_t raw=(uint32_t)p.i1_raw&0xffffffu;
+      p.fresh=raw!=ADBMS2950_I1_CLEAR_CODE && raw!=ADBMS2950_I1_RESET_CODE &&
+        (uint16_t)p.vb1_raw!=ADBMS2950_VB1_CLEAR_CODE &&
+        (uint16_t)p.vb1_raw!=ADBMS2950_VB1_RESET_CODE;
+      if(!p.fresh) st=HAL_ERROR;
+    }
+    if(st==HAL_OK) st=adbms2950_rd48_checked(dev,RDSTAT,buf);
+    if(st==HAL_OK && !(buf[1]&0x40u)) st=HAL_ERROR;
+  }
+  if(st==HAL_OK) {
+    p.step=7; st=adbms2950_debug_capture(dev,s,false);
+    /* Broad nominal screening, NOT datasheet accuracy qualification.
+     * Mode4 external S1A-I1A has no universal expected I1 value. */
+    p.expected_checked=true;
+    if(mode==5u) p.expected_match=p.i1_raw>=106200 && p.i1_raw<=129800 &&
+      p.vb1_raw>=1062 && p.vb1_raw<=1298;
+    else if(mode==6u) p.expected_match=p.i1_raw>=-137500 && p.i1_raw<=-112500 &&
+      p.vb1_raw>=21375 && p.vb1_raw<=26125;
+    else p.expected_match=p.vb1_raw>=-100 && p.vb1_raw<=100;
+    if(!p.expected_match && st==HAL_OK) {p.step=8; st=HAL_ERROR;}
+  }
+  /* Attempt restore after ANY attempted CFGB write, including failed writes. */
+  if(p.restore_attempted) {
+    for(unsigned n=0;n<6;n++) original[n] &= adbms2950_cfgb_compare_mask[n];
+    *restore_status=adbms2950_wr48_checked(dev,WRCFGB,original);
+    if(*restore_status==HAL_OK) *restore_status=adbms2950_rd48_checked(dev,RDCFGB,buf);
+    if(*restore_status==HAL_OK && !adbms2950_masked_equal(buf,original,adbms2950_cfgb_compare_mask,6u)) *restore_status=HAL_ERROR;
+  }
+  dev->health.initialized=false;
+  dev->health.config_valid=false;
+  dev->health.i1_continuous_ready=false;
+  adbms2950_invalidate_sample(dev,HAL_ERROR,false);
+  s->adc_probe=p;
+  return (p.restore_attempted && *restore_status!=HAL_OK) ? HAL_ERROR : st;
+#else
+  (void)dev;s->adc_probe=p;return HAL_ERROR;
+#endif
 }

@@ -23,6 +23,8 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "app.h"
+#include "diagnostics/ams_perf.h"
+#include "ext_drivers/ams_spi6_transport.h"
 #include "ext_drivers/ams_safety.h"
 /* USER CODE END Includes */
 
@@ -106,6 +108,12 @@ int main(void)
   /* MCU Configuration--------------------------------------------------------*/
 
   /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
+#if AMS_BENCHMARK_ICACHE
+  SCB_EnableICache();
+#endif
+#if AMS_BENCHMARK_DCACHE
+  SCB_EnableDCache();
+#endif
   HAL_Init();
 
   /* USER CODE BEGIN Init */
@@ -118,6 +126,7 @@ int main(void)
   SystemClock_Config();
 
   /* USER CODE BEGIN SysInit */
+  ams_perf_init();
 
   /* USER CODE END SysInit */
 
@@ -437,6 +446,9 @@ static void MX_SPI6_Init(void)
     Error_Handler();
   }
   /* USER CODE BEGIN SPI6_Init 2 */
+#if AMS_ADBMS_SPI_DMA
+  ams_spi6_dma_init();
+#endif
 
   /* USER CODE END SPI6_Init 2 */
 
@@ -844,11 +856,11 @@ static void MX_GPIO_Init(void)
 
   /*Configure GPIO pins : PF0 PF1 PF2 PF3
                            PF4 PF5 PF6 PF7
-                           PF8 PF9 PF10 PF12
+                           PF8 PF10 PF12
                            PF13 PF14 PF15 */
   GPIO_InitStruct.Pin = GPIO_PIN_0|GPIO_PIN_1|GPIO_PIN_2|GPIO_PIN_3
                           |GPIO_PIN_4|GPIO_PIN_5|GPIO_PIN_6|GPIO_PIN_7
-                          |GPIO_PIN_8|GPIO_PIN_9|GPIO_PIN_10|GPIO_PIN_12
+                          |GPIO_PIN_8|GPIO_PIN_10|GPIO_PIN_12
                           |GPIO_PIN_13|GPIO_PIN_14|GPIO_PIN_15;
   GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
@@ -881,6 +893,13 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+  /* Schematic MCU.SchDoc: HV_ACTIVE_MCU is PF9. This is a digital
+   * RTM HV-present indication, not a pack/load voltage measurement. */
+  GPIO_InitStruct.Pin = HV_ACTIVE_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(HV_ACTIVE_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pin : AIR_CTRL_Pin */
   GPIO_InitStruct.Pin = AIR_CTRL_Pin;

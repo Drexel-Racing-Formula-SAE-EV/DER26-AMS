@@ -1,0 +1,7 @@
+make: Entering directory '/workspace/scratch/43e64d7c85ca/work/ams-timing-r6/host_tests'
+cc -Idma_fakes -std=c11 -g -O0 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -Wno-missing-field-initializers -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -DSTM32F767xx -DUSE_HAL_DRIVER -DAMS_HOST_TEST=1 -Iinclude -I.. -I../Core/Inc -I../Core/Inc/tasks -I../Core/Inc/ext_drivers -I../Drivers/CMSIS/Include -I../Drivers/CMSIS/Device/ST/STM32F7xx/Include -I../Drivers/STM32F7xx_HAL_Driver/Inc -I../Drivers/STM32F7xx_HAL_Driver/Inc/Legacy -I../Middlewares/Third_Party/FreeRTOS/Source/include -I../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM7/r0p1 -Werror -DAMS_BUILD_PROFILE=4 -DAMS_ADBMS_SPI_DMA=1 production/spi6_dma_test.c -o build/spi6_dma_test
+build/spi6_dma_test
+PASS DMA success, task suspension, timeout, error, late IRQ, reuse, writes and quarantine
+python3 tools/check_spi_dma.py
+PASS DMA target-source native syntax and production driver SIL at /256, /128 and /64
+make: Leaving directory '/workspace/scratch/43e64d7c85ca/work/ams-timing-r6/host_tests'

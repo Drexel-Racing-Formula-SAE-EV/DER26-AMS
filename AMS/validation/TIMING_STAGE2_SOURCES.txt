@@ -1,0 +1,50 @@
+raw-fullrate rc=0
+TEMP 1 ICs: 21521 us, wakes 5, cold 1 warm 5
+TEMP 5 ICs: 28984 us, wakes 5, cold 1 warm 5
+VOLT+TEMP nominal wire/delay model: 68422 us
+STATUS completion nominal wire model: 4675 us
+PASS public temperature wrappers, stale boundary, zero and wrap
+PASS rolling sweep, duplicate rejection, failed visit, recovery, timestamp provenance and time filter
+PASS capture age, wrap, scheduled visits and transport rejection
+WAKE_AUDIT SID status:1 cold:0 warm:1 time_us:1335
+WAKE_AUDIT configuration status:1 cold:0 warm:1 time_us:2170
+WAKE_AUDIT status status:0 cold:0 warm:1 time_us:3005
+WAKE_AUDIT references status:1 cold:0 warm:2 time_us:25251
+WAKE_AUDIT mute status:1 cold:0 warm:1 time_us:1411
+WAKE_AUDIT unmute status:0 cold:0 warm:1 time_us:1411
+PASS nested/burst wake checks do not emit additional wake trains
+PASS production 6822/6830 wake/idle/integrity/timing regressions
+
+avg8 rc=0
+TEMP 1 ICs: 21521 us, wakes 5, cold 1 warm 5
+TEMP 5 ICs: 28984 us, wakes 5, cold 1 warm 5
+VOLT+TEMP nominal wire/delay model: 68422 us
+STATUS completion nominal wire model: 4675 us
+PASS public temperature wrappers, stale boundary, zero and wrap
+PASS rolling sweep, duplicate rejection, failed visit, recovery, timestamp provenance and time filter
+PASS capture age, wrap, scheduled visits and transport rejection
+WAKE_AUDIT SID status:1 cold:0 warm:1 time_us:1335
+WAKE_AUDIT configuration status:1 cold:0 warm:1 time_us:2170
+WAKE_AUDIT status status:0 cold:0 warm:1 time_us:3005
+WAKE_AUDIT references status:1 cold:0 warm:2 time_us:25251
+WAKE_AUDIT mute status:1 cold:0 warm:1 time_us:1411
+WAKE_AUDIT unmute status:0 cold:0 warm:1 time_us:1411
+PASS nested/burst wake checks do not emit additional wake trains
+PASS production 6822/6830 wake/idle/integrity/timing regressions
+
+iir rc=0
+TEMP 1 ICs: 21521 us, wakes 5, cold 1 warm 5
+TEMP 5 ICs: 28984 us, wakes 5, cold 1 warm 5
+VOLT+TEMP nominal wire/delay model: 68422 us
+STATUS completion nominal wire model: 4675 us
+PASS public temperature wrappers, stale boundary, zero and wrap
+PASS rolling sweep, duplicate rejection, failed visit, recovery, timestamp provenance and time filter
+PASS capture age, wrap, scheduled visits and transport rejection
+WAKE_AUDIT SID status:1 cold:0 warm:1 time_us:1335
+WAKE_AUDIT configuration status:1 cold:0 warm:1 time_us:2170
+WAKE_AUDIT status status:0 cold:0 warm:1 time_us:3005
+WAKE_AUDIT references status:1 cold:0 warm:2 time_us:25251
+WAKE_AUDIT mute status:1 cold:0 warm:1 time_us:1411
+WAKE_AUDIT unmute status:0 cold:0 warm:1 time_us:1411
+PASS nested/burst wake checks do not emit additional wake trains
+PASS production 6822/6830 wake/idle/integrity/timing regressions
